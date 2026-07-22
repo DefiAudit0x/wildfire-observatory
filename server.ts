@@ -1321,16 +1321,46 @@ async function startServer() {
     console.error("[FATAL] " + err.message);
     process.exit(1);
   }
-  if (process.env.NODE_ENV !== "production") {
+  // Detect production: either NODE_ENV=production or dist/server.cjs exists (bundled)
+  const isProduction = process.env.NODE_ENV === "production" || fs.existsSync(path.join(process.cwd(), "dist", "server.cjs"));
+
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    const distPath = path.resolve(process.cwd(), "dist");
+    console.log("[Server] Serving static files from:", distPath);
+
+    if (!fs.existsSync(distPath)) {
+      console.error("[FATAL] dist directory not found at:", distPath);
+      console.error("[FATAL] Run: npm run build");
+      process.exit(1);
+    }
+
+    // Log available assets for debugging
+    const assetsDir = path.join(distPath, "assets");
+    if (fs.existsSync(assetsDir)) {
+      const files = fs.readdirSync(assetsDir);
+      console.log("[Server] Assets available:", files.length);
+    }
+
+    app.use(express.static(distPath, {
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".js")) {
+          res.setHeader("Content-Type", "application/javascript; charset=utf-8");
+        }
+      }
+    }));
+
+    // SPA fallback: serve index.html only for navigation routes, not for missing assets
     app.get("*", (req, res) => {
+      if (req.path.startsWith("/assets/") || req.path.includes(".")) {
+        return res.status(404).send("Not found");
+      }
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
