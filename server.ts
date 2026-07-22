@@ -57,8 +57,9 @@ if (fs.existsSync(configPath)) {
   try {
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     firebaseApp = initializeApp(config);
-    db = getFirestore(firebaseApp);
-    console.log("[OK] Firebase Initialized successfully in server.ts");
+    const dbId = config.firestoreDatabaseId || "(default)";
+    db = getFirestore(firebaseApp, dbId);
+    console.log(`[OK] Firebase Initialized successfully in server.ts (db: ${dbId})`);
   } catch (err) {
     console.error("Failed to initialize Firebase from config:", err);
   }
