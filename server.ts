@@ -1024,18 +1024,14 @@ app.post("/api/reports", async (req, res) => {
           }`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: [
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: mimeType,
-              },
-            },
-            {
-              text: prompt,
-            },
-          ],
+          model: "gemini-2.0-flash",
+          contents: [{
+            role: "user",
+            parts: [
+              { text: prompt },
+              { inlineData: { data: base64Data, mimeType: mimeType } },
+            ],
+          }],
           config: {
             responseMimeType: "application/json",
           },
