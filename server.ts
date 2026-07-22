@@ -1216,7 +1216,7 @@ app.post("/api/ai/guidance", async (req, res) => {
         Keep it concise and highly practical. Avoid preambles.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3.5-flash",
+        model: "gemini-2.0-flash",
         contents: prompt,
       });
 
