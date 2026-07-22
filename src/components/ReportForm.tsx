@@ -157,6 +157,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [successReport, setSuccessReport] = useState<any | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
   // Compass & Camera Triangulation states
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -737,7 +738,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
 
     try {
+      setUploadProgress(50);
       const result = await onSubmit(payload);
+      setUploadProgress(100);
       setSuccessReport(result);
       
       // Reset form on success
@@ -748,7 +751,25 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setCompressedSize(null);
       setEdgeAiStatus(null);
     } catch (err: any) {
-      setErrorMsg(isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.");
+      setUploadProgress(0);
+      const msg = err?.message || "";
+      if (msg.includes("429") || msg.includes("quota")) {
+        setErrorMsg(isArabic
+          ? "🛑 تعذر التحقق من الصورة بالذكاء الاصطناعي حالياً (الحصة مؤقتاً). تم حفظ البلاغ وسيتم تحليله لاحقاً."
+          : "🛑 Vérification IA temporairement indisponible (quota). Le signalement sera analysé plus tard.");
+      } else if (msg.includes("413") || msg.includes("too large")) {
+        setErrorMsg(isArabic
+          ? "📸 الصورة كبيرة جداً. يرجى اختيار صورة أقل من 2 ميجابايت."
+          : "📸 L'image est trop volumineuse (max 2 Mo).");
+      } else if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) {
+        setErrorMsg(isArabic
+          ? "📡 فشل الاتصال بالخادم. تم حفظ البلاغ كمسودة وسيُرسل تلقائياً عند توفر الشبكة."
+          : "📡 Échec de connexion. Le rapport a été sauvegardé en brouillon.");
+      } else {
+        setErrorMsg(isArabic
+          ? "❌ عذراً، فشل إرسال البلاغ. تحقق من اتصالك وحاول مجدداً."
+          : "❌ Échec de l'envoi. Vérifiez votre connexion et réessayez.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -1427,6 +1448,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           {errorMsg && (
             <div className="p-3 bg-red-950/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-semibold leading-relaxed">
               ⚠️ {errorMsg}
+            </div>
+          )}
+
+          {uploadProgress > 0 && uploadProgress < 100 && (
+            <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-red-600 to-orange-500 rounded-full transition-all duration-500" style={{ width: `${uploadProgress}%` }} />
             </div>
           )}
 

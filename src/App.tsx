@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck, Crown } from "lucide-react";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck, Crown, AlertTriangle } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
@@ -12,6 +12,7 @@ import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
 import VolunteerRegistration from "./components/VolunteerRegistration";
 import CentralCommand from "./components/CentralCommand";
+import { fetchWithRetry, cacheGet, cacheSet } from "./utils/api";
 
 export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
@@ -93,7 +94,7 @@ export default function App() {
     sessionStorage.setItem("device_id", storedId);
 
     const sendHeartbeat = () => {
-      fetch("/api/location/heartbeat", {
+      fetchWithRetry("/api/location/heartbeat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -170,10 +171,13 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
+      const cachedWilayas = cacheGet<WilayaStatus[]>("wilayas");
+      if (cachedWilayas) setWilayas(cachedWilayas);
+
       const [reportsRes, satellitesRes, wilayasRes] = await Promise.all([
-        fetch("/api/reports"),
-        fetch("/api/satellite-data"),
-        fetch("/api/wilayas"),
+        fetchWithRetry("/api/reports"),
+        fetchWithRetry("/api/satellite-data"),
+        fetchWithRetry("/api/wilayas"),
       ]);
 
       const reportsData = await reportsRes.json();
@@ -183,6 +187,7 @@ export default function App() {
       setReports(reportsData);
       setSatellites(satellitesData);
       setWilayas(wilayasData);
+      cacheSet("wilayas", wilayasData);
       setLastRefreshed(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to fetch fire data:", err);
@@ -200,12 +205,12 @@ export default function App() {
 
   // Post citizen report handler
   const handleCreateReport = async (payload: any) => {
-    const res = await fetch("/api/reports", {
+    const res = await fetchWithRetry("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    if (!res.ok) throw new Error("Report failed");
+    if (!res.ok) throw new Error(`Report failed (${res.status})`);
     
     const newReport = await res.json();
     setReports((prev) => [newReport, ...prev]);
@@ -218,7 +223,7 @@ export default function App() {
   // Save parsed SMS report to database
   const handleSmsParsedReport = async (payload: any) => {
     try {
-      const res = await fetch("/api/reports", {
+      const res = await fetchWithRetry("/api/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -236,9 +241,9 @@ export default function App() {
   // Upvote/Confirm fire (Consensus Engine)
   const handleConfirmReport = async (id: string) => {
     try {
-      const res = await fetch(`/api/reports/${id}/confirm`, {
+      const res = await fetchWithRetry(`/api/reports/${id}/confirm`, {
         method: "POST",
-      });
+      }, 2);
       if (res.ok) {
         const result = await res.json();
         // Update local report consensus & status
@@ -660,6 +665,28 @@ export default function App() {
         )}
 
       </main>
+
+      {/* SOS FLOATING ACTION BUTTON */}
+      <button
+        onClick={() => { setActiveTab("report"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        className="fixed bottom-6 right-6 z-[1500] w-16 h-16 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white rounded-full shadow-[0_8px_32px_rgba(220,38,38,0.5)] flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 border border-red-400/30 group"
+      >
+        <div className="relative flex items-center justify-center">
+          <AlertTriangle className="h-7 w-7 animate-pulse group-hover:animate-none" />
+          <span className="absolute -top-1 -right-1 w-3 h-3 bg-white rounded-full animate-ping" />
+        </div>
+        <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[9px] font-black text-red-400 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
+          {isArabic ? "إبلاغ فوري" : "SOS"}
+        </span>
+      </button>
+
+      {/* LOADING OVERLAY */}
+      {loading && (
+        <div className="fixed top-4 right-4 z-[1600] bg-slate-950/90 backdrop-blur border border-white/10 rounded-lg px-3 py-2 flex items-center gap-2 shadow-xl text-xs">
+          <RefreshCw className="h-3.5 w-3.5 animate-spin text-red-400" />
+          <span className="text-slate-300">{isArabic ? "جاري التحديث..." : "Mise à jour..."}</span>
+        </div>
+      )}
 
       {/* 5. BRAND FOOTER */}
       <footer className="bg-[#050303]/40 border-t border-white/5 text-center py-6 mt-12 text-xs text-gray-500">
