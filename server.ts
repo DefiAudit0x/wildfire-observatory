@@ -4,7 +4,12 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createRequire } from "module";
-const _require = createRequire(import.meta.url);
+let _require: NodeRequire;
+try {
+  _require = createRequire(import.meta.url);
+} catch {
+  _require = require;
+}
 const { initializeApp } = _require("firebase/app");
 const { 
   getFirestore, 
@@ -1244,6 +1249,43 @@ Activité accrue des foyers d'incendies et propagation des fumées signalées pa
 - Police nationale : **1548**`,
     });
   }
+});
+
+// ========================
+// SUPER ADMIN / CENTRAL COMMAND - USER LOCATION TRACKING
+// ========================
+
+const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number }>();
+const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD || "REDACTED";
+
+app.post("/api/location/heartbeat", (req, res) => {
+  const { deviceId, lat, lng, name, role } = req.body;
+  if (!deviceId || lat === undefined || lng === undefined) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+  activeUserLocations.set(deviceId, {
+    lat: Number(lat),
+    lng: Number(lng),
+    name: name || "غير معروف",
+    role: role || "citizen",
+    lastSeen: Date.now(),
+  });
+  res.json({ success: true });
+});
+
+app.get("/api/locations", (req, res) => {
+  const { password } = req.query;
+  if (password !== SUPER_ADMIN_PASSWORD) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const now = Date.now();
+  activeUserLocations.forEach((val, key) => {
+    if (now - val.lastSeen > 5 * 60 * 1000) activeUserLocations.delete(key);
+  });
+  const users = Array.from(activeUserLocations.entries()).map(([deviceId, data]) => ({
+    deviceId, ...data, lastSeen: new Date(data.lastSeen).toISOString()
+  }));
+  res.json(users);
 });
 
 // Vite server middleware setup for handling both development and production static files

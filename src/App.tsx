@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck } from "lucide-react";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck, Crown } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
@@ -11,6 +11,7 @@ import EvacuationRadar from "./components/EvacuationRadar";
 import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
 import VolunteerRegistration from "./components/VolunteerRegistration";
+import CentralCommand from "./components/CentralCommand";
 
 export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
@@ -21,7 +22,7 @@ export default function App() {
   // Navigation / Interactive states
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer">("map");
+  const [activeTab, setActiveTab] = useState<"map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command">("map");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
@@ -37,6 +38,7 @@ export default function App() {
     { id: "volunteer", labelAr: "تسجيل متطوع", labelFr: "Devenir Volontaire", icon: <BadgeCheck className="h-4 w-4 text-emerald-400" /> },
     { id: "copilot", labelAr: "مساعد الذكاء الاصطناعي", labelFr: "Assistant Gemini IA", icon: <Sparkles className="h-4 w-4 text-purple-400" /> },
     { id: "guides", labelAr: "دليل النجاة والوقاية", labelFr: "Guides de Survie", icon: <BookOpen className="h-4 w-4 text-sky-400" /> },
+    { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
     { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
   ];
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
@@ -82,6 +84,32 @@ export default function App() {
       }
     }
   }, [simulationMode]);
+
+  // Heartbeat: send user location to server for Central Command tracking
+  useEffect(() => {
+    if (!userLocation) return;
+    const deviceId = `web_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+    const storedId = sessionStorage.getItem("device_id") || deviceId;
+    sessionStorage.setItem("device_id", storedId);
+
+    const sendHeartbeat = () => {
+      fetch("/api/location/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceId: storedId,
+          lat: userLocation.lat,
+          lng: userLocation.lng,
+          name: "مستخدم مباشر",
+          role: "citizen",
+        }),
+      }).catch(() => {});
+    };
+
+    sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, 30000);
+    return () => clearInterval(interval);
+  }, [userLocation]);
 
   // Recurrent scanning loop for proximity fires (checks reports list every 15 seconds)
   useEffect(() => {
@@ -460,8 +488,13 @@ export default function App() {
           </div>
         )}
 
+        {/* Central Command - full-screen command dashboard */}
+        {activeTab === "command" && (
+          <CentralCommand reports={reports} satellites={satellites} userLocation={userLocation} lang={lang} />
+        )}
+
         {/* Normal layout columns */}
-        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && (
+        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && (
           <>
             {/* LEFT MAIN PANELS (Leaflet Map, Guidance, Guides) - Spans 8 columns on desktop */}
             <section className={`lg:col-span-8 space-y-6 ${activeTab === "map" || activeTab === "guides" ? "block" : "hidden md:block"}`}>
