@@ -1,9 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Report, SatelliteHotspot, Language } from "../types";
 import L from "leaflet";
-import { Crown, Users, MapPin, Activity, Eye, Shield, Radio, RefreshCw, Clock, AlertTriangle } from "lucide-react";
-
-const SUPER_ADMIN_PASSWORD = import.meta.env.VITE_SUPER_ADMIN_PASSWORD || "";
+import { Crown, Users, MapPin, Activity, Eye, Shield, Radio, RefreshCw, AlertTriangle } from "lucide-react";
 
 interface UserLocationData {
   deviceId: string;
@@ -24,20 +22,36 @@ interface CentralCommandProps {
 export default function CentralCommand({ reports, satellites, userLocation, lang }: CentralCommandProps) {
   const [unlocked, setUnlocked] = useState(false);
   const [password, setPassword] = useState("");
+  const [enteredPassword, setEnteredPassword] = useState("");
   const [error, setError] = useState("");
   const [activeUsers, setActiveUsers] = useState<UserLocationData[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
+  const [validating, setValidating] = useState(false);
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
   const isArabic = lang === "ar";
 
-  const handleUnlock = () => {
-    if (password === SUPER_ADMIN_PASSWORD && SUPER_ADMIN_PASSWORD.length > 0) {
-      setUnlocked(true);
-      setError("");
-    } else {
-      setError(isArabic ? "كلمة السر غير صحيحة" : "Mot de passe incorrect");
+  const handleUnlock = async () => {
+    setValidating(true);
+    setError("");
+    try {
+      const res = await fetch("/api/auth/central-command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
+      const data = await res.json();
+      if (data.valid) {
+        setEnteredPassword(password);
+        setUnlocked(true);
+      } else {
+        setError(isArabic ? "كلمة السر غير صحيحة" : "Mot de passe incorrect");
+      }
+    } catch {
+      setError(isArabic ? "فشل الاتصال بالخادم" : "Erreur de connexion au serveur");
+    } finally {
+      setValidating(false);
     }
   };
 
@@ -45,7 +59,7 @@ export default function CentralCommand({ reports, satellites, userLocation, lang
   const fetchUserLocations = async () => {
     setLoadingUsers(true);
     try {
-      const res = await fetch(`/api/locations?password=${SUPER_ADMIN_PASSWORD}`);
+      const res = await fetch(`/api/locations?password=${encodeURIComponent(enteredPassword)}`);
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
@@ -63,7 +77,7 @@ export default function CentralCommand({ reports, satellites, userLocation, lang
       const interval = setInterval(fetchUserLocations, 15000);
       return () => clearInterval(interval);
     }
-  }, [unlocked]);
+  }, [unlocked, enteredPassword]);
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -205,10 +219,14 @@ export default function CentralCommand({ reports, satellites, userLocation, lang
             {error && <p className="text-red-400 text-xs font-bold">{error}</p>}
             <button
               onClick={handleUnlock}
-              className="w-full px-6 py-3 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 text-black font-black rounded-xl text-sm transition-all cursor-pointer flex items-center justify-center gap-2"
+              disabled={validating}
+              className="w-full px-6 py-3 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 disabled:opacity-50 text-black font-black rounded-xl text-sm transition-all cursor-pointer flex items-center justify-center gap-2"
             >
               <Eye className="h-4 w-4" />
-              {isArabic ? "الدخول إلى القيادة المركزية" : "Accéder au Commandement"}
+              {validating
+                ? (isArabic ? "جارٍ التحقق..." : "Vérification...")
+                : (isArabic ? "الدخول إلى القيادة المركزية" : "Accéder au Commandement")
+              }
             </button>
           </div>
         </div>

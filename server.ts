@@ -29,6 +29,21 @@ import { Report, SatelliteHotspot, WilayaStatus, BadgeCode, VolunteerRegistratio
 const app = express();
 const PORT = 3000;
 
+// ========================
+// SECURITY: Authentication credentials
+// WARNING: Never hardcode fallback passwords in production.
+// These MUST be set via environment variables (Railway secrets / .env).
+// If env vars are missing, the app will refuse to start.
+// ========================
+
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD;
+
+function requireAuth(): void {
+  if (!ADMIN_PASSWORD) throw new Error("ADMIN_PASSWORD env var is not set — server cannot start");
+  if (!SUPER_ADMIN_PASSWORD) throw new Error("SUPER_ADMIN_PASSWORD env var is not set — server cannot start");
+}
+
 // Body parser with 10mb limit for base64 image uploads
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
@@ -679,7 +694,7 @@ app.get("/api/badges", async (req, res) => {
 // POST create a new badge code (admin)
 app.post("/api/badges", async (req, res) => {
   const { password, code, ownerName, type, wilaya, phone } = req.body;
-  if (password !== "***REMOVED***") return res.status(401).json({ error: "Unauthorized" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "Unauthorized" });
   if (!code || !ownerName || !type || !wilaya) return res.status(400).json({ error: "Missing required fields" });
 
   const existing = await getBadgeCodesFromDb();
@@ -702,7 +717,7 @@ app.post("/api/badges", async (req, res) => {
 app.delete("/api/badges/:code", async (req, res) => {
   const { password } = req.body;
   const { code } = req.params;
-  if (password !== "***REMOVED***") return res.status(401).json({ error: "Unauthorized" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "Unauthorized" });
 
   if (db) {
     try { await deleteDoc(doc(db, "badgeCodes", code)); }
@@ -717,7 +732,7 @@ app.delete("/api/badges/:code", async (req, res) => {
 app.post("/api/badges/:code/toggle", async (req, res) => {
   const { password } = req.body;
   const { code } = req.params;
-  if (password !== "***REMOVED***") return res.status(401).json({ error: "Unauthorized" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "Unauthorized" });
 
   if (db) {
     try {
@@ -761,7 +776,7 @@ app.post("/api/volunteer/register", async (req, res) => {
 // GET pending registrations (admin)
 app.get("/api/volunteer/pending", async (req, res) => {
   const { password } = req.query;
-  if (password !== "***REMOVED***") return res.status(401).json({ error: "Unauthorized" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "Unauthorized" });
 
   const registrations = await getRegistrationsFromDb();
   res.json(registrations);
@@ -771,7 +786,7 @@ app.get("/api/volunteer/pending", async (req, res) => {
 app.post("/api/volunteer/:id/approve", async (req, res) => {
   const { password, status, assignedCode, ownerName, type, wilaya, phone } = req.body;
   const { id } = req.params;
-  if (password !== "***REMOVED***") return res.status(401).json({ error: "Unauthorized" });
+  if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: "Unauthorized" });
 
   if (db) {
     try {
@@ -861,7 +876,7 @@ app.post("/api/reports/:id/confirm", async (req, res) => {
 // Admin Authorization verification
 app.post("/api/admin/verify", (req, res) => {
   const { password } = req.body;
-  if (password === "***REMOVED***") {
+  if (password === ADMIN_PASSWORD) {
     return res.json({ success: true });
   }
   return res.status(401).json({ success: false, error: "Incorrect admin password" });
@@ -872,7 +887,7 @@ app.post("/api/admin/reports/:id/update-status", async (req, res) => {
   const { password, status, severity } = req.body;
   const { id } = req.params;
 
-  if (password !== "***REMOVED***") {
+  if (password !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -906,7 +921,7 @@ app.post("/api/admin/reports/:id/delete", async (req, res) => {
   const { password } = req.body;
   const { id } = req.params;
 
-  if (password !== "***REMOVED***") {
+  if (password !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
@@ -1256,7 +1271,6 @@ Activité accrue des foyers d'incendies et propagation des fumées signalées pa
 // ========================
 
 const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number }>();
-const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD || "REDACTED";
 
 app.post("/api/location/heartbeat", (req, res) => {
   const { deviceId, lat, lng, name, role } = req.body;
@@ -1271,6 +1285,15 @@ app.post("/api/location/heartbeat", (req, res) => {
     lastSeen: Date.now(),
   });
   res.json({ success: true });
+});
+
+// POST validate Central Command password (server-side auth, no client exposure)
+app.post("/api/auth/central-command", (req, res) => {
+  const { password } = req.body;
+  if (!password || password !== SUPER_ADMIN_PASSWORD) {
+    return res.status(401).json({ valid: false });
+  }
+  res.json({ valid: true });
 });
 
 app.get("/api/locations", (req, res) => {
@@ -1290,6 +1313,14 @@ app.get("/api/locations", (req, res) => {
 
 // Vite server middleware setup for handling both development and production static files
 async function startServer() {
+  // Security: refuse to start if passwords are not set via environment variables
+  try {
+    requireAuth();
+    console.log("[SECURITY] Authentication credentials loaded from environment");
+  } catch (err: any) {
+    console.error("[FATAL] " + err.message);
+    process.exit(1);
+  }
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
