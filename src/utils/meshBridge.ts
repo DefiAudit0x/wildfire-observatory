@@ -229,7 +229,7 @@ async function browserEncrypt(
 
     return {
       ciphertext: arrayBufferToBase64(ciphertext),
-      iv: arrayBufferToBase64(iv),
+      iv: arrayBufferToBase64(iv.buffer),
       signature: arrayBufferToBase64(signature),
       ephemeralId: browserEphemeralId,
       senderPublicKey: arrayBufferToBase64(exportedPub),

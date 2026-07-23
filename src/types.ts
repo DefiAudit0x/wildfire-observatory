@@ -12,6 +12,7 @@ export interface Report {
   reporterPhone?: string;
   reporterType?: 'citizen' | 'volunteer' | 'official';
   reporterBadgeCode?: string;
+  deviceId?: string;
   timestamp: string;
   aiVerification?: {
     isVerified: boolean;
@@ -24,6 +25,11 @@ export interface Report {
   clusterId?: string;
   clusterSize?: number;
   isClusterLeader?: boolean;
+  handlingTeamAr?: string;
+  handlingTeamFr?: string;
+  resolutionNotes?: string;
+  resolvedAt?: string;
+  resolvedOutcome?: 'extinguished' | 'contained' | 'evacuated' | 'false_alarm' | string;
 }
 
 export interface SatelliteHotspot {
@@ -78,4 +84,37 @@ export interface VolunteerRegistration {
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
   assignedCode?: string;
+}
+
+export interface Notification {
+  id: string;
+  deviceId: string;
+  titleAr: string;
+  titleFr: string;
+  bodyAr: string;
+  bodyFr: string;
+  type: 'success' | 'warning' | 'error' | 'info';
+  timestamp: string;
+  read: boolean;
+}
+
+export interface TrappedSOS {
+  id: string;
+  deviceId: string;
+  lat: number;
+  lng: number;
+  name: string;
+  phone?: string;
+  audioUrl?: string; // Base64 audio or playable URL of recorded voice distress call
+  audioDuration?: number; // duration in seconds
+  status: 'active' | 'resolved';
+  timestamp: string;
+  dispatchedTeams?: {
+    type: 'protection_civile' | 'volunteers';
+    teamNameAr: string;
+    teamNameFr: string;
+    dispatchedAt: string;
+    status: 'en_route' | 'arrived' | 'completed';
+    notes?: string;
+  }[];
 }

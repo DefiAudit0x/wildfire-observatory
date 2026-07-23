@@ -7,13 +7,20 @@ export async function fetchWithRetry(
   for (let i = 0; i < retries; i++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-      const res = await fetch(url, { ...options, signal: controller.signal });
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      const combinedSignal = options.signal
+        ? AbortSignal.any([options.signal, controller.signal])
+        : controller.signal;
+
+      const res = await fetch(url, { ...options, signal: combinedSignal });
       clearTimeout(timeoutId);
-      if (res.ok) return res;
-      if (res.status >= 400 && res.status < 500) return res;
-    } catch (e) {
-      if (i === retries - 1) throw e;
+      if (res.ok || (res.status >= 400 && res.status < 500)) {
+        return res;
+      }
+    } catch (e: any) {
+      if (i === retries - 1) {
+        throw e;
+      }
       await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
     }
   }

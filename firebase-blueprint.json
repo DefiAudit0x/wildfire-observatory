@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Report": {
+      "title": "Wildfire Report",
+      "description": "Citizen or official report of a wildfire incident",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "locationName": { "type": "string" },
+        "wilaya": { "type": "string" },
+        "description": { "type": "string" },
+        "severity": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "consensusCount": { "type": "number" },
+        "reporterType": { "type": "string" }
+      },
+      "required": ["id", "lat", "lng", "locationName", "wilaya", "description", "severity", "status", "timestamp"]
+    },
+    "BadgeCode": {
+      "title": "Badge Code",
+      "description": "Verification code for official or volunteer reporters",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "type": { "type": "string" },
+        "wilaya": { "type": "string" },
+        "isActive": { "type": "boolean" }
+      },
+      "required": ["code", "ownerName", "type", "wilaya", "isActive"]
+    },
+    "VolunteerRegistration": {
+      "title": "Volunteer Registration",
+      "description": "Application to register as a community volunteer",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "phone": { "type": "string" },
+        "wilaya": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "fullName", "phone", "wilaya", "status"]
+    },
+    "TrappedSOS": {
+      "title": "Trapped SOS Call",
+      "description": "Emergency SOS broadcast by a trapped citizen or group",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "deviceId": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "deviceId", "lat", "lng", "name", "status", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/reports/{reportId}": {
+      "schema": "Report",
+      "description": "Collection of wildfire reports"
+    },
+    "/badgeCodes/{code}": {
+      "schema": "BadgeCode",
+      "description": "Collection of active reporter badge codes"
+    },
+    "/volunteerRegistrations/{registrationId}": {
+      "schema": "VolunteerRegistration",
+      "description": "Collection of volunteer registration submissions"
+    },
+    "/trappedSos/{sosId}": {
+      "schema": "TrappedSOS",
+      "description": "Collection of emergency trapped SOS broadcasts and rescue coordinates"
+    }
+  }
+}

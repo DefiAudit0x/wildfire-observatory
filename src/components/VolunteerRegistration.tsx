@@ -38,7 +38,6 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
   const [email, setEmail] = useState("");
   const [wilaya, setWilaya] = useState("");
   const [type, setType] = useState<"volunteer" | "official">("volunteer");
-  const [idNumber, setIdNumber] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
@@ -58,11 +57,11 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
       const res = await fetch("/api/volunteer/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, phone, email: email || undefined, wilaya, type, idNumber: idNumber || undefined }),
+        body: JSON.stringify({ fullName, phone, email: email || undefined, wilaya, type }),
       });
       if (res.ok) {
         setSuccess(true);
-        setFullName(""); setPhone(""); setEmail(""); setWilaya(""); setIdNumber("");
+        setFullName(""); setPhone(""); setEmail(""); setWilaya(""); setType("volunteer");
       } else {
         setErrorMsg(isArabic ? "فشل التسجيل، حاول مجدداً" : "Échec de l'inscription, réessayez");
       }
@@ -140,6 +139,15 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
         </div>
 
         <div className="relative">
+          <Shield className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+          <select value={type} onChange={e => setType(e.target.value as any)} required
+            className="w-full bg-black/50 border border-white/5 rounded-lg py-2.5 pl-10 pr-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 appearance-none cursor-pointer">
+            <option value="volunteer">{isArabic ? "نوع العضوية: متطوع ميداني" : "Type : Bénévole de terrain"}</option>
+            <option value="official">{isArabic ? "نوع العضوية: جهة رسمية / هيئة وطنية" : "Type : Organisme officiel"}</option>
+          </select>
+        </div>
+
+        <div className="relative">
           <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
           <select value={wilaya} onChange={e => setWilaya(e.target.value)} required
             className="w-full bg-black/50 border border-white/5 rounded-lg py-2.5 pl-10 pr-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 appearance-none cursor-pointer">
@@ -148,26 +156,6 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
               <option key={idx} value={`${w.nameAr} (${w.nameFr})`}>{isArabic ? w.nameAr : w.nameFr}</option>
             ))}
           </select>
-        </div>
-
-        <div className="flex gap-2">
-          <button type="button" onClick={() => setType("volunteer")}
-            className={`flex-1 py-2 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
-              type === "volunteer" ? "bg-emerald-600 text-white border-emerald-600" : "bg-black/40 text-slate-400 border-white/5 hover:border-white/10"}`}>
-            💚 {isArabic ? "متطوع" : "Bénévole"}
-          </button>
-          <button type="button" onClick={() => setType("official")}
-            className={`flex-1 py-2 rounded-lg text-[11px] font-bold border transition-all cursor-pointer ${
-              type === "official" ? "bg-amber-600 text-white border-amber-600" : "bg-black/40 text-slate-400 border-white/5 hover:border-white/10"}`}>
-            🛡️ {isArabic ? "حماية مدنية" : "Protection Civile"}
-          </button>
-        </div>
-
-        <div className="relative">
-          <Shield className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-          <input value={idNumber} onChange={e => setIdNumber(e.target.value)}
-            placeholder={isArabic ? "رقم البطاقة المهنية (اختياري - للحماية المدنية)" : "Numéro de carte professionnelle (optionnel)"}
-            className="w-full bg-black/50 border border-white/5 rounded-lg py-2.5 pl-10 pr-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500/40 placeholder:text-gray-600" />
         </div>
 
         {errorMsg && (

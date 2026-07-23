@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck, Crown, AlertTriangle } from "lucide-react";
-import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, BadgeCheck, Crown, AlertTriangle, Bell, X, CheckCircle, Info } from "lucide-react";
+import { Report, SatelliteHotspot, WilayaStatus, Language, TrappedSOS } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
 import StatisticsPanel from "./components/StatisticsPanel";
@@ -12,26 +12,46 @@ import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
 import VolunteerRegistration from "./components/VolunteerRegistration";
 import CentralCommand from "./components/CentralCommand";
+import MeshNetworkSimulator from "./components/MeshNetworkSimulator";
+import DigitalWalkieTalkie from "./components/DigitalWalkieTalkie";
+import SafeEvacuation from "./components/SafeEvacuation";
+import TrappedSOSModal from "./components/TrappedSOSModal";
+import HomeHub from "./components/HomeHub";
 import { fetchWithRetry, cacheGet, cacheSet } from "./utils/api";
+
+const getDeviceId = () => {
+  let id = sessionStorage.getItem("device_id");
+  if (!id) {
+    id = `web_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+    sessionStorage.setItem("device_id", id);
+  }
+  return id;
+};
 
 export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
+  const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
   const [lang, setLang] = useState<Language>("ar");
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const deviceId = getDeviceId();
   
   // Navigation / Interactive states
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command">("map");
+  const [activeTab, setActiveTab] = useState<"home" | "map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command" | "mesh" | "radio" | "evac">("home");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
   // Proximity alerts states (recurring proximity checking)
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [showTrappedModal, setShowTrappedModal] = useState(false);
 
   const tabs = [
+    { id: "home", labelAr: "بوابة الطوارئ السريعة", labelFr: "Accueil d'Urgence", icon: <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" /> },
     { id: "map", labelAr: "المرصد والخريطة", labelFr: "Observatoire & Carte", icon: <Layers className="h-4 w-4" /> },
     { id: "radar", labelAr: "رادار الإخلاء والرياح", labelFr: "Radar d'Évacuation", icon: <Compass className="h-4 w-4 text-emerald-400" /> },
     { id: "ops", labelAr: "غرفة قيادة الطوارئ", labelFr: "Crisis Command Ops", icon: <Shield className="h-4 w-4 text-amber-400" /> },
@@ -39,12 +59,16 @@ export default function App() {
     { id: "volunteer", labelAr: "تسجيل متطوع", labelFr: "Devenir Volontaire", icon: <BadgeCheck className="h-4 w-4 text-emerald-400" /> },
     { id: "copilot", labelAr: "مساعد الذكاء الاصطناعي", labelFr: "Assistant Gemini IA", icon: <Sparkles className="h-4 w-4 text-purple-400" /> },
     { id: "guides", labelAr: "دليل النجاة والوقاية", labelFr: "Guides de Survie", icon: <BookOpen className="h-4 w-4 text-sky-400" /> },
+    { id: "mesh", labelAr: "شبكة طوارئ Mesh", labelFr: "Réseau Mesh", icon: <Radio className="h-4 w-4 text-indigo-400 animate-pulse" /> },
+    { id: "radio", labelAr: "راديو رقمي (جديد)", labelFr: "Radio (Nouveau)", icon: <Radio className="h-4 w-4 text-emerald-400 animate-bounce" /> },
+    { id: "evac", labelAr: "مسارات الإخلاء", labelFr: "Évacuation", icon: <Navigation className="h-4 w-4 text-sky-400" /> },
     { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
     { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
   ];
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
-  const [simulationMode, setSimulationMode] = useState(true);
+  const [simulationMode, setSimulationMode] = useState(false);
+  const [isLocating, setIsLocating] = useState(true);
 
   const isArabic = lang === "ar";
 
@@ -68,20 +92,27 @@ export default function App() {
     if (simulationMode) {
       // Coordinate positioned near Bejaia (very close to active hot spots!)
       setUserLocation({ lat: 36.72, lng: 5.08 });
+      setIsLocating(false);
     } else {
       if (navigator.geolocation) {
+        setIsLocating(true);
         const watchId = navigator.geolocation.watchPosition(
           (pos) => {
             setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+            setIsLocating(false);
           },
           (err) => {
             console.warn("User blocked Geolocation. Defaulting back to Simulation Mode.", err);
             setSimulationMode(true);
             setUserLocation({ lat: 36.72, lng: 5.08 });
+            setIsLocating(false);
           },
           { enableHighAccuracy: true }
         );
         return () => navigator.geolocation.clearWatch(watchId);
+      } else {
+        setSimulationMode(true);
+        setIsLocating(false);
       }
     }
   }, [simulationMode]);
@@ -94,6 +125,10 @@ export default function App() {
     sessionStorage.setItem("device_id", storedId);
 
     const sendHeartbeat = () => {
+      const storedBadge = localStorage.getItem("reporterBadgeCode") || "";
+      const storedName = localStorage.getItem("userName") || "مستخدم مباشر";
+      const storedRole = localStorage.getItem("userRole") || "citizen";
+
       fetchWithRetry("/api/location/heartbeat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -101,8 +136,9 @@ export default function App() {
           deviceId: storedId,
           lat: userLocation.lat,
           lng: userLocation.lng,
-          name: "مستخدم مباشر",
-          role: "citizen",
+          name: storedName,
+          role: storedRole,
+          badgeCode: storedBadge,
         }),
       }).catch(() => {});
     };
@@ -129,6 +165,21 @@ export default function App() {
         .sort((a, b) => a.distance - b.distance);
 
       setActiveAlerts(nearReports);
+
+      // Trigger Web Native Push Notifications for nearby verified/confirmed fires
+      if (nearReports.length > 0 && "Notification" in window && Notification.permission === "granted") {
+        const primary = nearReports[0];
+        try {
+          new Notification(isArabic ? "🚨 إشعار حريق مؤكد قريب!" : "🚨 Alerte Incendie Confirmée Proche !", {
+            body: isArabic 
+              ? `تم تأكيد بؤرة حريق على بعد ${primary.distance.toFixed(1)} كم في "${primary.locationName}". يرجى فحص مسار الإخلاء الآمن!`
+              : `Incendie confirmé à ${primary.distance.toFixed(1)} km à "${primary.locationName}". Vérifiez l'itinéraire !`,
+            icon: "/favicon.ico",
+          });
+        } catch (e) {
+          console.warn("Notification error:", e);
+        }
+      }
 
       // Web Audio sound alerts
       if (nearReports.length > 0 && !isMuted) {
@@ -174,23 +225,39 @@ export default function App() {
       const cachedWilayas = cacheGet<WilayaStatus[]>("wilayas");
       if (cachedWilayas) setWilayas(cachedWilayas);
 
-      const [reportsRes, satellitesRes, wilayasRes] = await Promise.all([
+      const [reportsRes, satellitesRes, wilayasRes, notifsRes, sosRes] = await Promise.allSettled([
         fetchWithRetry("/api/reports"),
         fetchWithRetry("/api/satellite-data"),
         fetchWithRetry("/api/wilayas"),
+        fetchWithRetry(`/api/notifications/${deviceId}`),
+        fetchWithRetry("/api/sos")
       ]);
 
-      const reportsData = await reportsRes.json();
-      const satellitesData = await satellitesRes.json();
-      const wilayasData = await wilayasRes.json();
+      if (reportsRes.status === "fulfilled" && reportsRes.value.ok) {
+        const data = await reportsRes.value.json();
+        setReports(data);
+      }
+      if (satellitesRes.status === "fulfilled" && satellitesRes.value.ok) {
+        const data = await satellitesRes.value.json();
+        setSatellites(data);
+      }
+      if (wilayasRes.status === "fulfilled" && wilayasRes.value.ok) {
+        const data = await wilayasRes.value.json();
+        setWilayas(data);
+        cacheSet("wilayas", data);
+      }
+      if (notifsRes.status === "fulfilled" && notifsRes.value.ok) {
+        const data = await notifsRes.value.json();
+        setNotifications(data);
+      }
+      if (sosRes.status === "fulfilled" && sosRes.value.ok) {
+        const data = await sosRes.value.json();
+        setSosCalls(data);
+      }
 
-      setReports(reportsData);
-      setSatellites(satellitesData);
-      setWilayas(wilayasData);
-      cacheSet("wilayas", wilayasData);
       setLastRefreshed(new Date().toLocaleTimeString());
     } catch (err) {
-      console.error("Failed to fetch fire data:", err);
+      console.warn("Partial fetch warning during fire data refresh:", err);
     } finally {
       setLoading(false);
     }
@@ -208,7 +275,7 @@ export default function App() {
     const res = await fetchWithRetry("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, deviceId }),
     });
     if (!res.ok) throw new Error(`Report failed (${res.status})`);
     
@@ -260,10 +327,38 @@ export default function App() {
     }
   };
 
+  const handleMarkNotificationRead = async (id: string) => {
+    try {
+      await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    } catch (e) {
+      console.error("Failed to mark notification read", e);
+    }
+  };
+
   const handleMapClick = (lat: number, lng: number) => {
     setMapClickedCoords({ lat, lng });
     // Switch to report tab on mobile so they can see the form filled immediately
     setActiveTab("report");
+  };
+
+  // Bulk simulation handler to test dozens of incoming citizen reports & evacuation vectors
+  const handleRunBulkSimulation = async () => {
+    try {
+      const res = await fetchWithRetry("/api/simulate/bulk", {
+        method: "POST",
+      }, 2);
+      if (res.ok) {
+        const data = await res.json();
+        alert(isArabic 
+          ? `🚀 تم بث محاكاة كثيفة بنجاح! تم إضافة ${data.count} بلاغات طوارئ جديدة موثقة ومربوطة بالخريطة والرادار.`
+          : `🚀 Simulation envoyée avec succès ! ${data.count} nouveaux signalements ajoutés.`
+        );
+        fetchData();
+      }
+    } catch (err) {
+      console.error("Bulk simulation error:", err);
+    }
   };
 
   return (
@@ -308,6 +403,68 @@ export default function App() {
               >
                 <RefreshCw className={`h-3 w-3 text-gray-400 ${loading ? "animate-spin text-red-500" : ""}`} />
               </button>
+            </div>
+
+            {/* Notifications Bell */}
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="relative p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors cursor-pointer border border-white/5"
+                title="Notifications"
+              >
+                <Bell className="h-4 w-4 text-gray-300" />
+                {notifications.some(n => !n.read) && (
+                  <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500 animate-pulse border border-black" />
+                )}
+              </button>
+              
+              {showNotifications && (
+                <div className={`absolute top-full mt-2 w-72 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl z-[1200] overflow-hidden ${isArabic ? "left-0 md:left-auto md:right-0" : "right-0"}`}>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-zinc-800/50">
+                    <h3 className="font-bold text-sm text-slate-100">{isArabic ? "الإشعارات" : "Notifications"}</h3>
+                    <button onClick={() => setShowNotifications(false)} className="text-gray-400 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-sm text-gray-400">
+                        {isArabic ? "لا توجد إشعارات" : "Aucune notification"}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col">
+                        {notifications.map(n => (
+                          <div 
+                            key={n.id} 
+                            onClick={() => !n.read && handleMarkNotificationRead(n.id)}
+                            className={`p-4 border-b border-white/5 last:border-0 cursor-pointer transition-colors ${n.read ? "bg-transparent opacity-60" : "bg-white/5 hover:bg-white/10"}`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className="shrink-0 mt-0.5">
+                                {n.type === "success" && <CheckCircle className="h-4 w-4 text-emerald-500" />}
+                                {n.type === "warning" && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                                {n.type === "error" && <AlertCircle className="h-4 w-4 text-red-500" />}
+                                {n.type === "info" && <Info className="h-4 w-4 text-blue-500" />}
+                              </div>
+                              <div className="flex-1">
+                                <h4 className={`text-xs font-bold ${!n.read ? "text-slate-100" : "text-gray-400"}`}>
+                                  {isArabic ? n.titleAr : n.titleFr}
+                                </h4>
+                                <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                                  {isArabic ? n.bodyAr : n.bodyFr}
+                                </p>
+                                <div className="text-[9px] text-gray-500 mt-2">
+                                  {new Date(n.timestamp).toLocaleString(isArabic ? "ar-DZ" : "fr-DZ")}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Volunteer Registration button */}
@@ -381,6 +538,29 @@ export default function App() {
                   ? (simulationMode ? "⚙️ وضع المحاكاة: بجاية" : "🌐 وضع البث: GPS حقيقي") 
                   : (simulationMode ? "Simulateur: Béjaïa" : "GPS Réel Actif")
                 }
+              </button>
+
+              <button
+                onClick={handleRunBulkSimulation}
+                className="px-2.5 py-1 bg-amber-600/30 hover:bg-amber-600/60 border border-amber-500/50 text-amber-300 rounded transition-all cursor-pointer font-bold flex items-center gap-1 shadow-md"
+                title="Simulate bulk incoming fire reports for stress testing"
+              >
+                <span>⚡ {isArabic ? "بث محاكاة عشرات البلاغات" : "Simuler Signalements Massifs"}</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  if ("Notification" in window) {
+                    Notification.requestPermission().then((permission) => {
+                      if (permission === "granted") {
+                        alert(isArabic ? "✅ تم تفعيل إشعارات الطوارئ المباشرة بنجاح!" : "✅ Notifications activées avec succès !");
+                      }
+                    });
+                  }
+                }}
+                className="px-2.5 py-1 bg-sky-600/30 hover:bg-sky-600/50 border border-sky-400/40 text-sky-300 rounded transition-colors cursor-pointer"
+              >
+                🔔 {isArabic ? "تفعيل إشعارات الهاتف" : "Activer Notifications"}
               </button>
 
               <button
@@ -465,10 +645,33 @@ export default function App() {
       {/* 4. MAIN LAYOUT GRID */}
       <main className="flex-1 px-4 py-5 md:px-8 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
+        {/* Simple Emergency-First Home Screen */}
+        {activeTab === "home" && (
+          <div className="col-span-12 animate-fadeIn">
+            <HomeHub
+              onNavigate={(tab) => setActiveTab(tab)}
+              onTriggerSOS={() => setShowTrappedModal(true)}
+              lang={lang}
+              reportsCount={reports.length}
+              sosCount={sosCalls.filter(s => s.status === "active").length}
+            />
+          </div>
+        )}
+
         {/* Safe Evacuation Radar View */}
         {activeTab === "radar" && (
           <div className="col-span-12">
-            <EvacuationRadar reports={reports} userLocation={userLocation} lang={lang} />
+            {isLocating ? (
+              <div className="w-full h-[600px] bg-slate-900/60 rounded-xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col items-center justify-center text-emerald-500 gap-4">
+                <div className="relative">
+                  <div className="h-20 w-20 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
+                  <Compass className="h-8 w-8 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-emerald-400" />
+                </div>
+                <p className="animate-pulse font-bold">{isArabic ? "جاري تهيئة الرادار وضبط الإحداثيات..." : "Initialisation du radar et des coordonnées..."}</p>
+              </div>
+            ) : (
+              <EvacuationRadar reports={reports} satellites={satellites} userLocation={userLocation} lang={lang} />
+            )}
           </div>
         )}
 
@@ -482,7 +685,7 @@ export default function App() {
         {/* Admin Moderation Panel View */}
         {activeTab === "admin" && (
           <div className="col-span-12">
-            <AdminPanel reports={reports} onRefresh={fetchData} lang={lang} />
+            <AdminPanel reports={reports} sosCalls={sosCalls} onRefresh={fetchData} lang={lang} />
           </div>
         )}
 
@@ -495,11 +698,42 @@ export default function App() {
 
         {/* Central Command - full-screen command dashboard */}
         {activeTab === "command" && (
-          <CentralCommand reports={reports} satellites={satellites} userLocation={userLocation} lang={lang} />
+          <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={fetchData} />
+        )}
+
+        {/* Mesh Network Simulator View */}
+        {activeTab === "mesh" && (
+          <div className="col-span-12">
+            <MeshNetworkSimulator lang={lang} />
+          </div>
+        )}
+
+        {/* Digital Walkie Talkie View */}
+        {activeTab === "radio" && (
+          <div className="col-span-12 animate-fadeIn">
+            <DigitalWalkieTalkie lang={lang} />
+          </div>
+        )}
+
+        {/* Safe Evacuation View */}
+        {activeTab === "evac" && (
+          <div className="col-span-12 animate-fadeIn">
+            {isLocating ? (
+              <div className="w-full h-[600px] bg-slate-900/60 rounded-xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col items-center justify-center text-sky-500 gap-4">
+                <div className="relative">
+                  <div className="h-20 w-20 border-4 border-sky-500/20 border-t-sky-500 rounded-full animate-spin"></div>
+                  <Compass className="h-8 w-8 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-sky-400" />
+                </div>
+                <p className="animate-pulse font-bold">{isArabic ? "جاري تهيئة مسارات الإخلاء الذكية..." : "Initialisation des itinéraires d'évacuation..."}</p>
+              </div>
+            ) : (
+              <SafeEvacuation lang={lang} userLocation={userLocation} />
+            )}
+          </div>
         )}
 
         {/* Normal layout columns */}
-        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && (
+        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "mesh" && activeTab !== "radio" && activeTab !== "evac" && activeTab !== "home" && (
           <>
             {/* LEFT MAIN PANELS (Leaflet Map, Guidance, Guides) - Spans 8 columns on desktop */}
             <section className={`lg:col-span-8 space-y-6 ${activeTab === "map" || activeTab === "guides" ? "block" : "hidden md:block"}`}>
@@ -525,14 +759,26 @@ export default function App() {
                     )}
                   </div>
                   
-                  <InteractiveMap
-                    reports={reports}
-                    satellites={satellites}
-                    onMapClick={handleMapClick}
-                    onConfirmReport={handleConfirmReport}
-                    selectedReportId={selectedReportId}
-                    lang={lang}
-                  />
+                  {isLocating ? (
+                    <div className="w-full h-[480px] sm:h-[520px] md:h-[580px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800 flex flex-col items-center justify-center text-slate-400 gap-4">
+                      <div className="relative">
+                        <div className="h-16 w-16 border-4 border-sky-500/20 border-t-sky-500 rounded-full animate-spin"></div>
+                        <Compass className="h-6 w-6 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-sky-400" />
+                      </div>
+                      <p className="animate-pulse font-bold">{isArabic ? "جاري تحديد موقعك بدقة لتوجيه الخرائط..." : "Acquisition de la position GPS..."}</p>
+                    </div>
+                  ) : (
+                    <InteractiveMap
+                      reports={reports}
+                      satellites={satellites}
+                      sosCalls={sosCalls}
+                      onMapClick={handleMapClick}
+                      onConfirmReport={handleConfirmReport}
+                      selectedReportId={selectedReportId}
+                      lang={lang}
+                      userLocation={userLocation}
+                    />
+                  )}
                 </div>
               )}
 
@@ -664,11 +910,18 @@ export default function App() {
           </>
         )}
 
+        {/* Mesh Network Simulator View */}
+        {activeTab === "mesh" && (
+          <div className="col-span-12 animate-fadeIn">
+            <MeshNetworkSimulator lang={lang} />
+          </div>
+        )}
+
       </main>
 
       {/* SOS FLOATING ACTION BUTTON */}
       <button
-        onClick={() => { setActiveTab("report"); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+        onClick={() => setShowTrappedModal(true)}
         className="fixed bottom-6 right-6 z-[1500] w-16 h-16 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white rounded-full shadow-[0_8px_32px_rgba(220,38,38,0.5)] flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 border border-red-400/30 group"
       >
         <div className="relative flex items-center justify-center">
@@ -676,9 +929,21 @@ export default function App() {
           <span className="absolute -top-1 -right-1 w-3 h-3 bg-white rounded-full animate-ping" />
         </div>
         <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[9px] font-black text-red-400 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
-          {isArabic ? "إبلاغ فوري" : "SOS"}
+          {isArabic ? "أنا محاصر (SOS)" : "Je suis bloqué (SOS)"}
         </span>
       </button>
+
+      {/* Trapped Person SOS Modal */}
+      {showTrappedModal && (
+        <TrappedSOSModal 
+          lang={lang} 
+          onClose={() => {
+            setShowTrappedModal(false);
+            fetchData();
+          }} 
+          userLocation={userLocation} 
+        />
+      )}
 
       {/* LOADING OVERLAY */}
       {loading && (

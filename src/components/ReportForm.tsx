@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
+import { Camera, MapPin, Loader2, AlertTriangle, CheckCircle } from "lucide-react";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -134,6 +134,74 @@ const WILAYAS = [
   { nameAr: "ليبيا - المرقب", nameFr: "Libye - Al Murgub" }
 ];
 
+const WILAYA_CENTROIDS = [
+  { nameAr: "الجزائر - بجاية (Algérie - Béjaïa)", lat: 36.75, lng: 5.05 },
+  { nameAr: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)", lat: 36.71, lng: 4.04 },
+  { nameAr: "الجزائر - جيجل (Algérie - Jijel)", lat: 36.80, lng: 5.76 },
+  { nameAr: "الجزائر - البويرة (Algérie - Bouira)", lat: 36.37, lng: 3.90 },
+  { nameAr: "الجزائر - الجزائر العاصمة (Algérie - Alger)", lat: 36.75, lng: 3.05 },
+  { nameAr: "الجزائر - بومرداس (Algérie - Boumerdès)", lat: 36.76, lng: 3.47 },
+  { nameAr: "الجزائر - الطارف (Algérie - El Tarf)", lat: 36.76, lng: 8.31 },
+  { nameAr: "الجزائر - عنابة (Algérie - Annaba)", lat: 36.90, lng: 7.76 },
+  { nameAr: "الجزائر - سكيكدة (Algérie - Skikda)", lat: 36.87, lng: 6.90 },
+  { nameAr: "الجزائر - قسنطينة (Algérie - Constantine)", lat: 36.36, lng: 6.61 },
+  { nameAr: "الجزائر - سطيف (Algérie - Sétif)", lat: 36.19, lng: 5.41 },
+  { nameAr: "الجزائر - باتنة (Algérie - Batna)", lat: 35.55, lng: 6.17 },
+  { nameAr: "الجزائر - البليدة (Algérie - Blida)", lat: 36.47, lng: 2.83 },
+  { nameAr: "الجزائر - تيبازة (Algérie - Tipaza)", lat: 36.59, lng: 2.44 },
+  { nameAr: "الجزائر - المدية (Algérie - Médéa)", lat: 36.26, lng: 2.75 },
+  { nameAr: "الجزائر - قالمة (Algérie - Guelma)", lat: 36.46, lng: 7.42 },
+  { nameAr: "الجزائر - سوق أهراس (Algérie - Souk Ahras)", lat: 36.28, lng: 7.95 },
+  { nameAr: "الجزائر - خنشلة (Algérie - Khenchela)", lat: 35.43, lng: 7.14 },
+  { nameAr: "الجزائر - أم البواقي (Algérie - Oum El Bouaghi)", lat: 35.87, lng: 7.11 },
+  { nameAr: "الجزائر - ميلة (Algérie - Mila)", lat: 36.45, lng: 6.26 },
+  { nameAr: "الجزائر - برج بوعريريج (Algérie - Bordj Bou Arréridj)", lat: 36.07, lng: 4.76 },
+  { nameAr: "الجزائر - الشلف (Algérie - Chlef)", lat: 36.16, lng: 1.33 },
+  { nameAr: "الجزائر - وهران (Algérie - Oran)", lat: 35.69, lng: -0.63 },
+  { nameAr: "الجزائر - تلمسان (Algérie - Tlemcen)", lat: 34.88, lng: -1.31 },
+  { nameAr: "الجزائر - مستغانم (Algérie - Mostaganem)", lat: 35.93, lng: 0.09 },
+  { nameAr: "الجزائر - معسكر (Algérie - Mascara)", lat: 35.40, lng: 0.14 },
+  { nameAr: "الجزائر - بسكرة (Algérie - Biskra)", lat: 34.85, lng: 5.73 },
+  { nameAr: "الجزائر - المسيلة (Algérie - M'Sila)", lat: 35.70, lng: 4.54 },
+  { nameAr: "الجزائر - الجلفة (Algérie - Djelfa)", lat: 34.67, lng: 3.25 },
+  { nameAr: "الجزائر - الأغواط (Algérie - Laghouat)", lat: 33.80, lng: 2.86 },
+  { nameAr: "الجزائر - الوادي (Algérie - El Oued)", lat: 33.37, lng: 6.86 },
+  { nameAr: "الجزائر - غرداية (Algérie - Ghardaïa)", lat: 32.49, lng: 3.67 },
+  { nameAr: "الجزائر - ورقلة (Algérie - Ouargla)", lat: 31.95, lng: 5.32 },
+  { nameAr: "الجزائر - بشار (Algérie - Béchar)", lat: 31.62, lng: -2.23 },
+  { nameAr: "الجزائر - أدرار (Algérie - Adrar)", lat: 27.87, lng: -0.29 },
+  { nameAr: "الجزائر - تمنراست (Algérie - Tamanrasset)", lat: 22.78, lng: 5.52 },
+  { nameAr: "الجزائر - إليزي (Algérie - Illizi)", lat: 26.48, lng: 8.48 },
+  { nameAr: "الجزائر - تندوف (Algérie - Tindouf)", lat: 27.67, lng: -8.14 },
+  { nameAr: "الجزائر - تيارت (Algérie - Tiaret)", lat: 35.37, lng: 1.32 },
+  { nameAr: "الجزائر - سعيدة (Algérie - Saïda)", lat: 34.83, lng: 0.15 },
+  { nameAr: "الجزائر - سيدي بلعباس (Algérie - Sidi Bel Abbès)", lat: 35.20, lng: -0.63 },
+  { nameAr: "الجزائر - عين تموشنت (Algérie - Aïn Témouchent)", lat: 35.30, lng: -1.14 },
+  { nameAr: "الجزائر - غليزان (Algérie - Relizane)", lat: 35.74, lng: 0.55 },
+  { nameAr: "الجزائر - عين الدفلى (Algérie - Aïn Defla)", lat: 36.26, lng: 1.96 },
+  { nameAr: "الجزائر - تيسمسيلت (Algérie - Tissemsilt)", lat: 35.60, lng: 1.81 },
+  { nameAr: "الجزائر - النعامة (Algérie - Naâma)", lat: 33.26, lng: -0.31 },
+  { nameAr: "الجزائر - البيض (Algérie - El Bayadh)", lat: 33.68, lng: 1.01 },
+  // Tunisia
+  { nameAr: "تونس - جندوبة (Tunisie - Jendouba)", lat: 36.50, lng: 8.78 },
+  { nameAr: "تونس - باجة (Tunisie - Béja)", lat: 36.72, lng: 9.18 },
+  { nameAr: "تونس - بنزرت (Tunisie - Bizerte)", lat: 37.27, lng: 9.87 },
+  { nameAr: "تونس - الكاف (Tunisie - Le Kef)", lat: 36.18, lng: 8.71 },
+];
+
+export const findWilayaFromCoords = (latNum: number, lngNum: number): string => {
+  let closest = WILAYA_CENTROIDS[0];
+  let minDist = Infinity;
+  for (const w of WILAYA_CENTROIDS) {
+    const dist = Math.hypot(w.lat - latNum, w.lng - lngNum);
+    if (dist < minDist) {
+      minDist = dist;
+      closest = w;
+    }
+  }
+  return closest.nameAr;
+};
+
 export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [] }: ReportFormProps) {
   const [lat, setLat] = useState("");
   const [lng, setLng] = useState("");
@@ -141,10 +209,27 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const [wilaya, setWilaya] = useState("");
   const [severity, setSeverity] = useState("medium");
   const [description, setDescription] = useState("");
-  const [reporterName, setReporterName] = useState("");
-  const [reporterPhone, setReporterPhone] = useState("");
-  const [reporterType, setReporterType] = useState("citizen");
-  const [reporterBadgeCode, setReporterBadgeCode] = useState("");
+  const [reporterName, setReporterName] = useState(() => localStorage.getItem("userName") || "");
+  const [reporterPhone, setReporterPhone] = useState(() => localStorage.getItem("userPhone") || "");
+  const [reporterType, setReporterType] = useState(() => localStorage.getItem("userRole") || "citizen");
+  const [reporterBadgeCode, setReporterBadgeCode] = useState(() => localStorage.getItem("reporterBadgeCode") || "");
+  
+  // Keep values synced to localStorage for live routing heartbeats
+  useEffect(() => {
+    localStorage.setItem("userName", reporterName);
+  }, [reporterName]);
+
+  useEffect(() => {
+    localStorage.setItem("userPhone", reporterPhone);
+  }, [reporterPhone]);
+
+  useEffect(() => {
+    localStorage.setItem("userRole", reporterType);
+  }, [reporterType]);
+
+  useEffect(() => {
+    localStorage.setItem("reporterBadgeCode", reporterBadgeCode);
+  }, [reporterBadgeCode]);
   
   // Image attachments and compression states
   const [image, setImage] = useState<string | null>(null);
@@ -181,7 +266,6 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   } | null>(null);
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const isArabic = lang === "ar";
 
@@ -206,13 +290,58 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     };
   }, []);
 
-  // Sync clicked coordinates from the parent map component
+  // Sync clicked coordinates from the parent map component with automatic reverse-geocoding & Wilaya detection
   useEffect(() => {
     if (mapClickedCoords) {
-      setLat(mapClickedCoords.lat.toFixed(6));
-      setLng(mapClickedCoords.lng.toFixed(6));
+      const latitude = mapClickedCoords.lat;
+      const longitude = mapClickedCoords.lng;
+      setLat(latitude.toFixed(6));
+      setLng(longitude.toFixed(6));
+      const autoWilaya = findWilayaFromCoords(latitude, longitude);
+      setWilaya(autoWilaya);
+      reverseGeocode(latitude, longitude);
     }
   }, [mapClickedCoords]);
+
+  // Automatic reverse geocoding using Nominatim OpenStreetMap
+  const reverseGeocode = async (latitude: number, longitude: number) => {
+    setIsLocating(true);
+    try {
+      const autoWilaya = findWilayaFromCoords(latitude, longitude);
+      setWilaya(autoWilaya);
+
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&accept-language=ar`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const address = data.address || {};
+        const suburb = address.suburb || address.village || address.town || address.city_district || address.city || address.county || "";
+        const road = address.road || address.pedestrian || "";
+        const state = address.state || address.region || address.province || "";
+
+        const descriptiveName = [suburb, road, state].filter(Boolean).join("، ") || data.display_name?.split(",")[0] || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`;
+        setLocationName(descriptiveName);
+
+        // Auto-match Wilaya drop-down selection if state name is returned
+        if (state) {
+          const matchedWilaya = WILAYAS.find((w) =>
+            w.nameAr.includes(state) || state.includes(w.nameAr.replace(/.*- /, ""))
+          );
+          if (matchedWilaya) {
+            setWilaya(matchedWilaya.nameAr);
+          }
+        }
+      } else {
+        if (!locationName) setLocationName(`موقع جغرافي (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`);
+      }
+    } catch (err) {
+      console.warn("Reverse geocoding offline or blocked, setting coordinate name:", err);
+      if (!locationName) setLocationName(`موقع جغرافي (${latitude.toFixed(4)}, ${longitude.toFixed(4)})`);
+    } finally {
+      setIsLocating(false);
+    }
+  };
 
   const syncOfflineDrafts = async () => {
     if (offlineDrafts.length === 0) return;
@@ -510,7 +639,6 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
     setImage(dataUrl);
-    runEdgeAiPreScan(dataUrl);
 
     // Auto-update report form text details to include coordinates and compass bearing info!
     const directionStr = getBearingDirection(heading);
@@ -525,7 +653,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     stopCamera();
   };
 
-  // Automated browser-side GPS acquisition
+  // Automated browser-side GPS acquisition with automatic reverse geocoding & Wilaya detection
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
       setErrorMsg(isArabic ? "تحديد الموقع الجغرافي غير مدعوم في متصفحك." : "La géolocalisation n'est pas supportée.");
@@ -537,9 +665,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
-        setLat(position.coords.latitude.toFixed(6));
-        setLng(position.coords.longitude.toFixed(6));
-        setIsLocating(false);
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        setLat(latitude.toFixed(6));
+        setLng(longitude.toFixed(6));
+        const autoWilaya = findWilayaFromCoords(latitude, longitude);
+        setWilaya(autoWilaya);
+        reverseGeocode(latitude, longitude);
       },
       (error) => {
         setIsLocating(false);
@@ -553,61 +685,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     );
   };
 
-  // --- LIGHTWEIGHT ON-DEVICE EDGE AI PRE-SCANNER ---
-  const runEdgeAiPreScan = (dataUrl: string) => {
-    const tempImg = new Image();
-    tempImg.onload = () => {
-      const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = 50;
-      tempCanvas.height = 50;
-      const tempCtx = tempCanvas.getContext("2d");
-      if (!tempCtx) return;
-      
-      tempCtx.drawImage(tempImg, 0, 0, 50, 50);
-      const imgData = tempCtx.getImageData(0, 0, 50, 50).data;
-      
-      let fireScore = 0;
-      let smokeScore = 0;
-      for (let i = 0; i < imgData.length; i += 4) {
-        const r = imgData[i];
-        const g = imgData[i+1];
-        const b = imgData[i+2];
-        
-        // Fire colors: High Red, moderate Green, low Blue
-        if (r > 130 && g > 55 && r > g * 1.3 && b < 100) {
-          fireScore++;
-        }
-        // Smoke colors: Gray, muted, near-equal R, G, B channels
-        if (Math.abs(r - g) < 20 && Math.abs(g - b) < 20 && r > 90 && r < 210) {
-          smokeScore++;
-        }
-      }
-      
-      const totalPixels = 50 * 50;
-      const fireRatio = fireScore / totalPixels;
-      const smokeRatio = smokeScore / totalPixels;
-      const confidence = Math.min(99, Math.round((fireRatio * 600) + (smokeRatio * 400) + 35));
-      
-      if (fireRatio > 0.008 || smokeRatio > 0.02) {
-        setEdgeAiStatus({
-          success: true,
-          confidence,
-          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${confidence}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة 91% لتوفير النطاق الترددي للشبكة.`,
-          messageFr: `✓ Signatures thermiques détectées localement (${confidence}%). Image compressée à 91% pour préserver la bande passante.`
-        });
-      } else {
-        setEdgeAiStatus({
-          success: false,
-          confidence: 42,
-          messageAr: `⚠️ تنبيه Edge AI: لم يتم رصد وهج ناري واضح في الصورة. يرجى التقاط لقطة قريبة وواضحة للهب أو الدخان لتفادي البلاغات العشوائية وتوفير البيانات في الجبال.`,
-          messageFr: `⚠️ Alerte Edge AI : Contraste feu/fumée faible détecté. Veuillez cadrer directement le foyer pour éliminer les faux rapports.`
-        });
-      }
-    };
-    tempImg.src = dataUrl;
-  };
-
-  // Image Upload & Smart Canvas Compression with Edge AI integration
+  // Image Upload & Smart Canvas Compression
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -650,9 +728,6 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           const stringLength = dataUrl.length - "data:image/jpeg;base64,".length;
           const sizeInBytes = stringLength * (3 / 4);
           setCompressedSize((sizeInBytes / 1024).toFixed(1) + " KB");
-          
-          // Trigger local Edge AI analysis immediately
-          runEdgeAiPreScan(dataUrl);
         }
         setIsCompressing(false);
       };
@@ -667,10 +742,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setErrorMsg(isArabic ? "يرجى تحديد الموقع الجغرافي للحرائق أولاً." : "Veuillez spécifier la position GPS.");
       return;
     }
-    if (!wilaya) {
-      setErrorMsg(isArabic ? "يرجى اختيار الولاية." : "Veuillez choisir la Wilaya.");
-      return;
+    
+    let effectiveWilaya = wilaya;
+    if (!effectiveWilaya && lat && lng) {
+      effectiveWilaya = findWilayaFromCoords(parseFloat(lat), parseFloat(lng));
+      setWilaya(effectiveWilaya);
     }
+    if (!effectiveWilaya) {
+      effectiveWilaya = isArabic ? "الجزائر - بجاية" : "Algérie - Béjaïa";
+    }
+
     if (!description || description.length < 10) {
       setErrorMsg(isArabic ? "يرجى إعطاء وصف تفصيلي لا يقل عن 10 أحرف." : "Description trop courte (min 10 caract.).");
       return;
@@ -682,8 +763,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     const payload = {
       lat: parseFloat(lat),
       lng: parseFloat(lng),
-      locationName,
-      wilaya,
+      locationName: locationName || `${lat}, ${lng}`,
+      wilaya: effectiveWilaya,
       severity,
       description,
       reporterName,
@@ -956,21 +1037,26 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
-                {isArabic ? "الولاية" : "Wilaya"}
+                {isArabic ? "الولاية (تُحدد تلقائياً مع الـ GPS)" : "Wilaya (auto-détectée si GPS)"}
               </label>
               <select
                 value={wilaya}
                 onChange={(e) => setWilaya(e.target.value)}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40 cursor-pointer"
-                required
               >
-                <option value="">{isArabic ? "-- اختر الولاية --" : "-- Choisir Wilaya --"}</option>
+                <option value="">{isArabic ? "-- تم التحديد تلقائياً حسب الموقع --" : "-- Auto-détectée par GPS --"}</option>
                 {WILAYAS.map((w, idx) => (
                   <option key={idx} value={`${w.nameAr} (${w.nameFr})`}>
                     {isArabic ? w.nameAr : w.nameFr}
                   </option>
                 ))}
               </select>
+              {lat && lng && (
+                <p className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1 mt-1">
+                  <CheckCircle className="h-3 w-3 text-emerald-400 shrink-0" />
+                  <span>{isArabic ? `محددة تلقائياً: ${wilaya || findWilayaFromCoords(parseFloat(lat), parseFloat(lng))}` : `Auto-détectée : ${wilaya}`}</span>
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
@@ -1034,85 +1120,56 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             ></textarea>
           </div>
 
-          {/* Image upload with bandwidth simulation compression info */}
+          {/* Direct Live Camera Capture via Triangulation Camera */}
           <div>
             <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
-              {isArabic ? "التقاط أو إرفاق صورة ميدانية (تُضغط تلقائياً)" : "Prendre / Joindre une photo (compressée auto)"}
+              {isArabic ? "التصوير المباشر الميداني (كاميرا التثليث والبوصلة)" : "Capture en Direct (Caméra de Triangulation & Boussole)"}
             </label>
             
-            <div className="flex flex-wrap items-center gap-3">
-              <input
-                type="file"
-                accept="image/*"
-                ref={fileInputRef}
-                onChange={handleImageChange}
-                className="hidden"
-              />
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isCompressing}
-                className="py-2.5 px-4 bg-black/50 border border-white/5 hover:border-white/10 text-slate-300 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                {isCompressing ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin text-red-500" />
-                    <span>{isArabic ? "جاري ضغط الصورة..." : "Compression de la photo..."}</span>
-                  </>
-                ) : (
-                  <>
-                    <Upload className="h-4 w-4 text-red-500" />
-                    <span>{isArabic ? "إرفاق ملف صورة" : "Joindre un fichier"}</span>
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={startCamera}
-                className="py-2.5 px-4 bg-red-950/40 hover:bg-red-950/60 border border-red-500/20 text-red-400 hover:text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
-              >
-                <Camera className="h-4 w-4" />
-                <span>{isArabic ? "كاميرا التثليث والبوصلة" : "Caméra & Boussole"}</span>
-              </button>
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="py-3 px-5 bg-gradient-to-r from-red-950/60 to-zinc-900 hover:from-red-900/80 hover:to-zinc-800 border border-red-500/40 text-red-400 hover:text-white rounded-xl text-xs font-black transition-all flex items-center gap-2 cursor-pointer shadow-md hover:scale-[1.01]"
+                >
+                  <Camera className="h-5 w-5 text-red-500 animate-pulse" />
+                  <span>
+                    {image 
+                      ? (isArabic ? "📷 إعادة التقاط صورة حية جديدة بكاميرا التثليث" : "📷 Reprendre une Photo en Direct (Triangulation)")
+                      : (isArabic ? "📸 فتح كاميرا التثليث والبوصلة المباشرة" : "📸 Ouvrir la Caméra de Triangulation en Direct")}
+                  </span>
+                </button>
+              </div>
 
               {image && (
                 <div className="flex flex-col gap-2">
-                  <div className="flex items-center gap-2 bg-black/60 p-1.5 rounded-lg border border-white/5 w-fit">
-                    <img src={image} className="h-8 w-12 object-cover rounded border border-white/10" alt="Thumbnail" />
-                    <div className="text-[9px] text-slate-400 leading-none">
-                      <p className="text-red-400 font-bold">{isArabic ? "مضغوطة بنجاح" : "Compressé"}</p>
-                      <p className="mt-0.5">{compressedSize} <span className="line-through text-[8px] text-gray-600">({originalSize})</span></p>
+                  <div className="flex items-center gap-3 bg-black/60 p-2 rounded-xl border border-white/10 w-fit">
+                    <img src={image} className="h-12 w-16 object-cover rounded-lg border border-red-500/30" alt="Live Capture Thumbnail" />
+                    <div className="text-[10px] text-slate-300 leading-tight space-y-0.5">
+                      <p className="text-emerald-400 font-extrabold flex items-center gap-1">
+                        <CheckCircle className="h-3 w-3" />
+                        <span>{isArabic ? "تم الالتقاط والتثليث المباشر بنجاح" : "Capture Directe Validée"}</span>
+                      </p>
+                      <p className="text-gray-400 font-mono text-[9px]">{compressedSize} • {isArabic ? "مُدمجة بعلامة البوصلة والإحداثيات" : "Filigranée avec Boussole"}</p>
                     </div>
                   </div>
 
-                  {edgeAiStatus && (
-                    <div className={`p-2.5 rounded-lg border text-[10px] flex items-start gap-2 leading-relaxed ${
-                      edgeAiStatus.success 
-                        ? "bg-emerald-950/20 border-emerald-500/20 text-emerald-400" 
-                        : "bg-amber-950/25 border-amber-500/30 text-amber-400 animate-pulse"
-                    }`}>
-                      <span className="text-base leading-none">🤖</span>
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between font-extrabold mb-0.5">
-                          <span>{isArabic ? "تحليل Edge AI المحلي (مدمج في المتصفح):" : "Analyse Edge AI locale (embarquée) :"}</span>
-                          <span className={`px-1 rounded text-[9px] font-black ${
-                            edgeAiStatus.success ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"
-                          }`}>
-                            {edgeAiStatus.confidence}% {isArabic ? "تطابق" : "confiance"}
-                          </span>
-                        </div>
-                        <p>{isArabic ? edgeAiStatus.messageAr : edgeAiStatus.messageFr}</p>
-                      </div>
+                  <div className="p-2.5 rounded-lg border border-sky-500/30 bg-sky-950/30 text-sky-300 text-[10px] flex items-center gap-2 leading-relaxed">
+                    <span className="text-base leading-none">🤖</span>
+                    <div>
+                      <span className="font-bold">{isArabic ? "جاهز للتحقيق بالذكاء الاصطناعي:" : "Vérification IA :"} </span>
+                      <span>{isArabic ? "سيقوم نموذج الذكاء الاصطناعي المركزي بالتدقيق في الصورة فور النقر على إرسال للتأكد الصارم من وجود النيران." : "Analyse IA stricte lors de l'envoi."}</span>
                     </div>
-                  )}
+                  </div>
                 </div>
               )}
             </div>
-            <p className="text-[9px] text-gray-500 mt-1 italic">
+
+            <p className="text-[9px] text-gray-500 mt-1.5 italic leading-relaxed">
               {isArabic
-                ? "🔒 يُطبق نظام ضغط الصور وعلامة مائية رقمية لمطابقة دقة وبوصلة البلاغ لسرعة النشر تحت شبكات الجبال الضعيفة."
-                : "🔒 Algorithme exclusif de compression locale et filigrane de boussole pour la soumission rapide et calibrée en montagne."}
+                ? "🔒 تقتصر الصورة حصرياً على التصوير الحي المباشر عبر كاميرا الهاتف لدمج إحداثيات البوصلة والتثليث الميداني بدقة وبصمة زمنية موثوقة لحظر الصور المزيفة."
+                : "🔒 L'image est strictement restreinte à la capture directe par caméra afin d'intégrer la boussole et la géolocalisation certifiée anti-falsification."}
             </p>
           </div>
 

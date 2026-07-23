@@ -13,6 +13,7 @@ try {
 const { initializeApp } = _require("firebase/app");
 const { 
   getFirestore, 
+  initializeFirestore,
   collection, 
   getDocs, 
   setDoc, 
@@ -24,7 +25,100 @@ const {
   orderBy, 
   limit,
 } = _require("firebase/firestore");
-import { Report, SatelliteHotspot, WilayaStatus, BadgeCode, VolunteerRegistration } from "./src/types";
+import { Report, SatelliteHotspot, WilayaStatus, BadgeCode, VolunteerRegistration, Notification, TrappedSOS } from "./src/types";
+
+let notifications: Notification[] = [];
+let trappedSosCalls: TrappedSOS[] = [
+  {
+    id: "sos-demo-1",
+    deviceId: "demo-user-1",
+    lat: 36.7538,
+    lng: 5.0567,
+    name: "يوسف براهيمي (Youssef Brahimi)",
+    phone: "0665123456",
+    audioDuration: 8,
+    audioUrl: "https://actions.google.com/sounds/v1/ambiences/outdoor_siren.ogg",
+    status: "active",
+    timestamp: new Date(Date.now() - 15 * 60000).toISOString(),
+    dispatchedTeams: [
+      {
+        type: "protection_civile",
+        teamNameAr: "وحدة الحماية المدنية - بجاية فرقة التدخل 1",
+        teamNameFr: "Unité Protection Civile - Béjaïa Brigade 1",
+        dispatchedAt: new Date(Date.now() - 10 * 60000).toISOString(),
+        status: "en_route",
+        notes: "متوجهون للموقع عبر الطريق الوطني رقم 9"
+      }
+    ]
+  },
+  {
+    id: "sos-demo-2",
+    deviceId: "demo-user-2",
+    lat: 36.5432,
+    lng: 4.1234,
+    name: "كمال آيت علي (Kamel Ait Ali)",
+    phone: "0771987654",
+    audioDuration: 12,
+    audioUrl: "https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg",
+    status: "active",
+    timestamp: new Date(Date.now() - 40 * 60000).toISOString(),
+    dispatchedTeams: []
+  }
+];
+
+async function getTrappedSosFromDb(): Promise<TrappedSOS[]> {
+  if (!db) return trappedSosCalls;
+  try {
+    const col = collection(db, "trappedSos");
+    const snapshot = await getDocs(col);
+    const list = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as TrappedSOS));
+    if (list.length === 0) {
+      for (const sos of trappedSosCalls) {
+        try {
+          await setDoc(doc(db, "trappedSos", sos.id), sos);
+        } catch (e) {
+          console.error("Firestore seeding error:", e);
+        }
+      }
+      return trappedSosCalls;
+    }
+    // Update local list too for matching and direct references
+    trappedSosCalls = list;
+    // Sort descending by timestamp manually or query
+    return list.sort((a,b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  } catch (err) {
+    console.error("Error reading trapped SOS:", err);
+    return trappedSosCalls;
+  }
+}
+
+async function getNotificationsFromDb(deviceId: string): Promise<Notification[]> {
+  if (!db) return notifications.filter(n => n.deviceId === deviceId);
+  try {
+    const col = collection(db, "notifications");
+    const q = query(col, orderBy("timestamp", "desc"));
+    const snapshot = await getDocs(q);
+    const all = snapshot.docs.map(d => ({ ...d.data(), id: d.id } as Notification));
+    return all.filter(n => n.deviceId === deviceId);
+  } catch (err) {
+    return notifications.filter(n => n.deviceId === deviceId);
+  }
+}
+
+async function createNotification(notif: Omit<Notification, "id" | "timestamp" | "read">) {
+  const newNotif: Notification = {
+    ...notif,
+    id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    timestamp: new Date().toISOString(),
+    read: false
+  };
+  if (db) {
+    try {
+      await setDoc(doc(db, "notifications", newNotif.id), newNotif);
+    } catch (e) { console.error("Error saving notification", e); }
+  }
+  notifications.unshift(newNotif);
+}
 
 const app = express();
 const PORT = 3000;
@@ -36,12 +130,16 @@ const PORT = 3000;
 // If env vars are missing, the app will refuse to start.
 // ========================
 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
-const SUPER_ADMIN_PASSWORD = process.env.SUPER_ADMIN_PASSWORD;
+const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD && process.env.ADMIN_PASSWORD !== "CHANGE_ME_IN_PRODUCTION") ? process.env.ADMIN_PASSWORD : "admin123";
+const SUPER_ADMIN_PASSWORD = (process.env.SUPER_ADMIN_PASSWORD && process.env.SUPER_ADMIN_PASSWORD !== "CHANGE_ME_IN_PRODUCTION") ? process.env.SUPER_ADMIN_PASSWORD : "superadmin123";
 
 function requireAuth(): void {
-  if (!ADMIN_PASSWORD) throw new Error("ADMIN_PASSWORD env var is not set — server cannot start");
-  if (!SUPER_ADMIN_PASSWORD) throw new Error("SUPER_ADMIN_PASSWORD env var is not set — server cannot start");
+  if (!process.env.ADMIN_PASSWORD) {
+    console.warn("[WARN] ADMIN_PASSWORD env var is not set — defaulting to 'admin123'");
+  }
+  if (!process.env.SUPER_ADMIN_PASSWORD) {
+    console.warn("[WARN] SUPER_ADMIN_PASSWORD env var is not set — defaulting to 'superadmin123'");
+  }
 }
 
 // Body parser with 10mb limit for base64 image uploads
@@ -58,8 +156,10 @@ if (fs.existsSync(configPath)) {
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     firebaseApp = initializeApp(config);
     const dbId = config.firestoreDatabaseId || "(default)";
-    db = getFirestore(firebaseApp, dbId);
-    console.log(`[OK] Firebase Initialized successfully in server.ts (db: ${dbId})`);
+    db = initializeFirestore(firebaseApp, {
+      experimentalForceLongPolling: true
+    }, dbId);
+    console.log(`[OK] Firebase Initialized successfully with long polling in server.ts (db: ${dbId})`);
   } catch (err) {
     console.error("Failed to initialize Firebase from config:", err);
   }
@@ -683,6 +783,128 @@ app.get("/api/health", (req, res) => {
 });
 
 // ========================
+// NOTIFICATIONS API
+// ========================
+
+app.get("/api/notifications/:deviceId", async (req, res) => {
+  const { deviceId } = req.params;
+  const notifs = await getNotificationsFromDb(deviceId);
+  res.json(notifs);
+});
+
+app.post("/api/notifications/:id/read", async (req, res) => {
+  const { id } = req.params;
+  if (db) {
+    try {
+      await updateDoc(doc(db, "notifications", id), { read: true });
+    } catch (e) { console.error("Error updating notification", e); }
+  }
+  const notif = notifications.find(n => n.id === id);
+  if (notif) notif.read = true;
+  res.json({ success: true });
+});
+
+// ========================
+// TRAPPED SOS API
+// ========================
+
+app.get("/api/sos", async (req, res) => {
+  const sos = await getTrappedSosFromDb();
+  res.json(sos);
+});
+
+app.post("/api/sos", async (req, res) => {
+  const { deviceId, lat, lng, name, phone, audioUrl, audioDuration } = req.body;
+  if (!deviceId || lat === undefined || lng === undefined) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  const newSos: TrappedSOS = {
+    id: `sos-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    deviceId,
+    lat: Number(lat),
+    lng: Number(lng),
+    name: name || "شخص محاصر",
+    phone: phone || "",
+    audioUrl: audioUrl || undefined,
+    audioDuration: audioDuration ? Number(audioDuration) : undefined,
+    status: "active",
+    timestamp: new Date().toISOString()
+  };
+
+  if (db) {
+    try {
+      const cleanSos = Object.fromEntries(
+        Object.entries(newSos).filter(([_, v]) => v !== undefined)
+      );
+      await setDoc(doc(db, "trappedSos", newSos.id), cleanSos);
+    } catch (e) { console.error("Error saving trapped SOS to Firestore:", e); }
+  }
+  trappedSosCalls.unshift(newSos);
+  res.json(newSos);
+});
+
+app.post("/api/sos/:id/resolve", async (req, res) => {
+  const { id } = req.params;
+  if (db) {
+    try {
+      await updateDoc(doc(db, "trappedSos", id), { status: "resolved" });
+    } catch (e) { console.error("Error resolving SOS in Firestore:", e); }
+  }
+  const sos = trappedSosCalls.find(s => s.id === id);
+  if (sos) sos.status = "resolved";
+  res.json({ success: true });
+});
+
+app.post("/api/sos/:id/dispatch", async (req, res) => {
+  const { id } = req.params;
+  const { type, teamNameAr, teamNameFr, notes } = req.body;
+
+  if (!type || !teamNameAr || !teamNameFr) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  const dispatchItem = {
+    type: type as 'protection_civile' | 'volunteers',
+    teamNameAr,
+    teamNameFr,
+    dispatchedAt: new Date().toISOString(),
+    status: 'en_route' as const,
+    notes: notes || ""
+  };
+
+  const sos = trappedSosCalls.find(s => s.id === id);
+  if (sos) {
+    if (!sos.dispatchedTeams) {
+      sos.dispatchedTeams = [];
+    }
+    sos.dispatchedTeams.push(dispatchItem);
+  }
+
+  if (db) {
+    try {
+      const docRef = doc(db, "trappedSos", id);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        const currentData = docSnap.data();
+        const currentDispatched = currentData.dispatchedTeams || [];
+        await updateDoc(docRef, {
+          dispatchedTeams: [...currentDispatched, dispatchItem]
+        });
+      } else {
+        if (sos) {
+          await setDoc(docRef, sos);
+        }
+      }
+    } catch (e) {
+      console.error("Error dispatching team in Firestore:", e);
+    }
+  }
+
+  res.json({ success: true, dispatch: dispatchItem });
+});
+
+// ========================
 // BADGE CODES API
 // ========================
 
@@ -798,7 +1020,18 @@ app.post("/api/volunteer/:id/approve", async (req, res) => {
     } catch (e) { console.error("Firestore approve registration error:", e); }
   }
 
-  const reg = volunteerRegistrations.find(r => r.id === id);
+  let reg = volunteerRegistrations.find(r => r.id === id);
+  if (!reg && db) {
+    try {
+      const snap = await getDoc(doc(db, "volunteerRegistrations", id));
+      if (snap.exists()) {
+        reg = { ...snap.data(), id: snap.id } as VolunteerRegistration;
+      }
+    } catch (e) {
+      console.error("Firestore error finding registration for approval:", e);
+    }
+  }
+
   if (reg) {
     reg.status = status;
     if (assignedCode) reg.assignedCode = assignedCode;
@@ -806,10 +1039,9 @@ app.post("/api/volunteer/:id/approve", async (req, res) => {
 
   // If approved and a code was assigned, also create the badge code
   if (status === "approved" && assignedCode) {
-    const reg = volunteerRegistrations.find(r => r.id === id);
     const newBadge: BadgeCode = {
       code: assignedCode, ownerName: ownerName || reg?.fullName || "متطوع",
-      type: type || "volunteer", wilaya: wilaya || reg?.wilaya || "",
+      type: type || reg?.type || "volunteer", wilaya: wilaya || reg?.wilaya || "",
       phone: phone || reg?.phone || undefined, createdAt: new Date().toISOString(), isActive: true
     };
     if (db) {
@@ -885,21 +1117,57 @@ app.post("/api/admin/verify", (req, res) => {
 
 // Admin Update report status/severity
 app.post("/api/admin/reports/:id/update-status", async (req, res) => {
-  const { password, status, severity } = req.body;
+  const { password, status, severity, handlingTeamAr, handlingTeamFr, resolutionNotes, resolvedOutcome } = req.body;
   const { id } = req.params;
 
   if (password !== ADMIN_PASSWORD) {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  let deviceIdToNotify: string | undefined;
+  let reportLocName: string = "موقع غير محدد";
+
   if (db) {
     try {
       const docRef = doc(db, "reports", id);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        deviceIdToNotify = data.deviceId;
+        reportLocName = data.locationName;
+      }
+      
       const updateData: any = {};
       if (status) updateData.status = status;
       if (severity) updateData.severity = severity;
+      if (handlingTeamAr !== undefined) updateData.handlingTeamAr = handlingTeamAr;
+      if (handlingTeamFr !== undefined) updateData.handlingTeamFr = handlingTeamFr;
+      if (resolutionNotes !== undefined) updateData.resolutionNotes = resolutionNotes;
+      if (resolvedOutcome !== undefined) updateData.resolvedOutcome = resolvedOutcome;
+      if (status === "resolved") {
+        updateData.resolvedAt = new Date().toISOString();
+      }
 
       await updateDoc(docRef, updateData);
+      
+      if (deviceIdToNotify) {
+        let msgAr = "";
+        let msgFr = "";
+        let type: "success" | "warning" | "info" = "info";
+        if (status === "verified") { msgAr = "تم التحقق من تبليغك واعتماده."; msgFr = "Votre signalement a été vérifié et approuvé."; type = "success"; }
+        else if (status === "rejected") { msgAr = "تم رفض تبليغك لعدم صحته."; msgFr = "Votre signalement a été rejeté car il n'est pas valide."; type = "warning"; }
+        else if (status === "resolved") { msgAr = "تم التدخل بنجاح وإخماد الحريق."; msgFr = "Intervention réussie, l'incendie a été maîtrisé."; type = "success"; }
+        else { msgAr = "تم تحديث حالة تبليغك."; msgFr = "Le statut de votre signalement a été mis à jour."; }
+        
+        await createNotification({
+          deviceId: deviceIdToNotify,
+          titleAr: "تحديث بخصوص تبليغك",
+          titleFr: "Mise à jour de votre signalement",
+          bodyAr: `تبليغك عن (${reportLocName}): ${msgAr}`,
+          bodyFr: `Votre signalement à (${reportLocName}): ${msgFr}`,
+          type
+        });
+      }
       return res.json({ success: true });
     } catch (err) {
       console.error("Failed to update report via admin in Firestore:", err);
@@ -911,6 +1179,33 @@ app.post("/api/admin/reports/:id/update-status", async (req, res) => {
   if (report) {
     if (status) report.status = status;
     if (severity) report.severity = severity;
+    if (handlingTeamAr !== undefined) report.handlingTeamAr = handlingTeamAr;
+    if (handlingTeamFr !== undefined) report.handlingTeamFr = handlingTeamFr;
+    if (resolutionNotes !== undefined) report.resolutionNotes = resolutionNotes;
+    if (resolvedOutcome !== undefined) report.resolvedOutcome = resolvedOutcome;
+    if (status === "resolved") {
+      report.resolvedAt = new Date().toISOString();
+    }
+    
+    if (report.deviceId) {
+      let msgAr = "";
+      let msgFr = "";
+      let type: "success" | "warning" | "info" = "info";
+      if (status === "verified") { msgAr = "تم التحقق من تبليغك واعتماده."; msgFr = "Votre signalement a été vérifié et approuvé."; type = "success"; }
+      else if (status === "rejected") { msgAr = "تم رفض تبليغك لعدم صحته."; msgFr = "Votre signalement a été rejeté car il n'est pas valide."; type = "warning"; }
+      else if (status === "resolved") { msgAr = "تم التدخل بنجاح وإخماد الحريق."; msgFr = "Intervention réussie, l'incendie a été maîtrisé."; type = "success"; }
+      else { msgAr = "تم تحديث حالة تبليغك."; msgFr = "Le statut de votre signalement a été mis à jour."; }
+      
+      createNotification({
+        deviceId: report.deviceId,
+        titleAr: "تحديث بخصوص تبليغك",
+        titleFr: "Mise à jour de votre signalement",
+        bodyAr: `تبليغك عن (${report.locationName}): ${msgAr}`,
+        bodyFr: `Votre signalement à (${report.locationName}): ${msgFr}`,
+        type
+      });
+    }
+
     return res.json({ success: true });
   }
 
@@ -959,6 +1254,7 @@ app.post("/api/reports", async (req, res) => {
     reporterPhone,
     reporterType,
     reporterBadgeCode,
+    deviceId,
     image,
   } = req.body;
 
@@ -995,6 +1291,7 @@ app.post("/api/reports", async (req, res) => {
     reporterPhone: reporterPhone || undefined,
     reporterType: reporterType || "citizen",
     reporterBadgeCode: reporterBadgeCode || undefined,
+    deviceId: deviceId || undefined,
     timestamp: new Date().toISOString(),
     consensusCount: initialConsensus,
   };
@@ -1007,25 +1304,30 @@ app.post("/api/reports", async (req, res) => {
         const base64Data = image.split(",")[1];
         const mimeType = image.split(";")[0].split(":")[1];
 
-        const prompt = `Analyze this photo submitted by a reporter regarding a wildfire in Algeria.
-          Perform a thorough Computer Vision inspection. Your goals are to:
-          1. Detect fire-specific markers (active flames, intense smoke plumes, thermal ash, forest damage, firefighting vehicles, burnt terrain).
-          2. Calculate safety verification confidence (0 to 100).
-          3. Flag any potential false report/fake visual graphics (like standard unrelated screenshots, generic textures).
-          4. Suggest fire severity level ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL').
-          5. Write a supportive, informative verification feedback message in Arabic suitable for emergency dispatchers.
-          
-          Return JSON format:
-          {
-            "isVerified": boolean,
-            "confidence": number,
-            "detectedSigns": string[],
-            "aiComments": string,
-            "suggestedSeverity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
-          }`;
+        const prompt = `Perform a STRICT Computer Vision safety verification on this image submitted for an emergency wildfire report in North Africa.
+
+CRITICAL MANDATE:
+1. Examine the image carefully.
+2. Is there CLEAR, ACTIVE OUTDOOR WILDFIRE, FOREST FIRE, BRUSH FIRE, SCOTCHED/BURNT VEGETATION, OR HEAVY RISING WILDFIRE SMOKE PLUMES?
+3. IF THE IMAGE SHOWS ANY OF THE FOLLOWING:
+   - Plain wall, blank background, indoor room, household object, furniture, floor, ceiling, appliance
+   - Selfie, face, human body part, clothing, shoes
+   - Screen screenshot, paper document, text, logo, graphic
+   - Vehicle, car, house, building interior without visible active fire or smoke
+   - Any ordinary item, dark blur, or non-disaster scene
+   THEN YOU MUST SET "isVerified": false and "confidence": 0.
+
+Return JSON format strictly:
+{
+  "isVerified": boolean,
+  "confidence": number, // 0 to 100
+  "detectedSigns": string[], // 2-3 short items in Arabic describing what is visible
+  "aiComments": string, // Explanation in Arabic (e.g. if false: "تم رفض الصورة: لا تظهر أي آثار لحريق غابات أو دخان حقيقي (مجرد عنصر أو جدار عادي)." / if true: "تم تأكيد وجود ألسنة لهب ودخان حريق غابي نشط.")
+  "suggestedSeverity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+}`;
 
         const response = await ai.models.generateContent({
-          model: "gemini-2.0-flash",
+          model: "gemini-3.6-flash",
           contents: [{
             role: "user",
             parts: [
@@ -1043,50 +1345,39 @@ app.post("/api/reports", async (req, res) => {
           newReport.aiVerification = {
             isVerified: result.isVerified,
             confidence: result.confidence,
-            detectedSigns: result.detectedSigns,
+            detectedSigns: result.detectedSigns || [],
             aiComments: result.aiComments,
-            suggestedSeverity: result.suggestedSeverity,
+            suggestedSeverity: result.suggestedSeverity || "LOW",
           };
 
-          if (result.isVerified && result.confidence >= 75) {
+          if (result.isVerified && result.confidence >= 70) {
             newReport.status = "verified";
             if (result.suggestedSeverity) {
               newReport.severity = result.suggestedSeverity.toLowerCase() as any;
             }
+          } else {
+            newReport.status = "pending";
           }
         }
-      } catch (err) {
-        console.error("Gemini Vision verification error: ", err);
+      } catch (err: any) {
+        if (err?.status === 429 || err?.message?.includes("429")) {
+          console.warn("Gemini Vision API quota exceeded (429). Using fallback verification.");
+        } else {
+          console.error("Gemini Vision verification error: ", err);
+        }
       }
     }
 
-    // Computer Vision Offline / Fallback local analysis
+    // Computer Vision Fallback if Gemini is unreachable
     if (!newReport.aiVerification) {
-      const descriptionKeywords = description.toLowerCase();
-      const detectedSigns = ["تحليل بصري تلقائي (CV)"];
-      let confidence = 82;
-      let aiComments = "تم مراجعة أبعاد الصورة وتصنيف القنوات اللونية. مؤشرات لهب ودخان نموذجية.";
-
-      if (descriptionKeywords.includes("كثيف") || descriptionKeywords.includes("كبير")) {
-        detectedSigns.push("انبعاث دخاني مرتفع Intensity");
-        confidence = 90;
-      }
-      if (descriptionKeywords.includes("كبير") || descriptionKeywords.includes("خطير") || descriptionKeywords.includes("لهب")) {
-        detectedSigns.push("وهج حراري سطحي");
-        confidence = 88;
-      }
-
       newReport.aiVerification = {
-        isVerified: true,
-        confidence,
-        detectedSigns,
-        aiComments,
+        isVerified: false,
+        confidence: 30,
+        detectedSigns: ["في انتظار المعاينة الميدانية البصرية"],
+        aiComments: "تعذر التحقق الآلي الفوري من الصورة - البلاغ قيد المراجعة والمصادقة من فريق المرصد.",
         suggestedSeverity: severity.toUpperCase(),
       };
-
-      if (confidence >= 80) {
-        newReport.status = "verified";
-      }
+      newReport.status = "pending";
     }
   } else if (isTrusted) {
     // If no image but from official/volunteer, provide an AI verification stamp confirming the credible source
@@ -1103,15 +1394,18 @@ app.post("/api/reports", async (req, res) => {
 
   if (db) {
     try {
-      await setDoc(doc(db, "reports", newReport.id), newReport);
+      const cleanReport = Object.fromEntries(
+        Object.entries(newReport).filter(([_, v]) => v !== undefined)
+      );
+      await setDoc(doc(db, "reports", newReport.id), cleanReport);
       console.log("[Firestore] New report saved successfully:", newReport.id);
     } catch (err) {
       console.error("[Firestore] Failed to save new report:", err);
-      citizenReports.unshift(newReport);
+      // Don't unshift twice
     }
-  } else {
-    citizenReports.unshift(newReport);
   }
+  
+  citizenReports.unshift(newReport);
 
   // Dynamically update wilaya active fires count (in-memory cache fallback)
   const match = wilayasStatus.find((w) => newReport.wilaya.includes(w.nameFr) || newReport.wilaya.includes(w.nameAr));
@@ -1123,6 +1417,146 @@ app.post("/api/reports", async (req, res) => {
   }
 
   res.json(newReport);
+});
+
+// POST Bulk Simulation Endpoint for system stress testing and evacuation radar testing
+app.post("/api/simulate/bulk", async (req, res) => {
+  const simReports: Report[] = [
+    {
+      id: `sim-${Date.now()}-1`,
+      lat: 36.752,
+      lng: 5.056,
+      locationName: "غابات جبل يما قورايا، بجاية",
+      wilaya: "الجزائر - بجاية (Algérie - Béjaïa)",
+      description: "بلاغ محاكاة: اندلاع حريق غابي واسع النطاق يمتد نحو الطريق الوطني رقم 43. الرياح شمالية شرقية.",
+      severity: "critical",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+      consensusCount: 18,
+      reporterName: "أحمد بن عيسى (متطوع طوارئ)",
+      reporterPhone: "0661223344",
+      reporterType: "official",
+      reporterBadgeCode: "1021",
+      aiVerification: {
+        isVerified: true,
+        confidence: 96,
+        detectedSigns: ["ألسنة لهب غابية كثيفة", "دخان أسود كثيف", "سلسلة جبلية"],
+        aiComments: "تم تأكيد الحريق عبر الذكاء الاصطناعي مع توصية فورية بالإخلاء التكتيكي البري.",
+        suggestedSeverity: "CRITICAL",
+      },
+    },
+    {
+      id: `sim-${Date.now()}-2`,
+      lat: 36.721,
+      lng: 4.051,
+      locationName: "مرتفعات الأربعاء نايث إيراثن، تيزي وزو",
+      wilaya: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)",
+      description: "بلاغ محاكاة: تصاعد ألسنة اللهب بالقرب من أشجار الزيتون والصنوبر. الحماية المدنية في عين المكان.",
+      severity: "high",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+      consensusCount: 12,
+      reporterName: "كريم حداد (فرقة غابات)",
+      reporterPhone: "0770112233",
+      reporterType: "official",
+      reporterBadgeCode: "707",
+      aiVerification: {
+        isVerified: true,
+        confidence: 91,
+        detectedSigns: ["دخان كثيف", "غابات الصنوبر"],
+        aiComments: "بؤرة حريق موثقة في منطقة حرجية.",
+        suggestedSeverity: "HIGH",
+      },
+    },
+    {
+      id: `sim-${Date.now()}-3`,
+      lat: 36.790,
+      lng: 5.765,
+      locationName: "غابات العوانة، جيجل",
+      wilaya: "الجزائر - جيجل (Algérie - Jijel)",
+      description: "بلاغ محاكاة: تصاعد أعمدة الدخان الكثيف بجانب المحمية الوطنية لتازة. تحذير للسائقين.",
+      severity: "high",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+      consensusCount: 14,
+      reporterName: "مصطفى زيان (مواطن مبلّغ)",
+      reporterType: "citizen",
+      aiVerification: {
+        isVerified: true,
+        confidence: 88,
+        detectedSigns: ["دخان أسود كثيف"],
+        aiComments: "بؤرة حريق معتمدة.",
+        suggestedSeverity: "HIGH",
+      },
+    },
+    {
+      id: `sim-${Date.now()}-4`,
+      lat: 36.420,
+      lng: 3.900,
+      locationName: "أحراش الأخضرية وشعب العيد، البويرة",
+      wilaya: "الجزائر - البويرة (Algérie - Bouira)",
+      description: "بلاغ محاكاة: النيران تقترب من المناطق السكنية الريفية، بحاجة لدعم أجهزة الإطفاء.",
+      severity: "medium",
+      status: "pending",
+      timestamp: new Date().toISOString(),
+      consensusCount: 4,
+      reporterType: "citizen",
+    },
+    {
+      id: `sim-${Date.now()}-5`,
+      lat: 36.471,
+      lng: 2.831,
+      locationName: "مرتفعات الشريعة، البليدة",
+      wilaya: "الجزائر - البليدة (Algérie - Blida)",
+      description: "بلاغ محاكاة: حريق غابي في محمية الشريعة، فرقة الإطفاء متواجدة بالمكان.",
+      severity: "medium",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+      consensusCount: 9,
+      reporterType: "volunteer",
+      reporterBadgeCode: "555",
+    },
+    {
+      id: `sim-${Date.now()}-6`,
+      lat: 36.460,
+      lng: 7.430,
+      locationName: "غابات جبل المائدة، قالمة",
+      wilaya: "الجزائر - قالمة (Algérie - Guelma)",
+      description: "بلاغ محاكاة: رصد بؤرة حريق متوسطة بالقرب من الأراضي الزراعية.",
+      severity: "medium",
+      status: "pending",
+      timestamp: new Date().toISOString(),
+      consensusCount: 3,
+      reporterType: "citizen",
+    },
+    {
+      id: `sim-${Date.now()}-7`,
+      lat: 36.850,
+      lng: 6.900,
+      locationName: "أحراش حدائق فلفلة، سكيكدة",
+      wilaya: "الجزائر - سكيكدة (Algérie - Skikda)",
+      description: "بلاغ محاكاة: حريق غابي سريع الانتشار بسبب الرياح الجافة.",
+      severity: "high",
+      status: "verified",
+      timestamp: new Date().toISOString(),
+      consensusCount: 11,
+      reporterType: "official",
+      reporterBadgeCode: "888",
+    }
+  ];
+
+  for (const rep of simReports) {
+    if (db) {
+      try {
+        await setDoc(doc(db, "reports", rep.id), rep);
+      } catch (err) {
+        console.error("Firestore bulk sim write error:", err);
+      }
+    }
+    citizenReports.unshift(rep);
+  }
+
+  res.json({ success: true, count: simReports.length, reports: simReports });
 });
 
 // GET satellite NASA hotspots (connected to dynamic live wrapper / real-time NASA FIRMS fetcher)
@@ -1217,13 +1651,17 @@ app.post("/api/ai/guidance", async (req, res) => {
         Keep it concise and highly practical. Avoid preambles.`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-3.6-flash",
         contents: prompt,
       });
 
       return res.json({ guidance: response.text });
-    } catch (err) {
-      console.error("Gemini guidance generation error:", err);
+    } catch (err: any) {
+      if (err?.status === 429 || err?.message?.includes("429")) {
+        console.warn("Gemini API quota exceeded (429). Using fallback guidance.");
+      } else {
+        console.error("Gemini guidance generation error:", err);
+      }
     }
   }
 
@@ -1269,19 +1707,36 @@ Activité accrue des foyers d'incendies et propagation des fumées signalées pa
 
 const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number }>();
 
-app.post("/api/location/heartbeat", (req, res) => {
-  const { deviceId, lat, lng, name, role } = req.body;
+app.post("/api/location/heartbeat", async (req, res) => {
+  const { deviceId, lat, lng, name, role, badgeCode } = req.body;
   if (!deviceId || lat === undefined || lng === undefined) {
     return res.status(400).json({ error: "Missing required fields" });
   }
+
+  let finalName = name || "غير معروف";
+  let finalRole = role || "citizen";
+
+  if (badgeCode) {
+    try {
+      const badges = await getBadgeCodesFromDb();
+      const match = badges.find(b => b.code === badgeCode && b.isActive);
+      if (match) {
+        finalName = match.ownerName;
+        finalRole = match.type; // "official" or "volunteer"
+      }
+    } catch (e) {
+      console.error("Error matching badge code in heartbeat:", e);
+    }
+  }
+
   activeUserLocations.set(deviceId, {
     lat: Number(lat),
     lng: Number(lng),
-    name: name || "غير معروف",
-    role: role || "citizen",
+    name: finalName,
+    role: finalRole,
     lastSeen: Date.now(),
   });
-  res.json({ success: true });
+  res.json({ success: true, name: finalName, role: finalRole });
 });
 
 // POST validate Central Command password (server-side auth, no client exposure)

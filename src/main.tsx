@@ -10,7 +10,7 @@ if ("serviceWorker" in navigator) {
       // Unregister old sw that doesn't match our current one
       if (!reg.active || reg.active.scriptURL.includes("sw.js")) {
         const shouldUnregister = !reg.active ||
-          reg.active.scriptURL !== navigator.origin + "/sw.js" ||
+          reg.active.scriptURL !== window.location.origin + "/sw.js" ||
           reg.active.scriptURL.includes("localhost");
         if (shouldUnregister) {
           reg.unregister().then(() => {
