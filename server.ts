@@ -1809,6 +1809,16 @@ async function startServer() {
     }));
 
     // SPA fallback: serve index.html only for navigation routes, not for missing assets
+    // Serve APK download
+    const apkPath = path.join(distPath, "WildfireObservatory-release.apk");
+    app.get("/download", (req, res) => {
+      if (fs.existsSync(apkPath)) {
+        res.download(apkPath, "WildfireObservatory-release.apk");
+      } else {
+        res.status(404).json({ error: "APK not available" });
+      }
+    });
+
     app.get("*", (req, res) => {
       if (req.path.startsWith("/assets/") || req.path.includes(".")) {
         return res.status(404).send("Not found");

@@ -1,7 +1,7 @@
 buildscript {
     ext {
         kotlin_version = "1.9.22"
-        agp_version = "8.2.2"
+        agp_version = "8.3.0"
     }
     repositories {
         google()
@@ -13,9 +13,6 @@ buildscript {
     }
 }
 
-allprojects {
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
+
+
+

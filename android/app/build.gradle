@@ -3,14 +3,30 @@ plugins {
     id 'kotlin-android'
 }
 
+// Load keystore properties
+def keystorePropsFile = rootProject.file('keystore.properties')
+def keystoreProps = new Properties()
+if (keystorePropsFile.exists()) {
+    keystoreProps.load(new FileInputStream(keystorePropsFile))
+}
+
 android {
     namespace 'com.observatory.wildfire'
-    compileSdk 34
+    compileSdk 36
+
+    signingConfigs {
+        release {
+            storeFile rootProject.file(keystoreProps['storeFile'] ?: 'release.keystore')
+            storePassword keystoreProps['storePassword'] ?: 'wildfire123'
+            keyAlias keystoreProps['keyAlias'] ?: 'wildfire'
+            keyPassword keystoreProps['keyPassword'] ?: 'wildfire123'
+        }
+    }
 
     defaultConfig {
         applicationId 'com.observatory.wildfire'
         minSdk 26
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName '1.0.0'
 
@@ -19,6 +35,7 @@ android {
 
     buildTypes {
         release {
+            signingConfig signingConfigs.release
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
@@ -36,9 +53,9 @@ android {
         jvmTarget = '17'
     }
 
-    packagingOptions {
+    packaging {
         resources {
-            excludes += ['META-INF/NOTICE.md', 'META-INF/LICENSE.md']
+            excludes += ['META-INF/NOTICE.md', 'META-INF/LICENSE.md', 'META-INF/versions/**']
         }
     }
 }
@@ -54,10 +71,11 @@ dependencies {
     implementation 'com.google.android.gms:play-services-nearby:19.0.0'
 
     // Spongy Castle for Bouncy Castle crypto on Android
-    implementation 'com.madgag.spongycastle:core:1.58.0.0'
-    implementation 'com.madgag.spongycastle:prov:1.58.0.0'
-    implementation 'com.madgag.spongycastle:pkix:1.58.0.0'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
+    implementation 'org.bouncycastle:bcpkix-jdk18on:1.78.1'
 
     // Kotlin coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'
 }
+
