@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Cairo", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Base style resets */
+body {
+  font-family: var(--font-sans);
+}
+
+/* Custom leaflet marker and container styling to look modern and dark-themed */
+.leaflet-container {
+  background-color: #0a0505 !important;
+  font-family: inherit;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(239, 68, 68, 0.2) !important;
+}
+
+.leaflet-bar {
+  border: none !important;
+}
+
+.leaflet-bar a {
+  background-color: #180c0c !important;
+  color: #f8fafc !important;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.2) !important;
+}
+
+.leaflet-bar a:hover {
+  background-color: #ef4444 !important;
+  color: white !important;
+}
+
+.leaflet-popup-content-wrapper {
+  background-color: rgba(15, 8, 8, 0.95) !important;
+  backdrop-filter: blur(8px);
+  color: #f8fafc !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 10px 25px -5px rgba(220, 38, 38, 0.3) !important;
+  border: 1px solid rgba(220, 38, 38, 0.4) !important;
+}
+
+.leaflet-popup-tip {
+  background-color: rgba(15, 8, 8, 0.95) !important;
+  border: 1px solid rgba(220, 38, 38, 0.4) !important;
+}
+
+/* Pulse animation for active satellite thermal points */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.35);
+    opacity: 0.8;
+  }
+  80%, 100% {
+    opacity: 0;
+  }
+}
+
+.satellite-pulse {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  background-color: rgba(239, 68, 68, 0.4);
+  border-radius: 50%;
+  border: 2px solid rgb(239, 68, 68);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.satellite-pulse::before {
+  content: '';
+  position: absolute;
+  width: 48px;
+  height: 48px;
+  border: 2px solid rgb(239, 68, 68);
+  border-radius: 50%;
+  animation: pulse-ring 2s cubic-bezier(0.215, 0.610, 0.355, 1) infinite;
+}
+
+.satellite-pulse-dot {
+  width: 8px;
+  height: 8px;
+  background-color: rgb(239, 68, 68);
+  border-radius: 50%;
+}
+
+/* Citizen report pulse marker */
+.citizen-pulse {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  background-color: rgba(245, 158, 11, 0.4);
+  border-radius: 50%;
+  border: 2px solid rgb(245, 158, 11);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.citizen-pulse-dot {
+  width: 6px;
+  height: 6px;
+  background-color: rgb(245, 158, 11);
+  border-radius: 50%;
+}
