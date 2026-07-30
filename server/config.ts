@@ -24,6 +24,11 @@ const config = {
   firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "",
   appUrl: process.env.APP_URL || "http://localhost:3000",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
+  smtpHost: process.env.SMTP_HOST || "",
+  smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
+  smtpUser: process.env.SMTP_USER || "",
+  smtpPass: process.env.SMTP_PASS || "",
+  emailFrom: process.env.EMAIL_FROM || "noreply@observatory.novadz.com",
 };
 
 export default config;

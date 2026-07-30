@@ -10,6 +10,7 @@ import {
   confirmReportInFirestore,
 } from "../db.js";
 import logger from "../logger.js";
+import { sendFireAlert } from "../email.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -168,6 +169,13 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   const { reporterPhone: _rp, ...safeReport } = newReport;
+
+  if (safeReport.severity === "critical" || safeReport.severity === "high") {
+    sendFireAlert(safeReport).catch((err) =>
+      logger.error({ err }, "Failed to send fire alert email")
+    );
+  }
+
   res.json(safeReport);
 });
 

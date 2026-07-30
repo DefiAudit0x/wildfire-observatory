@@ -17,6 +17,7 @@ import adminRouter from "./routes/admin.js";
 import satelliteRouter from "./routes/satellite.js";
 import wilayasRouter from "./routes/wilayas.js";
 import aiRouter from "./routes/ai.js";
+import notificationsRouter from "./routes/notifications.js";
 
 const app = express();
 const PORT = config.port;
@@ -83,6 +84,7 @@ app.use("/api/admin", adminRouter);
 app.use("/api/satellite-data", satelliteRouter);
 app.use("/api/wilayas", wilayasRouter);
 app.use("/api/ai/guidance", aiLimiter, aiRouter);
+app.use("/api/notifications", notificationsRouter);
 
 app.use(notFoundHandler);
 
