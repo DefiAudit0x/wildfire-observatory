@@ -13,7 +13,7 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   });
 }
 
-createRoot(document.getElementById("root")!).render(
+createRoot(document.getElementById("app")!).render(
   <StrictMode>
     <Sentry.ErrorBoundary fallback={<div className="min-h-screen bg-[#0a0505] text-slate-100 flex items-center justify-center p-8 text-center"><div><h1 className="text-2xl font-bold text-red-500 mb-2">⚠️ خطأ في التطبيق</h1><p className="text-slate-400">يرجى إعادة تحميل الصفحة</p></div></div>}>
       <App />
