@@ -18,26 +18,43 @@ export function getDb(): Firestore | AdminFirestore | null {
 
   if (process.env.SKIP_FIREBASE === "true") return null;
 
-  const serviceAccountPath = config.firebaseServiceAccountPath;
-  if (serviceAccountPath) {
-    const saPath = path.isAbsolute(serviceAccountPath)
-      ? serviceAccountPath
-      : path.join(process.cwd(), serviceAccountPath);
-    if (fs.existsSync(saPath)) {
-      try {
-        const serviceAccount = JSON.parse(fs.readFileSync(saPath, "utf8"));
-        if (getAdminApps().length === 0) {
-          initializeAdminApp({ credential: cert(serviceAccount) });
+  let serviceAccount: any = null;
+
+  if (config.firebaseServiceAccount) {
+    try {
+      serviceAccount = JSON.parse(config.firebaseServiceAccount);
+    } catch (err) {
+      logger.error({ err }, "FIREBASE_SERVICE_ACCOUNT is not valid JSON");
+    }
+  }
+
+  if (!serviceAccount) {
+    const saPath = config.firebaseServiceAccountPath;
+    if (saPath) {
+      const resolvedPath = path.isAbsolute(saPath) ? saPath : path.join(process.cwd(), saPath);
+      if (fs.existsSync(resolvedPath)) {
+        try {
+          serviceAccount = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
+        } catch (err) {
+          logger.error({ err }, "Failed to parse service account file");
         }
-        adminDb = getAdminFirestore();
-        _isAdmin = true;
-        logger.info("Firebase Admin initialized successfully");
-        return adminDb;
-      } catch (err) {
-        logger.error({ err }, "Failed to initialize Firebase Admin, falling back to client SDK");
+      } else {
+        logger.warn({ saPath: resolvedPath }, "Firebase service account not found");
       }
-    } else {
-      logger.warn({ saPath }, "Firebase service account not found");
+    }
+  }
+
+  if (serviceAccount) {
+    try {
+      if (getAdminApps().length === 0) {
+        initializeAdminApp({ credential: cert(serviceAccount) });
+      }
+      adminDb = getAdminFirestore();
+      _isAdmin = true;
+      logger.info("Firebase Admin initialized successfully");
+      return adminDb;
+    } catch (err) {
+      logger.error({ err }, "Failed to initialize Firebase Admin, falling back to client SDK");
     }
   }
 
