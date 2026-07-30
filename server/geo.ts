@@ -90,12 +90,14 @@ export function runClustering(reports: Report[]): Report[] {
 
     const leaderId = sortedMembers[0].id;
     clusterMembers.forEach((member) => {
-      member.clusterId = clusterId;
-      member.clusterSize = clusterMembers.length;
-      member.isClusterLeader = member.id === leaderId;
-      result.push(member);
+      result.push({
+        ...member,
+        clusterId,
+        clusterSize: clusterMembers.length,
+        isClusterLeader: member.id === leaderId,
+      });
     });
   }
 
-  return reports.map((r) => result.find((res) => res.id === r.id) || r);
+  return result;
 }

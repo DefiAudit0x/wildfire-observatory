@@ -32,7 +32,16 @@ if (config.sentryDsn) {
 
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://firms.modaps.eosdis.nasa.gov"],
+      fontSrc: ["'self'", "data:"],
+    },
+  },
 }));
 
 app.use(cors({
@@ -53,6 +62,14 @@ const generalLimiter = rateLimit({
 });
 app.use(generalLimiter);
 
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "AI guidance limit reached. Try again later." },
+});
+
 app.use((req, _res, next) => {
   logger.info({ req }, "Request");
   next();
@@ -65,7 +82,7 @@ app.use("/api/reports", reportsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/satellite-data", satelliteRouter);
 app.use("/api/wilayas", wilayasRouter);
-app.use("/api/ai/guidance", aiRouter);
+app.use("/api/ai/guidance", aiLimiter, aiRouter);
 
 app.use(notFoundHandler);
 

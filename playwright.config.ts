@@ -27,6 +27,7 @@ export default defineConfig({
     env: {
       SKIP_FIREBASE: "true",
       NODE_ENV: "test",
+      ADMIN_PASSWORD: "test-admin",
     },
   },
 });

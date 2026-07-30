@@ -20,8 +20,7 @@ describe("AdminPanel", () => {
       { id: "1", status: "pending" as const, severity: "high" as const, lat: 36.8, lng: 7.5, locationName: "Test", wilaya: "test", description: "test", timestamp: new Date().toISOString(), consensusCount: 1, reporterType: "citizen" as const },
       { id: "2", status: "verified" as const, severity: "critical" as const, lat: 36.8, lng: 7.5, locationName: "Test2", wilaya: "test", description: "test", timestamp: new Date().toISOString(), consensusCount: 5, reporterType: "official" as const, reporterBadgeCode: "123" },
     ];
-    sessionStorage.setItem("admin_authenticated", "true");
-    sessionStorage.setItem("admin_password", "test-pass");
+    sessionStorage.setItem("admin_token", "test-token");
     render(<AdminPanel reports={reports} onRefresh={() => {}} lang="ar" />);
     expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument();
     expect(screen.getByText(/بلاغات قيد المراجعة/i)).toBeInTheDocument();

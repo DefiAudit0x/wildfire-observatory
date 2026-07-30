@@ -32,11 +32,15 @@ test.describe("Smoke tests", () => {
   });
 
   test("admin login flow succeeds with correct password", async ({ page }) => {
+    const adminPw = process.env.ADMIN_PASSWORD || "test-admin";
+    if (!process.env.ADMIN_PASSWORD) {
+      test.skip(!process.env.ADMIN_PASSWORD, "ADMIN_PASSWORD not set");
+    }
     await page.goto("/");
     await page.click('button:has-text("أدمن")');
     const input = page.getByPlaceholder(/mot de passe|كلمة المرور/i);
     await expect(input).toBeVisible({ timeout: 5000 });
-    await input.fill("nova2026");
+    await input.fill(adminPw);
     await page.click('button:has-text("دخول")');
     await expect(page.getByText(/أدمن نشط/i)).toBeVisible({ timeout: 5000 });
   });

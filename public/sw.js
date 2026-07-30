@@ -28,9 +28,16 @@ self.addEventListener("fetch", (event) => {
   if (url.pathname.startsWith("/api/")) {
     event.respondWith(
       caches.open(API_CACHE).then((cache) =>
-        fetch(event.request)
+        fetch(event.request, { cache: "no-store" })
           .then((response) => {
-            cache.put(event.request, response.clone());
+            const headers = new Headers(response.headers);
+            headers.set("cache-control", "max-age=120");
+            const cachedResponse = new Response(response.clone().body, {
+              status: response.status,
+              statusText: response.statusText,
+              headers,
+            });
+            cache.put(event.request, cachedResponse);
             return response;
           })
           .catch(() => cache.match(event.request))

@@ -1,43 +1,27 @@
 import { Request, Response, Router } from "express";
-import jwt from "jsonwebtoken";
-import config from "../config.js";
 import { citizenReports } from "../data.js";
-import { generateAdminToken } from "../middleware.js";
+import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
+import logger from "../logger.js";
 
 const router = Router();
 
 router.post("/verify", (req: Request, res: Response) => {
   const { password } = req.body;
-  if (!config.adminPassword) {
-    if (password === "nova2026") {
-      const token = generateAdminToken();
-      res.json({ success: true, token });
-      return;
-    }
-    res.status(401).json({ success: false, error: "Incorrect admin password" });
+  if (!password) {
+    res.status(400).json({ success: false, error: "Password required" });
     return;
   }
-  if (password === config.adminPassword) {
+  if (password === process.env.ADMIN_PASSWORD) {
     const token = generateAdminToken();
     res.json({ success: true, token });
   } else {
+    logger.warn("Failed admin login attempt");
     res.status(401).json({ success: false, error: "Incorrect admin password" });
   }
 });
 
-router.post("/reports/:id/update-status", async (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  try {
-    jwt.verify(authHeader.split(" ")[1], config.jwtSecret);
-  } catch {
-    res.status(401).json({ error: "Unauthorized: invalid token" });
-    return;
-  }
+router.post("/reports/:id/update-status", requireAdmin, async (req: Request, res: Response) => {
   const { status, severity } = req.body;
   const { id } = req.params;
 
@@ -61,18 +45,7 @@ router.post("/reports/:id/update-status", async (req: Request, res: Response) =>
   res.status(404).json({ error: "Report not found" });
 });
 
-router.post("/reports/:id/delete", async (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  try {
-    jwt.verify(authHeader.split(" ")[1], config.jwtSecret);
-  } catch {
-    res.status(401).json({ error: "Unauthorized: invalid token" });
-    return;
-  }
+router.post("/reports/:id/delete", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
 
   const deleted = await deleteReportFromFirestore(id);

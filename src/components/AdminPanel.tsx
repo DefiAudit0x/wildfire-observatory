@@ -11,7 +11,7 @@ interface AdminPanelProps {
 export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps) {
   const [password, setPassword] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return sessionStorage.getItem("admin_authenticated") === "true";
+    return !!sessionStorage.getItem("admin_token");
   });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -30,11 +30,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
+      const data = await res.json();
 
-      if (res.ok) {
+      if (res.ok && data.token) {
         setIsAuthenticated(true);
-        sessionStorage.setItem("admin_authenticated", "true");
-        sessionStorage.setItem("admin_password", password);
+        sessionStorage.setItem("admin_token", data.token);
       } else {
         setError(isArabic ? "رمز المرور غير صحيح!" : "Mot de passe incorrect !");
       }
@@ -48,18 +48,19 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const handleLogout = () => {
     setIsAuthenticated(false);
     setPassword("");
-    sessionStorage.removeItem("admin_authenticated");
-    sessionStorage.removeItem("admin_password");
+    sessionStorage.removeItem("admin_token");
   };
+
+  const getToken = () => sessionStorage.getItem("admin_token");
 
   const updateReportStatus = async (id: string, newStatus: string) => {
     setUpdatingId(id);
-    const adminPass = sessionStorage.getItem("admin_password") || password;
+    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: adminPass, status: newStatus }),
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ status: newStatus }),
       });
 
       if (res.ok) {
@@ -76,12 +77,12 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   const updateReportSeverity = async (id: string, newSeverity: string) => {
     setUpdatingId(id);
-    const adminPass = sessionStorage.getItem("admin_password") || password;
+    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: adminPass, severity: newSeverity }),
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        body: JSON.stringify({ severity: newSeverity }),
       });
 
       if (res.ok) {
@@ -102,12 +103,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     }
 
     setUpdatingId(id);
-    const adminPass = sessionStorage.getItem("admin_password") || password;
+    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/delete`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: adminPass }),
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
       });
 
       if (res.ok) {
@@ -145,7 +145,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
             <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
             <input
               type="password"
-              placeholder={isArabic ? "كلمة المرور (nova2026)" : "Mot de passe (nova2026)"}
+              placeholder={isArabic ? "كلمة المرور" : "Mot de passe"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required

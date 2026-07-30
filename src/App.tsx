@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
@@ -28,6 +28,7 @@ export default function App() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const [simulationMode, setSimulationMode] = useState(true);
 
   const isArabic = lang === "ar";
@@ -91,16 +92,19 @@ export default function App() {
       // Web Audio sound alerts
       if (nearReports.length > 0 && !isMuted) {
         try {
-          const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+          if (!audioCtxRef.current) {
+            audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          }
+          const audioCtx = audioCtxRef.current;
           const osc1 = audioCtx.createOscillator();
           const osc2 = audioCtx.createOscillator();
           const gainNode = audioCtx.createGain();
 
           osc1.type = "sine";
-          osc1.frequency.setValueAtTime(880, audioCtx.currentTime); // High alarm
+          osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
           
           osc2.type = "sawtooth";
-          osc2.frequency.setValueAtTime(440, audioCtx.currentTime); // Buzz
+          osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
 
           gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
           gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);

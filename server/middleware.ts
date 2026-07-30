@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import rateLimit from "express-rate-limit";
 import config from "./config.js";
 import logger from "./logger.js";
 
@@ -27,6 +28,13 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
     res.status(401).json({ error: "Unauthorized: invalid or expired token" });
   }
 }
+
+export const looseLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
   logger.error({ err }, "Unhandled error");
