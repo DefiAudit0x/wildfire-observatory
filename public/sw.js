@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-const CACHE_NAME = "observatory-v1";
-const API_CACHE = "observatory-api-v1";
+const CACHE_NAME = "observatory-v2";
+const API_CACHE = "observatory-api-v2";
 const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
@@ -37,6 +37,20 @@ self.addEventListener("fetch", (event) => {
               headers,
             });
             cache.put(event.request, cachedResponse);
+            return response;
+          })
+          .catch(() => cache.match(event.request))
+      )
+    );
+    return;
+  }
+
+  if (url.pathname === "/" || url.pathname === "/index.html") {
+    event.respondWith(
+      caches.open(CACHE_NAME).then((cache) =>
+        fetch(event.request, { cache: "no-store" })
+          .then((response) => {
+            cache.put(event.request, response.clone());
             return response;
           })
           .catch(() => cache.match(event.request))
