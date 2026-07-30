@@ -1,36 +1,28 @@
 import { Request, Response, Router } from "express";
-import { getDb } from "../firebase.js";
 import { citizenReports, wilayasStatus } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
-import { getHaversineDistance, determineWilayaByCoords, runClustering } from "../geo.js";
+import { runClustering } from "../geo.js";
+import {
+  getReportsFromFirestore,
+  seedReportsToFirestore,
+  saveReportToFirestore,
+  confirmReportInFirestore,
+} from "../db.js";
 
 const router = Router();
 
 let initialReportsSeeded = false;
 
 async function getReportsFromDb() {
-  const db = getDb();
-  if (!db) return citizenReports;
-  try {
-    const { collection, getDocs, query, orderBy, setDoc, doc } = await import("firebase/firestore");
-    const reportsCol = collection(db, "reports");
-    const q = query(reportsCol, orderBy("timestamp", "desc"));
-    const snapshot = await getDocs(q);
-    if (snapshot.empty) {
-      if (!initialReportsSeeded) {
-        console.log("Seeding initial reports to Firestore...");
-        for (const rep of citizenReports) {
-          await setDoc(doc(db, "reports", rep.id), rep);
-        }
-        initialReportsSeeded = true;
-      }
-      return citizenReports;
+  const reports = await getReportsFromFirestore();
+  if (reports) return reports;
+  if (!initialReportsSeeded) {
+    if (reports === null) {
+      seedReportsToFirestore();
     }
-    return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as any));
-  } catch (err) {
-    console.error("Error reading reports from Firestore, using fallback:", err);
-    return citizenReports;
+    initialReportsSeeded = true;
   }
+  return citizenReports;
 }
 
 router.get("/", async (_req: Request, res: Response) => {
@@ -153,16 +145,8 @@ router.post("/", async (req: Request, res: Response) => {
     };
   }
 
-  const db = getDb();
-  if (db) {
-    try {
-      const { setDoc, doc } = await import("firebase/firestore");
-      await setDoc(doc(db, "reports", newReport.id), newReport);
-    } catch (err) {
-      console.error("[Firestore] Failed to save new report:", err);
-      citizenReports.unshift(newReport);
-    }
-  } else {
+  const saved = await saveReportToFirestore(newReport);
+  if (!saved) {
     citizenReports.unshift(newReport);
   }
 
@@ -181,26 +165,11 @@ router.post("/", async (req: Request, res: Response) => {
 
 router.post("/:id/confirm", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const db = getDb();
 
-  if (db) {
-    try {
-      const { doc, getDoc, updateDoc } = await import("firebase/firestore");
-      const docRef = doc(db, "reports", id);
-      const docSnap = await getDoc(docRef);
-      if (docSnap.exists()) {
-        const report = { id: docSnap.id, ...docSnap.data() } as any;
-        report.consensusCount += 1;
-        if (report.consensusCount >= 5 && report.status === "pending") {
-          report.status = "verified";
-        }
-        await updateDoc(docRef, { consensusCount: report.consensusCount, status: report.status });
-        res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
-        return;
-      }
-    } catch (err) {
-      console.error("Failed to update report upvote in Firestore:", err);
-    }
+  const result = await confirmReportInFirestore(id);
+  if (result) {
+    res.json({ success: true, ...result });
+    return;
   }
 
   const report = citizenReports.find((r) => r.id === id);

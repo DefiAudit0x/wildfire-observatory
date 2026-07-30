@@ -1,21 +1,8 @@
 import { Request, Response, Router } from "express";
-import { getDb } from "../firebase.js";
 import { wilayasStatus } from "../data.js";
+import { getReportsFromFirestore } from "../db.js";
 
 const router = Router();
-
-async function getReportsFromDb() {
-  const db = getDb();
-  if (!db) return [];
-  try {
-    const { collection, getDocs, query, orderBy } = await import("firebase/firestore");
-    const q = query(collection(db, "reports"), orderBy("timestamp", "desc"));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map((docSnap) => ({ id: docSnap.id, ...docSnap.data() } as any));
-  } catch {
-    return [];
-  }
-}
 
 async function getLiveSatelliteData() {
   const { satelliteHotspots } = await import("../data.js");
@@ -29,7 +16,8 @@ async function getLiveSatelliteData() {
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const currentReports = await getReportsFromDb();
+  const firestoreReports = await getReportsFromFirestore();
+  const currentReports = firestoreReports || [];
   const hotspots = await getLiveSatelliteData();
 
   const dynamicWilayas = wilayasStatus.map((w) => ({

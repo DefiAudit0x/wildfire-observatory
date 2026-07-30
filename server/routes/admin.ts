@@ -1,9 +1,9 @@
 import { Request, Response, Router } from "express";
 import jwt from "jsonwebtoken";
 import config from "../config.js";
-import { getDb } from "../firebase.js";
 import { citizenReports } from "../data.js";
 import { generateAdminToken } from "../middleware.js";
+import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
 
 const router = Router();
 
@@ -41,19 +41,14 @@ router.post("/reports/:id/update-status", async (req: Request, res: Response) =>
   const { status, severity } = req.body;
   const { id } = req.params;
 
-  const db = getDb();
-  if (db) {
-    try {
-      const { doc, updateDoc } = await import("firebase/firestore");
-      const updateData: any = {};
-      if (status) updateData.status = status;
-      if (severity) updateData.severity = severity;
-      await updateDoc(doc(db, "reports", id), updateData);
-      res.json({ success: true });
-      return;
-    } catch (err) {
-      console.error("Failed to update report in Firestore:", err);
-    }
+  const updateData: Record<string, any> = {};
+  if (status) updateData.status = status;
+  if (severity) updateData.severity = severity;
+
+  const updated = await updateReportInFirestore(id, updateData);
+  if (updated) {
+    res.json({ success: true });
+    return;
   }
 
   const report = citizenReports.find((r: any) => r.id === id);
@@ -80,16 +75,10 @@ router.post("/reports/:id/delete", async (req: Request, res: Response) => {
   }
   const { id } = req.params;
 
-  const db = getDb();
-  if (db) {
-    try {
-      const { doc, deleteDoc } = await import("firebase/firestore");
-      await deleteDoc(doc(db, "reports", id));
-      res.json({ success: true });
-      return;
-    } catch (err) {
-      console.error("Failed to delete report in Firestore:", err);
-    }
+  const deleted = await deleteReportFromFirestore(id);
+  if (deleted) {
+    res.json({ success: true });
+    return;
   }
 
   const index = citizenReports.findIndex((r: any) => r.id === id);

@@ -4,3 +4,6 @@ dist/
 .env
 .env.local
 firebase-applet-config.json
+conversations.json
+user.json
+assets/

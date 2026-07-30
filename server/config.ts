@@ -12,6 +12,7 @@ const config = {
   logLevel: process.env.LOG_LEVEL || "info",
   sentryDsn: process.env.SENTRY_DSN || "",
   firebaseConfigPath: process.env.FIREBASE_CONFIG_PATH || "firebase-applet-config.json",
+  firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "",
   appUrl: process.env.APP_URL || "http://localhost:3000",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
 };

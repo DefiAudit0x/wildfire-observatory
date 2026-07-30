@@ -7,16 +7,11 @@ router.post("/", async (req: Request, res: Response) => {
   const { lat, lng, wilaya, lang } = req.body;
   const isArabic = lang === "ar";
 
-  const currentReports: any[] = [];
+  let currentReports: any[] = [];
   try {
-    const { getDb } = await import("../firebase.js");
-    const db = getDb();
-    if (db) {
-      const { collection, getDocs, query, orderBy } = await import("firebase/firestore");
-      const q = query(collection(db, "reports"), orderBy("timestamp", "desc"));
-      const snapshot = await getDocs(q);
-      snapshot.docs.forEach((d) => currentReports.push({ id: d.id, ...d.data() }));
-    }
+    const { getReportsFromFirestore } = await import("../db.js");
+    const reports = await getReportsFromFirestore();
+    if (reports) currentReports = reports;
   } catch { /* ignore */ }
 
   const nearbyReports = currentReports.filter((r) => {
