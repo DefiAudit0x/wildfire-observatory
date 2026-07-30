@@ -86,13 +86,6 @@ app.use("/api/wilayas", wilayasRouter);
 app.use("/api/ai/guidance", aiLimiter, aiRouter);
 app.use("/api/notifications", notificationsRouter);
 
-app.use(notFoundHandler);
-
-if (config.sentryDsn) {
-  Sentry.setupExpressErrorHandler(app);
-}
-app.use(errorHandler);
-
 async function startServer() {
   if (config.nodeEnv !== "production") {
     const vite = await createViteServer({
@@ -107,6 +100,13 @@ async function startServer() {
       res.sendFile(path.join(distPath, "index.html"));
     });
   }
+
+  app.use(notFoundHandler);
+
+  if (config.sentryDsn) {
+    Sentry.setupExpressErrorHandler(app);
+  }
+  app.use(errorHandler);
 
   app.listen(PORT, "0.0.0.0", () => {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
