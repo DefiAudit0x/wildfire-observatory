@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Shield, Radio, Terminal, Send, Eye, Loader2, Sparkles, CheckCircle2, AlertOctagon } from "lucide-react";
+import { Shield, Radio, Terminal, Send, Eye, Loader2, Sparkles, CheckCircle2, AlertOctagon, Lock, Unlock } from "lucide-react";
 import { Report } from "../types";
 
 interface CrisisCenterProps {
@@ -10,6 +10,79 @@ interface CrisisCenterProps {
 
 export default function CrisisCenter({ onAddParsedReport, reports, lang }: CrisisCenterProps) {
   const isArabic = lang === "ar";
+
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(() => {
+    return !!sessionStorage.getItem("admin_token");
+  });
+
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthLoading(true);
+    try {
+      const res = await fetch("/api/admin/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: authPassword }),
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        setIsAuthenticated(true);
+        sessionStorage.setItem("admin_token", data.token);
+      } else {
+        setAuthError(isArabic ? "رمز المرور غير صحيح!" : "Mot de passe incorrect !");
+      }
+    } catch {
+      setAuthError(isArabic ? "حدث خطأ في الاتصال بالخادم" : "Erreur de connexion au serveur");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    setIsAuthenticated(false);
+    setAuthPassword("");
+    sessionStorage.removeItem("admin_token");
+  };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="col-span-12 max-w-md mx-auto my-12 bg-zinc-950/80 border border-white/5 rounded-2xl p-8 shadow-[0_10px_50px_rgba(0,0,0,0.8)] text-center space-y-6">
+        <div className="p-3 bg-amber-500/10 rounded-full w-fit mx-auto border border-amber-500/20">
+          <Lock className="h-6 w-6 text-amber-500" />
+        </div>
+        <h3 className="text-lg font-bold text-slate-100">
+          {isArabic ? "غرفة قيادة الطوارئ - مشرف" : "Centre d'Opérations de Crise - Authentification"}
+        </h3>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          {isArabic
+            ? "هذه اللوحة مخصصة لقادة الحماية المدنية والمشرفين. يرجى إدخال رمز المشرف للدخول."
+            : "Ce panneau est réservé aux chefs de la protection civile et aux superviseurs. Veuillez entrer le mot de passe administrateur."}
+        </p>
+        <form onSubmit={handleAuth} className="space-y-4">
+          <input
+            type="password"
+            value={authPassword}
+            onChange={(e) => setAuthPassword(e.target.value)}
+            placeholder={isArabic ? "رمز المشرف" : "Mot de passe superviseur"}
+            className="w-full bg-zinc-950 border border-white/10 rounded-xl px-4 py-3 text-sm text-slate-200 placeholder-slate-600 text-center focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+          />
+          {authError && <p className="text-red-400 text-xs">{authError}</p>}
+          <button
+            type="submit"
+            disabled={authLoading || !authPassword}
+            className="w-full py-3 bg-amber-500 hover:bg-amber-600 disabled:bg-zinc-800 text-slate-950 font-black text-sm rounded-xl transition-all cursor-pointer disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {authLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlock className="h-4 w-4" />}
+            <span>{isArabic ? "فتح غرفة القيادة" : "Ouvrir le centre d'opérations"}</span>
+          </button>
+        </form>
+      </div>
+    );
+  }
   
   // Drone simulator state
   const [isDroneActive, setIsDroneActive] = useState(false);
@@ -97,7 +170,7 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
     setTimeout(() => {
       // Analyze SMS text content using regex/NLP mock to extract coordinates & details
       let parsedReport: any = {
-        id: `parsed-${Date.now()}`,
+        id: `parsed-${crypto.randomUUID().slice(0, 8)}`,
         status: "verified",
         reporterType: "citizen",
         reporterName: `SMS Citizen (${sms.sender})`,
@@ -179,20 +252,29 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
     <div className="bg-zinc-900/60 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)] font-mono text-slate-200 space-y-6">
       
       {/* HEADER SECTION */}
-      <div className="flex items-center gap-2 border-b border-white/5 pb-4">
-        <div className="p-2 bg-amber-500/10 text-amber-500 rounded border border-amber-500/20">
-          <Shield className="h-5 w-5 animate-pulse" />
+      <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-4">
+        <div className="flex items-center gap-2">
+          <div className="p-2 bg-amber-500/10 text-amber-500 rounded border border-amber-500/20">
+            <Shield className="h-5 w-5 animate-pulse" />
+          </div>
+          <div>
+            <h3 className="font-bold text-base text-slate-100">
+              {isArabic ? "لوحة تحكم قيادة الأزمات والحماية المدنية" : "Centre d'Opérations Tactique de Crise"}
+            </h3>
+            <p className="text-[10px] text-gray-400 mt-0.5">
+              {isArabic 
+                ? "التحكم في الموارد المتطورة: طائرات الاستطلاع (UAV)، البث الخلوي للجغرافيا، وبوابات استقبال SMS للجبال"
+                : "Commandement spécialisé : Drones de reconnaissance, alertes SMS géofencing, gateway satellite montagne"}
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 className="font-bold text-base text-slate-100">
-            {isArabic ? "لوحة تحكم قيادة الأزمات والحماية المدنية" : "Centre d'Opérations Tactique de Crise"}
-          </h3>
-          <p className="text-[10px] text-gray-400 mt-0.5">
-            {isArabic 
-              ? "التحكم في الموارد المتطورة: طائرات الاستطلاع (UAV)، البث الخلوي للجغرافيا، وبوابات استقبال SMS للجبال"
-              : "Commandement spécialisé : Drones de reconnaissance, alertes SMS géofencing, gateway satellite montagne"}
-          </p>
-        </div>
+        <button
+          onClick={handleLogout}
+          className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded-lg text-[10px] font-bold transition-colors cursor-pointer flex items-center gap-1"
+        >
+          <Lock className="h-3 w-3" />
+          {isArabic ? "خروج" : "Quitter"}
+        </button>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

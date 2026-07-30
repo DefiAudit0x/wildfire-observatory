@@ -5,6 +5,7 @@ import { getFirestore as getAdminFirestore, Firestore as AdminFirestore } from "
 import { initializeApp } from "firebase/app";
 import { getFirestore, Firestore } from "firebase/firestore";
 import config from "./config.js";
+import logger from "./logger.js";
 
 let adminDb: AdminFirestore | null = null;
 let clientDb: Firestore | null = null;
@@ -30,13 +31,13 @@ export function getDb(): Firestore | AdminFirestore | null {
         }
         adminDb = getAdminFirestore();
         _isAdmin = true;
-        console.log("[OK] Firebase Admin initialized successfully");
+        logger.info("Firebase Admin initialized successfully");
         return adminDb;
       } catch (err) {
-        console.error("Failed to initialize Firebase Admin, falling back to client SDK:", err);
+        logger.error({ err }, "Failed to initialize Firebase Admin, falling back to client SDK");
       }
     } else {
-      console.warn(`Firebase service account not found at: ${saPath}`);
+      logger.warn({ saPath }, "Firebase service account not found");
     }
   }
 
@@ -47,9 +48,9 @@ export function getDb(): Firestore | AdminFirestore | null {
     const fConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
     const firebaseApp = initializeApp(fConfig);
     clientDb = getFirestore(firebaseApp);
-    console.log("[OK] Firebase Client SDK initialized successfully");
+    logger.info("Firebase Client SDK initialized successfully");
   } catch (err) {
-    console.error("Failed to initialize Firebase Client SDK:", err);
+    logger.error({ err }, "Failed to initialize Firebase Client SDK");
   }
 
   return clientDb;

@@ -1,5 +1,6 @@
 import swaggerJsdoc from "swagger-jsdoc";
-import config from "./config.js";
+
+const isProduction = process.env.NODE_ENV === "production";
 
 const options: swaggerJsdoc.Options = {
   definition: {
@@ -11,7 +12,7 @@ const options: swaggerJsdoc.Options = {
       contact: { name: "Nova DZ" },
     },
     servers: [
-      { url: config.appUrl, description: config.nodeEnv === "production" ? "Production" : "Development" },
+      { url: process.env.APP_URL || "http://localhost:3000", description: isProduction ? "Production" : "Development" },
     ],
     components: {
       securitySchemes: {
@@ -19,7 +20,7 @@ const options: swaggerJsdoc.Options = {
       },
     },
   },
-  apis: ["./server/routes/*.ts"],
+  apis: isProduction ? ["./dist/server/routes/*.js"] : ["./server/routes/*.ts"],
 };
 
 const swaggerSpec = swaggerJsdoc(options);

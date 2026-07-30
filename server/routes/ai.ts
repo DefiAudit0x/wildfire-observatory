@@ -1,5 +1,6 @@
 import { Request, Response, Router } from "express";
 import { getAiClient, getAiModel } from "../ai.js";
+import logger from "../logger.js";
 
 const router = Router();
 
@@ -42,7 +43,7 @@ router.post("/", async (req: Request, res: Response) => {
       res.json({ guidance: response.text });
       return;
     } catch (err) {
-      console.error("AI guidance error:", err);
+      logger.error({ err }, "AI guidance error");
     }
   }
 

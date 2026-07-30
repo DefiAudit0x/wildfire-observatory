@@ -53,8 +53,8 @@ describe("POST /api/reports", () => {
   it("creates a new report with valid data", async () => {
     const app = createTestApp();
     const res = await supertest(app).post("/api/reports").send({
-      lat: 36.5,
-      lng: 7.5,
+      lat: 36.8,
+      lng: 7.6,
       locationName: "Test Location",
       wilaya: "الجزائر - عنابة (Algérie - Annaba)",
       description: "حريق اختبار للتحقق من النظام",

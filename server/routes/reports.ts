@@ -2,7 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { citizenReports, wilayasStatus } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
-import { runClustering } from "../geo.js";
+import { runClustering, wilayaContainsCoords } from "../geo.js";
 import {
   getReportsFromFirestore,
   seedReportsToFirestore,
@@ -58,6 +58,11 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, image } = parsed.data;
+
+  if (!wilayaContainsCoords(wilaya, lat, lng)) {
+    res.status(400).json({ error: `Coordinates do not fall within the bounds of ${wilaya}` });
+    return;
+  }
 
   let isTrusted = false;
   let finalStatus: "pending" | "verified" = "pending";
