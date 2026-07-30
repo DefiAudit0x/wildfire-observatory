@@ -118,6 +118,12 @@ export default function App() {
           
           osc1.stop(audioCtx.currentTime + 1.0);
           osc2.stop(audioCtx.currentTime + 1.0);
+          setTimeout(() => {
+            if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+              audioCtxRef.current.close().catch(() => {});
+              audioCtxRef.current = null;
+            }
+          }, 2000);
         } catch (err) {
           console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
         }

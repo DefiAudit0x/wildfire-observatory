@@ -75,7 +75,7 @@ router.post("/", async (req: Request, res: Response) => {
   }
 
   const newReport: any = {
-    id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    id: `rep-${crypto.randomUUID().slice(0, 8)}`,
     lat, lng, locationName, wilaya, description,
     severity, status: finalStatus,
     image: image || undefined,
@@ -166,12 +166,27 @@ router.post("/", async (req: Request, res: Response) => {
   res.json(safeReport);
 });
 
+const voters = new Map<string, Set<string>>();
+
 router.post("/:id/confirm", async (req: Request, res: Response) => {
   const { id } = req.params;
+  const voterIp = req.ip || req.socket.remoteAddress || "unknown";
 
-  const result = await confirmReportInFirestore(id);
+  const voterId = `${voterIp}-${id}`;
+  if (voters.has(id) && voters.get(id)!.has(voterIp)) {
+    res.status(409).json({ error: "Already confirmed from this device" });
+    return;
+  }
+
+  const result = await confirmReportInFirestore(id, voterIp);
   if (result) {
-    res.json({ success: true, ...result });
+    if ("error" in result && result.error === "ALREADY_VOTED") {
+      res.status(409).json({ error: "Already confirmed" });
+      return;
+    }
+    if (!voters.has(id)) voters.set(id, new Set());
+    voters.get(id)!.add(voterIp);
+    res.json({ success: true, consensusCount: result.consensusCount, status: result.status });
     return;
   }
 
@@ -184,6 +199,8 @@ router.post("/:id/confirm", async (req: Request, res: Response) => {
   if (report.consensusCount >= 5 && report.status === "pending") {
     report.status = "verified";
   }
+  if (!voters.has(id)) voters.set(id, new Set());
+  voters.get(id)!.add(voterIp);
   res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
 });
 

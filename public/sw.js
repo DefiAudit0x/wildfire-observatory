@@ -1,10 +1,7 @@
 /// <reference lib="webworker" />
 const CACHE_NAME = "observatory-v1";
 const API_CACHE = "observatory-api-v1";
-const STATIC_FILES = [
-  "/",
-  "/index.html",
-];
+const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -23,6 +20,8 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
+  if (event.request.method !== "GET") return;
+
   const url = new URL(event.request.url);
 
   if (url.pathname.startsWith("/api/")) {

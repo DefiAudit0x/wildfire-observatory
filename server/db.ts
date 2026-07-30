@@ -1,5 +1,6 @@
 import { getDb, isAdminDb } from "./firebase.js";
 import { citizenReports } from "./data.js";
+import logger from "./logger.js";
 
 async function loadClientSdk() {
   return import("firebase/firestore");
@@ -26,7 +27,7 @@ export async function getReportsFromFirestore() {
       return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));
     }
   } catch (err) {
-    console.error("Error reading reports from Firestore:", err);
+    logger.error({ err }, "Error reading reports from Firestore");
     return null;
   }
 }
@@ -47,7 +48,7 @@ export async function seedReportsToFirestore() {
     }
     console.log("Seeded initial reports to Firestore");
   } catch (err) {
-    console.error("Failed to seed reports:", err);
+    logger.error({ err }, "Failed to seed reports");
   }
 }
 
@@ -63,41 +64,61 @@ export async function saveReportToFirestore(report: any) {
     }
     return true;
   } catch (err) {
-    console.error("[Firestore] Failed to save report:", err);
+    logger.error({ err }, "[Firestore] Failed to save report");
     return false;
   }
 }
 
-export async function confirmReportInFirestore(id: string) {
+export async function confirmReportInFirestore(id: string, voterId?: string) {
   const db = getDb();
   if (!db) return null;
+  const CONSENSUS_THRESHOLD = 5;
   try {
     if (isAdminDb(db)) {
       const docRef = db.collection("reports").doc(id);
-      const snap = await docRef.get();
-      if (!snap.exists) return null;
-      const data = snap.data() as any;
-      data.consensusCount += 1;
-      if (data.consensusCount >= 5 && data.status === "pending") {
-        data.status = "verified";
-      }
-      await docRef.update({ consensusCount: data.consensusCount, status: data.status });
-      return { consensusCount: data.consensusCount, status: data.status };
+      const result = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(docRef);
+        if (!snap.exists) return null;
+        const data = snap.data() as any;
+        if (voterId && data.voters?.includes(voterId)) {
+          return { error: "ALREADY_VOTED" };
+        }
+        const newConsensus = (data.consensusCount || 0) + 1;
+        let newStatus = data.status || "pending";
+        if (newConsensus >= CONSENSUS_THRESHOLD && newStatus === "pending") {
+          newStatus = "verified";
+        }
+        const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
+        if (voterId) {
+          update.voters = [...(data.voters || []), voterId];
+        }
+        tx.update(docRef, update);
+        return { consensusCount: newConsensus, status: newStatus };
+      });
+      return result;
     } else {
       const { doc, getDoc, updateDoc } = await loadClientSdk();
       const docRef = doc(db, "reports", id);
       const snap = await getDoc(docRef);
       if (!snap.exists()) return null;
       const data = snap.data() as any;
-      data.consensusCount += 1;
-      if (data.consensusCount >= 5 && data.status === "pending") {
-        data.status = "verified";
+      if (voterId && data.voters?.includes(voterId)) {
+        return { error: "ALREADY_VOTED" };
       }
-      await updateDoc(docRef, { consensusCount: data.consensusCount, status: data.status });
-      return { consensusCount: data.consensusCount, status: data.status };
+      const newConsensus = (data.consensusCount || 0) + 1;
+      let newStatus = data.status || "pending";
+      if (newConsensus >= CONSENSUS_THRESHOLD && newStatus === "pending") {
+        newStatus = "verified";
+      }
+      const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
+      if (voterId) {
+        update.voters = [...(data.voters || []), voterId];
+      }
+      await updateDoc(docRef, update);
+      return { consensusCount: newConsensus, status: newStatus };
     }
   } catch (err) {
-    console.error("[Firestore] Failed to confirm report:", err);
+    logger.error({ err }, "[Firestore] Failed to confirm report");
     return null;
   }
 }
@@ -114,7 +135,7 @@ export async function updateReportInFirestore(id: string, updateData: Record<str
     }
     return true;
   } catch (err) {
-    console.error("[Firestore] Failed to update report:", err);
+    logger.error({ err }, "[Firestore] Failed to update report");
     return false;
   }
 }
@@ -131,7 +152,7 @@ export async function deleteReportFromFirestore(id: string) {
     }
     return true;
   } catch (err) {
-    console.error("[Firestore] Failed to delete report:", err);
+    logger.error({ err }, "[Firestore] Failed to delete report");
     return false;
   }
 }

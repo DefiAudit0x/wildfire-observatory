@@ -192,23 +192,29 @@ export default function InteractiveMap({
         </span>
       `;
 
+      function esc(str: string): string {
+        const div = document.createElement("div");
+        div.textContent = str;
+        return div.innerHTML;
+      }
+
       const popupContent = document.createElement("div");
       popupContent.dir = isArabic ? "rtl" : "ltr";
       popupContent.className = "p-2 text-slate-100 text-sm font-sans max-w-xs";
       popupContent.innerHTML = `
         <div class="flex items-start justify-between gap-2 mb-1">
           <div>
-            <h4 class="font-bold text-slate-200 text-base leading-tight">${rep.locationName}</h4>
+            <h4 class="font-bold text-slate-200 text-base leading-tight">${esc(rep.locationName)}</h4>
             <div class="flex items-center gap-1.5 flex-wrap mt-1">
-              <span class="text-[10px] text-slate-400">${new Date(rep.timestamp).toLocaleTimeString()} | ${rep.wilaya}</span>
+              <span class="text-[10px] text-slate-400">${new Date(rep.timestamp).toLocaleTimeString()} | ${esc(rep.wilaya)}</span>
               ${getReporterBadgeHtml(rep.reporterType)}
             </div>
           </div>
           ${severityBadge}
         </div>
-        <p class="text-xs text-slate-300 mt-2 bg-slate-900/60 p-2 rounded border border-slate-800 leading-relaxed">${rep.description}</p>
+        <p class="text-xs text-slate-300 mt-2 bg-slate-900/60 p-2 rounded border border-slate-800 leading-relaxed">${esc(rep.description)}</p>
         
-        ${rep.image ? `<img src="${rep.image}" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
+        ${rep.image ? `<img src="${esc(rep.image)}" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
         
         ${clusterHtml}
         ${aiStatusHtml}
@@ -217,7 +223,7 @@ export default function InteractiveMap({
           <span class="text-[11px] text-slate-400">
             ${isArabic ? "تأكيدات المجتمع:" : "Confirmations:"} <strong>${rep.consensusCount}</strong>
           </span>
-          <button id="upvote-btn-${rep.id}" class="px-2 py-1 bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white rounded text-xs transition-colors font-bold cursor-pointer flex items-center gap-1">
+          <button id="upvote-btn-${esc(rep.id)}" class="px-2 py-1 bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white rounded text-xs transition-colors font-bold cursor-pointer flex items-center gap-1">
             🔥 ${isArabic ? "تأكيد وجود حريق" : "Confirmer le feu"}
           </button>
         </div>
