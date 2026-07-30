@@ -20,6 +20,7 @@ import aiRouter from "./routes/ai.js";
 import notificationsRouter from "./routes/notifications.js";
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = config.port;
 
 if (config.sentryDsn) {
