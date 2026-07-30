@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/node";
 import express from "express";
 import path from "path";
+import fs from "fs";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
@@ -97,6 +98,17 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
+
+    app.get("/assets/*", (req, res) => {
+      const filePath = path.join(distPath, req.path);
+      if (fs.existsSync(filePath)) {
+        res.sendFile(filePath);
+      } else {
+        logger.warn({ path: req.path }, "Asset not found");
+        res.status(404).json({ error: "Asset not found" });
+      }
+    });
+
     app.get("*", (_req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
     });
