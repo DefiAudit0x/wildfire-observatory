@@ -1,6 +1,8 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import crypto from "crypto";
 import logger from "../logger.js";
+import config from "../config.js";
 
 const router = Router();
 
@@ -10,6 +12,10 @@ const subscribeSchema = z.object({
   minSeverity: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 
+function generateVerificationToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
 router.post("/subscribe", async (req: Request, res: Response) => {
   const parsed = subscribeSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -18,6 +24,7 @@ router.post("/subscribe", async (req: Request, res: Response) => {
   }
 
   const { email, wilayas, minSeverity } = parsed.data;
+  const verificationToken = generateVerificationToken();
 
   try {
     const { getDb, isAdminDb } = await import("../firebase.js");
@@ -33,14 +40,15 @@ router.post("/subscribe", async (req: Request, res: Response) => {
         await existing.docs[0].ref.update({
           wilayas: wilayas || [],
           minSeverity: minSeverity || "medium",
+          verificationToken,
           updatedAt: new Date().toISOString(),
         });
-        res.json({ success: true, message: "Subscription updated" });
+        res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
       await db.collection("subscribers").add({
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, createdAt: new Date().toISOString(),
       });
     } else {
       const { collection, getDocs, query, where, addDoc, updateDoc, doc } = await import("firebase/firestore");
@@ -50,14 +58,14 @@ router.post("/subscribe", async (req: Request, res: Response) => {
       if (!snap.empty) {
         await updateDoc(doc(db, "subscribers", snap.docs[0].id), {
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-          updatedAt: new Date().toISOString(),
+          verificationToken, updatedAt: new Date().toISOString(),
         });
-        res.json({ success: true, message: "Subscription updated" });
+        res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
       await addDoc(subsCol, {
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, createdAt: new Date().toISOString(),
       });
     }
 
@@ -125,7 +133,12 @@ router.get("/verify", async (req: Request, res: Response) => {
         res.status(404).json({ error: "Subscriber not found" });
         return;
       }
-      await existing.docs[0].ref.update({ verified: true });
+      const sub = existing.docs[0].data() as any;
+      if (!sub.verificationToken || sub.verificationToken !== token) {
+        res.status(403).json({ error: "Invalid verification token" });
+        return;
+      }
+      await existing.docs[0].ref.update({ verified: true, verificationToken: null });
     } else {
       const { collection, getDocs, query, where, updateDoc, doc } = await import("firebase/firestore");
       const q = query(collection(db, "subscribers"), where("email", "==", email));
@@ -134,7 +147,12 @@ router.get("/verify", async (req: Request, res: Response) => {
         res.status(404).json({ error: "Subscriber not found" });
         return;
       }
-      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true });
+      const sub = snap.docs[0].data() as any;
+      if (!sub.verificationToken || sub.verificationToken !== token) {
+        res.status(403).json({ error: "Invalid verification token" });
+        return;
+      }
+      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null });
     }
     res.send("<h2>✅ اشتراكك مؤكد! سنرسل لك تنبيهات الحرائق.</h2>");
   } catch (err) {

@@ -21,6 +21,8 @@ import aiRouter from "./routes/ai.js";
 import notificationsRouter from "./routes/notifications.js";
 
 const app = express();
+// Railway runs a single load-balancer hop in front of the app container.
+// "trust proxy 1" lets req.ip resolve to the real client IP (used for vote dedup).
 app.set("trust proxy", 1);
 const PORT = config.port;
 

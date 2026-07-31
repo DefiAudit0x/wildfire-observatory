@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-const CACHE_NAME = "observatory-v3";
-const API_CACHE = "observatory-api-v3";
+const CACHE_NAME = "observatory-v4";
+const API_CACHE = "observatory-api-v4";
 const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
@@ -30,6 +30,7 @@ self.addEventListener("fetch", (event) => {
       caches.open(API_CACHE).then((cache) =>
         fetch(event.request, { cache: "no-store" })
           .then((response) => {
+            if (!response.ok) return response;
             const headers = new Headers(response.headers);
             headers.set("cache-control", "max-age=120");
             const cachedResponse = new Response(response.clone().body, {

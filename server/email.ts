@@ -104,17 +104,16 @@ export async function sendFireAlert(report: {
   const html = buildAlertHtml(report);
   const subject = `🔥 [${report.severity.toUpperCase()}] حريق في ${report.wilaya}`;
 
-  for (const email of subscribers) {
-    try {
-      await t.sendMail({
-        from: config.emailFrom,
-        to: email,
-        subject,
-        html,
-      });
-    } catch (err) {
-      logger.error({ err, email }, "Failed to send alert email");
-    }
+  const BATCH_SIZE = 10;
+  for (let i = 0; i < subscribers.length; i += BATCH_SIZE) {
+    const batch = subscribers.slice(i, i + BATCH_SIZE);
+    await Promise.allSettled(
+      batch.map((email) =>
+        t.sendMail({ from: config.emailFrom, to: email, subject, html }).catch((err) => {
+          logger.error({ err, email }, "Failed to send alert email");
+        })
+      )
+    );
   }
 
   logger.info({ count: subscribers.length, wilaya: report.wilaya }, "Fire alerts sent");

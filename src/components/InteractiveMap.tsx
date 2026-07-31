@@ -2,6 +2,18 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 import { Report, SatelliteHotspot } from "../types";
 
+function esc(str: unknown): string {
+  const div = document.createElement("div");
+  div.textContent = String(str ?? "");
+  return div.innerHTML;
+}
+
+function safeImageSrc(src: unknown): string {
+  const value = String(src ?? "");
+  if (value.startsWith("data:image/") || value.startsWith("https://")) return value;
+  return "";
+}
+
 interface InteractiveMapProps {
   reports: Report[];
   satellites: SatelliteHotspot[];
@@ -96,11 +108,11 @@ export default function InteractiveMap({
             </strong>
           </div>
           <div class="space-y-1 mt-2 text-xs border-t border-slate-700 pt-2 text-slate-300">
-            <p><strong>${isArabic ? "الولاية" : "Wilaya"}:</strong> ${sat.wilaya}</p>
-            <p><strong>${isArabic ? "القمر الصناعي" : "Satellite"}:</strong> NASA ${sat.satellite}</p>
-            <p><strong>${isArabic ? "شدة الحرارة" : "Luminosité"}:</strong> ${sat.brightness.toFixed(1)} K</p>
-            <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${sat.confidence}%</p>
-            <p><strong>${isArabic ? "توقيت الرصد" : "Heure de détection"}:</strong> ${new Date(sat.scanTime).toLocaleTimeString()}</p>
+            <p><strong>${isArabic ? "الولاية" : "Wilaya"}:</strong> ${esc(sat.wilaya)}</p>
+            <p><strong>${isArabic ? "القمر الصناعي" : "Satellite"}:</strong> NASA ${esc(sat.satellite)}</p>
+            <p><strong>${isArabic ? "شدة الحرارة" : "Luminosité"}:</strong> ${esc(sat.brightness.toFixed(1))} K</p>
+            <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${esc(sat.confidence)}%</p>
+            <p><strong>${isArabic ? "توقيت الرصد" : "Heure de détection"}:</strong> ${esc(new Date(sat.scanTime).toLocaleTimeString())}</p>
           </div>
           <p class="text-[10px] text-slate-400 mt-2 italic text-center">
             ${isArabic ? "مصدر البيانات: وكالة ناسا FIRMS" : "Source : NASA FIRMS Near Real-Time"}
@@ -150,9 +162,9 @@ export default function InteractiveMap({
           <div class="mt-2 bg-emerald-950/40 border border-emerald-500/30 rounded p-1.5 text-[11px] text-emerald-300">
             <div class="flex items-center gap-1 font-bold">
               <span>🤖 ${isArabic ? "تم التحقق بالذكاء الاصطناعي" : "Vérifié par l'IA"}</span>
-              <span class="bg-emerald-500 text-slate-950 text-[9px] px-1 rounded">${rep.aiVerification.confidence}%</span>
+              <span class="bg-emerald-500 text-slate-950 text-[9px] px-1 rounded">${esc(rep.aiVerification.confidence)}%</span>
             </div>
-            <p class="mt-1 text-[10px] text-slate-300">${rep.aiVerification.aiComments}</p>
+            <p class="mt-1 text-[10px] text-slate-300">${esc(rep.aiVerification.aiComments)}</p>
           </div>
         `
         : `
@@ -202,12 +214,6 @@ export default function InteractiveMap({
         </span>
       `;
 
-      function esc(str: string): string {
-        const div = document.createElement("div");
-        div.textContent = str;
-        return div.innerHTML;
-      }
-
       const popupContent = document.createElement("div");
       popupContent.dir = isArabic ? "rtl" : "ltr";
       popupContent.className = "p-2 text-slate-100 text-sm font-sans max-w-xs";
@@ -224,7 +230,7 @@ export default function InteractiveMap({
         </div>
         <p class="text-xs text-slate-300 mt-2 bg-slate-900/60 p-2 rounded border border-slate-800 leading-relaxed">${esc(rep.description)}</p>
         
-        ${rep.image ? `<img src="${esc(rep.image)}" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
+        ${rep.image ? `<img src="${safeImageSrc(rep.image)}" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
         
         ${clusterHtml}
         ${aiStatusHtml}

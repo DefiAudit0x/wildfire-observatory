@@ -1,4 +1,6 @@
 import { Request, Response, Router } from "express";
+import rateLimit from "express-rate-limit";
+import { z } from "zod";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
@@ -6,7 +8,25 @@ import logger from "../logger.js";
 
 const router = Router();
 
-router.post("/verify", (req: Request, res: Response) => {
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many login attempts. Try again in 15 minutes." },
+});
+
+const updateStatusSchema = z
+  .object({
+    status: z.enum(["pending", "verified", "rejected", "resolved"]).optional(),
+    severity: z.enum(["low", "medium", "high", "critical"]).optional(),
+  })
+  .refine((data) => data.status || data.severity, {
+    message: "At least one of status or severity must be provided",
+  });
+
+router.post("/verify", loginLimiter, (req: Request, res: Response) => {
   const { password } = req.body;
   if (!password) {
     res.status(400).json({ success: false, error: "Password required" });
@@ -22,7 +42,12 @@ router.post("/verify", (req: Request, res: Response) => {
 });
 
 router.post("/reports/:id/update-status", requireAdmin, async (req: Request, res: Response) => {
-  const { status, severity } = req.body;
+  const parsed = updateStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+    return;
+  }
+  const { status, severity } = parsed.data;
   const { id } = req.params;
 
   const updateData: Record<string, any> = {};

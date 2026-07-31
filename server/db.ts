@@ -46,7 +46,7 @@ export async function seedReportsToFirestore() {
         await setDoc(doc(db, "reports", rep.id), rep);
       }
     }
-    console.log("Seeded initial reports to Firestore");
+    logger.info("Seeded initial reports to Firestore");
   } catch (err) {
     logger.error({ err }, "Failed to seed reports");
   }
@@ -97,25 +97,28 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
       });
       return result;
     } else {
-      const { doc, getDoc, updateDoc } = await loadClientSdk();
+      const { doc, runTransaction } = await loadClientSdk();
       const docRef = doc(db, "reports", id);
-      const snap = await getDoc(docRef);
-      if (!snap.exists()) return null;
-      const data = snap.data() as any;
-      if (voterId && data.voters?.includes(voterId)) {
-        return { error: "ALREADY_VOTED" };
-      }
-      const newConsensus = (data.consensusCount || 0) + 1;
-      let newStatus = data.status || "pending";
-      if (newConsensus >= CONSENSUS_THRESHOLD && newStatus === "pending") {
-        newStatus = "verified";
-      }
-      const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
-      if (voterId) {
-        update.voters = [...(data.voters || []), voterId];
-      }
-      await updateDoc(docRef, update);
-      return { consensusCount: newConsensus, status: newStatus };
+      const result = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(docRef);
+        if (!snap.exists()) return null;
+        const data = snap.data() as any;
+        if (voterId && data.voters?.includes(voterId)) {
+          return { error: "ALREADY_VOTED" };
+        }
+        const newConsensus = (data.consensusCount || 0) + 1;
+        let newStatus = data.status || "pending";
+        if (newConsensus >= CONSENSUS_THRESHOLD && newStatus === "pending") {
+          newStatus = "verified";
+        }
+        const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
+        if (voterId) {
+          update.voters = [...(data.voters || []), voterId];
+        }
+        tx.update(docRef, update);
+        return { consensusCount: newConsensus, status: newStatus };
+      });
+      return result;
     }
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to confirm report");

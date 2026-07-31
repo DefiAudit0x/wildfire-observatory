@@ -139,19 +139,21 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [reportsRes, satellitesRes, wilayasRes] = await Promise.all([
+      const [reportsRes, satellitesRes, wilayasRes] = await Promise.allSettled([
         fetch("/api/reports"),
         fetch("/api/satellite-data"),
         fetch("/api/wilayas"),
       ]);
 
-      const reportsData = await reportsRes.json();
-      const satellitesData = await satellitesRes.json();
-      const wilayasData = await wilayasRes.json();
-
-      setReports(reportsData);
-      setSatellites(satellitesData);
-      setWilayas(wilayasData);
+      if (reportsRes.status === "fulfilled" && reportsRes.value.ok) {
+        setReports(await reportsRes.value.json());
+      }
+      if (satellitesRes.status === "fulfilled" && satellitesRes.value.ok) {
+        setSatellites(await satellitesRes.value.json());
+      }
+      if (wilayasRes.status === "fulfilled" && wilayasRes.value.ok) {
+        setWilayas(await wilayasRes.value.json());
+      }
       setLastRefreshed(new Date().toLocaleTimeString());
     } catch (err) {
       console.error("Failed to fetch fire data:", err);
@@ -473,7 +475,7 @@ export default function App() {
                           }`}
                         >
                           <div className="flex gap-3 items-start">
-                            {rep.image ? (
+                            {rep.image && (rep.image.startsWith("data:image/") || rep.image.startsWith("https://")) ? (
                               <img src={rep.image} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt="Report image" referrerPolicy="no-referrer" />
                             ) : (
                               <div className="w-16 h-12 bg-black/40 rounded border border-white/5 flex items-center justify-center text-xs text-slate-500">
