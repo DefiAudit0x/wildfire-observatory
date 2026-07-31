@@ -56,6 +56,11 @@ export default function InteractiveMap({
     markersRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
 
+    // Ensure correct size if container dimensions change after mount
+    setTimeout(() => {
+      if (mapRef.current) mapRef.current.invalidateSize();
+    }, 100);
+
     return () => {
       if (mapRef.current) {
         mapRef.current.remove();
@@ -288,8 +293,8 @@ export default function InteractiveMap({
   }, [selectedReportId, reports]);
 
   return (
-    <div className="relative w-full h-full min-h-[300px] md:min-h-[450px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
-      <div id="map-target" ref={mapContainerRef} className="w-full h-full" />
+    <div className="relative w-full h-[300px] md:h-[450px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
+      <div id="map-target" ref={mapContainerRef} className="absolute inset-0" />
       
       {/* Absolute overlay indicator */}
       <div className="absolute top-3 right-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur text-xs py-1.5 px-3 rounded-lg shadow-lg flex items-center gap-3">
