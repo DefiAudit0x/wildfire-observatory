@@ -41,7 +41,12 @@ app.use(helmet({
       scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://firms.modaps.eosdis.nasa.gov"],
+      connectSrc: [
+        "'self'",
+        "https://firms.modaps.eosdis.nasa.gov",
+        "https://*.basemaps.cartocdn.com",
+        "https://tile.openstreetmap.org",
+      ],
       fontSrc: ["'self'", "data:"],
     },
   },
