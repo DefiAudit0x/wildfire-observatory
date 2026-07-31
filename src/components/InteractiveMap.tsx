@@ -22,17 +22,22 @@ export default function InteractiveMap({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
+  const onMapClickRef = useRef(onMapClick);
+
+  useEffect(() => {
+    onMapClickRef.current = onMapClick;
+  }, [onMapClick]);
 
   const isArabic = lang === "ar";
 
-  // Initial map setup
+  // Initial map setup (runs once on mount)
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
     // Center map around Algeria (with focus on fire-prone northern regions)
     const map = L.map(mapContainerRef.current, {
       center: [35.5, 5.0],
-      zoom: 6.5,
+      zoom: 6,
       zoomControl: true,
     });
 
@@ -45,7 +50,7 @@ export default function InteractiveMap({
 
     // Click handler for coordinates reporting
     map.on("click", (e: L.LeafletMouseEvent) => {
-      onMapClick(e.latlng.lat, e.latlng.lng);
+      onMapClickRef.current(e.latlng.lat, e.latlng.lng);
     });
 
     markersRef.current = L.layerGroup().addTo(map);
@@ -57,7 +62,7 @@ export default function InteractiveMap({
         mapRef.current = null;
       }
     };
-  }, [onMapClick]);
+  }, []);
 
   // Update markers when reports or satellites change
   useEffect(() => {
