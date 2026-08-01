@@ -59,7 +59,7 @@ async function fetchFirmsData(source: string): Promise<any[]> {
   }
 }
 
-async function getLiveSatelliteData() {
+export async function getLiveSatelliteData() {
   const now = Date.now();
   if (cachedHotspots && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedHotspots;

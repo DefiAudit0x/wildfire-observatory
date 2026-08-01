@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
@@ -250,7 +250,7 @@ export default function App() {
   };
 
   // Upvote/Confirm fire (Consensus Engine)
-  const handleConfirmReport = async (id: string) => {
+  const handleConfirmReport = useCallback(async (id: string) => {
     try {
       const res = await fetch(`/api/reports/${id}/confirm`, {
         method: "POST",
@@ -269,13 +269,13 @@ export default function App() {
     } catch (err) {
       console.error("Failed to confirm report:", err);
     }
-  };
+  }, []);
 
-  const handleMapClick = (lat: number, lng: number) => {
+  const handleMapClick = useCallback((lat: number, lng: number) => {
     setMapClickedCoords({ lat, lng });
     // Switch to report tab on mobile so they can see the form filled immediately
     setActiveTab("report");
-  };
+  }, []);
 
   return (
     <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>
@@ -482,6 +482,13 @@ export default function App() {
         {/* Normal layout columns */}
         {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && (
           <>
+            {/* Live statistics summary cards */}
+            {activeTab === "map" && (
+              <div className="col-span-12">
+                <StatisticsPanel reports={reports} satellites={satellites} lang={lang} />
+              </div>
+            )}
+
             {/* LEFT MAIN PANELS (Leaflet Map, Guidance, Guides) - Spans 8 columns on desktop */}
             <section className={`lg:col-span-8 space-y-6 ${activeTab === "map" || activeTab === "guides" ? "block" : "hidden md:block"}`}>
               {/* Map Box */}
