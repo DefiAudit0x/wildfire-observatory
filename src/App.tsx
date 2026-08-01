@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle } from "lucide-react";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle, Bell, X, CheckCircle, Info } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language, TrappedSOS } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
@@ -34,6 +34,8 @@ export default function App() {
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [lang, setLang] = useState<Language>("ar");
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
   const [meshNodeCount, setMeshNodeCount] = useState(0);
@@ -190,11 +192,12 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [reportsRes, satellitesRes, wilayasRes, sosRes] = await Promise.allSettled([
+      const [reportsRes, satellitesRes, wilayasRes, sosRes, notifsRes] = await Promise.allSettled([
         fetch("/api/reports"),
         fetch("/api/satellite-data"),
         fetch("/api/wilayas"),
         fetch("/api/sos"),
+        fetch(`/api/notifications/${deviceId}`),
       ]);
 
       if (reportsRes.status === "fulfilled" && reportsRes.value.ok) {
@@ -208,6 +211,9 @@ export default function App() {
       }
       if (sosRes.status === "fulfilled" && sosRes.value.ok) {
         setSosCalls(await sosRes.value.json());
+      }
+      if (notifsRes.status === "fulfilled" && notifsRes.value.ok) {
+        setNotifications(await notifsRes.value.json());
       }
       setLastRefreshed(new Date().toLocaleTimeString());
     } catch (err) {
@@ -271,7 +277,7 @@ export default function App() {
     const res = await fetch("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, deviceId }),
     });
     if (!res.ok) throw new Error("Report failed");
     
@@ -289,7 +295,7 @@ export default function App() {
       const res = await fetch("/api/reports", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, deviceId }),
       });
       if (res.ok) {
         const newReport = await res.json();
@@ -322,6 +328,15 @@ export default function App() {
       console.error("Failed to confirm report:", err);
     }
   }, []);
+
+  const handleMarkNotificationRead = async (id: string) => {
+    try {
+      await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
+    } catch (e) {
+      console.error("Failed to mark notification read", e);
+    }
+  };
 
   const handleMapClick = useCallback((lat: number, lng: number) => {
     setMapClickedCoords({ lat, lng });
@@ -371,6 +386,68 @@ export default function App() {
               >
                 <RefreshCw className={`h-3 w-3 text-gray-400 ${loading ? "animate-spin text-red-500" : ""}`} />
               </button>
+            </div>
+
+            {/* Notifications Bell */}
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="relative p-2 bg-white/5 hover:bg-white/10 rounded-full transition-colors cursor-pointer border border-white/5"
+                title="Notifications"
+              >
+                <Bell className="h-4 w-4 text-gray-300" />
+                {notifications.some(n => !n.read) && (
+                  <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-red-500 animate-pulse border border-black" />
+                )}
+              </button>
+              
+              {showNotifications && (
+                <div className={`absolute top-full mt-2 w-72 bg-zinc-900 border border-white/10 rounded-xl shadow-2xl z-[1200] overflow-hidden ${isArabic ? "left-0 md:left-auto md:right-0" : "right-0"}`}>
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 bg-zinc-800/50">
+                    <h3 className="font-bold text-sm text-slate-100">{isArabic ? "الإشعارات" : "Notifications"}</h3>
+                    <button onClick={() => setShowNotifications(false)} className="text-gray-400 hover:text-white p-1 rounded-full hover:bg-white/10 transition-colors">
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="max-h-[300px] overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-6 text-center text-sm text-gray-400">
+                        {isArabic ? "لا توجد إشعارات" : "Aucune notification"}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col">
+                        {notifications.map(n => (
+                          <div 
+                            key={n.id} 
+                            onClick={() => !n.read && handleMarkNotificationRead(n.id)}
+                            className={`p-4 border-b border-white/5 last:border-0 cursor-pointer transition-colors ${n.read ? "bg-transparent opacity-60" : "bg-white/5 hover:bg-white/10"}`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <div className="shrink-0 mt-0.5">
+                                {n.type === "success" && <CheckCircle className="h-4 w-4 text-emerald-500" />}
+                                {n.type === "warning" && <AlertTriangle className="h-4 w-4 text-amber-500" />}
+                                {n.type === "error" && <AlertCircle className="h-4 w-4 text-red-500" />}
+                                {n.type === "info" && <Info className="h-4 w-4 text-blue-500" />}
+                              </div>
+                              <div className="flex-1">
+                                <h4 className={`text-xs font-bold ${!n.read ? "text-slate-100" : "text-gray-400"}`}>
+                                  {isArabic ? n.titleAr : n.titleFr}
+                                </h4>
+                                <p className="text-[11px] text-gray-400 mt-1 leading-relaxed">
+                                  {isArabic ? n.bodyAr : n.bodyFr}
+                                </p>
+                                <div className="text-[9px] text-gray-500 mt-2">
+                                  {new Date(n.timestamp).toLocaleString(isArabic ? "ar-DZ" : "fr-DZ")}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mesh network status badge */}

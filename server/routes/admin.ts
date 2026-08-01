@@ -6,6 +6,7 @@ import { createHash, timingSafeEqual } from "crypto";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
+import { createNotification } from "./notifications.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -71,6 +72,25 @@ const adminActionLimiter = rateLimit({
   message: { error: "Too many admin actions. Slow down." },
 });
 
+function buildStatusNotification(report: any, status?: string) {
+  if (!report.deviceId) return;
+  let msgAr = "";
+  let msgFr = "";
+  let type: "success" | "warning" | "info" = "info";
+  if (status === "verified") { msgAr = "تم التحقق من تبليغك واعتماده."; msgFr = "Votre signalement a été vérifié et approuvé."; type = "success"; }
+  else if (status === "rejected") { msgAr = "تم رفض تبليغك لعدم صحته."; msgFr = "Votre signalement a été rejeté car il n'est pas valide."; type = "warning"; }
+  else if (status === "resolved") { msgAr = "تم التدخل بنجاح وإخماد الحريق."; msgFr = "Intervention réussie, l'incendie a été maîtrisé."; type = "success"; }
+  else { msgAr = "تم تحديث حالة تبليغك."; msgFr = "Le statut de votre signalement a été mis à jour."; }
+  createNotification({
+    deviceId: report.deviceId,
+    titleAr: "تحديث بخصوص تبليغك",
+    titleFr: "Mise à jour de votre signalement",
+    bodyAr: `تبليغك عن (${report.locationName}): ${msgAr}`,
+    bodyFr: `Votre signalement à (${report.locationName}): ${msgFr}`,
+    type,
+  }).catch(() => {});
+}
+
 router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
   const parsed = updateStatusSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -86,6 +106,8 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
 
   const updated = await updateReportInFirestore(id, updateData);
   if (updated) {
+    const report = citizenReports.find((r: any) => r.id === id);
+    buildStatusNotification(report || updateData, status);
     res.json({ success: true });
     return;
   }
@@ -94,6 +116,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
   if (report) {
     if (status) report.status = status;
     if (severity) report.severity = severity;
+    buildStatusNotification(report, status);
     res.json({ success: true });
     return;
   }

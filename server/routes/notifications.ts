@@ -4,8 +4,53 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
+import { collectionGet, docSet, docUpdate } from "../fs.js";
 
 const router = Router();
+
+const memoryNotifications: any[] = [];
+
+async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
+  const fromDb = await collectionGet("notifications", "timestamp", 100);
+  if (fromDb && fromDb.length > 0) {
+    return fromDb.filter((n: any) => n.deviceId === deviceId);
+  }
+  return memoryNotifications.filter((n) => n.deviceId === deviceId);
+}
+
+export async function createNotification(notif: { deviceId: string; titleAr: string; titleFr: string; bodyAr: string; bodyFr: string; type: "success" | "warning" | "error" | "info" }) {
+  const newNotif = {
+    ...notif,
+    id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    timestamp: new Date().toISOString(),
+    read: false,
+  };
+  try {
+    await docSet("notifications", newNotif.id, newNotif);
+  } catch (err) {
+    logger.error({ err }, "Error saving notification");
+  }
+  memoryNotifications.unshift(newNotif);
+  return newNotif;
+}
+
+router.get("/:deviceId", async (req: Request, res: Response) => {
+  const { deviceId } = req.params;
+  const notifs = await getNotificationsFromDb(deviceId);
+  res.json(notifs);
+});
+
+router.post("/:id/read", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    await docUpdate("notifications", id, { read: true });
+  } catch (err) {
+    logger.error({ err, id }, "Error updating notification");
+  }
+  const notif = memoryNotifications.find((n: any) => n.id === id);
+  if (notif) notif.read = true;
+  res.json({ success: true });
+});
 
 const subscribeLimiter = rateLimit({
   windowMs: 60 * 1000,

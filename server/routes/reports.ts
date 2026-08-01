@@ -54,6 +54,7 @@ const createReportSchema = z.object({
   reporterPhone: z.string().max(30).optional(),
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
   reporterBadgeCode: z.string().max(20).optional(),
+  deviceId: z.string().max(128).optional(),
   image: z
     .string()
     .max(500000, "Image must be under 500KB")
@@ -90,7 +91,7 @@ router.post("/", async (req: Request, res: Response) => {
     return;
   }
 
-  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, image } = parsed.data;
+  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, image, deviceId } = parsed.data;
 
   if (!wilayaContainsCoords(wilaya, lat, lng)) {
     res.status(400).json({ error: `Coordinates do not fall within the bounds of ${wilaya}` });
@@ -125,6 +126,7 @@ router.post("/", async (req: Request, res: Response) => {
     reporterPhone: reporterPhone || undefined,
     reporterType: reporterType || "citizen",
     reporterBadgeCode: reporterBadgeCode || undefined,
+    deviceId: deviceId || undefined,
     timestamp: new Date().toISOString(),
     consensusCount: initialConsensus,
   };
