@@ -3,6 +3,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import * as Sentry from "@sentry/react";
 import App from "./App.tsx";
+import "leaflet/dist/leaflet.css";
 import "./index.css";
 
 if (import.meta.env.VITE_SENTRY_DSN) {
