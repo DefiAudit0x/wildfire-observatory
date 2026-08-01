@@ -40,6 +40,19 @@ describe("determineWilayaByCoords", () => {
     const result = determineWilayaByCoords(32.75, 21.85);
     expect(result).toContain("الجبل الأخضر");
   });
+
+  it("no overlap: El Tarf vs Annaba boundary", () => {
+    expect(determineWilayaByCoords(36.8, 8.2)).toContain("الطارف");
+    expect(determineWilayaByCoords(36.85, 7.6)).toContain("عنابة");
+    expect(determineWilayaByCoords(36.9, 7.9)).not.toContain("الطارف");
+  });
+
+  it("no overlap: Béjaïa vs Tizi Ouzou boundary", () => {
+    expect(determineWilayaByCoords(36.6, 5.0)).toContain("بجاية");
+    expect(determineWilayaByCoords(36.6, 4.2)).toContain("تيزي وزو");
+    expect(determineWilayaByCoords(36.7, 4.45)).not.toContain("بجاية");
+    expect(determineWilayaByCoords(36.7, 5.0)).not.toContain("تيزي وزو");
+  });
 });
 
 describe("runClustering", () => {

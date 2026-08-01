@@ -14,6 +14,11 @@ function safeImageSrc(src: unknown): string {
   return "";
 }
 
+function safeNumber(value: unknown, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 interface InteractiveMapProps {
   reports: Report[];
   satellites: SatelliteHotspot[];
@@ -133,8 +138,8 @@ export default function InteractiveMap({
           <div class="space-y-1 mt-2 text-xs border-t border-slate-700 pt-2 text-slate-300">
             <p><strong>${isArabic ? "الولاية" : "Wilaya"}:</strong> ${esc(sat.wilaya)}</p>
             <p><strong>${isArabic ? "القمر الصناعي" : "Satellite"}:</strong> NASA ${esc(sat.satellite)}</p>
-            <p><strong>${isArabic ? "شدة الحرارة" : "Luminosité"}:</strong> ${esc(sat.brightness.toFixed(1))} K</p>
-            <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${esc(sat.confidence)}%</p>
+            <p><strong>${isArabic ? "شدة الحرارة" : "Luminosité"}:</strong> ${safeNumber(sat.brightness).toFixed(1)} K</p>
+            <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${safeNumber(sat.confidence)}%</p>
             <p><strong>${isArabic ? "توقيت الرصد" : "Heure de détection"}:</strong> ${esc(new Date(sat.scanTime).toLocaleTimeString())}</p>
           </div>
           <p class="text-[10px] text-slate-400 mt-2 italic text-center">

@@ -16,10 +16,15 @@ function safePasswordMatch(candidate: string, expected: string): boolean {
   return timingSafeEqual(candidateHash, expectedHash);
 }
 
-function verifyAdminPassword(candidate: string): boolean {
+async function verifyAdminPassword(candidate: string): Promise<boolean> {
   const passwordHash = process.env.ADMIN_PASSWORD_HASH;
   if (passwordHash && passwordHash.startsWith("$2")) {
-    return bcrypt.compareSync(candidate, passwordHash);
+    try {
+      return await bcrypt.compare(candidate, passwordHash);
+    } catch (err) {
+      logger.error({ err }, "bcrypt comparison error");
+      return false;
+    }
   }
   const legacyPassword = process.env.ADMIN_PASSWORD;
   if (!legacyPassword) return false;
@@ -44,13 +49,13 @@ const updateStatusSchema = z
     message: "At least one of status or severity must be provided",
   });
 
-router.post("/verify", loginLimiter, (req: Request, res: Response) => {
+router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
   const { password } = req.body;
   if (!password) {
     res.status(400).json({ success: false, error: "Password required" });
     return;
   }
-  if (verifyAdminPassword(password)) {
+  if (await verifyAdminPassword(password)) {
     const token = generateAdminToken();
     res.json({ success: true, token });
   } else {
@@ -59,7 +64,15 @@ router.post("/verify", loginLimiter, (req: Request, res: Response) => {
   }
 });
 
-router.post("/reports/:id/update-status", requireAdmin, async (req: Request, res: Response) => {
+const adminActionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many admin actions. Slow down." },
+});
+
+router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
   const parsed = updateStatusSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
@@ -88,7 +101,7 @@ router.post("/reports/:id/update-status", requireAdmin, async (req: Request, res
   res.status(404).json({ error: "Report not found" });
 });
 
-router.post("/reports/:id/delete", requireAdmin, async (req: Request, res: Response) => {
+router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
   const { id } = req.params;
 
   const deleted = await deleteReportFromFirestore(id);

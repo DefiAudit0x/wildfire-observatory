@@ -1,10 +1,19 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import crypto from "crypto";
+import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
 
 const router = Router();
+
+const subscribeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many subscription requests. Try again shortly." },
+});
 
 const subscribeSchema = z.object({
   email: z.string().email(),
@@ -16,7 +25,7 @@ function generateVerificationToken(): string {
   return crypto.randomBytes(32).toString("hex");
 }
 
-router.post("/subscribe", async (req: Request, res: Response) => {
+router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) => {
   const parsed = subscribeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });

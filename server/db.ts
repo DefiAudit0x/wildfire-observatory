@@ -90,7 +90,11 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          update.voters = [...(data.voters || []), voterId];
+          const existingVoters = data.voters || [];
+          if (existingVoters.length >= 50) {
+            existingVoters.shift();
+          }
+          update.voters = [...existingVoters, voterId];
         }
         tx.update(docRef, update);
         return { consensusCount: newConsensus, status: newStatus };
@@ -113,7 +117,11 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          update.voters = [...(data.voters || []), voterId];
+          const existingVoters = data.voters || [];
+          if (existingVoters.length >= 50) {
+            existingVoters.shift();
+          }
+          update.voters = [...existingVoters, voterId];
         }
         tx.update(docRef, update);
         return { consensusCount: newConsensus, status: newStatus };

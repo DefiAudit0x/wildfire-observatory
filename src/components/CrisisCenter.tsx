@@ -171,11 +171,13 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
       // Analyze SMS text content using regex/NLP mock to extract coordinates & details
       let parsedReport: any = {
         id: `parsed-${crypto.randomUUID().slice(0, 8)}`,
-        status: "verified",
+        status: "pending",
         reporterType: "citizen",
         reporterName: `SMS Citizen (${sms.sender})`,
         timestamp: new Date().toISOString(),
-        consensusCount: 8, // Instant consensus booster because Civil Protection verified the SMS
+        consensusCount: 1,
+        source: "sms-simulation",
+        simulation: true,
       };
 
       if (sms.id === "sms-1") {
@@ -187,13 +189,6 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
           wilaya: "الجزائر - الطارف (Algérie - El Tarf)",
           description: `📬 [بلاغ عاجل مرمز ومستقبل عبر SMS للجبال]: ${sms.text}`,
           severity: "critical",
-          aiVerification: {
-            isVerified: true,
-            confidence: 94,
-            detectedSigns: ["القالة الطارف", "الصنوبر", "Canadair", "تجاوزت البيوت"],
-            aiComments: "تم تحليل لغة الرسالة بنجاح عبر بوابة SMS الجبلية العكسية. رصد إشارات استغاثة عالية الخطورة ومطابقة جغرافية لبلدية القالة.",
-            suggestedSeverity: "CRITICAL"
-          }
         };
       } else if (sms.id === "sms-2") {
         parsedReport = {
@@ -204,13 +199,6 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
           wilaya: "الجزائر - البويرة (Algérie - Bouira)",
           description: `📬 [بلاغ عاجل مرمز ومستقبل عبر SMS للجبال]: ${sms.text}`,
           severity: "high",
-          aiVerification: {
-            isVerified: true,
-            confidence: 88,
-            detectedSigns: ["جبل لالة خديجة", "أشجار الزيتون", "البويرة"],
-            aiComments: "تحليل جيو-دلالي ناجح لشبكة جبال لالة خديجة بالبويرة. كشف لهب متسارع عبر الأحراش الكثيفة.",
-            suggestedSeverity: "HIGH"
-          }
         };
       } else {
         parsedReport = {
@@ -221,13 +209,6 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
           wilaya: "تونس - جندوبة (Tunisie - Jendouba)",
           description: `📬 [بلاغ عاجل مرمز ومستقبل عبر SMS للجبال]: ${sms.text}`,
           severity: "high",
-          aiVerification: {
-            isVerified: true,
-            confidence: 91,
-            detectedSigns: ["سد جندوبة", "عين دراهم", "الصنوبر الحلبي"],
-            aiComments: "تم معالجة نص البلاغ التونسي بنظام التثليث النصي لعين دراهم بنجاح. رصد وهج بالقرب من منشأة مائية.",
-            suggestedSeverity: "HIGH"
-          }
         };
       }
 
@@ -251,6 +232,16 @@ export default function CrisisCenter({ onAddParsedReport, reports, lang }: Crisi
   return (
     <div className="bg-zinc-900/60 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)] font-mono text-slate-200 space-y-6">
       
+      {/* SIMULATION NOTICE */}
+      <div className="flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+        <AlertOctagon className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+        <p className="text-[11px] text-amber-300 leading-relaxed">
+          {isArabic
+            ? "وضع العرض التجريبي: جميع الرسائل والتقارير والطائرات هنا محاكاة لأغراض التدريب فقط — لا تُبث كحالات حقيقية وتظهر بشارة «محاكاة» في الخريطة."
+            : "Mode démonstration : tous les SMS, rapports et drones sont simulés à des fins de formation uniquement — ils ne sont pas diffusés comme incidents réels."}
+        </p>
+      </div>
+
       {/* HEADER SECTION */}
       <div className="flex items-center justify-between gap-2 border-b border-white/5 pb-4">
         <div className="flex items-center gap-2">

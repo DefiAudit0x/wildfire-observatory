@@ -19,6 +19,23 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
     temperature: 42, // °C heatwave
   });
 
+  // Drift the wind within a realistic range every 10s (approximation, not live METAR data)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWind((prev) => {
+        const jitter = () => Math.round((Math.random() - 0.5) * 16);
+        const nextDirection = Math.min(285, Math.max(235, prev.direction + jitter()));
+        const nextSpeed = Math.min(48, Math.max(22, prev.speed + jitter()));
+        return {
+          direction: nextDirection,
+          speed: nextSpeed,
+          temperature: prev.temperature + (Math.random() - 0.5) * 2,
+        };
+      });
+    }, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
   // Rotate the radar sweep line
   useEffect(() => {
     const timer = setInterval(() => {
@@ -119,6 +136,9 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
               {wind.speed} km/h • {getDirectionName(wind.direction)} ({wind.temperature}°C)
             </p>
           </div>
+          <span className="text-[8px] text-slate-500 border border-white/10 rounded px-1 py-0.5" title={isArabic ? "بيانات جوية تقديرية" : "Données météo approximatives"}>
+            {isArabic ? "تقديري" : "≈ approx"}
+          </span>
         </div>
       </div>
 

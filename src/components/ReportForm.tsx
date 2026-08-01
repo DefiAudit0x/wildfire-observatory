@@ -556,7 +556,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   };
 
   // --- LIGHTWEIGHT ON-DEVICE EDGE AI PRE-SCANNER ---
-  const runEdgeAiPreScan = (dataUrl: string) => {
+  const runEdgeAiPreScan = (dataUrl: string, compressionPercent: number | null = null) => {
     const tempImg = new Image();
     tempImg.onload = () => {
       const tempCanvas = document.createElement("canvas");
@@ -594,8 +594,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         setEdgeAiStatus({
           success: true,
           confidence,
-          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${confidence}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة 91% لتوفير النطاق الترددي للشبكة.`,
-          messageFr: `✓ Signatures thermiques détectées localement (${confidence}%). Image compressée à 91% pour préserver la bande passante.`
+          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${confidence}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}% لتوفير النطاق الترددي للشبكة.`,
+          messageFr: `✓ Signatures thermiques détectées localement (${confidence}%). Image compressée à ${compressionPercent ?? 0}% pour préserver la bande passante.`
         });
       } else {
         setEdgeAiStatus({
@@ -652,9 +652,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           const stringLength = dataUrl.length - "data:image/jpeg;base64,".length;
           const sizeInBytes = stringLength * (3 / 4);
           setCompressedSize((sizeInBytes / 1024).toFixed(1) + " KB");
+
+          const compressionPercent = file.size > 0
+            ? Math.min(99, Math.max(0, Math.round((1 - sizeInBytes / file.size) * 100)))
+            : 0;
           
           // Trigger local Edge AI analysis immediately
-          runEdgeAiPreScan(dataUrl);
+          runEdgeAiPreScan(dataUrl, compressionPercent);
         }
         setIsCompressing(false);
       };

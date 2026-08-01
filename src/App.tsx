@@ -560,6 +560,11 @@ export default function App() {
                             <div>
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <h4 className="font-bold text-xs text-slate-200">{rep.locationName}</h4>
+                                {(rep as any).simulation && (
+                                  <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-black">
+                                    🎓 {isArabic ? "محاكاة" : "Simulation"}
+                                  </span>
+                                )}
                                 {rep.reporterType === "official" && (
                                   <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-black">
                                     🛡️ {isArabic ? "جهة رسمية" : "Officiel"}

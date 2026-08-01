@@ -1,5 +1,6 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { citizenReports } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { runClustering, wilayaContainsCoords } from "../geo.js";
@@ -46,13 +47,13 @@ const createReportSchema = z.object({
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
   locationName: z.string().min(3).max(200),
-  wilaya: z.string().min(3),
+  wilaya: z.string().min(3).max(200),
   description: z.string().min(10).max(2000),
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
-  reporterName: z.string().optional(),
-  reporterPhone: z.string().optional(),
+  reporterName: z.string().max(120).optional(),
+  reporterPhone: z.string().max(30).optional(),
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
-  reporterBadgeCode: z.string().optional(),
+  reporterBadgeCode: z.string().max(20).optional(),
   image: z
     .string()
     .max(500000, "Image must be under 500KB")
@@ -214,6 +215,14 @@ const VOTERS_TTL_MS = 60 * 60 * 1000;
 const MAX_VOTERS_ENTRIES = 1000;
 const voters = new Map<string, { ips: Set<string>; expiresAt: number }>();
 
+const confirmLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many confirmations. Slow down." },
+});
+
 function recordVoter(reportId: string, voterIp: string): boolean {
   const entry = voters.get(reportId);
   if (entry) {
@@ -233,7 +242,7 @@ function recordVoter(reportId: string, voterIp: string): boolean {
   return true;
 }
 
-router.post("/:id/confirm", async (req: Request, res: Response) => {
+router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
   const { id } = req.params;
   const voterIp = req.ip || req.socket.remoteAddress || "unknown";
 

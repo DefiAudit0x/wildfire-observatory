@@ -53,6 +53,15 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   const getToken = () => sessionStorage.getItem("admin_token");
 
+  const handleAuthError = (res: Response) => {
+    if (res.status === 401) {
+      handleLogout();
+      alert(isArabic ? "انتهت صلاحية جلستك — سجّل الدخول مجدداً" : "Session expirée — veuillez vous reconnecter");
+      return true;
+    }
+    return false;
+  };
+
   const updateReportStatus = async (id: string, newStatus: string) => {
     setUpdatingId(id);
     const token = getToken();
@@ -65,7 +74,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
       if (res.ok) {
         onRefresh();
-      } else {
+      } else if (!handleAuthError(res)) {
         alert(isArabic ? "فشل تحديث الحالة" : "Échec de la mise à jour de l'état");
       }
     } catch (err) {
@@ -87,7 +96,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
       if (res.ok) {
         onRefresh();
-      } else {
+      } else if (!handleAuthError(res)) {
         alert(isArabic ? "فشل تحديث درجة الخطورة" : "Échec de la mise à jour de la gravité");
       }
     } catch (err) {
@@ -112,7 +121,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
       if (res.ok) {
         onRefresh();
-      } else {
+      } else if (!handleAuthError(res)) {
         alert(isArabic ? "فشل حذف البلاغ" : "Échec de la suppression du signalement");
       }
     } catch (err) {
