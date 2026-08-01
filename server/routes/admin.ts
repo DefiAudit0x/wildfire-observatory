@@ -16,7 +16,7 @@ function safePasswordMatch(candidate: string, expected: string): boolean {
   return timingSafeEqual(candidateHash, expectedHash);
 }
 
-async function verifyAdminPassword(candidate: string): Promise<boolean> {
+export async function verifyAdminPassword(candidate: string): Promise<boolean> {
   const passwordHash = process.env.ADMIN_PASSWORD_HASH;
   if (passwordHash && passwordHash.startsWith("$2")) {
     try {

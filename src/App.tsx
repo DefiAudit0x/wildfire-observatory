@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff } from "lucide-react";
-import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle } from "lucide-react";
+import { Report, SatelliteHotspot, WilayaStatus, Language, TrappedSOS } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
 import StatisticsPanel from "./components/StatisticsPanel";
@@ -10,20 +10,39 @@ import SafetyGuides from "./components/SafetyGuides";
 import EvacuationRadar from "./components/EvacuationRadar";
 import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
+import VolunteerRegistration from "./components/VolunteerRegistration";
+import CentralCommand from "./components/CentralCommand";
+import MeshNetworkSimulator from "./components/MeshNetworkSimulator";
+import DigitalWalkieTalkie from "./components/DigitalWalkieTalkie";
+import SafeEvacuation from "./components/SafeEvacuation";
+import TrappedSOSModal from "./components/TrappedSOSModal";
+import HomeHub from "./components/HomeHub";
+import { fetchWithRetry } from "./utils/api";
 import { meshClient } from "./lib/mesh";
+
+const getDeviceId = () => {
+  let id = sessionStorage.getItem("device_id");
+  if (!id) {
+    id = `web_${Math.random().toString(36).substring(2, 10)}_${Date.now()}`;
+    sessionStorage.setItem("device_id", id);
+  }
+  return id;
+};
 
 export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
+  const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
   const [lang, setLang] = useState<Language>("ar");
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
   const [meshNodeCount, setMeshNodeCount] = useState(0);
+  const deviceId = getDeviceId();
   
   // Navigation / Interactive states
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin">("map");
+  const [activeTab, setActiveTab] = useState<"home" | "map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command" | "mesh" | "radio" | "evac">("home");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
@@ -33,6 +52,7 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const [simulationMode, setSimulationMode] = useState(true);
+  const [showTrappedModal, setShowTrappedModal] = useState(false);
 
   const isArabic = lang === "ar";
 
@@ -73,6 +93,34 @@ export default function App() {
       }
     }
   }, [simulationMode]);
+
+  // Heartbeat: send user location to server for Central Command tracking
+  useEffect(() => {
+    if (!userLocation) return;
+
+    const sendHeartbeat = () => {
+      const storedBadge = localStorage.getItem("reporterBadgeCode") || "";
+      const storedName = localStorage.getItem("userName") || "مستخدم مباشر";
+      const storedRole = localStorage.getItem("userRole") || "citizen";
+
+      fetchWithRetry("/api/location/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceId,
+          lat: userLocation.lat,
+          lng: userLocation.lng,
+          name: storedName,
+          role: storedRole,
+          badgeCode: storedBadge,
+        }),
+      }).catch(() => {});
+    };
+
+    sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, 30000);
+    return () => clearInterval(interval);
+  }, [userLocation, deviceId]);
 
   // Recurrent scanning loop for proximity fires (checks reports list every 15 seconds)
   useEffect(() => {
@@ -142,10 +190,11 @@ export default function App() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [reportsRes, satellitesRes, wilayasRes] = await Promise.allSettled([
+      const [reportsRes, satellitesRes, wilayasRes, sosRes] = await Promise.allSettled([
         fetch("/api/reports"),
         fetch("/api/satellite-data"),
         fetch("/api/wilayas"),
+        fetch("/api/sos"),
       ]);
 
       if (reportsRes.status === "fulfilled" && reportsRes.value.ok) {
@@ -156,6 +205,9 @@ export default function App() {
       }
       if (wilayasRes.status === "fulfilled" && wilayasRes.value.ok) {
         setWilayas(await wilayasRes.value.json());
+      }
+      if (sosRes.status === "fulfilled" && sosRes.value.ok) {
+        setSosCalls(await sosRes.value.json());
       }
       setLastRefreshed(new Date().toLocaleTimeString());
     } catch (err) {
@@ -432,12 +484,18 @@ export default function App() {
       {/* 3. RESPONSIVE TAB DECK */}
       <div className="px-4 py-2 flex gap-1.5 bg-black/80 border-b border-white/5 overflow-x-auto sticky top-[65px] z-[1000] justify-start md:justify-center" dir={isArabic ? "rtl" : "ltr"}>
         {[
+          { id: "home", labelAr: "بوابة الطوارئ السريعة", labelFr: "Accueil d'Urgence", icon: <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" /> },
           { id: "map", labelAr: "المرصد والخريطة", labelFr: "Observatoire & Carte", icon: <Layers className="h-4 w-4" /> },
           { id: "radar", labelAr: "رادار الإخلاء والرياح", labelFr: "Radar d'Évacuation", icon: <Compass className="h-4 w-4 text-emerald-400" /> },
           { id: "ops", labelAr: "غرفة قيادة الطوارئ", labelFr: "Crisis Command Ops", icon: <Shield className="h-4 w-4 text-amber-400" /> },
           { id: "report", labelAr: "إرسال بلاغ حريق", labelFr: "Signaler un incendie", icon: <AlertCircle className="h-4 w-4 text-red-400" /> },
+          { id: "volunteer", labelAr: "تسجيل متطوع", labelFr: "Devenir Volontaire", icon: <BadgeCheck className="h-4 w-4 text-emerald-400" /> },
           { id: "copilot", labelAr: "مساعد الذكاء الاصطناعي", labelFr: "Assistant Gemini IA", icon: <Sparkles className="h-4 w-4 text-purple-400" /> },
           { id: "guides", labelAr: "دليل النجاة والوقاية", labelFr: "Guides de Survie", icon: <BookOpen className="h-4 w-4 text-sky-400" /> },
+          { id: "mesh", labelAr: "شبكة طوارئ Mesh", labelFr: "Réseau Mesh", icon: <Radio className="h-4 w-4 text-indigo-400 animate-pulse" /> },
+          { id: "radio", labelAr: "راديو رقمي (جديد)", labelFr: "Radio (Nouveau)", icon: <Radio className="h-4 w-4 text-emerald-400 animate-bounce" /> },
+          { id: "evac", labelAr: "مسارات الإخلاء", labelFr: "Évacuation", icon: <Navigation className="h-4 w-4 text-sky-400" /> },
+          { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
           { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
         ].map((tab) => (
           <button
@@ -458,6 +516,19 @@ export default function App() {
       {/* 4. MAIN LAYOUT GRID */}
       <main className="flex-1 px-4 py-5 md:px-8 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         
+        {/* Simple Emergency-First Home Screen */}
+        {activeTab === "home" && (
+          <div className="col-span-12 animate-fadeIn">
+            <HomeHub
+              onNavigate={(tab) => setActiveTab(tab)}
+              onTriggerSOS={() => setShowTrappedModal(true)}
+              lang={lang}
+              reportsCount={reports.length}
+              sosCount={sosCalls.filter(s => s.status === "active").length}
+            />
+          </div>
+        )}
+
         {/* Safe Evacuation Radar View */}
         {activeTab === "radar" && (
           <div className="col-span-12">
@@ -479,8 +550,41 @@ export default function App() {
           </div>
         )}
 
+        {/* Volunteer Registration full page */}
+        {activeTab === "volunteer" && (
+          <div className="col-span-12 max-w-2xl mx-auto">
+            <VolunteerRegistration lang={lang} />
+          </div>
+        )}
+
+        {/* Central Command - full-screen command dashboard */}
+        {activeTab === "command" && (
+          <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={fetchData} />
+        )}
+
+        {/* Mesh Network Simulator View */}
+        {activeTab === "mesh" && (
+          <div className="col-span-12">
+            <MeshNetworkSimulator lang={lang} />
+          </div>
+        )}
+
+        {/* Digital Walkie Talkie View */}
+        {activeTab === "radio" && (
+          <div className="col-span-12 animate-fadeIn">
+            <DigitalWalkieTalkie lang={lang} />
+          </div>
+        )}
+
+        {/* Safe Evacuation View */}
+        {activeTab === "evac" && (
+          <div className="col-span-12 animate-fadeIn">
+            <SafeEvacuation lang={lang} userLocation={userLocation} />
+          </div>
+        )}
+
         {/* Normal layout columns */}
-        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && (
+        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "mesh" && activeTab !== "radio" && activeTab !== "evac" && activeTab !== "home" && (
           <>
             {/* Live statistics summary cards */}
             {activeTab === "map" && (
@@ -658,6 +762,32 @@ export default function App() {
         )}
 
       </main>
+
+      {/* SOS FLOATING ACTION BUTTON */}
+      <button
+        onClick={() => setShowTrappedModal(true)}
+        className="fixed bottom-6 right-6 z-[1500] w-16 h-16 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white rounded-full shadow-[0_8px_32px_rgba(220,38,38,0.5)] flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 border border-red-400/30 group"
+      >
+        <div className="relative flex items-center justify-center">
+          <AlertTriangle className="h-7 w-7 animate-pulse group-hover:animate-none" />
+          <span className="absolute -top-1 -right-1 w-3 h-3 bg-white rounded-full animate-ping" />
+        </div>
+        <span className="absolute -bottom-8 left-1/2 -translate-x-1/2 text-[9px] font-black text-red-400 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity">
+          {isArabic ? "أنا محاصر (SOS)" : "Je suis bloqué (SOS)"}
+        </span>
+      </button>
+
+      {/* Trapped Person SOS Modal */}
+      {showTrappedModal && (
+        <TrappedSOSModal
+          lang={lang}
+          onClose={() => {
+            setShowTrappedModal(false);
+            fetchData();
+          }}
+          userLocation={userLocation}
+        />
+      )}
 
       {/* 5. BRAND FOOTER */}
       <footer className="bg-[#050303]/40 border-t border-white/5 text-center py-6 mt-12 text-xs text-gray-500">

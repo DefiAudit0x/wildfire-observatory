@@ -20,6 +20,11 @@ import satelliteRouter from "./routes/satellite.js";
 import wilayasRouter from "./routes/wilayas.js";
 import aiRouter from "./routes/ai.js";
 import notificationsRouter from "./routes/notifications.js";
+import sosRouter from "./routes/sos.js";
+import badgesRouter from "./routes/badges.js";
+import volunteersRouter from "./routes/volunteers.js";
+import commandRouter from "./routes/command.js";
+import simulateRouter from "./routes/simulate.js";
 
 const app = express();
 // Railway runs a single load-balancer hop in front of the app container.
@@ -101,6 +106,11 @@ app.use("/api/satellite-data", satelliteRouter);
 app.use("/api/wilayas", wilayasRouter);
 app.use("/api/ai/guidance", aiLimiter, aiRouter);
 app.use("/api/notifications", notificationsRouter);
+app.use("/api/sos", sosRouter);
+app.use("/api/badges", badgesRouter);
+app.use("/api/volunteer", volunteersRouter);
+app.use("/api", commandRouter);
+app.use("/api/simulate", simulateRouter);
 
 async function startServer() {
   if (config.nodeEnv !== "production") {

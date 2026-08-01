@@ -56,3 +56,59 @@ export interface EmergencyCenter {
   locationAr: string;
   locationFr: string;
 }
+
+export interface BadgeCode {
+  code: string;
+  ownerName: string;
+  type: 'official' | 'volunteer';
+  wilaya: string;
+  phone?: string;
+  createdAt: string;
+  isActive: boolean;
+}
+
+export interface VolunteerRegistration {
+  id: string;
+  fullName: string;
+  phone: string;
+  email?: string;
+  wilaya: string;
+  type: 'volunteer' | 'official';
+  idNumber?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  createdAt: string;
+  assignedCode?: string;
+}
+
+export interface Notification {
+  id: string;
+  deviceId: string;
+  titleAr: string;
+  titleFr: string;
+  bodyAr: string;
+  bodyFr: string;
+  type: 'success' | 'warning' | 'error' | 'info';
+  timestamp: string;
+  read: boolean;
+}
+
+export interface TrappedSOS {
+  id: string;
+  deviceId: string;
+  lat: number;
+  lng: number;
+  name: string;
+  phone?: string;
+  audioUrl?: string;
+  audioDuration?: number;
+  status: 'active' | 'resolved';
+  timestamp: string;
+  dispatchedTeams?: {
+    type: 'protection_civile' | 'volunteers';
+    teamNameAr: string;
+    teamNameFr: string;
+    dispatchedAt: string;
+    status: 'en_route' | 'arrived' | 'completed';
+    notes?: string;
+  }[];
+}
