@@ -1,6 +1,6 @@
 import { Report, SatelliteHotspot, WilayaStatus } from "../src/types.js";
 
-export let citizenReports: Report[] = [
+export const citizenReports: Report[] = [
   {
     id: "rep-1", lat: 36.881, lng: 8.412,
     locationName: "بالقرب من بحيرة طونغا، القالة",
@@ -96,7 +96,7 @@ export let citizenReports: Report[] = [
   },
 ];
 
-export let satelliteHotspots: SatelliteHotspot[] = [
+export const satelliteHotspots: SatelliteHotspot[] = [
   { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: "2026-07-21T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
   { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: "2026-07-21T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
   { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: "2026-07-21T11:02:00Z", satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
@@ -105,7 +105,7 @@ export let satelliteHotspots: SatelliteHotspot[] = [
   { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: "2026-07-21T11:40:00Z", satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
 ];
 
-export let wilayasStatus: WilayaStatus[] = [
+export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "الجزائر - أدرار", nameFr: "Algérie - Adrar", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الشلف", nameFr: "Algérie - Chlef", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الأغواط", nameFr: "Algérie - Laghouat", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },

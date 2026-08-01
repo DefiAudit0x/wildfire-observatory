@@ -26,6 +26,15 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== self.location.origin) return;
 
   if (url.pathname.startsWith("/api/")) {
+    const liveEndpoints = ["/api/reports", "/api/wilayas", "/api/satellite-data"];
+    if (liveEndpoints.some((endpoint) => url.pathname.startsWith(endpoint))) {
+      event.respondWith(
+        fetch(event.request, { cache: "no-store" }).catch(() =>
+          caches.open(API_CACHE).then((cache) => cache.match(event.request))
+        )
+      );
+      return;
+    }
     event.respondWith(
       caches.open(API_CACHE).then((cache) =>
         fetch(event.request, { cache: "no-store" })

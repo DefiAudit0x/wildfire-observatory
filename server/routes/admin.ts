@@ -1,12 +1,30 @@
 import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import bcrypt from "bcryptjs";
+import { createHash, timingSafeEqual } from "crypto";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
 import logger from "../logger.js";
 
 const router = Router();
+
+function safePasswordMatch(candidate: string, expected: string): boolean {
+  const candidateHash = createHash("sha256").update(candidate).digest();
+  const expectedHash = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(candidateHash, expectedHash);
+}
+
+function verifyAdminPassword(candidate: string): boolean {
+  const passwordHash = process.env.ADMIN_PASSWORD_HASH;
+  if (passwordHash && passwordHash.startsWith("$2")) {
+    return bcrypt.compareSync(candidate, passwordHash);
+  }
+  const legacyPassword = process.env.ADMIN_PASSWORD;
+  if (!legacyPassword) return false;
+  return safePasswordMatch(candidate, legacyPassword);
+}
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -32,7 +50,7 @@ router.post("/verify", loginLimiter, (req: Request, res: Response) => {
     res.status(400).json({ success: false, error: "Password required" });
     return;
   }
-  if (password === process.env.ADMIN_PASSWORD) {
+  if (verifyAdminPassword(password)) {
     const token = generateAdminToken();
     res.json({ success: true, token });
   } else {

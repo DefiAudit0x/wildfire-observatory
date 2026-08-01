@@ -22,6 +22,15 @@ function getTransporter(): nodemailer.Transporter | null {
   return transporter;
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function buildAlertHtml(report: {
   severity: string; locationName: string; wilaya: string;
   description: string; lat: number; lng: number;
@@ -31,6 +40,11 @@ function buildAlertHtml(report: {
     critical: "#dc2626", high: "#ea580c", medium: "#ca8a04", low: "#16a34a",
   };
   const color = colorMap[report.severity] || "#6b7280";
+  const locationName = escapeHtml(report.locationName);
+  const wilaya = escapeHtml(report.wilaya);
+  const description = escapeHtml(report.description);
+  const severity = escapeHtml(report.severity);
+  const reporterType = escapeHtml(report.reporterType);
 
   return `
 <!DOCTYPE html>
@@ -44,15 +58,15 @@ function buildAlertHtml(report: {
     </td></tr>
     <tr><td style="background:#1a1a1a;border-radius:12px;padding:24px;border-right:4px solid ${color}">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <h2 style="color:#f3f4f6;font-size:16px;margin:0">${report.locationName}</h2>
-        <span style="background:${color};color:white;padding:4px 12px;border-radius:999px;font-size:11px;font-weight:bold">${report.severity.toUpperCase()}</span>
+        <h2 style="color:#f3f4f6;font-size:16px;margin:0">${locationName}</h2>
+        <span style="background:${color};color:white;padding:4px 12px;border-radius:999px;font-size:11px;font-weight:bold">${severity.toUpperCase()}</span>
       </div>
-      <p style="color:#d1d5db;font-size:13px;margin:12px 0">${report.description}</p>
+      <p style="color:#d1d5db;font-size:13px;margin:12px 0">${description}</p>
       <table style="width:100%;font-size:12px;color:#9ca3af">
-        <tr><td style="padding:4px 0">الولاية:</td><td style="font-weight:bold;color:#e5e7eb">${report.wilaya}</td></tr>
+        <tr><td style="padding:4px 0">الولاية:</td><td style="font-weight:bold;color:#e5e7eb">${wilaya}</td></tr>
         <tr><td style="padding:4px 0">الإحداثيات:</td><td style="font-weight:bold;color:#e5e7eb">${report.lat}, ${report.lng}</td></tr>
         <tr><td style="padding:4px 0">الوقت:</td><td style="font-weight:bold;color:#e5e7eb">${new Date(report.timestamp).toLocaleString("ar-DZ")}</td></tr>
-        <tr><td style="padding:4px 0">المبلغ:</td><td style="font-weight:bold;color:#e5e7eb">${report.reporterType}</td></tr>
+        <tr><td style="padding:4px 0">المبلغ:</td><td style="font-weight:bold;color:#e5e7eb">${reporterType}</td></tr>
       </table>
       <a href="${config.appUrl}" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#dc2626;color:white;text-decoration:none;border-radius:8px;font-size:13px;font-weight:bold">فتح الخريطة التفاعلية</a>
     </td></tr>

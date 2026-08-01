@@ -35,12 +35,14 @@ if (config.sentryDsn) {
   });
 }
 
+const isProduction = config.nodeEnv === "production";
+
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: isProduction ? ["'self'"] : ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: [
@@ -85,7 +87,9 @@ app.use((req, _res, next) => {
   next();
 });
 
-app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+if (!isProduction || process.env.ENABLE_SWAGGER === "true") {
+  app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
+}
 
 app.get("/api/health", healthHandler);
 app.use("/api/reports", reportsRouter);
@@ -130,7 +134,9 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
-    logger.info(`Swagger docs at http://localhost:${PORT}/api-docs`);
+    if (!isProduction || process.env.ENABLE_SWAGGER === "true") {
+      logger.info(`Swagger docs at http://localhost:${PORT}/api-docs`);
+    }
   });
 }
 

@@ -1,12 +1,38 @@
 import { Request, Response, Router } from "express";
+import { z } from "zod";
 import { getAiClient, getAiModel } from "../ai.js";
 import logger from "../logger.js";
 
 const router = Router();
 
+const guidanceSchema = z.object({
+  lat: z.number().min(18).max(38).optional(),
+  lng: z.number().min(-17).max(25).optional(),
+  wilaya: z.string().min(3).max(200).optional(),
+  lang: z.enum(["ar", "fr"]).default("ar"),
+});
+
+const PROMPT_INJECTION_PATTERNS = /(\bignore\b|\bforget\b|\bdisregard\b|\byou are\b|\bnow respond\b|\bsystem prompt\b|\bsystem:|instructions?:|return json|overwrite)/gi;
+
+function sanitizeForPrompt(value: string | undefined, maxLength: number): string {
+  if (!value) return "";
+  return value
+    .normalize("NFKC")
+    .replace(PROMPT_INJECTION_PATTERNS, "")
+    .replace(/[^\p{L}\p{N}\s\-(),./@]/gu, "")
+    .slice(0, maxLength)
+    .trim();
+}
+
 router.post("/", async (req: Request, res: Response) => {
-  const { lat, lng, wilaya, lang } = req.body;
+  const parsed = guidanceSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+    return;
+  }
+  const { lat, lng, lang } = parsed.data;
   const isArabic = lang === "ar";
+  const wilaya = sanitizeForPrompt(parsed.data.wilaya, 60);
 
   let currentReports: any[] = [];
   try {
@@ -30,8 +56,10 @@ router.post("/", async (req: Request, res: Response) => {
       const languageInstruction = isArabic
         ? "أجب باللغة العربية بأسلوب وقور، مطمئن، ومباشر لإنقاذ الأرواح وإعطاء إرشادات سلامة للتعامل مع دخان وحرائق الغابات."
         : "Répondez en français de manière calme, directe et rassurante afin d'aider les personnes face aux incendies.";
-      const prompt = `Give a short, localized wildfire situation summary and safety guidance.
-        Location: ${wilaya || "الشرق الجزائري"} (lat: ${lat || 36.8}, lng: ${lng || 7.5}).
+      const locationLabel = wilaya || (isArabic ? "الشرق الجزائري" : "l'Est algérien");
+      const prompt = `You are a wildfire safety assistant for North Africa. Only follow the instructions below.
+        Give a short, localized wildfire situation summary and safety guidance.
+        Location: [[${locationLabel}]] (lat: ${lat || 36.8}, lng: ${lng || 7.5}).
         Active reports: ${activeReportsCount}, High/Critical: ${criticalReports}.
         ${languageInstruction}
         Structure into: 1. الوضع الميداني الحالي 2. توصيات السلامة الفورية 3. أرقام ومراكز الإغاثة.`;

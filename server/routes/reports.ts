@@ -15,7 +15,31 @@ import { sendFireAlert } from "../email.js";
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
 
-const VALID_BADGE_CODES = new Set(["1021", "777", "888", "150", "198"]);
+const DEFAULT_BADGE_CODES = "1021,777,888,150,198";
+const VALID_BADGE_CODES = new Set(
+  (process.env.TRUSTED_BADGE_CODES || DEFAULT_BADGE_CODES)
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean)
+);
+
+const BADGE_ATTEMPT_WINDOW_MS = 60 * 1000;
+const MAX_BADGE_ATTEMPTS_PER_WINDOW = 10;
+const badgeAttempts = new Map<string, { count: number; expiresAt: number }>();
+
+function badgeRateLimited(badgeCode: string): boolean {
+  const now = Date.now();
+  const entry = badgeAttempts.get(badgeCode);
+  if (!entry || now > entry.expiresAt) {
+    badgeAttempts.set(badgeCode, { count: 1, expiresAt: now + BADGE_ATTEMPT_WINDOW_MS });
+    return false;
+  }
+  entry.count += 1;
+  if (entry.count >= MAX_BADGE_ATTEMPTS_PER_WINDOW) {
+    logger.warn({ badgeCode }, "Badge code rate limit hit");
+  }
+  return entry.count > MAX_BADGE_ATTEMPTS_PER_WINDOW;
+}
 
 const createReportSchema = z.object({
   lat: z.number().min(-90).max(90),
@@ -28,7 +52,13 @@ const createReportSchema = z.object({
   reporterPhone: z.string().optional(),
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
   reporterBadgeCode: z.string().optional(),
-  image: z.string().optional(),
+  image: z
+    .string()
+    .max(500000, "Image must be under 500KB")
+    .refine((v) => !v || v.startsWith("data:image/"), {
+      message: "Image must be a data:image URI",
+    })
+    .optional(),
 });
 
 let initialReportsSeeded = false;
@@ -70,7 +100,11 @@ router.post("/", async (req: Request, res: Response) => {
   let initialConsensus = 1;
 
   if (reporterType === "official" || reporterType === "volunteer") {
-    if (reporterBadgeCode && VALID_BADGE_CODES.has(reporterBadgeCode.trim())) {
+    if (
+      reporterBadgeCode &&
+      VALID_BADGE_CODES.has(reporterBadgeCode.trim()) &&
+      !badgeRateLimited(reporterBadgeCode.trim())
+    ) {
       isTrusted = true;
       finalStatus = "verified";
       initialConsensus = 10;
