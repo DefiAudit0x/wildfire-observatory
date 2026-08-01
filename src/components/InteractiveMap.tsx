@@ -42,6 +42,9 @@ export default function InteractiveMap({
 
   const isArabic = lang === "ar";
 
+  // Basemap options the user can switch between
+  const basemaps: Record<string, L.TileLayer> = {};
+
   // Initial map setup (runs once on mount)
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -53,12 +56,32 @@ export default function InteractiveMap({
       zoomControl: true,
     });
 
-    // Dark styled tile layer to look premium and high contrast
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    const tileOptions = {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
       subdomains: "abcd",
       maxZoom: 19,
-    }).addTo(map);
+    };
+
+    const lightLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", tileOptions);
+    const darkLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", tileOptions);
+    const voyagerLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", tileOptions);
+
+    // Default: light map (dark_all is nearly black, looks broken)
+    lightLayer.addTo(map);
+
+    basemaps.light = lightLayer;
+    basemaps.dark = darkLayer;
+    basemaps.voyager = voyagerLayer;
+
+    L.control.layers(
+      {
+        [isArabic ? "فاتحة" : "Clair"]: lightLayer,
+        [isArabic ? "ملونة" : "Voyager"]: voyagerLayer,
+        [isArabic ? "داكنة" : "Sombre"]: darkLayer,
+      },
+      undefined,
+      { position: "topright", collapsed: false }
+    ).addTo(map);
 
     // Click handler for coordinates reporting
     map.on("click", (e: L.LeafletMouseEvent) => {
