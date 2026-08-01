@@ -20,10 +20,9 @@ async function verifyAdminPassword(candidate: string): Promise<boolean> {
   const passwordHash = process.env.ADMIN_PASSWORD_HASH;
   if (passwordHash && passwordHash.startsWith("$2")) {
     try {
-      return await bcrypt.compare(candidate, passwordHash);
+      if (await bcrypt.compare(candidate, passwordHash)) return true;
     } catch (err) {
       logger.error({ err }, "bcrypt comparison error");
-      return false;
     }
   }
   const legacyPassword = process.env.ADMIN_PASSWORD;
