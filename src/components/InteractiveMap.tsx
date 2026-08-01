@@ -80,7 +80,7 @@ export default function InteractiveMap({
         [isArabic ? "داكنة" : "Sombre"]: darkLayer,
       },
       undefined,
-      { position: "topright", collapsed: false }
+      { position: "bottomright", collapsed: false }
     ).addTo(map);
 
     // Click handler for coordinates reporting
