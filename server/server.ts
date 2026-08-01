@@ -24,7 +24,6 @@ import sosRouter from "./routes/sos.js";
 import badgesRouter from "./routes/badges.js";
 import volunteersRouter from "./routes/volunteers.js";
 import commandRouter from "./routes/command.js";
-import simulateRouter from "./routes/simulate.js";
 
 const app = express();
 // Railway runs a single load-balancer hop in front of the app container.
@@ -110,7 +109,6 @@ app.use("/api/sos", sosRouter);
 app.use("/api/badges", badgesRouter);
 app.use("/api/volunteer", volunteersRouter);
 app.use("/api", commandRouter);
-app.use("/api/simulate", simulateRouter);
 
 async function startServer() {
   if (config.nodeEnv !== "production") {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle, Bell, X, CheckCircle, Info } from "lucide-react";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle, Bell, X, CheckCircle, Info } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language, TrappedSOS } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
@@ -8,12 +8,9 @@ import WilayaList from "./components/WilayaList";
 import AICopilot from "./components/AICopilot";
 import SafetyGuides from "./components/SafetyGuides";
 import EvacuationRadar from "./components/EvacuationRadar";
-import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
 import VolunteerRegistration from "./components/VolunteerRegistration";
 import CentralCommand from "./components/CentralCommand";
-import MeshNetworkSimulator from "./components/MeshNetworkSimulator";
-import DigitalWalkieTalkie from "./components/DigitalWalkieTalkie";
 import SafeEvacuation from "./components/SafeEvacuation";
 import TrappedSOSModal from "./components/TrappedSOSModal";
 import HomeHub from "./components/HomeHub";
@@ -44,16 +41,16 @@ export default function App() {
   // Navigation / Interactive states
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"home" | "map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command" | "mesh" | "radio" | "evac">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac">("home");
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
   // Proximity alerts states (recurring proximity checking)
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [geoError, setGeoError] = useState<string | null>(null);
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const [simulationMode, setSimulationMode] = useState(true);
   const [showTrappedModal, setShowTrappedModal] = useState(false);
 
   const isArabic = lang === "ar";
@@ -73,28 +70,26 @@ export default function App() {
     return R * c;
   };
 
-  // Obtain user coordinates (either live GPS or high-fidelity simulation for preview safety)
+  // Obtain user coordinates via live GPS (no simulation)
   useEffect(() => {
-    if (simulationMode) {
-      // Coordinate positioned near Bejaia (very close to active hot spots!)
-      setUserLocation({ lat: 36.72, lng: 5.08 });
+    if (navigator.geolocation) {
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setGeoError(null);
+        },
+        (err) => {
+          console.warn("Geolocation error:", err);
+          setGeoError(isArabic ? "تعذّر تحديد موقعك. فعّل GPS للتبليغ الدقيق." : "Localisation GPS indisponible. Activez le GPS pour un signalement précis.");
+        },
+        { enableHighAccuracy: true, maximumAge: 30000, timeout: 30000 }
+      );
+      return () => navigator.geolocation.clearWatch(watchId);
     } else {
-      if (navigator.geolocation) {
-        const watchId = navigator.geolocation.watchPosition(
-          (pos) => {
-            setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
-          },
-          (err) => {
-            console.warn("User blocked Geolocation. Defaulting back to Simulation Mode.", err);
-            setSimulationMode(true);
-            setUserLocation({ lat: 36.72, lng: 5.08 });
-          },
-          { enableHighAccuracy: true }
-        );
-        return () => navigator.geolocation.clearWatch(watchId);
-      }
+      setGeoError(isArabic ? "المتصفح لا يدعم تحديد الموقع." : "Le navigateur ne supporte pas la géolocalisation.");
     }
-  }, [simulationMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isArabic]);
 
   // Heartbeat: send user location to server for Central Command tracking
   useEffect(() => {
@@ -290,22 +285,7 @@ export default function App() {
   };
 
   // Save parsed SMS report to database
-  const handleSmsParsedReport = async (payload: any) => {
-    try {
-      const res = await fetch("/api/reports", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, deviceId }),
-      });
-      if (res.ok) {
-        const newReport = await res.json();
-        setReports((prev) => [newReport, ...prev]);
-        fetchData();
-      }
-    } catch (err) {
-      console.error("Failed to post parsed SMS report:", err);
-    }
-  };
+  // (removed: SMS parsing was part of the simulation-only Crisis Center)
 
   // Upvote/Confirm fire (Consensus Engine)
   const handleConfirmReport = useCallback(async (id: string) => {
@@ -519,22 +499,26 @@ export default function App() {
               </div>
             </div>
 
-            {/* Simulated actions and controls */}
+            {/* Real GPS status and controls */}
             <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold">
-              {/* Telemetry settings buttons */}
+              {/* GPS status indicator */}
               <button
-                onClick={() => setSimulationMode((prev) => !prev)}
+                onClick={() => {
+                  if (userLocation) {
+                    setSelectedReportId(activeAlerts[0].id);
+                    setActiveTab("map");
+                  }
+                }}
                 className={`px-2.5 py-1 rounded border transition-all cursor-pointer ${
-                  simulationMode 
-                    ? "bg-amber-500/20 text-amber-400 border-amber-500/30" 
-                    : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                  userLocation
+                    ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                    : "bg-amber-500/20 text-amber-400 border-amber-500/30"
                 }`}
-                title="Toggle real GPS vs simulated regional coordinates"
+                title="Live GPS coordinates"
               >
-                {isArabic 
-                  ? (simulationMode ? "⚙️ وضع المحاكاة: بجاية" : "🌐 وضع البث: GPS حقيقي") 
-                  : (simulationMode ? "Simulateur: Béjaïa" : "GPS Réel Actif")
-                }
+                {userLocation
+                  ? (isArabic ? "🌐 GPS حقيقي: " : "🌐 GPS Réel : ") + `${userLocation.lat.toFixed(3)}, ${userLocation.lng.toFixed(3)}`
+                  : (isArabic ? "📍 جاري تحديد الموقع..." : "📍 Localisation GPS...")}
               </button>
 
               <button
@@ -564,13 +548,10 @@ export default function App() {
           { id: "home", labelAr: "بوابة الطوارئ السريعة", labelFr: "Accueil d'Urgence", icon: <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" /> },
           { id: "map", labelAr: "المرصد والخريطة", labelFr: "Observatoire & Carte", icon: <Layers className="h-4 w-4" /> },
           { id: "radar", labelAr: "رادار الإخلاء والرياح", labelFr: "Radar d'Évacuation", icon: <Compass className="h-4 w-4 text-emerald-400" /> },
-          { id: "ops", labelAr: "غرفة قيادة الطوارئ", labelFr: "Crisis Command Ops", icon: <Shield className="h-4 w-4 text-amber-400" /> },
           { id: "report", labelAr: "إرسال بلاغ حريق", labelFr: "Signaler un incendie", icon: <AlertCircle className="h-4 w-4 text-red-400" /> },
           { id: "volunteer", labelAr: "تسجيل متطوع", labelFr: "Devenir Volontaire", icon: <BadgeCheck className="h-4 w-4 text-emerald-400" /> },
           { id: "copilot", labelAr: "مساعد الذكاء الاصطناعي", labelFr: "Assistant Gemini IA", icon: <Sparkles className="h-4 w-4 text-purple-400" /> },
           { id: "guides", labelAr: "دليل النجاة والوقاية", labelFr: "Guides de Survie", icon: <BookOpen className="h-4 w-4 text-sky-400" /> },
-          { id: "mesh", labelAr: "شبكة طوارئ Mesh", labelFr: "Réseau Mesh", icon: <Radio className="h-4 w-4 text-indigo-400 animate-pulse" /> },
-          { id: "radio", labelAr: "راديو رقمي (جديد)", labelFr: "Radio (Nouveau)", icon: <Radio className="h-4 w-4 text-emerald-400 animate-bounce" /> },
           { id: "evac", labelAr: "مسارات الإخلاء", labelFr: "Évacuation", icon: <Navigation className="h-4 w-4 text-sky-400" /> },
           { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
           { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
@@ -613,13 +594,6 @@ export default function App() {
           </div>
         )}
 
-        {/* Crisis Operations Command View */}
-        {activeTab === "ops" && (
-          <div className="col-span-12">
-            <CrisisCenter reports={reports} onAddParsedReport={handleSmsParsedReport} lang={lang} />
-          </div>
-        )}
-
         {/* Admin Moderation Panel View */}
         {activeTab === "admin" && (
           <div className="col-span-12">
@@ -639,20 +613,6 @@ export default function App() {
           <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={fetchData} />
         )}
 
-        {/* Mesh Network Simulator View */}
-        {activeTab === "mesh" && (
-          <div className="col-span-12">
-            <MeshNetworkSimulator lang={lang} />
-          </div>
-        )}
-
-        {/* Digital Walkie Talkie View */}
-        {activeTab === "radio" && (
-          <div className="col-span-12 animate-fadeIn">
-            <DigitalWalkieTalkie lang={lang} />
-          </div>
-        )}
-
         {/* Safe Evacuation View */}
         {activeTab === "evac" && (
           <div className="col-span-12 animate-fadeIn">
@@ -661,7 +621,7 @@ export default function App() {
         )}
 
         {/* Normal layout columns */}
-        {activeTab !== "radar" && activeTab !== "ops" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "mesh" && activeTab !== "radio" && activeTab !== "evac" && activeTab !== "home" && (
+        {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && (
           <>
             {/* Live statistics summary cards */}
             {activeTab === "map" && (
@@ -741,11 +701,6 @@ export default function App() {
                             <div>
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <h4 className="font-bold text-xs text-slate-200">{rep.locationName}</h4>
-                                {(rep as any).simulation && (
-                                  <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-black">
-                                    🎓 {isArabic ? "محاكاة" : "Simulation"}
-                                  </span>
-                                )}
                                 {rep.reporterType === "official" && (
                                   <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-black">
                                     🛡️ {isArabic ? "جهة رسمية" : "Officiel"}

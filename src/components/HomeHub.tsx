@@ -1,20 +1,17 @@
 import { useState } from "react";
-import { 
-  ShieldAlert, 
-  Flame, 
-  MapPin, 
-  Radio, 
-  Compass, 
-  BookOpen, 
-  Phone, 
-  HeartHandshake, 
+import {
+  ShieldAlert,
+  Flame,
+  MapPin,
+  BookOpen,
+  Phone,
+  HeartHandshake,
   AlertTriangle,
   Navigation,
   Sparkles,
   ChevronDown,
   ChevronUp,
   LayoutGrid,
-  WifiOff,
   Crown,
   Layers,
   Shield
@@ -22,7 +19,7 @@ import {
 import { Language } from "../types";
 
 interface HomeHubProps {
-  onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "ops" | "admin" | "volunteer" | "command" | "mesh" | "radio" | "evac") => void;
+  onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
   onTriggerSOS: () => void;
   lang: Language;
   reportsCount: number;
@@ -51,24 +48,6 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       descFr: "Découvrez les routes de secours ouvertes et zones sécurisées",
       color: "border-amber-500/20 hover:border-amber-500/40 text-amber-400 bg-amber-950/20",
       icon: <Navigation className="h-6 w-6 text-amber-500" />
-    },
-    {
-      id: "radio" as const,
-      titleAr: "الراديو والجهاز اللاسلكي الرقمي",
-      titleFr: "Radio & Talkie-Walkie Mobile",
-      descAr: "تواصل صوتياً عبر موجات الطوارئ الافتراضية الميدانية",
-      descFr: "Communiquez vocalement via les ondes d'urgence virtuelles",
-      color: "border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 bg-emerald-950/20",
-      icon: <Radio className="h-6 w-6 text-emerald-500 animate-pulse" />
-    },
-    {
-      id: "volunteer" as const,
-      titleAr: "التسجيل كممتوع وإعانة المتضررين",
-      titleFr: "Devenir Volontaire & Solidarité",
-      descAr: "تسجيل المتطوعين وتقديم المساعدات والأدوية والمؤن للجمعيات",
-      descFr: "S'inscrire pour prêter main forte et faire des dons de matériel",
-      color: "border-teal-500/20 hover:border-teal-500/40 text-teal-400 bg-teal-950/20",
-      icon: <HeartHandshake className="h-6 w-6 text-teal-400" />
     },
     {
       id: "guides" as const,
@@ -122,8 +101,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
         </h2>
         <p className="text-xs md:text-sm text-gray-400 max-w-xl mx-auto leading-relaxed">
           {isArabic
-            ? "اختر الخيار المناسب لحالتك مباشرة: تبليغ، استغاثة طارئة، شبكة بدون إنترنت، أو تصفح خدمات المنصة."
-            : "Sélectionnez directement votre option : Signalement, SOS Urgence, Réseau sans Internet ou Autres Services."}
+            ? "اختر الخيار المناسب لحالتك مباشرة: تبليغ، استغاثة طارئة، تطوع، أو تصفح خدمات المنصة."
+            : "Sélectionnez directement votre option : Signalement, SOS Urgence, Bénévolat ou Autres Services."}
         </p>
 
         {/* Live Counters */}
@@ -205,33 +184,33 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
           </div>
         </button>
 
-        {/* BUTTON 3: MESH NETWORK WHEN OFFLINE (في حالة انقطاع النت والشبكة) */}
+        {/* BUTTON 3: VOLUNTEER REGISTRATION (سجل كمتطوع للمساعدة) */}
         <button
           type="button"
-          onClick={() => onNavigate("mesh")}
-          className="relative group p-6 bg-gradient-to-br from-indigo-950/80 via-purple-900/40 to-zinc-950 border-2 border-indigo-500/50 hover:border-indigo-400 rounded-2xl shadow-[0_10px_30px_rgba(99,102,241,0.2)] hover:shadow-[0_15px_40px_rgba(99,102,241,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
+          onClick={() => onNavigate("volunteer")}
+          className="relative group p-6 bg-gradient-to-br from-teal-950/80 via-emerald-900/40 to-zinc-950 border-2 border-teal-500/50 hover:border-teal-400 rounded-2xl shadow-[0_10px_30px_rgba(20,184,166,0.2)] hover:shadow-[0_15px_40px_rgba(20,184,166,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
         >
           <div className="flex items-start justify-between">
-            <div className="p-3 bg-indigo-500/20 rounded-xl border border-indigo-500/40">
-              <WifiOff className="h-8 w-8 text-indigo-400 animate-pulse" />
+            <div className="p-3 bg-teal-500/20 rounded-xl border border-teal-500/40">
+              <HeartHandshake className="h-8 w-8 text-teal-400 animate-pulse" />
             </div>
-            <span className="text-[10px] font-black tracking-widest text-indigo-400 bg-indigo-500/10 px-2.5 py-1 rounded-full uppercase border border-indigo-500/20">
-              {isArabic ? "3. بدون إنترنت" : "3. HORS LIGNE"}
+            <span className="text-[10px] font-black tracking-widest text-teal-400 bg-teal-500/10 px-2.5 py-1 rounded-full uppercase border border-teal-500/20">
+              {isArabic ? "3. التطوع" : "3. BÉNÉVOLAT"}
             </span>
           </div>
           <div className="space-y-1">
-            <h3 className="text-xl font-black text-slate-100 group-hover:text-indigo-400 transition-colors">
-              {isArabic ? "3. شبكة طوارئ Mesh (دون إنترنت)" : "3. Réseau Mesh (Sans Internet)"}
+            <h3 className="text-xl font-black text-slate-100 group-hover:text-teal-400 transition-colors">
+              {isArabic ? "3. سجّل كمتطوع ومدّ يد العون" : "3. Devenez Bénévole"}
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "في حالة انقطاع النت والشبكة الهاتفية: تمرير نداءات الاستغاثة عبر الهواتف القريبة دون اتصال."
-                : "En cas de coupure Internet/Réseau : relayez vos appels SOS d'appareil à appareil."}
+                ? "انضم لفرق الإغاثة الميدانية لتقديم المساعدات والأدوية والمؤن للمتضررين من الحرائق."
+                : "Rejoignez les équipes de secours et apportez aide et dons aux sinistrés."}
             </p>
           </div>
-          <div className="pt-2 flex items-center justify-between text-xs font-bold text-indigo-400 border-t border-indigo-500/20">
-            <span>{isArabic ? "فتح شبكة Mesh للطوارئ 📶" : "Ouvrir le Réseau Mesh 📶"}</span>
-            <Compass className="h-4 w-4" />
+          <div className="pt-2 flex items-center justify-between text-xs font-bold text-teal-400 border-t border-teal-500/20">
+            <span>{isArabic ? "التسجيل كمتطوع الآن 🤝" : "S'inscrire comme bénévole 🤝"}</span>
+            <HeartHandshake className="h-4 w-4" />
           </div>
         </button>
 
@@ -259,8 +238,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "تصفح الخريطة التفاعلية، مسارات الإخلاء، الراديو الرقمي، دليل النجاة، التطوع ومساعد IA."
-                : "Consultez la carte, les routes d'évacuation, la radio, le guide de survie et l'IA."}
+                ? "تصفح الخريطة التفاعلية، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA."
+                : "Consultez la carte, les routes d'évacuation, le guide de survie et l'IA."}
             </p>
           </div>
           <div className="pt-2 flex items-center justify-between text-xs font-bold text-sky-400 border-t border-sky-500/20">
