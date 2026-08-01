@@ -11,6 +11,7 @@ import {
 } from "../db.js";
 import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
+import { meshHub } from "../mesh.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -204,6 +205,8 @@ router.post("/", async (req: Request, res: Response) => {
     );
   }
 
+  meshHub.broadcast({ type: "report:new", report: safeReport });
+
   res.json(safeReport);
 });
 
@@ -245,6 +248,12 @@ router.post("/:id/confirm", async (req: Request, res: Response) => {
       res.status(409).json({ error: "Already confirmed" });
       return;
     }
+    meshHub.broadcast({
+      type: "report:confirm",
+      id,
+      consensusCount: result.consensusCount,
+      status: result.status,
+    });
     res.json({ success: true, consensusCount: result.consensusCount, status: result.status });
     return;
   }
@@ -258,6 +267,12 @@ router.post("/:id/confirm", async (req: Request, res: Response) => {
   if (report.consensusCount >= 5 && report.status === "pending") {
     report.status = "verified";
   }
+  meshHub.broadcast({
+    type: "report:confirm",
+    id,
+    consensusCount: report.consensusCount,
+    status: report.status,
+  });
   res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
 });
 

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield } from "lucide-react";
+import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, Radio, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language } from "./types";
 import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
@@ -10,12 +10,15 @@ import SafetyGuides from "./components/SafetyGuides";
 import EvacuationRadar from "./components/EvacuationRadar";
 import CrisisCenter from "./components/CrisisCenter";
 import AdminPanel from "./components/AdminPanel";
+import { meshClient } from "./lib/mesh";
 
 export default function App() {
   const [reports, setReports] = useState<Report[]>([]);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
   const [lang, setLang] = useState<Language>("ar");
+  const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
+  const [meshNodeCount, setMeshNodeCount] = useState(0);
   
   // Navigation / Interactive states
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
@@ -169,6 +172,48 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Mesh network: live peer-to-peer-ish synchronization
+  useEffect(() => {
+    meshClient.connect();
+
+    const offStatus = meshClient.onStatus((status, count) => {
+      setMeshStatus(status);
+      setMeshNodeCount(count);
+      if (status === "online") {
+        window.dispatchEvent(new Event("mesh:online"));
+      }
+    });
+
+    const offMessage = meshClient.onMessage((message) => {
+      if (message.type === "report:new") {
+        const report = message.report as Report;
+        if (report?.id) {
+          setReports((prev) => {
+            if (prev.some((r) => r.id === report.id)) return prev;
+            return [report, ...prev];
+          });
+        }
+      } else if (message.type === "report:confirm") {
+        const id = String(message.id);
+        const consensusCount = Number(message.consensusCount);
+        const status = String(message.status);
+        if (id && !Number.isNaN(consensusCount)) {
+          setReports((prev) =>
+            prev.map((r) =>
+              r.id === id ? { ...r, consensusCount, status: status as Report["status"] } : r
+            )
+          );
+        }
+      }
+    });
+
+    return () => {
+      offStatus();
+      offMessage();
+      meshClient.disconnect();
+    };
+  }, []);
+
   // Post citizen report handler
   const handleCreateReport = async (payload: any) => {
     const res = await fetch("/api/reports", {
@@ -275,6 +320,29 @@ export default function App() {
                 <RefreshCw className={`h-3 w-3 text-gray-400 ${loading ? "animate-spin text-red-500" : ""}`} />
               </button>
             </div>
+
+            {/* Mesh network status badge */}
+            <button
+              onClick={fetchData}
+              title={isArabic ? "شبكة المرصد المترابطة (Mesh) — اضغط للتحديث" : "Réseau Mesh de l'observatoire — cliquer pour actualiser"}
+              className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
+                meshStatus === "online"
+                  ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                  : meshStatus === "connecting"
+                    ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                    : "bg-zinc-900 border-white/10 text-gray-500"
+              }`}
+            >
+              {meshStatus === "online" ? (
+                <Wifi className="h-3.5 w-3.5" />
+              ) : (
+                <WifiOff className="h-3.5 w-3.5" />
+              )}
+              <span>
+                {isArabic ? "شبكة Mesh" : "Réseau Mesh"}
+                {meshStatus === "online" && meshNodeCount > 0 ? `: ${meshNodeCount}` : ""}
+              </span>
+            </button>
 
             {/* Emergency Hotline summary button */}
             <a

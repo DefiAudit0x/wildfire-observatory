@@ -197,11 +197,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
     const handleOnlineStatus = () => setIsOffline(false);
     const handleOfflineStatus = () => setIsOffline(true);
+    const handleMeshOnline = () => setIsOffline(false);
     window.addEventListener("online", handleOnlineStatus);
     window.addEventListener("offline", handleOfflineStatus);
+    window.addEventListener("mesh:online", handleMeshOnline);
     return () => {
       window.removeEventListener("online", handleOnlineStatus);
       window.removeEventListener("offline", handleOfflineStatus);
+      window.removeEventListener("mesh:online", handleMeshOnline);
     };
   }, []);
 

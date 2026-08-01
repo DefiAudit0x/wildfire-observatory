@@ -11,6 +11,7 @@ import config from "./config.js";
 import logger from "./logger.js";
 import { errorHandler, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
+import { meshHub, MESH_PATH } from "./mesh.js";
 
 import { healthHandler } from "./routes/health.js";
 import reportsRouter from "./routes/reports.js";
@@ -47,6 +48,8 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "https:"],
       connectSrc: [
         "'self'",
+        "wss:",
+        "ws:",
         "https://firms.modaps.eosdis.nasa.gov",
         "https://*.basemaps.cartocdn.com",
         "https://tile.openstreetmap.org",
@@ -132,12 +135,15 @@ async function startServer() {
   }
   app.use(errorHandler);
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
     if (!isProduction || process.env.ENABLE_SWAGGER === "true") {
       logger.info(`Swagger docs at http://localhost:${PORT}/api-docs`);
     }
   });
+
+  meshHub.attach(httpServer);
+  logger.info(`Mesh hub listening on ${MESH_PATH}`);
 }
 
 startServer();
