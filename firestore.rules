@@ -2,12 +2,30 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Public map reports: readable by everyone, writable only by the server
+    // (server writes bypass rules via the Admin SDK service account).
     match /reports/{report} {
       allow read: if true;
       allow write: if false;
     }
 
+    // Email subscribers: private — server only.
     match /subscribers/{subscriber} {
+      allow read, write: if false;
+    }
+
+    // Badge codes (volunteer/team credentials): private — server only.
+    match /badgeCodes/{code} {
+      allow read, write: if false;
+    }
+
+    // SOS emergency calls: private — server only.
+    match /trappedSos/{id} {
+      allow read, write: if false;
+    }
+
+    // Per-device notifications: private — server only.
+    match /notifications/{id} {
       allow read, write: if false;
     }
   }
