@@ -104,6 +104,44 @@ async function getVerifiedSubscribers(): Promise<string[]> {
   }
 }
 
+export async function sendVerificationEmail(email: string, token: string): Promise<void> {
+  const t = getTransporter();
+  if (!t) return;
+
+  const verifyUrl = `${config.appUrl}/api/notifications/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
+
+  const html = `
+<!DOCTYPE html>
+<html dir="rtl">
+<head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#0a0a0a;font-family:sans-serif">
+  <table width="100%" style="max-width:600px;margin:auto;padding:20px">
+    <tr><td style="text-align:center;padding:20px 0">
+      <h1 style="color:#fbbf24;font-size:20px;margin:0">🔥 North African Wildfire Observatory</h1>
+      <p style="color:#9ca3af;font-size:12px">تأكيد الاشتراك في تنبيهات الحرائق</p>
+    </td></tr>
+    <tr><td style="background:#1a1a1a;border-radius:12px;padding:24px;text-align:center">
+      <p style="color:#f3f4f6;font-size:14px;margin:0 0 8px">مرحباً! لتأكيد اشتراكك في تنبيهات حرائق الغابات، اضغط الزر التالي:</p>
+      <a href="${verifyUrl}" style="display:inline-block;margin-top:16px;padding:12px 28px;background:#dc2626;color:white;text-decoration:none;border-radius:8px;font-size:14px;font-weight:bold">تأكيد الاشتراك</a>
+      <p style="color:#6b7280;font-size:11px;margin-top:20px">إن لم يعمل الزر، انسخ الرابط: <span style="word-break:break-all">${verifyUrl}</span></p>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+  try {
+    await t.sendMail({
+      from: config.emailFrom,
+      to: email,
+      subject: "تأكيد اشتراكك في تنبيهات حرائق الغابات 🔥",
+      html,
+    });
+    logger.info({ email }, "Verification email sent");
+  } catch (err) {
+    logger.error({ err, email }, "Failed to send verification email");
+  }
+}
+
 export async function sendFireAlert(report: {
   severity: string; locationName: string; wilaya: string;
   description: string; lat: number; lng: number;

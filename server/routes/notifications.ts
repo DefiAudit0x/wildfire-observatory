@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
 import { collectionGet, docSet, docUpdate } from "../fs.js";
+import { sendVerificationEmail } from "../email.js";
 
 const router = Router();
 
@@ -97,6 +98,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           verificationToken,
           updatedAt: new Date().toISOString(),
         });
+        sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
@@ -114,6 +116,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
           verificationToken, updatedAt: new Date().toISOString(),
         });
+        sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
@@ -123,6 +126,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       });
     }
 
+    sendVerificationEmail(email, verificationToken);
     logger.info({ email }, "New subscriber registered");
     res.json({ success: true, message: "Subscription created. Check email to verify." });
   } catch (err) {
