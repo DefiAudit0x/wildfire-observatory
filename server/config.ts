@@ -27,11 +27,10 @@ const config = {
   firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "",
   appUrl: process.env.APP_URL || "http://localhost:3000",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
-  smtpHost: process.env.SMTP_HOST || "",
-  smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
-  smtpUser: process.env.SMTP_USER || "",
-  smtpPass: process.env.SMTP_PASS || "",
   emailFrom: process.env.EMAIL_FROM || "noreply@observatory.novadz.com",
+  resendApiKey: process.env.RESEND_API_KEY || "",
+  brevoApiKey: process.env.BREVO_API_KEY || "",
+  sendgridApiKey: process.env.SENDGRID_API_KEY || "",
 };
 
 export default config;

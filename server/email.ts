@@ -1,39 +1,70 @@
-import nodemailer from "nodemailer";
-import { promises as dns } from "dns";
 import config from "./config.js";
 import logger from "./logger.js";
 
-let transporterPromise: Promise<nodemailer.Transporter | null> | null = null;
+type EmailPayload = { to: string; subject: string; html: string };
 
-function getTransporter(): Promise<nodemailer.Transporter | null> {
-  if (!transporterPromise) {
-    transporterPromise = createTransporter();
-  }
-  return transporterPromise;
+function getProvider(): "resend" | "brevo" | "sendgrid" | null {
+  if (config.resendApiKey) return "resend";
+  if (config.brevoApiKey) return "brevo";
+  if (config.sendgridApiKey) return "sendgrid";
+  return null;
 }
 
-async function createTransporter(): Promise<nodemailer.Transporter | null> {
-  if (!config.smtpHost || !config.smtpUser || !config.smtpPass) {
-    logger.warn("SMTP not configured — email notifications disabled");
-    return null;
+async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
+  const provider = getProvider();
+  if (!provider) {
+    logger.warn("Email service not configured — email notifications disabled");
+    return;
   }
 
-  let host = config.smtpHost;
   try {
-    const { address } = await dns.lookup(config.smtpHost, { family: 4 });
-    host = address;
-    logger.info({ host: config.smtpHost, address }, "SMTP host resolved to IPv4");
-  } catch (err) {
-    logger.warn({ err }, "SMTP host IPv4 lookup failed, using hostname");
-  }
+    if (provider === "resend") {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.resendApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ from: config.emailFrom, to: [to], subject, html }),
+      });
+      if (!res.ok) throw new Error(`Resend API ${res.status}: ${await res.text()}`);
+    } else if (provider === "brevo") {
+      const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": config.brevoApiKey,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          sender: { email: config.emailFrom },
+          to: [{ email: to }],
+          subject,
+          htmlContent: html,
+        }),
+      });
+      if (!res.ok) throw new Error(`Brevo API ${res.status}: ${await res.text()}`);
+    } else {
+      const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${config.sendgridApiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: to }] }],
+          from: { email: config.emailFrom },
+          subject,
+          content: [{ type: "text/html", value: html }],
+        }),
+      });
+      if (!res.ok) throw new Error(`SendGrid API ${res.status}: ${await res.text()}`);
+    }
 
-  return nodemailer.createTransport({
-    host,
-    port: config.smtpPort,
-    secure: config.smtpPort === 465,
-    auth: { user: config.smtpUser, pass: config.smtpPass },
-    tls: { servername: config.smtpHost },
-  } as any);
+    logger.info({ to, provider }, "Verification email sent");
+  } catch (err) {
+    logger.error({ err, to, provider }, "Failed to send verification email");
+  }
 }
 
 function escapeHtml(value: string): string {
@@ -119,8 +150,8 @@ async function getVerifiedSubscribers(): Promise<string[]> {
 }
 
 export async function sendVerificationEmail(email: string, token: string): Promise<void> {
-  const t = await getTransporter();
-  if (!t) return;
+  const provider = getProvider();
+  if (!provider) return;
 
   const verifyUrl = `${config.appUrl}/api/notifications/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
 
@@ -143,17 +174,7 @@ export async function sendVerificationEmail(email: string, token: string): Promi
 </body>
 </html>`.trim();
 
-  try {
-    await t.sendMail({
-      from: config.emailFrom,
-      to: email,
-      subject: "تأكيد اشتراكك في تنبيهات حرائق الغابات 🔥",
-      html,
-    });
-    logger.info({ email }, "Verification email sent");
-  } catch (err) {
-    logger.error({ err, email }, "Failed to send verification email");
-  }
+  await sendEmail({ to: email, subject: "تأكيد اشتراكك في تنبيهات حرائق الغابات 🔥", html });
 }
 
 export async function sendFireAlert(report: {
@@ -161,8 +182,8 @@ export async function sendFireAlert(report: {
   description: string; lat: number; lng: number;
   timestamp: string; reporterType: string;
 }): Promise<void> {
-  const t = await getTransporter();
-  if (!t) return;
+  const provider = getProvider();
+  if (!provider) return;
 
   const subscribers = await getVerifiedSubscribers();
   if (subscribers.length === 0) return;
@@ -175,7 +196,7 @@ export async function sendFireAlert(report: {
     const batch = subscribers.slice(i, i + BATCH_SIZE);
     await Promise.allSettled(
       batch.map((email) =>
-        t.sendMail({ from: config.emailFrom, to: email, subject, html }).catch((err) => {
+        sendEmail({ to: email, subject, html }).catch((err) => {
           logger.error({ err, email }, "Failed to send alert email");
         })
       )
