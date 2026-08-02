@@ -17,7 +17,8 @@ function getTransporter(): nodemailer.Transporter | null {
     port: config.smtpPort,
     secure: config.smtpPort === 465,
     auth: { user: config.smtpUser, pass: config.smtpPass },
-  });
+    connectionOptions: { family: 4 },
+  } as any);
 
   return transporter;
 }
