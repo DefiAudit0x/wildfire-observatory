@@ -12,11 +12,25 @@ let clientDb: Firestore | null = null;
 let initialized = false;
 let _isAdmin = false;
 
+function resolveDatabaseId(): string {
+  if (config.firestoreDatabaseId) return config.firestoreDatabaseId;
+  const configPath = path.join(process.cwd(), config.firebaseConfigPath);
+  if (!fs.existsSync(configPath)) return "";
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8")).firestoreDatabaseId || "";
+  } catch (err) {
+    logger.error({ err }, "Failed to read firestoreDatabaseId from config file");
+    return "";
+  }
+}
+
 export function getDb(): Firestore | AdminFirestore | null {
   if (initialized) return adminDb || clientDb;
   initialized = true;
 
   if (process.env.SKIP_FIREBASE === "true") return null;
+
+  const databaseId = resolveDatabaseId();
 
   let serviceAccount: any = null;
 
@@ -49,9 +63,11 @@ export function getDb(): Firestore | AdminFirestore | null {
       if (getAdminApps().length === 0) {
         initializeAdminApp({ credential: cert(serviceAccount) });
       }
-      adminDb = getAdminFirestore();
+      adminDb = databaseId
+        ? getAdminFirestore(getAdminApps()[0], databaseId)
+        : getAdminFirestore(getAdminApps()[0]);
       _isAdmin = true;
-      logger.info("Firebase Admin initialized successfully");
+      logger.info({ databaseId: databaseId || "(default)" }, "Firebase Admin initialized successfully");
       return adminDb;
     } catch (err) {
       logger.error({ err }, "Failed to initialize Firebase Admin, falling back to client SDK");
@@ -64,8 +80,10 @@ export function getDb(): Firestore | AdminFirestore | null {
   try {
     const fConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
     const firebaseApp = initializeApp(fConfig);
-    clientDb = getFirestore(firebaseApp);
-    logger.info("Firebase Client SDK initialized successfully");
+    clientDb = databaseId
+      ? getFirestore(firebaseApp, databaseId)
+      : getFirestore(firebaseApp);
+    logger.info({ databaseId: databaseId || "(default)" }, "Firebase Client SDK initialized successfully");
   } catch (err) {
     logger.error({ err }, "Failed to initialize Firebase Client SDK");
   }

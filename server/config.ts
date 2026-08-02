@@ -24,6 +24,7 @@ const config = {
   firebaseConfigPath: process.env.FIREBASE_CONFIG_PATH || "firebase-applet-config.json",
   firebaseServiceAccount: process.env.FIREBASE_SERVICE_ACCOUNT || "",
   firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "",
+  firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "",
   appUrl: process.env.APP_URL || "http://localhost:3000",
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
   smtpHost: process.env.SMTP_HOST || "",
