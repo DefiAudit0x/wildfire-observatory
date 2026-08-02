@@ -1,26 +1,39 @@
 import nodemailer from "nodemailer";
+import { promises as dns } from "dns";
 import config from "./config.js";
 import logger from "./logger.js";
 
-let transporter: nodemailer.Transporter | null = null;
+let transporterPromise: Promise<nodemailer.Transporter | null> | null = null;
 
-function getTransporter(): nodemailer.Transporter | null {
-  if (transporter) return transporter;
+function getTransporter(): Promise<nodemailer.Transporter | null> {
+  if (!transporterPromise) {
+    transporterPromise = createTransporter();
+  }
+  return transporterPromise;
+}
 
+async function createTransporter(): Promise<nodemailer.Transporter | null> {
   if (!config.smtpHost || !config.smtpUser || !config.smtpPass) {
     logger.warn("SMTP not configured — email notifications disabled");
     return null;
   }
 
-  transporter = nodemailer.createTransport({
-    host: config.smtpHost,
+  let host = config.smtpHost;
+  try {
+    const { address } = await dns.lookup(config.smtpHost, { family: 4 });
+    host = address;
+    logger.info({ host: config.smtpHost, address }, "SMTP host resolved to IPv4");
+  } catch (err) {
+    logger.warn({ err }, "SMTP host IPv4 lookup failed, using hostname");
+  }
+
+  return nodemailer.createTransport({
+    host,
     port: config.smtpPort,
     secure: config.smtpPort === 465,
     auth: { user: config.smtpUser, pass: config.smtpPass },
-    connectionOptions: { family: 4 },
+    tls: { servername: config.smtpHost },
   } as any);
-
-  return transporter;
 }
 
 function escapeHtml(value: string): string {
@@ -106,7 +119,7 @@ async function getVerifiedSubscribers(): Promise<string[]> {
 }
 
 export async function sendVerificationEmail(email: string, token: string): Promise<void> {
-  const t = getTransporter();
+  const t = await getTransporter();
   if (!t) return;
 
   const verifyUrl = `${config.appUrl}/api/notifications/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
@@ -148,7 +161,7 @@ export async function sendFireAlert(report: {
   description: string; lat: number; lng: number;
   timestamp: string; reporterType: string;
 }): Promise<void> {
-  const t = getTransporter();
+  const t = await getTransporter();
   if (!t) return;
 
   const subscribers = await getVerifiedSubscribers();
