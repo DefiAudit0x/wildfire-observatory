@@ -25,7 +25,7 @@ const config = {
   firebaseServiceAccount: process.env.FIREBASE_SERVICE_ACCOUNT || "",
   firebaseServiceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || "",
   firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || "",
-  appUrl: process.env.APP_URL || "http://localhost:3000",
+  appUrl: (process.env.APP_URL || "http://localhost:3000").replace(/\/+$/, ""),
   geminiModel: process.env.GEMINI_MODEL || "gemini-2.0-flash",
   emailFrom: process.env.EMAIL_FROM || "noreply@observatory.novadz.com",
   resendApiKey: process.env.RESEND_API_KEY || "",
