@@ -3,6 +3,7 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { verifyAdminPassword } from "./admin.js";
+import { logAdminAction } from "./audit.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -105,6 +106,7 @@ router.post("/:id/approve", async (req: Request, res: Response) => {
     await docSet("badgeCodes", assignedCode, newBadge);
   }
 
+  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }).catch(() => {});
   res.json({ success: true });
 });
 

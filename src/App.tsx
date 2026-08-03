@@ -16,6 +16,7 @@ import TrappedSOSModal from "./components/TrappedSOSModal";
 import HomeHub from "./components/HomeHub";
 import { fetchWithRetry } from "./utils/api";
 import { meshClient } from "./lib/mesh";
+import { useLiveEvents } from "./utils/live";
 
 const getDeviceId = () => {
   let id = sessionStorage.getItem("device_id");
@@ -225,6 +226,65 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  // Server push events (report created/updated/deleted, safezones changed) → refresh
+  const lastLiveRefreshRef = useRef(0);
+  useLiveEvents((event) => {
+    if (["report:new", "report:update", "report:delete", "safezones:changed"].includes(event.type)) {
+      const now = Date.now();
+      if (now - lastLiveRefreshRef.current > 3000) {
+        lastLiveRefreshRef.current = now;
+        fetchData();
+      }
+    }
+  });
+
+  // Operator alert tone when a new critical/high report appears (throttled)
+  const lastCriticalIdsRef = useRef<Set<string>>(new Set());
+  const lastBeepAtRef = useRef(0);
+  useEffect(() => {
+    const critical = reports.filter(
+      (r) =>
+        (r.severity === "critical" || r.severity === "high") &&
+        r.status !== "resolved" &&
+        r.status !== "rejected"
+    );
+    const seen = lastCriticalIdsRef.current;
+    const newOnes = critical.filter((r) => !seen.has(r.id));
+    for (const r of newOnes) seen.add(r.id);
+    if (newOnes.length === 0 || isMuted) return;
+    const now = Date.now();
+    if (now - lastBeepAtRef.current < 20000) return;
+    lastBeepAtRef.current = now;
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const audioCtx = audioCtxRef.current;
+      const t0 = audioCtx.currentTime;
+      const hasCritical = newOnes.some((x) => x.severity === "critical");
+      for (let i = 0; i < 3; i++) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(hasCritical ? 1200 : 900, t0 + i * 0.35);
+        gain.gain.setValueAtTime(0.05, t0 + i * 0.35);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.35 + 0.3);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t0 + i * 0.35);
+        osc.stop(t0 + i * 0.35 + 0.3);
+      }
+      setTimeout(() => {
+        if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+          audioCtxRef.current.close().catch(() => {});
+          audioCtxRef.current = null;
+        }
+      }, 2000);
+    } catch (err) {
+      console.warn("Critical alert tone blocked:", err);
+    }
+  }, [reports, isMuted]);
+
   // Mesh network: live peer-to-peer-ish synchronization
   useEffect(() => {
     meshClient.connect();
@@ -269,11 +329,34 @@ export default function App() {
 
   // Post citizen report handler
   const handleCreateReport = async (payload: any) => {
-    const res = await fetch("/api/reports", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload, deviceId }),
-    });
+    let res: Response;
+
+    if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
+      // Multipart upload: avoids sending base64 through the JSON body parser
+      const fd = new FormData();
+      const imgData = payload.image;
+      const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
+      const base64 = imgData.split(",")[1] || "";
+      const bin = atob(base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const blob = new Blob([bytes], { type: mime });
+      const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+      fd.append("image", blob, `report-${Date.now()}.${ext}`);
+      for (const [k, v] of Object.entries(payload)) {
+        if (k === "image") continue;
+        if (v !== undefined && v !== null && v !== "") fd.append(k, String(v));
+      }
+      fd.append("deviceId", deviceId);
+      res = await fetch("/api/reports", { method: "POST", body: fd });
+    } else {
+      res = await fetch("/api/reports", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, deviceId }),
+      });
+    }
+
     if (!res.ok) {
       let serverMsg: string | undefined;
       try {

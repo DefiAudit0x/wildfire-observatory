@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, ArrowRight, Car, Compass, MapPin, Activity } from "lucide-react";
+import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, ArrowRight, Car, Compass, MapPin, Activity, RefreshCw } from "lucide-react";
 
 interface SafeEvacuationProps {
   lang: "ar" | "fr";
@@ -11,9 +11,26 @@ interface SafeZone {
   nameAr: string;
   nameFr: string;
   capacity: number;
-  currentOccupancy: number;
-  distance: string;
+  lat: number;
+  lng: number;
   hasMedical: boolean;
+  isActive?: boolean;
+}
+
+const DEFAULT_ZONES: SafeZone[] = [
+  { id: "z1", nameAr: "ملعب مصطفى تشاكر - البليدة", nameFr: "Stade Mustapha Tchaker - Blida", capacity: 5000, lat: 36.5058, lng: 2.8266, hasMedical: true },
+  { id: "z2", nameAr: "القطب الجامعي - تيزي وزو", nameFr: "Pôle Universitaire - Tizi Ouzou", capacity: 8000, lat: 36.717, lng: 4.064, hasMedical: true },
+  { id: "z3", nameAr: "ساحة التضامن - بجاية", nameFr: "Place de la Solidarité - Béjaïa", capacity: 2000, lat: 36.7509, lng: 5.0567, hasMedical: false },
+];
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationProps) {
@@ -21,6 +38,93 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
   const [isCalculating, setIsCalculating] = useState(false);
   const [activeRoute, setActiveRoute] = useState<SafeZone | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [zones, setZones] = useState<SafeZone[]>(DEFAULT_ZONES);
+  const [routeInfo, setRouteInfo] = useState<{ distanceKm: number; durationMin: number } | null>(null);
+  const [heading, setHeading] = useState<number | null>(null);
+  const [zonesStatus, setZonesStatus] = useState<"loading" | "ready" | "fallback">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/safezones")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("bad status"))))
+      .then((data) => {
+        if (cancelled) return;
+        if (Array.isArray(data) && data.length > 0) {
+          setZones(data.filter((z: any) => z.isActive !== false));
+          setZonesStatus("ready");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setZonesStatus("fallback");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Real compass heading via device orientation (fallback: slow simulated drift)
+  useEffect(() => {
+    let fallbackTimer: ReturnType<typeof setInterval> | null = null;
+    const fallbackAngle = { v: 0 };
+    const startFallback = () => {
+      fallbackTimer = setInterval(() => {
+        fallbackAngle.v = (fallbackAngle.v + 0.5) % 360;
+        setHeading(Math.round(fallbackAngle.v));
+      }, 300);
+    };
+    const onOrientation = (e: DeviceOrientationEvent) => {
+      const webkitEvent = e as DeviceOrientationEvent & { webkitCompassHeading?: number | null };
+      let deg: number | null = null;
+      if (webkitEvent.webkitCompassHeading !== undefined && webkitEvent.webkitCompassHeading !== null) {
+        deg = webkitEvent.webkitCompassHeading;
+      } else if (e.alpha !== null) {
+        deg = 360 - e.alpha;
+      }
+      if (deg !== null) {
+        if (fallbackTimer) clearInterval(fallbackTimer);
+        setHeading(Math.round(deg));
+      }
+    };
+    window.addEventListener("deviceorientation", onOrientation);
+    startFallback();
+    return () => {
+      window.removeEventListener("deviceorientation", onOrientation);
+      if (fallbackTimer) clearInterval(fallbackTimer);
+    };
+  }, []);
+
+  const handleCalculateRoute = async (zone: SafeZone) => {
+    setIsCalculating(true);
+    setActiveRoute(null);
+    setRouteInfo(null);
+
+    const fallback = { lat: 36.72, lng: 5.08 };
+    const from = userLocation || fallback;
+    let distanceKm = haversineKm(from.lat, from.lng, zone.lat, zone.lng);
+    let durationMin = Math.round(distanceKm / 0.6); // ~36 km/h average
+
+    try {
+      const res = await fetch(
+        `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${zone.lng},${zone.lat}?overview=false`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const route = data?.routes?.[0];
+        if (route?.distance) {
+          distanceKm = Math.round((route.distance / 1000) * 10) / 10;
+          durationMin = Math.max(1, Math.round(route.duration / 60));
+        }
+      }
+    } catch {
+      // OSRM unreachable — keep haversine estimate
+    }
+
+    setTimeout(() => {
+      setIsCalculating(false);
+      setActiveRoute(zone);
+      setRouteInfo({ distanceKm, durationMin });
+    }, 800);
+  };
 
   const startVoiceNavigation = (zone: SafeZone) => {
     if (!("speechSynthesis" in window)) {
@@ -32,18 +136,21 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
       setIsSpeaking(false);
       return;
     }
+    const dist = routeInfo?.distanceKm ?? haversineKm(userLocation?.lat ?? 36.72, userLocation?.lng ?? 5.08, zone.lat, zone.lng);
     const steps = isArabic
       ? [
           "انتبه، ابدأ الإخلاء فوراً.",
+          `وجهتك ${zone.nameAr} على بعد ${Math.round(dist)} كيلومتر.`,
           "اتجه شمالاً نحو الطريق الوطني 12.",
           "انعطف يميناً، هذا المسار يتجنب حريق الغابة.",
-          `واصل لمسافة 3 كيلومترات حتى الوصول إلى ${zone.nameAr}.`,
+          "واصل على نفس الطريق حتى الوصول إلى المنطقة الآمنة.",
         ]
       : [
           "Attention, évacuez immédiatement.",
+          `Votre destination est ${zone.nameFr} à ${Math.round(dist)} kilomètres.`,
           "Dirigez-vous vers le nord sur la route nationale 12.",
           "Tournez à droite, cet itinéraire évite l'incendie.",
-          `Continuez sur 3 kilomètres jusqu'à ${zone.nameFr}.`,
+          "Continuez tout droit jusqu'à la zone sécurisée.",
         ];
     const utterance = new SpeechSynthesisUtterance(steps.join(" "));
     utterance.lang = isArabic ? "ar-SA" : "fr-FR";
@@ -52,23 +159,6 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
     utterance.onerror = () => setIsSpeaking(false);
     window.speechSynthesis.speak(utterance);
     setIsSpeaking(true);
-  };
-
-  const safeZones: SafeZone[] = [
-    { id: "z1", nameAr: "ملعب مصطفى تشاكر - البليدة", nameFr: "Stade Mustapha Tchaker - Blida", capacity: 5000, currentOccupancy: 1200, distance: "4.2 km", hasMedical: true },
-    { id: "z2", nameAr: "القطب الجامعي - تيزي وزو", nameFr: "Pôle Universitaire - Tizi Ouzou", capacity: 8000, currentOccupancy: 3500, distance: "12.5 km", hasMedical: true },
-    { id: "z3", nameAr: "ساحة التضامن - بجاية", nameFr: "Place de la Solidarité - Béjaïa", capacity: 2000, currentOccupancy: 1800, distance: "7.1 km", hasMedical: false },
-  ];
-
-  const handleCalculateRoute = (zone: SafeZone) => {
-    setIsCalculating(true);
-    setActiveRoute(null);
-    
-    // Simulate AI calculating safe route avoiding fires
-    setTimeout(() => {
-      setIsCalculating(false);
-      setActiveRoute(zone);
-    }, 2500);
   };
 
   return (
@@ -103,9 +193,14 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
           </h4>
           
           <div className="flex-1 overflow-y-auto space-y-3 pr-1 custom-scrollbar">
-            {safeZones.map((zone) => {
-              const occupancyRate = (zone.currentOccupancy / zone.capacity) * 100;
-              const isFull = occupancyRate > 90;
+            {zones.map((zone) => {
+              const fallbackLoc = { lat: 36.72, lng: 5.08 };
+              const zoneDistance = haversineKm(
+                (userLocation || fallbackLoc).lat,
+                (userLocation || fallbackLoc).lng,
+                zone.lat,
+                zone.lng
+              );
 
               return (
                 <div key={zone.id} className={`p-3 rounded-xl border transition-all ${
@@ -115,13 +210,13 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
                 }`}>
                   <div className="flex justify-between items-start mb-2">
                     <h5 className="text-sm font-bold text-slate-200">{isArabic ? zone.nameAr : zone.nameFr}</h5>
-                    <span className="text-xs font-mono text-sky-400 bg-sky-950 px-1.5 py-0.5 rounded">{zone.distance}</span>
+                    <span className="text-xs font-mono text-sky-400 bg-sky-950 px-1.5 py-0.5 rounded">{zoneDistance.toFixed(1)} km</span>
                   </div>
                   
                   <div className="flex items-center gap-4 text-[10px] text-slate-400 mb-3">
                     <span className="flex items-center gap-1">
                       <Activity className="h-3 w-3" />
-                      {zone.currentOccupancy} / {zone.capacity} {isArabic ? "شخص" : "pers"}
+                      {isArabic ? `استيعاب ${zone.capacity.toLocaleString()} شخص` : `Capacité ${zone.capacity.toLocaleString()} pers`}
                     </span>
                     {zone.hasMedical && (
                       <span className="flex items-center gap-1 text-emerald-400">
@@ -131,23 +226,13 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
                     )}
                   </div>
 
-                  {/* Capacity Bar */}
-                  <div className="w-full bg-slate-900 rounded-full h-1.5 mb-3">
-                    <div 
-                      className={`h-1.5 rounded-full ${isFull ? 'bg-red-500' : occupancyRate > 70 ? 'bg-amber-500' : 'bg-emerald-500'}`} 
-                      style={{ width: `${occupancyRate}%` }}
-                    ></div>
-                  </div>
-
                   <button
                     onClick={() => handleCalculateRoute(zone)}
-                    disabled={isCalculating || isFull}
+                    disabled={isCalculating}
                     className={`w-full py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${
                       activeRoute?.id === zone.id
                         ? "bg-sky-600 text-white"
-                        : isFull 
-                          ? "bg-slate-800 text-slate-500 cursor-not-allowed" 
-                          : "bg-indigo-600 hover:bg-indigo-500 text-white"
+                        : "bg-indigo-600 hover:bg-indigo-500 text-white"
                     }`}
                   >
                     {isCalculating && activeRoute?.id !== zone.id ? (
@@ -202,7 +287,15 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
                     {isArabic ? "مسار الإخلاء آمن" : "Itinéraire Sécurisé"}
                   </h4>
                   <p className="text-xs text-slate-400 mt-1 flex items-center gap-2">
-                    <Car className="h-3 w-3" /> {activeRoute.distance} • ~14 {isArabic ? "دقيقة" : "min"}
+                    <Car className="h-3 w-3" />
+                    {routeInfo ? `${routeInfo.distanceKm} km • ~${routeInfo.durationMin} ${isArabic ? "دقيقة" : "min"}` : "..."}
+                  </p>
+                  <p className="text-[10px] text-slate-500 mt-1 flex items-center gap-1">
+                    <Compass className="h-3 w-3" />
+                    {isArabic ? "اتجاهك الحالي:" : "Cap actuel:"} {heading !== null ? `${heading}°` : "..."}
+                    {zonesStatus === "fallback" && (
+                      <span className="text-amber-500/80">{isArabic ? "(بيانات افتراضية)" : "(valeurs par défaut)"}</span>
+                    )}
                   </p>
                 </div>
                 <div className="text-right">
@@ -251,7 +344,11 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
                     <div className="w-0.5 h-10 bg-slate-700/50 my-1"></div>
                   </div>
                   <div className="pt-1">
-                    <p className="text-sm font-bold text-slate-200">{isArabic ? "استمر لمسافة 3 كم" : "Continuez sur 3 km"}</p>
+                    <p className="text-sm font-bold text-slate-200">
+                      {isArabic
+                        ? `استمر لمسافة ${routeInfo ? Math.max(1, Math.round(routeInfo.distanceKm * 0.7)) : 3} كم`
+                        : `Continuez sur ${routeInfo ? Math.max(1, Math.round(routeInfo.distanceKm * 0.7)) : 3} km`}
+                    </p>
                   </div>
                 </div>
 

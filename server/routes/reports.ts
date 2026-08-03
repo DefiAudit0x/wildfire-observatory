@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
+import multer from "multer";
 import { citizenReports } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
@@ -13,9 +14,15 @@ import {
 import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
+import { liveHub } from "../live.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024, files: 1 },
+});
 
 const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 };
 
@@ -65,8 +72,8 @@ function badgeRateLimited(badgeCode: string): boolean {
 }
 
 const createReportSchema = z.object({
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
   locationName: z.string().min(3).max(200),
   wilaya: z.string().min(3).max(200),
   description: z.string().min(10).max(2000),
@@ -113,14 +120,19 @@ const reportLimiter = rateLimit({
   message: { error: "Too many reports. Please slow down and try again shortly." },
 });
 
-router.post("/", reportLimiter, async (req: Request, res: Response) => {
+router.post("/", reportLimiter, upload.single("image"), async (req: Request, res: Response) => {
   const parsed = createReportSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
     return;
   }
 
-  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, image, deviceId } = parsed.data;
+  let image = parsed.data.image;
+  if (req.file) {
+    image = `data:${req.file.mimetype || "image/jpeg"};base64,${req.file.buffer.toString("base64")}`;
+  }
+
+  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, deviceId } = parsed.data;
 
   if (lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat || lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
     res.status(400).json({ error: "الإحداثيات المدخلة خارج نطاق المراقبة (شمال أفريقيا فقط)" });
@@ -250,6 +262,7 @@ router.post("/", reportLimiter, async (req: Request, res: Response) => {
   }
 
   meshHub.broadcast({ type: "report:new", report: safeReport });
+  liveHub.broadcast("report:new", { report: safeReport });
 
   res.json(safeReport);
 });

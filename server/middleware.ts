@@ -38,8 +38,9 @@ export const looseLimiter = rateLimit({
 
 export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
   logger.error({ err }, "Unhandled error");
-  const statusCode = (err as any).statusCode || 500;
-  const message = config.nodeEnv === "production" ? "Internal server error" : err.message;
+  const isMulterSize = (err as any).code === "LIMIT_FILE_SIZE";
+  const statusCode = (err as any).statusCode || (isMulterSize ? 400 : 500);
+  const message = isMulterSize ? "Image too large (max 500KB)" : config.nodeEnv === "production" ? "Internal server error" : err.message;
   res.status(statusCode).json({ error: message });
 }
 

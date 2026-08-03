@@ -12,6 +12,7 @@ import logger from "./logger.js";
 import { errorHandler, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
+import { liveHub, LIVE_PATH } from "./live.js";
 
 import { healthHandler } from "./routes/health.js";
 import reportsRouter from "./routes/reports.js";
@@ -24,6 +25,8 @@ import sosRouter from "./routes/sos.js";
 import badgesRouter from "./routes/badges.js";
 import volunteersRouter from "./routes/volunteers.js";
 import commandRouter from "./routes/command.js";
+import auditRouter from "./routes/audit.js";
+import safezonesRouter from "./routes/safezones.js";
 
 const app = express();
 // Railway runs a single load-balancer hop in front of the app container.
@@ -57,6 +60,8 @@ app.use(helmet({
         "https://firms.modaps.eosdis.nasa.gov",
         "https://*.basemaps.cartocdn.com",
         "https://tile.openstreetmap.org",
+        "https://api.open-meteo.com",
+        "https://router.project-osrm.org",
       ],
       fontSrc: ["'self'", "data:"],
     },
@@ -115,6 +120,8 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/sos", sosRouter);
 app.use("/api/badges", badgesRouter);
 app.use("/api/volunteer", volunteersRouter);
+app.use("/api/audit", auditRouter);
+app.use("/api/safezones", safezonesRouter);
 app.use("/api", commandRouter);
 
 async function startServer() {
@@ -163,6 +170,8 @@ async function startServer() {
 
   meshHub.attach(httpServer);
   logger.info(`Mesh hub listening on ${MESH_PATH}`);
+  liveHub.attach(httpServer);
+  logger.info(`Live hub listening on ${LIVE_PATH}`);
 }
 
 startServer();

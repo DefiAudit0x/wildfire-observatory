@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { Report, SatelliteHotspot } from "../types";
 
@@ -39,7 +39,11 @@ export default function InteractiveMap({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
+  const heatRef = useRef<L.LayerGroup | null>(null);
   const onMapClickRef = useRef(onMapClick);
+  const [severityFilter, setSeverityFilter] = useState<Set<string>>(new Set(["low", "medium", "high", "critical"]));
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [heatEnabled, setHeatEnabled] = useState(false);
 
   useEffect(() => {
     onMapClickRef.current = onMapClick;
@@ -94,6 +98,7 @@ export default function InteractiveMap({
     });
 
     markersRef.current = L.layerGroup().addTo(map);
+    heatRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
 
     // Ensure correct size if container dimensions change after mount
@@ -153,21 +158,42 @@ export default function InteractiveMap({
         .addTo(markerGroup);
     });
 
-    // 2. Plot citizen reports
-    reports.forEach((rep) => {
-      const getSeverityColor = (sev: string) => {
-        switch (sev) {
-          case "critical":
-            return "#ef4444"; // red
-          case "high":
-            return "#f97316"; // orange
-          case "medium":
-            return "#f59e0b"; // amber
-          default:
-            return "#10b981"; // green
-        }
-      };
+    // 2. Plot citizen reports (filtered)
+    const visibleReports = reports.filter(
+      (r) => severityFilter.has(r.severity) && (statusFilter === "all" || r.status === statusFilter)
+    );
 
+    // Heat layer: semi-transparent intensity circles per report
+    const getSeverityColor = (sev: string) => {
+      switch (sev) {
+        case "critical":
+          return "#ef4444"; // red
+        case "high":
+          return "#f97316"; // orange
+        case "medium":
+          return "#f59e0b"; // amber
+        default:
+          return "#10b981"; // green
+      }
+    };
+
+    const heatLayer = heatRef.current;
+    if (heatLayer) heatLayer.clearLayers();
+    if (heatEnabled && heatLayer) {
+      visibleReports.forEach((rep) => {
+        const weight = rep.severity === "critical" ? 0.5 : rep.severity === "high" ? 0.38 : rep.severity === "medium" ? 0.26 : 0.16;
+        L.circle([rep.lat, rep.lng], {
+          radius: 900,
+          color: getSeverityColor(rep.severity),
+          weight: 0,
+          fillColor: getSeverityColor(rep.severity),
+          fillOpacity: weight,
+          interactive: false,
+        }).addTo(heatLayer);
+      });
+    }
+
+    visibleReports.forEach((rep) => {
       const color = getSeverityColor(rep.severity);
 
       // Custom pulsing orange div icon with color based on severity
@@ -310,7 +336,7 @@ export default function InteractiveMap({
         }
       });
     });
-  }, [reports, satellites, lang, onConfirmReport, isArabic]);
+  }, [reports, satellites, lang, onConfirmReport, isArabic, severityFilter, statusFilter, heatEnabled]);
 
   // Handle flyTo when a selected report is clicked in list
   useEffect(() => {
@@ -351,6 +377,73 @@ export default function InteractiveMap({
         {isArabic
           ? "💡 انقر على أي مكان بالخريطة لتحديد موقع وإبلاغ عن حريق"
           : "💡 Cliquez sur la carte pour épingler un feu"}
+      </div>
+
+      {/* Map Filters Toolbar */}
+      <div className="absolute top-3 left-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur rounded-lg p-2 shadow-lg space-y-1.5 max-w-[210px]">
+        <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">
+          {isArabic ? "فلاتر العرض" : "Filtres"}
+        </p>
+        <div className="flex items-center gap-1 flex-wrap">
+          {(["critical", "high", "medium", "low"] as const).map((sev) => {
+            const active = severityFilter.has(sev);
+            const colors: Record<string, string> = {
+              critical: "#ef4444",
+              high: "#f97316",
+              medium: "#f59e0b",
+              low: "#10b981",
+            };
+            return (
+              <button
+                key={sev}
+                type="button"
+                onClick={() => {
+                  const next = new Set(severityFilter);
+                  if (next.has(sev)) {
+                    next.delete(sev);
+                  } else {
+                    next.add(sev);
+                  }
+                  setSeverityFilter(next);
+                }}
+                className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-all cursor-pointer ${
+                  active ? "text-white" : "text-slate-500 border-slate-800"
+                }`}
+                style={active ? { backgroundColor: `${colors[sev]}33`, borderColor: colors[sev] } : undefined}
+              >
+                {isArabic
+                  ? { critical: "كارثي", high: "مرتفع", medium: "متوسط", low: "خفيف" }[sev]
+                  : { critical: "Crit.", high: "Élevé", medium: "Moyen", low: "Faible" }[sev]}
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="flex-1 bg-slate-900 border border-slate-800 rounded text-[9px] text-slate-300 px-1.5 py-1 focus:outline-none"
+          >
+            {(["all", "pending", "verified", "resolved", "rejected"] as const).map((st) => (
+              <option key={st} value={st}>
+                {st === "all"
+                  ? (isArabic ? "كل الحالات" : "Tous")
+                  : (isArabic ? { pending: "قيد الانتظار", verified: "مؤكد", resolved: "محلول", rejected: "مرفوض" }[st] : st)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setHeatEnabled((v) => !v)}
+            className={`px-2 py-1 rounded text-[9px] font-bold border transition-all cursor-pointer ${
+              heatEnabled
+                ? "bg-orange-500/20 text-orange-400 border-orange-500/40"
+                : "bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300"
+            }`}
+          >
+            {isArabic ? "🔥 حرارة" : "🔥 Chaleur"}
+          </button>
+        </div>
       </div>
     </div>
   );

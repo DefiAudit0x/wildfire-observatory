@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download } from "lucide-react";
+import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download, ScrollText } from "lucide-react";
 import { Report, Language } from "../types";
+import AuditLog from "./admin/AuditLog";
+import SafeZonesManager from "./admin/SafeZonesManager";
 
 interface AdminPanelProps {
   reports: Report[];
@@ -19,6 +21,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
+  const [activeSection, setActiveSection] = useState<"reports" | "audit" | "zones">("reports");
   const ITEMS_PER_PAGE = 20;
 
   const isArabic = lang === "ar";
@@ -288,6 +291,38 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
         </div>
       </div>
 
+      {/* Section Tabs */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {([
+          { id: "reports" as const, labelAr: "إدارة البلاغات", labelFr: "Signalements", icon: <Layers className="h-3.5 w-3.5" /> },
+          { id: "audit" as const, labelAr: "سجل التدقيق", labelFr: "Journal d'audit", icon: <ScrollText className="h-3.5 w-3.5" /> },
+          { id: "zones" as const, labelAr: "المراكز الآمنة", labelFr: "Centres sûrs", icon: <MapPin className="h-3.5 w-3.5" /> },
+        ]).map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveSection(tab.id)}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+              activeSection === tab.id
+                ? "bg-red-600/15 border-red-500/30 text-red-400"
+                : "bg-zinc-900/50 border-white/5 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            {tab.icon}
+            <span>{isArabic ? tab.labelAr : tab.labelFr}</span>
+          </button>
+        ))}
+      </div>
+
+      {activeSection === "audit" && (
+        <AuditLog lang={lang} token={getToken()} onAuthError={handleAuthError} />
+      )}
+
+      {activeSection === "zones" && (
+        <SafeZonesManager lang={lang} token={getToken()} onAuthError={handleAuthError} />
+      )}
+
+      {activeSection === "reports" && (
+      <>
       {/* Admin Quick Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-xl space-y-1">
@@ -555,6 +590,8 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 }

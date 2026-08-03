@@ -11,18 +11,52 @@ interface EvacuationRadarProps {
 export default function EvacuationRadar({ reports, userLocation, lang }: EvacuationRadarProps) {
   const isArabic = lang === "ar";
   const [radarAngle, setRadarAngle] = useState(0);
-  
-  // Simulated dynamic meteorological wind vector for North Africa
   const [wind, setWind] = useState({
-    direction: 260, // degrees (West-South-West)
-    speed: 35, // km/h
-    temperature: 42, // °C heatwave
+    direction: 260,
+    speed: 35,
+    temperature: 42,
+    isLive: false,
   });
 
-  // Drift the wind within a realistic range every 10s (approximation, not live METAR data)
+  // Live wind from Open-Meteo (free, no API key) at the user's location
+  useEffect(() => {
+    let cancelled = false;
+    const activeLoc = userLocation || { lat: 36.72, lng: 5.08 };
+
+    const fetchWind = async () => {
+      try {
+        const res = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${activeLoc.lat.toFixed(2)}&longitude=${activeLoc.lng.toFixed(2)}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const cur = data?.current;
+        if (!cur || cur.wind_speed_10m === undefined || cur.wind_direction_10m === undefined) return;
+        if (cancelled) return;
+        setWind({
+          direction: Math.round(cur.wind_direction_10m),
+          speed: Math.round(cur.wind_speed_10m * 10) / 10,
+          temperature: Math.round(cur.temperature_2m * 10) / 10,
+          isLive: true,
+        });
+      } catch {
+        // fallback to simulated drift below
+      }
+    };
+
+    fetchWind();
+    const timer = setInterval(fetchWind, 10 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [userLocation?.lat, userLocation?.lng]);
+
+  // Fallback: drift the wind within a realistic range every 10s (only when live data unavailable)
   useEffect(() => {
     const timer = setInterval(() => {
       setWind((prev) => {
+        if (prev.isLive) return prev;
         const jitter = () => Math.round((Math.random() - 0.5) * 16);
         const nextDirection = Math.min(285, Math.max(235, prev.direction + jitter()));
         const nextSpeed = Math.min(48, Math.max(22, prev.speed + jitter()));
@@ -30,6 +64,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           direction: nextDirection,
           speed: nextSpeed,
           temperature: prev.temperature + (Math.random() - 0.5) * 2,
+          isLive: false,
         };
       });
     }, 10000);
@@ -136,8 +171,12 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
               {wind.speed} km/h • {getDirectionName(wind.direction)} ({wind.temperature}°C)
             </p>
           </div>
-          <span className="text-[8px] text-slate-500 border border-white/10 rounded px-1 py-0.5" title={isArabic ? "بيانات جوية تقديرية" : "Données météo approximatives"}>
-            {isArabic ? "تقديري" : "≈ approx"}
+          <span className={`text-[8px] border border-white/10 rounded px-1 py-0.5 ${wind.isLive ? "text-emerald-400" : "text-slate-500"}`}
+            title={wind.isLive
+              ? (isArabic ? "بيانات جوية حية من Open-Meteo" : "Données météo live Open-Meteo")
+              : (isArabic ? "بيانات جوية تقديرية (تعذر الوصول للبيانات الحية)" : "Données approximatives (service live indisponible)")}
+          >
+            {wind.isLive ? (isArabic ? "مباشر" : "Live") : (isArabic ? "تقديري" : "≈ approx")}
           </span>
         </div>
       </div>
