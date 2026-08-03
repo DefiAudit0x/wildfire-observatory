@@ -274,7 +274,18 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...payload, deviceId }),
     });
-    if (!res.ok) throw new Error("Report failed");
+    if (!res.ok) {
+      let serverMsg: string | undefined;
+      try {
+        const data = await res.json();
+        serverMsg = data?.error;
+      } catch {
+        // non-JSON error body
+      }
+      const err: any = new Error(serverMsg || "Report failed");
+      err.data = { error: serverMsg };
+      throw err;
+    }
     
     const newReport = await res.json();
     setReports((prev) => [newReport, ...prev]);
@@ -583,6 +594,8 @@ export default function App() {
               lang={lang}
               reportsCount={reports.length}
               sosCount={sosCalls.filter(s => s.status === "active").length}
+              reports={reports}
+              userLocation={userLocation}
             />
           </div>
         )}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock } from "lucide-react";
+import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download } from "lucide-react";
 import { Report, Language } from "../types";
 
 interface AdminPanelProps {
@@ -16,6 +16,10 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
 
   const isArabic = lang === "ar";
 
@@ -197,6 +201,48 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const verifiedReports = reports.filter(r => r.status === "verified");
   const resolvedReports = reports.filter(r => r.status === "resolved");
 
+  const exportToCSV = () => {
+    const rows = [
+      ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الهاتف", "الوقت"].join(","),
+      ...reports.map((r) =>
+        [
+          r.id,
+          `"${(r.locationName || "").replace(/"/g, '""')}"`,
+          `"${(r.wilaya || "").replace(/"/g, '""')}"`,
+          r.status,
+          r.severity,
+          `"${(r.description || "").replace(/"/g, '""')}"`,
+          `"${(r.reporterName || "").replace(/"/g, '""')}"`,
+          r.reporterPhone || "",
+          r.timestamp,
+        ].join(",")
+      ),
+    ].join("\n");
+
+    const blob = new Blob(["\ufeff" + rows], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reports_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filteredReports = reports.filter((r) => {
+    const matchesSearch =
+      !searchQuery.trim() ||
+      (r.locationName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.wilaya || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.description || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.reporterName || "").toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === "all" || r.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filteredReports.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const paginatedReports = filteredReports.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
+
   return (
     <div id="admin-panel-container" className="space-y-6 w-full animate-fade-in">
       
@@ -262,19 +308,60 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
         </div>
       </div>
 
+      {/* Search / Filter / Export Toolbar */}
+      <div className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => { setSearchQuery(e.target.value); setPage(1); }}
+            placeholder={isArabic ? "ابحث عن ولاية، موقع، وصف، أو مُبلغ..." : "Rechercher wilaya, lieu, description, rapporteur..."}
+            className="w-full bg-black/50 border border-white/10 rounded-xl py-2.5 pl-10 pr-4 text-xs text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-red-500/40 transition-all"
+          />
+        </div>
+        <select
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+          className="bg-black/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-slate-300 font-bold focus:ring-1 focus:ring-red-500/40 focus:outline-none cursor-pointer"
+        >
+          <option value="all">{isArabic ? "جميع الحالات" : "Tous les états"}</option>
+          <option value="pending">{isArabic ? "قيد المراجعة" : "En attente"}</option>
+          <option value="verified">{isArabic ? "موثق رسمي" : "Vérifié"}</option>
+          <option value="resolved">{isArabic ? "تم الحل / خمد" : "Résolu"}</option>
+          <option value="rejected">{isArabic ? "مرفوض" : "Rejeté"}</option>
+        </select>
+        <button
+          onClick={exportToCSV}
+          className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+        >
+          <Download className="h-4 w-4" />
+          <span>{isArabic ? "تصدير CSV" : "Exporter CSV"}</span>
+        </button>
+      </div>
+
       {/* Moderation List */}
       <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-5 shadow-lg space-y-4">
-        <h3 className="font-extrabold text-sm text-slate-200">
-          {isArabic ? "إدارة وتعديل بلاغات المواطنين" : "Gestion active des signalements"}
-        </h3>
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <h3 className="font-extrabold text-sm text-slate-200">
+            {isArabic ? "إدارة وتعديل بلاغات المواطنين" : "Gestion active des signalements"}
+          </h3>
+          <span className="text-[10px] text-gray-500 font-mono">
+            {isArabic ? `${filteredReports.length} بلاغ (صفحة ${safePage}/${totalPages})` : `${filteredReports.length} signalements (page ${safePage}/${totalPages})`}
+          </span>
+        </div>
 
         <div className="space-y-4 max-h-[600px] overflow-y-auto pr-1">
-          {reports.length === 0 ? (
+          {paginatedReports.length === 0 ? (
             <div className="text-center py-12 text-xs text-gray-500">
-              {isArabic ? "لا توجد بلاغات مسجلة في النظام." : "Aucun signalement trouvé."}
+              {isArabic
+                ? (searchQuery || statusFilter !== "all"
+                    ? "لا توجد بلاغات مطابقة لمعايير البحث."
+                    : "لا توجد بلاغات مسجلة في النظام.")
+                : "Aucun signalement trouvé."}
             </div>
           ) : (
-            reports.map((rep) => (
+            paginatedReports.map((rep) => (
               <div
                 key={rep.id}
                 className={`bg-black/50 p-4 rounded-xl border transition-all flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between ${
@@ -447,6 +534,26 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
             ))
           )}
         </div>
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-3 pt-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage <= 1}
+              className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-white/10 rounded-lg text-xs font-bold text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+            >
+              {isArabic ? "السابق" : "Précédent"}
+            </button>
+            <span className="text-xs text-gray-400 font-mono">{safePage} / {totalPages}</span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage >= totalPages}
+              className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-white/10 rounded-lg text-xs font-bold text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+            >
+              {isArabic ? "التالي" : "Suivant"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

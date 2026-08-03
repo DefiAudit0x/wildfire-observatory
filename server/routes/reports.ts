@@ -3,7 +3,7 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { citizenReports } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
-import { runClustering, wilayaContainsCoords } from "../geo.js";
+import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
   getReportsFromFirestore,
   seedReportsToFirestore,
@@ -16,6 +16,27 @@ import { meshHub } from "../mesh.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
+
+const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 };
+
+const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
+const DUPLICATE_DISTANCE_KM = 0.5;
+const recentReports: { lat: number; lng: number; timestamp: number }[] = [];
+
+function isDuplicateReport(lat: number, lng: number): boolean {
+  const now = Date.now();
+  const cutoff = now - DUPLICATE_WINDOW_MS;
+  for (let i = recentReports.length - 1; i >= 0; i--) {
+    const r = recentReports[i];
+    if (r.timestamp < cutoff) {
+      recentReports.splice(0, i + 1);
+      break;
+    }
+    if (getHaversineDistance(lat, lng, r.lat, r.lng) < DUPLICATE_DISTANCE_KM) return true;
+  }
+  if (recentReports.length > 2000) recentReports.splice(0, recentReports.length - 2000);
+  return false;
+}
 
 const DEFAULT_BADGE_CODES = "1021,777,888,150,198";
 const VALID_BADGE_CODES = new Set(
@@ -84,7 +105,15 @@ router.get("/", async (_req: Request, res: Response) => {
   res.json(clustered);
 });
 
-router.post("/", async (req: Request, res: Response) => {
+const reportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many reports. Please slow down and try again shortly." },
+});
+
+router.post("/", reportLimiter, async (req: Request, res: Response) => {
   const parsed = createReportSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
@@ -93,8 +122,18 @@ router.post("/", async (req: Request, res: Response) => {
 
   const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, image, deviceId } = parsed.data;
 
+  if (lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat || lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
+    res.status(400).json({ error: "الإحداثيات المدخلة خارج نطاق المراقبة (شمال أفريقيا فقط)" });
+    return;
+  }
+
   if (!wilayaContainsCoords(wilaya, lat, lng)) {
     res.status(400).json({ error: `Coordinates do not fall within the bounds of ${wilaya}` });
+    return;
+  }
+
+  if (isDuplicateReport(lat, lng)) {
+    res.status(409).json({ error: "يوجد بلاغ مشابه قريب من هذا الموقع خلال الساعة الماضية. يرجى تأكيد البلاغ الموجود بدلاً من إنشاء بلاغ جديد." });
     return;
   }
 
@@ -130,6 +169,8 @@ router.post("/", async (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     consensusCount: initialConsensus,
   };
+
+  recentReports.push({ lat, lng, timestamp: Date.now() });
 
   if (image && image.startsWith("data:image")) {
     const ai = getAiClient();

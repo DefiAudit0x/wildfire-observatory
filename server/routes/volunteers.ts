@@ -1,5 +1,6 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { verifyAdminPassword } from "./admin.js";
 import logger from "../logger.js";
@@ -7,17 +8,25 @@ import logger from "../logger.js";
 const router = Router();
 
 const registerSchema = z.object({
-  fullName: z.string().min(1),
-  phone: z.string().min(1),
-  email: z.string().optional(),
-  wilaya: z.string().min(1),
-  type: z.string().optional(),
-  idNumber: z.string().optional(),
+  fullName: z.string().min(2).max(120),
+  phone: z.string().min(6).max(20),
+  email: z.string().email().max(120).optional(),
+  wilaya: z.string().min(2).max(120),
+  type: z.enum(["volunteer", "official"]).optional(),
+  idNumber: z.string().max(30).optional(),
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many registrations from this device. Please try again later." },
 });
 
 const memoryRegs: any[] = [];
 
-router.post("/register", async (req: Request, res: Response) => {
+router.post("/register", registerLimiter, async (req: Request, res: Response) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Missing required fields" });
@@ -29,14 +38,15 @@ router.post("/register", async (req: Request, res: Response) => {
     fullName, phone,
     email: email || undefined,
     wilaya,
-    type: type || "volunteer",
+    type: "volunteer",
+    requestedType: type || "volunteer",
     idNumber: idNumber || undefined,
     status: "pending",
     createdAt: new Date().toISOString(),
   };
   await docSet("volunteerRegistrations", registration.id, registration);
   memoryRegs.unshift(registration);
-  res.json(registration);
+  res.json({ id: registration.id, status: registration.status });
 });
 
 async function loadRegs(): Promise<any[]> {
@@ -64,8 +74,10 @@ router.post("/:id/approve", async (req: Request, res: Response) => {
     res.status(401).json({ error: "Unauthorized" });
     return;
   }
+  const finalStatus = status === "approved" || status === "rejected" ? status : "pending";
+  const finalType = type === "official" || type === "volunteer" ? type : undefined;
 
-  await docUpdate("volunteerRegistrations", id, { status, assignedCode });
+  await docUpdate("volunteerRegistrations", id, { status: finalStatus, assignedCode });
 
   let reg = memoryRegs.find((r: any) => r.id === id);
   if (!reg) {
@@ -76,15 +88,15 @@ router.post("/:id/approve", async (req: Request, res: Response) => {
     }
   }
   if (reg) {
-    reg.status = status;
+    reg.status = finalStatus;
     if (assignedCode) reg.assignedCode = assignedCode;
   }
 
-  if (status === "approved" && assignedCode) {
+  if (finalStatus === "approved" && assignedCode) {
     const newBadge = {
       code: assignedCode,
       ownerName: ownerName || reg?.fullName || "متطوع",
-      type: type || reg?.type || "volunteer",
+      type: finalType || "volunteer",
       wilaya: wilaya || reg?.wilaya || "",
       phone: phone || reg?.phone || undefined,
       createdAt: new Date().toISOString(),

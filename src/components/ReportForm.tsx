@@ -673,6 +673,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setErrorMsg(isArabic ? "يرجى تحديد الموقع الجغرافي للحرائق أولاً." : "Veuillez spécifier la position GPS.");
       return;
     }
+    const parsedLat = parseFloat(lat);
+    const parsedLng = parseFloat(lng);
+    if (isNaN(parsedLat) || isNaN(parsedLng)) {
+      setErrorMsg(isArabic ? "إحداثيات غير صالحة. يرجى تحديد الموقع من الخريطة." : "Coordonnées invalides. Veuillez choisir la position sur la carte.");
+      return;
+    }
+    if (parsedLat < 19 || parsedLat > 38 || parsedLng < -18 || parsedLng > 25) {
+      setErrorMsg(isArabic ? "الإحداثيات المدخلة خارج نطاق المراقبة (شمال أفريقيا فقط)." : "Coordonnées hors de la zone surveillée (Afrique du Nord uniquement).");
+      return;
+    }
     if (!wilaya) {
       setErrorMsg(isArabic ? "يرجى اختيار الولاية." : "Veuillez choisir la Wilaya.");
       return;
@@ -685,17 +695,17 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     setIsSubmitting(true);
     setErrorMsg(null);
 
-    const payload = {
-      lat: parseFloat(lat),
-      lng: parseFloat(lng),
+    const payload: any = {
+      lat: parsedLat,
+      lng: parsedLng,
       locationName,
       wilaya,
       severity,
       description,
-      reporterName,
-      reporterPhone,
+      reporterName: reporterName || undefined,
+      reporterPhone: reporterPhone || undefined,
       reporterType,
-      reporterBadgeCode,
+      reporterBadgeCode: reporterBadgeCode || undefined,
       image,
     };
 
@@ -755,7 +765,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setCompressedSize(null);
       setEdgeAiStatus(null);
     } catch (err: any) {
-      setErrorMsg(isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.");
+      const serverMsg = err?.data?.error || err?.response?.data?.error;
+      setErrorMsg(
+        serverMsg ||
+        (isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.")
+      );
     } finally {
       setIsSubmitting(false);
     }

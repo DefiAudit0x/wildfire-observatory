@@ -20,6 +20,39 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
   const isArabic = lang === "ar";
   const [isCalculating, setIsCalculating] = useState(false);
   const [activeRoute, setActiveRoute] = useState<SafeZone | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const startVoiceNavigation = (zone: SafeZone) => {
+    if (!("speechSynthesis" in window)) {
+      alert(isArabic ? "الملاحة الصوتية غير مدعومة في متصفحك." : "Navigation vocale non supportée par votre navigateur.");
+      return;
+    }
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    const steps = isArabic
+      ? [
+          "انتبه، ابدأ الإخلاء فوراً.",
+          "اتجه شمالاً نحو الطريق الوطني 12.",
+          "انعطف يميناً، هذا المسار يتجنب حريق الغابة.",
+          `واصل لمسافة 3 كيلومترات حتى الوصول إلى ${zone.nameAr}.`,
+        ]
+      : [
+          "Attention, évacuez immédiatement.",
+          "Dirigez-vous vers le nord sur la route nationale 12.",
+          "Tournez à droite, cet itinéraire évite l'incendie.",
+          `Continuez sur 3 kilomètres jusqu'à ${zone.nameFr}.`,
+        ];
+    const utterance = new SpeechSynthesisUtterance(steps.join(" "));
+    utterance.lang = isArabic ? "ar-SA" : "fr-FR";
+    utterance.rate = 1;
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+    setIsSpeaking(true);
+  };
 
   const safeZones: SafeZone[] = [
     { id: "z1", nameAr: "ملعب مصطفى تشاكر - البليدة", nameFr: "Stade Mustapha Tchaker - Blida", capacity: 5000, currentOccupancy: 1200, distance: "4.2 km", hasMedical: true },
@@ -238,9 +271,18 @@ export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationPro
 
               {/* Action */}
               <div className="mt-4 pt-4 border-t border-white/5">
-                <button className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-all">
+                <button
+                  onClick={() => startVoiceNavigation(activeRoute)}
+                  className={`w-full font-bold py-3 rounded-lg flex items-center justify-center gap-2 transition-all ${
+                    isSpeaking
+                      ? "bg-red-600 hover:bg-red-500 text-white animate-pulse"
+                      : "bg-emerald-600 hover:bg-emerald-500 text-white"
+                  }`}
+                >
                   <Navigation2 className="h-5 w-5" />
-                  {isArabic ? "ابدأ الملاحة الصوتية (بدون إنترنت)" : "Démarrer la navigation (Hors-ligne)"}
+                  {isSpeaking
+                    ? (isArabic ? "إيقاف الملاحة الصوتية" : "Arrêter la navigation")
+                    : (isArabic ? "ابدأ الملاحة الصوتية (بدون إنترنت)" : "Démarrer la navigation (Hors-ligne)")}
                 </button>
                 <p className="text-xs text-center text-slate-400 mt-2 flex items-center justify-center gap-1">
                   <AlertTriangle className="h-3 w-3 text-amber-400" />

@@ -177,7 +177,7 @@ export default function InteractiveMap({
           <div class="relative flex items-center justify-center" style="width: 24px; height: 24px;">
             <div class="absolute rounded-full opacity-40 animate-ping" style="width: 24px; height: 24px; background-color: ${color};"></div>
             <div class="rounded-full shadow-lg border-2 border-white flex items-center justify-center text-white" style="width: 14px; height: 14px; background-color: ${color}; font-size: 8px;">
-              ${rep.consensusCount}
+              ${safeNumber(rep.consensusCount)}
             </div>
           </div>
         `,
@@ -229,8 +229,8 @@ export default function InteractiveMap({
             <span class="font-bold">📍 ${isArabic ? "بؤرة متزامنة جغرافياً (Geo-Cluster)" : "Geo-Cluster Actif"}</span>
             <p class="text-[9px] text-slate-300 mt-0.5">
               ${isArabic 
-                ? `تم دمج ${rep.clusterSize} بلاغات متشابهة في نطاق 3 كلم للحد من التكرار.` 
-                : `${rep.clusterSize} rapports fusionnés dans un rayon de 3km.`}
+                ? `تم دمج ${safeNumber(rep.clusterSize)} بلاغات متشابهة في نطاق 3 كلم للحد من التكرار.` 
+                : `${safeNumber(rep.clusterSize)} rapports fusionnés dans un rayon de 3km.`}
             </p>
           </div>
         `

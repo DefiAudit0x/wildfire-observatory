@@ -6,30 +6,44 @@ interface VolunteerRegistrationProps {
   lang: Language;
 }
 
+const DZ_WILAYAS = [
+  "أدرار", "الشلف", "الأغواط", "أم البواقي", "باتنة", "بجاية", "بسكرة", "بشار",
+  "البليدة", "البويرة", "تمنراست", "تبسة", "تلمسان", "تيارت", "تيزي وزو", "الجزائر العاصمة",
+  "الجلفة", "جيجل", "سطيف", "سعيدة", "سكيكدة", "سيدي بلعباس", "عنابة", "قالمة",
+  "قسنطينة", "المدية", "مستغانم", "المسيلة", "معسكر", "ورقلة", "وهران", "البيض",
+  "إليزي", "برج بوعريريج", "بومرداس", "الطارف", "تندوف", "تيسمسيلت", "الوادي", "خنشلة",
+  "سوق أهراس", "تيبازة", "ميلة", "عين الدفلى", "النعامة", "عين تموشنت", "غرداية", "غليزان",
+  "تيميمون", "برج باجي مختار", "أولاد جلال", "بني عباس", "عين صالح", "عين قزام", "تقرت", "جانت",
+  "المغير", "المنيعة",
+];
+
 const WILAYAS_LIST = [
-  { nameAr: "الجزائر - الجزائر العاصمة", nameFr: "Algérie - Alger" },
-  { nameAr: "الجزائر - وهران", nameFr: "Algérie - Oran" },
-  { nameAr: "الجزائر - قسنطينة", nameFr: "Algérie - Constantine" },
-  { nameAr: "الجزائر - عنابة", nameFr: "Algérie - Annaba" },
-  { nameAr: "الجزائر - الطارف", nameFr: "Algérie - El Tarf" },
-  { nameAr: "الجزائر - سكيكدة", nameFr: "Algérie - Skikda" },
-  { nameAr: "الجزائر - تيزي وزو", nameFr: "Algérie - Tizi Ouzou" },
-  { nameAr: "الجزائر - بجاية", nameFr: "Algérie - Béjaïa" },
-  { nameAr: "الجزائر - جيجل", nameFr: "Algérie - Jijel" },
+  ...DZ_WILAYAS.map((w) => ({ nameAr: `الجزائر - ${w}`, nameFr: `Algérie - ${w}` })),
   { nameAr: "تونس - تونس العاصمة", nameFr: "Tunisie - Tunis" },
   { nameAr: "تونس - جندوبة", nameFr: "Tunisie - Jendouba" },
   { nameAr: "تونس - بنزرت", nameFr: "Tunisie - Bizerte" },
   { nameAr: "تونس - سوسة", nameFr: "Tunisie - Sousse" },
   { nameAr: "تونس - صفاقس", nameFr: "Tunisie - Sfax" },
+  { nameAr: "تونس - القيروان", nameFr: "Tunisie - Kairouan" },
+  { nameAr: "تونس - الكاف", nameFr: "Tunisie - Le Kef" },
+  { nameAr: "تونس - باجة", nameFr: "Tunisie - Béja" },
+  { nameAr: "تونس - قابس", nameFr: "Tunisie - Gabès" },
   { nameAr: "المغرب - طنجة تطوان الحسيمة", nameFr: "Maroc - Tanger-Tétouan" },
   { nameAr: "المغرب - الرباط سلا القنيطرة", nameFr: "Maroc - Rabat-Salé" },
   { nameAr: "المغرب - الدار البيضاء سطات", nameFr: "Maroc - Casablanca-Settat" },
   { nameAr: "المغرب - مراكش آسفي", nameFr: "Maroc - Marrakech-Safi" },
+  { nameAr: "المغرب - فاس مكناس", nameFr: "Maroc - Fès-Meknès" },
+  { nameAr: "المغرب - بني ملال خنيفرة", nameFr: "Maroc - Béni Mellal-Khénifra" },
+  { nameAr: "المغرب - سوس ماسة", nameFr: "Maroc - Souss-Massa" },
+  { nameAr: "المغرب - الشرق", nameFr: "Maroc - L'Oriental" },
+  { nameAr: "المغرب - كلميم واد نون", nameFr: "Maroc - Guelmim-Oued Noun" },
   { nameAr: "ليبيا - طرابلس", nameFr: "Libye - Tripoli" },
   { nameAr: "ليبيا - بنغازي", nameFr: "Libye - Benghazi" },
   { nameAr: "ليبيا - الجبل الأخضر", nameFr: "Libye - Al Jabal al Akhdar" },
   { nameAr: "ليبيا - درنة", nameFr: "Libye - Derna" },
   { nameAr: "ليبيا - مصراتة", nameFr: "Libye - Misrata" },
+  { nameAr: "ليبيا - الزاوية", nameFr: "Libye - Az Zawiyah" },
+  { nameAr: "ليبيا - سبها", nameFr: "Libye - Sebha" },
 ];
 
 export default function VolunteerRegistration({ lang }: VolunteerRegistrationProps) {
@@ -41,6 +55,7 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const [honeypot, setHoneypot] = useState("");
 
   const isArabic = lang === "ar";
 
@@ -50,6 +65,22 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
       setErrorMsg(isArabic ? "يرجى ملء الحقول الإلزامية" : "Veuillez remplir les champs obligatoires");
       return;
     }
+
+    const PHONE_DZ = /^(?:\+213|0)(5|6|7)\d{8}$/;
+    const PHONE_TN = /^(?:\+216)?[2-9]\d{7}$/;
+    const PHONE_MA = /^(?:\+212|0)(?:5|6|7)\d{8}$/;
+    const PHONE_LY = /^(?:\+218|0)[2-9]\d{8}$/;
+    const cleanPhone = phone.replace(/[\s\-]/g, "");
+    if (!PHONE_DZ.test(cleanPhone) && !PHONE_TN.test(cleanPhone) && !PHONE_MA.test(cleanPhone) && !PHONE_LY.test(cleanPhone)) {
+      setErrorMsg(isArabic
+        ? "رقم الهاتف غير صحيح. يرجى إدخال رقم مغاربي صالح (مثال: 0550123456 أو +213550123456)."
+        : "Numéro invalide. Veuillez entrer un numéro maghrébin valide (ex: 0550123456 ou +213550123456).");
+      return;
+    }
+
+    if (honeypot) return;
+
+    setErrorMsg("");
     setIsSubmitting(true);
     setErrorMsg("");
 
@@ -117,6 +148,10 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-3">
+        <div style={{ display: "none" }} aria-hidden="true">
+          <input type="text" name="website" value={honeypot} onChange={(e) => setHoneypot(e.target.value)} tabIndex={-1} autoComplete="off" />
+        </div>
+
         <div className="relative">
           <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
           <input value={fullName} onChange={e => setFullName(e.target.value)} required

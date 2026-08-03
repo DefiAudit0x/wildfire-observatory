@@ -16,7 +16,7 @@ import {
   Layers,
   Shield
 } from "lucide-react";
-import { Language } from "../types";
+import { Language, Report } from "../types";
 
 interface HomeHubProps {
   onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
@@ -24,11 +24,38 @@ interface HomeHubProps {
   lang: Language;
   reportsCount: number;
   sosCount: number;
+  reports?: Report[];
+  userLocation?: { lat: number; lng: number } | null;
 }
 
-export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount }: HomeHubProps) {
+function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], userLocation }: HomeHubProps) {
   const isArabic = lang === "ar";
   const [showAllServices, setShowAllServices] = useState(false);
+
+  const nearbyActiveFires = userLocation
+    ? reports.filter(
+        (r) =>
+          (r.status === "pending" || r.status === "verified") &&
+          getDistanceKm(userLocation.lat, userLocation.lng, r.lat, r.lng) <= 10
+      )
+    : [];
+  const emergencyMode = nearbyActiveFires.length >= 3;
+  const nearestFire = nearbyActiveFires.length > 0
+    ? nearbyActiveFires.reduce((a, b) =>
+        getDistanceKm(userLocation!.lat, userLocation!.lng, a.lat, a.lng) <=
+        getDistanceKm(userLocation!.lat, userLocation!.lng, b.lat, b.lng) ? a : b
+      )
+    : null;
 
   const secondaryServices = [
     {
@@ -89,7 +116,44 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
 
   return (
     <div className="w-full space-y-6 animate-fadeIn max-w-4xl mx-auto px-2" dir={isArabic ? "rtl" : "ltr"}>
-      
+
+      {/* Emergency Mode Banner: 3+ active fires within 10km */}
+      {emergencyMode && userLocation && (
+        <div className="relative overflow-hidden bg-red-950/90 border-2 border-red-500 rounded-2xl p-4 md:p-5 shadow-[0_0_40px_rgba(239,68,68,0.35)] animate-pulse">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="text-3xl">🚨</span>
+              <div>
+                <h3 className="text-lg md:text-xl font-black text-white">
+                  {isArabic ? "⚠️ حالة طوارئ قصوى! حرائق متعددة قريبة منك" : "⚠️ Urgence maximale ! Foyers multiples à proximité"}
+                </h3>
+                <p className="text-xs text-red-200 leading-relaxed">
+                  {isArabic
+                    ? `${nearbyActiveFires.length} حرائق نشطة على بعد أقل من 10 كم من موقعك${nearestFire ? ` — أقربها: ${nearestFire.locationName} (${Math.round(getDistanceKm(userLocation.lat, userLocation.lng, nearestFire.lat, nearestFire.lng))} كم)` : ""}. اخلَ فوراً ولا تنتظر انتشار النيران.`
+                    : `${nearbyActiveFires.length} foyers actifs à moins de 10 km${nearestFire ? ` — le plus proche : ${nearestFire.locationName} (${Math.round(getDistanceKm(userLocation.lat, userLocation.lng, nearestFire.lat, nearestFire.lng))} km)` : ""}. Évacuez immédiatement.`}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => onNavigate("evac")}
+                className="px-4 py-2.5 bg-white text-red-700 rounded-xl text-xs font-black hover:bg-red-50 transition-colors cursor-pointer"
+              >
+                {isArabic ? "مسارات النجاة الآن" : "Itinéraires de secours"}
+              </button>
+              <button
+                type="button"
+                onClick={onTriggerSOS}
+                className="px-4 py-2.5 bg-red-600 hover:bg-red-500 border border-red-400 text-white rounded-xl text-xs font-black transition-colors cursor-pointer"
+              >
+                {isArabic ? "طلب نجدة فوري" : "SOS immédiat"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Reassurance Header */}
       <div className="relative overflow-hidden bg-zinc-900/60 border border-white/5 rounded-2xl p-5 md:p-6 text-center space-y-3 shadow-xl">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 h-32 w-32 bg-red-600/10 rounded-full blur-3xl"></div>

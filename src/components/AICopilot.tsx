@@ -13,8 +13,32 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
   const [activeWilaya, setActiveWilaya] = useState<string>("");
 
   const isArabic = lang === "ar";
+  const CACHE_TTL_MS = 60 * 60 * 1000;
 
-  const fetchGuidance = async () => {
+  const getCacheKey = () => {
+    const lat = userLocation?.lat?.toFixed(2) || "36.8";
+    const lng = userLocation?.lng?.toFixed(2) || "7.5";
+    return `ai_guidance_${lang}_${lat}_${lng}_${activeWilaya}`;
+  };
+
+  const fetchGuidance = async (force = false) => {
+    const cacheKey = getCacheKey();
+
+    if (!force) {
+      try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed.guidance && Date.now() - parsed.timestamp < CACHE_TTL_MS) {
+            setGuidance(parsed.guidance);
+            return;
+          }
+        }
+      } catch {
+        // ignore corrupted cache
+      }
+    }
+
     setLoading(true);
     try {
       const response = await fetch("/api/ai/guidance", {
@@ -28,7 +52,15 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
         }),
       });
       const data = await response.json();
-      setGuidance(data.guidance || "");
+      const text = data.guidance || "";
+      setGuidance(text);
+      if (text) {
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({ guidance: text, timestamp: Date.now() }));
+        } catch {
+          // storage full — cache skipped
+        }
+      }
     } catch (err) {
       console.error(err);
       setGuidance(
@@ -64,7 +96,7 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
         </div>
 
         <button
-          onClick={fetchGuidance}
+          onClick={() => fetchGuidance(true)}
           disabled={loading}
           className="p-1.5 hover:bg-zinc-800 text-gray-400 hover:text-slate-200 rounded transition-colors"
           title={isArabic ? "تحديث التقرير" : "Actualiser"}
