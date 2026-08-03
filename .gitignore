@@ -9,3 +9,7 @@ firebase-service-account.json
 conversations.json
 user.json
 assets/
+android/release.keystore
+android/local.properties
+*.keystore
+*.jks

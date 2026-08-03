@@ -10,22 +10,35 @@ async function getAdminFirestoreModule() {
   return import("firebase-admin/firestore");
 }
 
+const REPORTS_CACHE_TTL_MS = 30 * 1000;
+let reportsCache: { data: any[] | null; expiresAt: number } | null = null;
+
+export function invalidateReportsCache() {
+  reportsCache = null;
+}
+
 export async function getReportsFromFirestore() {
+  if (reportsCache && Date.now() < reportsCache.expiresAt) return reportsCache.data;
   const db = getDb();
   if (!db) return null;
   try {
+    let data: any[] | null = null;
     if (isAdminDb(db)) {
       const snapshot = await db.collection("reports").orderBy("timestamp", "desc").get();
-      if (snapshot.empty) return null;
-      return snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as any[];
+      if (!snapshot.empty) {
+        data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as any[];
+      }
     } else {
       const { collection, getDocs, query, orderBy } = await loadClientSdk();
       const reportsCol = collection(db, "reports");
       const q = query(reportsCol, orderBy("timestamp", "desc"));
       const snapshot = await getDocs(q);
-      if (snapshot.empty) return null;
-      return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+      if (!snapshot.empty) {
+        data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+      }
     }
+    reportsCache = { data, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
+    return data;
   } catch (err) {
     logger.error({ err }, "Error reading reports from Firestore");
     return null;
@@ -62,6 +75,7 @@ export async function saveReportToFirestore(report: any) {
       const { setDoc, doc } = await loadClientSdk();
       await setDoc(doc(db, "reports", report.id), report);
     }
+    invalidateReportsCache();
     return true;
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to save report");
@@ -144,6 +158,7 @@ export async function updateReportInFirestore(id: string, updateData: Record<str
       const { doc, updateDoc } = await loadClientSdk();
       await updateDoc(doc(db, "reports", id), updateData);
     }
+    invalidateReportsCache();
     return true;
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to update report");
@@ -161,6 +176,7 @@ export async function deleteReportFromFirestore(id: string) {
       const { doc, deleteDoc } = await loadClientSdk();
       await deleteDoc(doc(db, "reports", id));
     }
+    invalidateReportsCache();
     return true;
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to delete report");
