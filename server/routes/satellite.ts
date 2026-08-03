@@ -16,14 +16,21 @@ async function fetchFirmsData(source: string): Promise<any[]> {
   if (!apiKey || apiKey === "MY_NASA_FIRMS_KEY") return [];
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
-  const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${apiKey}/${source}/${minLat}/${maxLat}/${minLng}/${maxLng}/1`;
+  const url = `${config.firmsBaseUrl}/${apiKey}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
     const response = await fetch(url, { signal: controller.signal });
-    if (!response.ok) return [];
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      logger.warn(
+        { status: response.status, source, snippet: body.slice(0, 200) },
+        "NASA FIRMS HTTP error — check MAP_KEY validity, area format, and IP authorization"
+      );
+      return [];
+    }
 
     const text = await response.text();
     const lines = text.trim().split("\n");
@@ -52,7 +59,11 @@ async function fetchFirmsData(source: string): Promise<any[]> {
     }
     return hotspots;
   } catch (err) {
-    logger.warn({ err, source }, "NASA FIRMS fetch failed");
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { source, msg },
+      "NASA FIRMS fetch failed — if 'ETIMEDOUT', the server IP is likely not authorized on the FIRMS account; whitelist it or set FIRMS_BASE_URL to a Cloudflare Worker proxy"
+    );
     return [];
   } finally {
     clearTimeout(timeout);

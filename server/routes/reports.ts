@@ -15,6 +15,7 @@ import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
+import { docGet } from "../fs.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -56,6 +57,23 @@ const VALID_BADGE_CODES = new Set(
 const BADGE_ATTEMPT_WINDOW_MS = 60 * 1000;
 const MAX_BADGE_ATTEMPTS_PER_WINDOW = 10;
 const badgeAttempts = new Map<string, { count: number; expiresAt: number }>();
+
+const BADGE_CACHE_TTL_MS = 5 * 60 * 1000;
+const badgeCache = new Map<string, { valid: boolean; expiresAt: number }>();
+
+async function isBadgeApprovedInFirestore(badgeCode: string): Promise<boolean> {
+  const cached = badgeCache.get(badgeCode);
+  if (cached && Date.now() < cached.expiresAt) return cached.valid;
+  let valid = false;
+  try {
+    const doc = await docGet("badgeCodes", badgeCode);
+    valid = !!doc && doc.isActive !== false;
+  } catch (err) {
+    logger.warn({ err, badgeCode }, "badgeCodes Firestore lookup failed — falling back to env-only");
+  }
+  badgeCache.set(badgeCode, { valid, expiresAt: Date.now() + BADGE_CACHE_TTL_MS });
+  return valid;
+}
 
 function badgeRateLimited(badgeCode: string): boolean {
   const now = Date.now();
@@ -154,15 +172,14 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   let initialConsensus = 1;
 
   if (reporterType === "official" || reporterType === "volunteer") {
-    if (
-      reporterBadgeCode &&
-      VALID_BADGE_CODES.has(reporterBadgeCode.trim()) &&
-      !badgeRateLimited(reporterBadgeCode.trim())
-    ) {
+    const code = reporterBadgeCode?.trim();
+    const envTrusted = !!code && VALID_BADGE_CODES.has(code) && !badgeRateLimited(code);
+    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code)) && !badgeRateLimited(code);
+    if (envTrusted || firestoreTrusted) {
       isTrusted = true;
       finalStatus = "verified";
       initialConsensus = 10;
-      logger.info(`Trusted report from ${reporterType}: ${reporterBadgeCode}`);
+      logger.info(`Trusted report from ${reporterType}: ${code}`);
     } else {
       logger.warn(`Invalid badge code attempt: ${reporterBadgeCode}`);
     }

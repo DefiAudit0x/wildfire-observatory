@@ -15,6 +15,7 @@ const config = {
   nodeEnv,
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   nasaFirmsKey: process.env.NASA_FIRMS_KEY || "",
+  firmsBaseUrl: process.env.FIRMS_BASE_URL || "https://firms.modaps.eosdis.nasa.gov/api/area/csv",
   adminPassword: process.env.ADMIN_PASSWORD || "",
   superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || "",
   jwtSecret: nodeEnv === "production" ? jwtSecret! : devJwtSecret,

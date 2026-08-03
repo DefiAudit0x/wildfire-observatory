@@ -168,6 +168,11 @@ async function startServer() {
     }
   });
 
+  fetch("https://api.ipify.org")
+    .then((r) => r.text())
+    .then((ip) => logger.info(`Egress IP: ${ip} — whitelist this IP on the NASA FIRMS account if FIRMS fails`))
+    .catch((err) => logger.warn({ err }, "Could not determine egress IP"));
+
   meshHub.attach(httpServer);
   logger.info(`Mesh hub listening on ${MESH_PATH}`);
   liveHub.attach(httpServer);
