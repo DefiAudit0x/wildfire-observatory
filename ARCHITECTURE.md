@@ -144,7 +144,6 @@ observatory/
 │   ├── components/
 │   │   ├── AdminPanel.tsx
 │   │   ├── AICopilot.tsx
-│   │   ├── CrisisCenter.tsx
 │   │   ├── EvacuationRadar.tsx
 │   │   ├── InteractiveMap.tsx
 │   │   ├── ReportForm.tsx

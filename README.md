@@ -133,7 +133,6 @@ observatory/
 │       ├── AdminPanel.tsx      # Admin moderation dashboard
 │       ├── AICopilot.tsx       # AI guidance assistant
 │       ├── EvacuationRadar.tsx # Evacuation radar view
-│       ├── CrisisCenter.tsx    # Crisis operations center
 │       ├── SafetyGuides.tsx    # Safety guides
 │       ├── StatisticsPanel.tsx # Wilaya statistics
 │       └── WilayaList.tsx      # Region status list
