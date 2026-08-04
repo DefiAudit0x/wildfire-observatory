@@ -13,10 +13,10 @@ let cacheTimestamp = 0;
 
 async function fetchFirmsData(source: string): Promise<any[]> {
   const apiKey = config.nasaFirmsKey;
-  if (!apiKey || apiKey === "MY_NASA_FIRMS_KEY") return [];
+  const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
+  if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return [];
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
-  const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
   const days = 3;
   const url = isProxy
     ? `${config.firmsBaseUrl}/${source}/${minLng},${minLat},${maxLng},${maxLat}/${days}`
