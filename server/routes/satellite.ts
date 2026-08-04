@@ -17,9 +17,10 @@ async function fetchFirmsData(source: string): Promise<any[]> {
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
   const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
+  const days = 3;
   const url = isProxy
-    ? `${config.firmsBaseUrl}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`
-    : `${config.firmsBaseUrl}/${apiKey}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`;
+    ? `${config.firmsBaseUrl}/${source}/${minLng},${minLat},${maxLng},${maxLat}/${days}`
+    : `${config.firmsBaseUrl}/${apiKey}/${source}/${minLng},${minLat},${maxLng},${maxLat}/${days}`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
