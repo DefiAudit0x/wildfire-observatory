@@ -16,7 +16,10 @@ async function fetchFirmsData(source: string): Promise<any[]> {
   if (!apiKey || apiKey === "MY_NASA_FIRMS_KEY") return [];
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
-  const url = `${config.firmsBaseUrl}/${apiKey}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`;
+  const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
+  const url = isProxy
+    ? `${config.firmsBaseUrl}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`
+    : `${config.firmsBaseUrl}/${apiKey}/${source}/${minLng},${minLat},${maxLng},${maxLat}/1`;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 15000);
