@@ -43,20 +43,20 @@ async function fetchFirmsData(source: string): Promise<any[]> {
     const hotspots: any[] = [];
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split(",");
-      if (cols.length < 8) continue;
-      const lat = parseFloat(cols[1]);
-      const lng = parseFloat(cols[2]);
-      const brightness = parseFloat(cols[3]);
-      const scanDate = cols[4];
-      const scanTime = cols[5];
-      const satType = cols[6] === "N" ? "VIIRS" : "MODIS";
-      const confidenceStr = cols[7];
+      if (cols.length < 10) continue;
+      const lat = parseFloat(cols[0]);
+      const lng = parseFloat(cols[1]);
+      const brightness = parseFloat(cols[2]);
+      const scanDate = cols[5];
+      const scanTimeRaw = cols[6].padStart(4, "0");
+      const satType = cols[8];
+      const confidenceStr = cols[9];
       const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
       if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
           lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng) {
         hotspots.push({
           id: `sat-live-${source}-${i}`, lat, lng, brightness, confidence,
-          scanTime: `${scanDate}T${scanTime.substring(0, 2)}:${scanTime.substring(2, 4)}:00Z`,
+          scanTime: `${scanDate}T${scanTimeRaw.substring(0, 2)}:${scanTimeRaw.substring(2, 4)}:00Z`,
           satellite: satType, wilaya: determineWilayaByCoords(lat, lng),
         });
       }
