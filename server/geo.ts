@@ -29,6 +29,10 @@ export function determineWilayaByCoords(lat: number, lng: number): string {
   return "خارج التغطية (Hors zone)";
 }
 
+export function isInKnownWilaya(lat: number, lng: number): boolean {
+  return WILAYA_BOUNDS.some((b) => pointInBounds(lat, lng, b));
+}
+
 const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = [
   { name: "الجزائر - الطارف (Algérie - El Tarf)", minLat: 36.5, maxLat: 37.0, minLng: 8.0, maxLng: 8.6 },
   { name: "الجزائر - عنابة (Algérie - Annaba)", minLat: 36.7, maxLat: 37.0, minLng: 7.4, maxLng: 7.95 },

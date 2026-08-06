@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
 import { satelliteHotspots } from "../data.js";
-import { determineWilayaByCoords } from "../geo.js";
+import { determineWilayaByCoords, isInKnownWilaya } from "../geo.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -53,7 +53,8 @@ async function fetchFirmsData(source: string): Promise<any[]> {
       const confidenceStr = cols[9];
       const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
       if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
-          lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng) {
+          lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
+          isInKnownWilaya(lat, lng)) {
         hotspots.push({
           id: `sat-live-${source}-${i}`, lat, lng, brightness, confidence,
           scanTime: `${scanDate}T${scanTimeRaw.substring(0, 2)}:${scanTimeRaw.substring(2, 4)}:00Z`,
