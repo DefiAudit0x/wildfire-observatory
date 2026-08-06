@@ -172,6 +172,8 @@ export function useObservatoryData() {
     try {
       const res = await fetch(`/api/reports/${id}/confirm`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId }),
       });
       if (res.ok) {
         const result = await res.json();
@@ -187,7 +189,7 @@ export function useObservatoryData() {
     } catch (err) {
       console.error("Failed to confirm report:", err);
     }
-  }, []);
+  }, [deviceId]);
 
   const handleMarkNotificationRead = useCallback(async (id: string) => {
     try {

@@ -351,13 +351,15 @@ function recordVoter(reportId: string, voterIp: string): boolean {
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
   const { id } = req.params;
   const voterIp = req.ip || req.socket.remoteAddress || "unknown";
+  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
+  const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
 
-  if (!recordVoter(id, voterIp)) {
+  if (!recordVoter(id, voterKey)) {
     res.status(409).json({ error: "Already confirmed from this device" });
     return;
   }
 
-  const result = await confirmReportInFirestore(id, voterIp);
+  const result = await confirmReportInFirestore(id, voterKey);
   if (result) {
     if ("error" in result && result.error === "ALREADY_VOTED") {
       res.status(409).json({ error: "Already confirmed" });

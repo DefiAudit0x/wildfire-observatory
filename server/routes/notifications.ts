@@ -35,7 +35,15 @@ export async function createNotification(notif: { deviceId: string; titleAr: str
   return newNotif;
 }
 
-router.get("/verify", async (req: Request, res: Response) => {
+const verifyLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many verification requests. Try again shortly." },
+});
+
+router.get("/verify", verifyLimiter, async (req: Request, res: Response) => {
   const { email, token } = req.query;
   if (!email || !token) {
     res.status(400).json({ error: "Email and token are required" });
@@ -205,7 +213,15 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
   }
 });
 
-router.post("/unsubscribe", async (req: Request, res: Response) => {
+const unsubscribeLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many unsubscribe requests. Try again shortly." },
+});
+
+router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Response) => {
   const { email } = req.body;
   if (!email || typeof email !== "string") {
     res.status(400).json({ error: "Email is required" });
