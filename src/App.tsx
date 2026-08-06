@@ -1,7 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from "react";
 import { Flame, ShieldAlert, Navigation, Sparkles, BookOpen, Layers, Globe, RefreshCw, AlertCircle, Phone, MessageSquare, Clock, Compass, Shield, Wifi, WifiOff, BadgeCheck, Crown, AlertTriangle, Bell, X, CheckCircle, Info } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus, Language, TrappedSOS } from "./types";
-import InteractiveMap from "./components/InteractiveMap";
 import ReportForm from "./components/ReportForm";
 import StatisticsPanel from "./components/StatisticsPanel";
 import WilayaList from "./components/WilayaList";
@@ -10,13 +9,21 @@ import SafetyGuides from "./components/SafetyGuides";
 import EvacuationRadar from "./components/EvacuationRadar";
 import AdminPanel from "./components/AdminPanel";
 import VolunteerRegistration from "./components/VolunteerRegistration";
-import CentralCommand from "./components/CentralCommand";
 import SafeEvacuation from "./components/SafeEvacuation";
 import TrappedSOSModal from "./components/TrappedSOSModal";
 import HomeHub from "./components/HomeHub";
 import { fetchWithRetry } from "./utils/api";
 import { meshClient } from "./lib/mesh";
 import { useLiveEvents } from "./utils/live";
+
+const CentralCommand = lazy(() => import("./components/CentralCommand"));
+const InteractiveMap = lazy(() => import("./components/InteractiveMap"));
+
+const PanelFallback = () => (
+  <div className="col-span-12 py-24 flex items-center justify-center text-sm text-gray-500 font-bold animate-pulse">
+    ⏳ {document.documentElement.lang === "ar" ? "جارٍ تحميل لوحة القيادة..." : "Chargement du tableau de bord..."}
+  </div>
+);
 
 const getDeviceId = () => {
   let id = sessionStorage.getItem("device_id");
@@ -738,7 +745,9 @@ export default function App() {
 
         {/* Central Command - full-screen command dashboard */}
         {activeTab === "command" && (
-          <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={fetchData} />
+          <Suspense fallback={<PanelFallback />}>
+            <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={fetchData} />
+          </Suspense>
         )}
 
         {/* Safe Evacuation View */}
@@ -782,14 +791,16 @@ export default function App() {
                     )}
                   </div>
                   
-                  <InteractiveMap
-                    reports={reports}
-                    satellites={satellites}
-                    onMapClick={handleMapClick}
-                    onConfirmReport={handleConfirmReport}
-                    selectedReportId={selectedReportId}
-                    lang={lang}
-                  />
+                  <Suspense fallback={<PanelFallback />}>
+                    <InteractiveMap
+                      reports={reports}
+                      satellites={satellites}
+                      onMapClick={handleMapClick}
+                      onConfirmReport={handleConfirmReport}
+                      selectedReportId={selectedReportId}
+                      lang={lang}
+                    />
+                  </Suspense>
                 </div>
               )}
 

@@ -33,8 +33,8 @@ function esc(value: unknown): string {
 }
 
 export default function CentralCommand({ reports, satellites, sosCalls = [], userLocation, lang, onRefresh }: CentralCommandProps) {
-  const [unlocked, setUnlocked] = useState(false);
-  const [commandToken, setCommandToken] = useState("");
+  const [unlocked, setUnlocked] = useState(() => !!sessionStorage.getItem("command_token"));
+  const [commandToken, setCommandToken] = useState(() => sessionStorage.getItem("command_token") || "");
   const [activeUsers, setActiveUsers] = useState<UserLocationData[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [dispatchLoading, setDispatchLoading] = useState(false);
