@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-const CACHE_NAME = "observatory-v5";
-const API_CACHE = "observatory-api-v5";
+const CACHE_NAME = "observatory-v6";
+const API_CACHE = "observatory-api-v6";
 const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
