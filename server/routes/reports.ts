@@ -46,13 +46,19 @@ function isDuplicateReport(lat: number, lng: number): boolean {
   return false;
 }
 
-const DEFAULT_BADGE_CODES = "1021,777,888,150,198";
+const DEFAULT_BADGE_CODES = "";
 const VALID_BADGE_CODES = new Set(
   (process.env.TRUSTED_BADGE_CODES || DEFAULT_BADGE_CODES)
     .split(",")
     .map((c) => c.trim())
     .filter(Boolean)
 );
+
+if (process.env.NODE_ENV === "production" && VALID_BADGE_CODES.size === 0) {
+  logger.warn(
+    "TRUSTED_BADGE_CODES is NOT configured in production — no badge-based trust elevation is accepted. Set it to enable trusted reporting."
+  );
+}
 
 const BADGE_ATTEMPT_WINDOW_MS = 60 * 1000;
 const MAX_BADGE_ATTEMPTS_PER_WINDOW = 10;

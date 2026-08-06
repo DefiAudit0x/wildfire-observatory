@@ -29,7 +29,15 @@ class MeshHub {
 
   attach(server: Server): void {
     if (this.wss) return;
-    this.wss = new WebSocketServer({ server, path: MESH_PATH, maxPayload: MAX_MESSAGE_BYTES });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
+
+    server.on("upgrade", (req, socket, head) => {
+      const pathname = new URL(req.url || "/", "http://localhost").pathname;
+      if (pathname !== MESH_PATH || !this.wss) return;
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss!.emit("connection", ws, req);
+      });
+    });
 
     this.wss.on("connection", (ws, req) => {
       const ip = req.socket.remoteAddress || "unknown";

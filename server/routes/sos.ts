@@ -32,7 +32,17 @@ function stripAudio(sos: any) {
   return hasAudio ? { ...rest, hasAudio } : sos;
 }
 
-router.get("/", async (_req: Request, res: Response) => {
+function anonymizeSos(sos: any) {
+  if (!sos) return sos;
+  const { name, phone, audioUrl, dispatchedTeams, ...rest } = sos;
+  return {
+    ...rest,
+    lat: Math.round(sos.lat * 100) / 100,
+    lng: Math.round(sos.lng * 100) / 100,
+  };
+}
+
+async function getAllSos(): Promise<any[]> {
   const fromDb = await collectionGet("trappedSos", "timestamp", 100);
   let merged: any[];
   if (fromDb && fromDb.length > 0) {
@@ -42,6 +52,16 @@ router.get("/", async (_req: Request, res: Response) => {
   } else {
     merged = memorySos;
   }
+  return merged;
+}
+
+router.get("/", async (_req: Request, res: Response) => {
+  const merged = await getAllSos();
+  res.json(merged.map(stripAudio).map(anonymizeSos));
+});
+
+router.get("/full", requireAdmin, async (_req: Request, res: Response) => {
+  const merged = await getAllSos();
   res.json(merged.map(stripAudio));
 });
 

@@ -2,7 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
-import { verifyAdminPassword } from "./admin.js";
+import { requireAdmin } from "../middleware.js";
 import { logAdminAction } from "./audit.js";
 import logger from "../logger.js";
 
@@ -58,23 +58,14 @@ async function loadRegs(): Promise<any[]> {
   return memoryRegs;
 }
 
-router.get("/pending", async (req: Request, res: Response) => {
-  const { password } = req.query;
-  if (!password || !(await verifyAdminPassword(String(password)))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+router.get("/pending", requireAdmin, async (_req: Request, res: Response) => {
   const registrations = await loadRegs();
   res.json(registrations);
 });
 
-router.post("/:id/approve", async (req: Request, res: Response) => {
+router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { password, status, assignedCode, ownerName, type, wilaya, phone } = req.body;
-  if (!password || !(await verifyAdminPassword(password))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+  const { status, assignedCode, ownerName, type, wilaya, phone } = req.body;
   const finalStatus = status === "approved" || status === "rejected" ? status : "pending";
   const finalType = type === "official" || type === "volunteer" ? type : undefined;
 

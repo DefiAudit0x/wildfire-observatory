@@ -39,7 +39,22 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [dispatchLoading, setDispatchLoading] = useState(false);
   const [focus, setFocus] = useState<FocusTarget | null>(null);
+  const [fullSos, setFullSos] = useState<TrappedSOS[]>(sosCalls);
   const isArabic = lang === "ar";
+
+  const fetchFullSos = useCallback(async () => {
+    if (!commandToken) return;
+    try {
+      const res = await fetch("/api/sos/full", {
+        headers: { Authorization: `Bearer ${commandToken}` },
+      });
+      if (res.ok) {
+        setFullSos(await res.json());
+      }
+    } catch (err) {
+      console.error("Failed to fetch full SOS list:", err);
+    }
+  }, [commandToken]);
 
   const fetchUserLocations = useCallback(async () => {
     setLoadingUsers(true);
@@ -63,13 +78,17 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
 
   useEffect(() => {
     if (unlocked) {
+      fetchFullSos();
       fetchUserLocations();
-      const interval = setInterval(fetchUserLocations, 15000);
+      const interval = setInterval(() => {
+        fetchFullSos();
+        fetchUserLocations();
+      }, 15000);
       return () => clearInterval(interval);
     }
-  }, [unlocked, fetchUserLocations]);
+  }, [unlocked, fetchFullSos, fetchUserLocations]);
 
-  const teams = getTeamsStatusAndPositions(sosCalls);
+  const teams = getTeamsStatusAndPositions(fullSos);
 
   const handleUnlocked = (token: string) => {
     sessionStorage.setItem("command_token", token);
@@ -218,7 +237,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         isArabic={isArabic}
         reports={reports}
         satellites={satellites}
-        sosCalls={sosCalls}
+        sosCalls={fullSos}
         activeUsers={activeUsers}
         teams={teams}
       />
@@ -230,7 +249,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           satellites={satellites}
           activeUsers={activeUsers}
           reports={reports}
-          sosCalls={sosCalls}
+          sosCalls={fullSos}
           teams={teams}
           focus={focus}
         />
@@ -239,7 +258,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         <div className="lg:col-span-4 flex flex-col gap-4">
           <SosPanel
             isArabic={isArabic}
-            sosCalls={sosCalls}
+            sosCalls={fullSos}
             token={commandToken}
             dispatchLoading={dispatchLoading}
             onDispatch={handleDispatchSubmit}
@@ -254,7 +273,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       <TeamsTable
         isArabic={isArabic}
         teams={teams}
-        sosCalls={sosCalls}
+        sosCalls={fullSos}
         dispatchLoading={dispatchLoading}
         onDirectDispatch={handleDirectDispatch}
         onTargetTeam={handleTargetTeam}

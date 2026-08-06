@@ -10,7 +10,15 @@ class LiveHub {
 
   attach(server: Server): void {
     if (this.wss) return;
-    this.wss = new WebSocketServer({ server, path: LIVE_PATH, maxPayload: 64 * 1024 });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+
+    server.on("upgrade", (req, socket, head) => {
+      const pathname = new URL(req.url || "/", "http://localhost").pathname;
+      if (pathname !== LIVE_PATH || !this.wss) return;
+      this.wss.handleUpgrade(req, socket, head, (ws) => {
+        this.wss!.emit("connection", ws, req);
+      });
+    });
 
     this.wss.on("connection", (ws) => {
       this.clients.add(ws);
