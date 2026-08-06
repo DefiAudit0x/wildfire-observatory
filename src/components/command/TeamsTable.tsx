@@ -8,18 +8,62 @@ interface TeamsTableProps {
   teams: TeamStatus[];
   sosCalls: TrappedSOS[];
   dispatchLoading: boolean;
-  onDirectDispatch: (teamId: string, sosId: string, notes: string) => void;
+  onDirectDispatch: (teamId: string, sosId: string, notes: string) => Promise<boolean>;
   onTargetTeam: (team: TeamStatus) => void;
 }
 
 export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading, onDirectDispatch, onTargetTeam }: TeamsTableProps) {
   const [tableDispatchSosId, setTableDispatchSosId] = useState<Record<string, string>>({});
   const [tableDispatchNotes, setTableDispatchNotes] = useState<Record<string, string>>({});
+  const [dispatchResult, setDispatchResult] = useState<Record<string, { ok: boolean; text: string }>>({});
+  const [dispatchingTeamId, setDispatchingTeamId] = useState<string | null>(null);
 
-  const activeSos = sosCalls.filter((s) => s.status === "active");
+  const activeSos = sosCalls
+    .filter((s) => s.status === "active")
+    .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   const availableCount = teams.filter((t) => t.status === "available").length;
   const enRouteCount = teams.filter((t) => t.status === "en_route").length;
   const onSiteCount = teams.filter((t) => t.status === "on_site").length;
+
+  const handleDispatchClick = async (team: TeamStatus) => {
+    if (dispatchingTeamId) return;
+    let sosId = tableDispatchSosId[team.id] || "";
+    if (!sosId) {
+      const oldestUnassigned = activeSos.find((s) => !s.dispatchedTeams || s.dispatchedTeams.length === 0);
+      if (oldestUnassigned) {
+        sosId = oldestUnassigned.id;
+        setTableDispatchSosId((prev) => ({ ...prev, [team.id]: sosId }));
+      } else if (activeSos.length > 0) {
+        sosId = activeSos[0].id;
+        setTableDispatchSosId((prev) => ({ ...prev, [team.id]: sosId }));
+      } else {
+        setDispatchResult((prev) => ({
+          ...prev,
+          [team.id]: { ok: false, text: isArabic ? "لا توجد استغاثات نشطة للتوجيه" : "Aucun SOS actif" },
+        }));
+        return;
+      }
+    }
+
+    setDispatchingTeamId(team.id);
+    setDispatchResult((prev) => {
+      const next = { ...prev };
+      delete next[team.id];
+      return next;
+    });
+    const ok = await onDirectDispatch(team.id, sosId, tableDispatchNotes[team.id] || "");
+    setDispatchingTeamId(null);
+    if (ok) {
+      setTableDispatchSosId((prev) => ({ ...prev, [team.id]: "" }));
+      setTableDispatchNotes((prev) => ({ ...prev, [team.id]: "" }));
+    }
+    setDispatchResult((prev) => ({
+      ...prev,
+      [team.id]: ok
+        ? { ok: true, text: isArabic ? "✓ تم توجيه الفريق" : "✓ Équipe dépêchée" }
+        : { ok: false, text: isArabic ? "فشل التوجيه — تحقق من الاتصال" : "Échec du dispatch" },
+    }));
+  };
 
   return (
     <div className="bg-zinc-900/60 border border-white/5 rounded-xl shadow-[0_4px_25px_rgba(0,0,0,0.3)]">
@@ -144,15 +188,30 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
                           />
                         </div>
 
-                        <button
-                          type="button"
-                          disabled={dispatchLoading || !selectedSosIdForTeam}
-                          onClick={() => onDirectDispatch(team.id, selectedSosIdForTeam, notesForTeam)}
-                          className="bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-800 disabled:text-gray-500 disabled:border-zinc-800 border border-amber-500 text-black font-extrabold rounded px-3 py-1 text-[11px] transition-all cursor-pointer shrink-0 flex items-center gap-1"
-                        >
-                          <Truck className="h-3 w-3" />
-                          <span>{isArabic ? "توجيه الفريق" : "Dépêcher"}</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            disabled={dispatchLoading || dispatchingTeamId !== null}
+                            onClick={() => handleDispatchClick(team)}
+                            className="bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-800 disabled:text-gray-500 disabled:border-zinc-800 border border-amber-500 text-black font-extrabold rounded px-3 py-1 text-[11px] transition-all cursor-pointer shrink-0 flex items-center gap-1"
+                          >
+                            <Truck className={`h-3 w-3 ${dispatchingTeamId === team.id ? "animate-pulse" : ""}`} />
+                            <span>
+                              {dispatchingTeamId === team.id
+                                ? (isArabic ? "جارٍ التوجيه..." : "Envoi...")
+                                : (isArabic ? "توجيه الفريق" : "Dépêcher")}
+                            </span>
+                          </button>
+                          {dispatchResult[team.id] && (
+                            <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${
+                              dispatchResult[team.id].ok
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                                : "bg-red-500/10 text-red-400 border-red-500/30"
+                            }`}>
+                              {dispatchResult[team.id].text}
+                            </span>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="text-[11px] text-slate-300">

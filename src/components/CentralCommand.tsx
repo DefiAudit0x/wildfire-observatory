@@ -96,22 +96,26 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     setUnlocked(true);
   };
 
-  const handleDispatchSubmit = async (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string): Promise<boolean> => {
-    if (!teamId) return false;
-    setDispatchLoading(true);
-    const names = getTeamNames(teamId);
+  const applyLocalDispatch = (sosId: string, dispatchItem: any) => {
+    setFullSos((prev) =>
+      prev.map((s) =>
+        s.id === sosId
+          ? { ...s, dispatchedTeams: [...(s.dispatchedTeams || []), dispatchItem] }
+          : s
+      )
+    );
+  };
+
+  const sendDispatchRequest = async (sosId: string, body: any): Promise<boolean> => {
     try {
       const res = await fetch(`/api/sos/${sosId}/dispatch`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${commandToken}` },
-        body: JSON.stringify({
-          type,
-          teamNameAr: names.nameAr,
-          teamNameFr: names.nameFr,
-          notes: notes || "",
-        }),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
+        const data = await res.json().catch(() => null);
+        applyLocalDispatch(sosId, data?.dispatch || body);
         if (onRefresh) onRefresh();
         return true;
       }
@@ -119,38 +123,41 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     } catch (err) {
       console.error("Dispatch request failed:", err);
       return false;
+    }
+  };
+
+  const handleDispatchSubmit = async (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string): Promise<boolean> => {
+    if (!teamId) return false;
+    setDispatchLoading(true);
+    const names = getTeamNames(teamId);
+    try {
+      return await sendDispatchRequest(sosId, {
+        type,
+        teamNameAr: names.nameAr,
+        teamNameFr: names.nameFr,
+        notes: notes || "",
+      });
     } finally {
       setDispatchLoading(false);
     }
   };
 
-  const handleDirectDispatch = async (teamId: string, sosId: string, notes: string) => {
-    if (!sosId) return;
+  const handleDirectDispatch = async (teamId: string, sosId: string, notes: string): Promise<boolean> => {
     setDispatchLoading(true);
 
     const team = teams.find((t) => t.id === teamId);
     if (!team) {
       setDispatchLoading(false);
-      return;
+      return false;
     }
 
     try {
-      const res = await fetch(`/api/sos/${sosId}/dispatch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${commandToken}` },
-        body: JSON.stringify({
-          type: team.type,
-          teamNameAr: team.teamNameAr,
-          teamNameFr: team.teamNameFr,
-          notes: notes || "",
-        }),
+      return await sendDispatchRequest(sosId, {
+        type: team.type,
+        teamNameAr: team.teamNameAr,
+        teamNameFr: team.teamNameFr,
+        notes: notes || "",
       });
-
-      if (res.ok) {
-        if (onRefresh) onRefresh();
-      }
-    } catch (err) {
-      console.error("Direct dispatch failed:", err);
     } finally {
       setDispatchLoading(false);
     }
