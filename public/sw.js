@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
-const CACHE_NAME = "observatory-v4";
-const API_CACHE = "observatory-api-v4";
+const CACHE_NAME = "observatory-v5";
+const API_CACHE = "observatory-api-v5";
 const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
@@ -58,19 +58,34 @@ self.addEventListener("fetch", (event) => {
 
   if (url.pathname === "/" || url.pathname === "/index.html") {
     event.respondWith(
-      caches.open(CACHE_NAME).then((cache) =>
-        fetch(event.request, { cache: "no-store" })
-          .then((response) => {
-            cache.put(event.request, response.clone());
-            return response;
-          })
-          .catch(() => cache.match(event.request))
-      )
+      fetch(event.request, { cache: "no-store" })
+        .then((response) => {
+          const copy = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          return response;
+        })
+        .catch(() => caches.match(event.request))
     );
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    caches.match(event.request).then((cached) => {
+      if (cached) {
+        fetch(event.request, { cache: "no-store" })
+          .then((response) => {
+            if (response.ok) {
+              caches.open(CACHE_NAME).then((cache) => cache.put(event.request, response.clone()));
+            }
+          })
+          .catch(() => {});
+        return cached;
+      }
+      return fetch(event.request).then((response) => {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return response;
+      });
+    })
   );
 });
