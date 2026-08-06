@@ -86,12 +86,33 @@ router.get("/verify", async (req: Request, res: Response) => {
 
 router.get("/:deviceId", async (req: Request, res: Response) => {
   const { deviceId } = req.params;
+  const cookieDevice = (req as any).cookies?.deviceId;
+  if (cookieDevice && cookieDevice !== deviceId) {
+    res.status(403).json({ error: "Forbidden: device mismatch" });
+    return;
+  }
+  res.cookie("deviceId", deviceId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.nodeEnv === "production",
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+  });
   const notifs = await getNotificationsFromDb(deviceId);
   res.json(notifs);
 });
 
 router.post("/:id/read", async (req: Request, res: Response) => {
   const { id } = req.params;
+  const cookieDevice = (req as any).cookies?.deviceId;
+  if (!cookieDevice) {
+    res.status(403).json({ error: "Forbidden: no device binding" });
+    return;
+  }
+  const owned = (await getNotificationsFromDb(cookieDevice)).some((n: any) => n.id === id);
+  if (!owned) {
+    res.status(404).json({ error: "Notification not found" });
+    return;
+  }
   try {
     await docUpdate("notifications", id, { read: true });
   } catch (err) {
@@ -215,55 +236,6 @@ router.post("/unsubscribe", async (req: Request, res: Response) => {
     res.json({ success: true, message: "Unsubscribed successfully" });
   } catch (err) {
     logger.error({ err }, "Failed to unsubscribe");
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-router.get("/verify", async (req: Request, res: Response) => {
-  const { email, token } = req.query;
-  if (!email || !token) {
-    res.status(400).json({ error: "Email and token are required" });
-    return;
-  }
-
-  try {
-    const { getDb, isAdminDb } = await import("../firebase.js");
-    const db = getDb();
-    if (!db) {
-      res.status(503).json({ error: "Database not available" });
-      return;
-    }
-
-    if (isAdminDb(db)) {
-      const existing = await db.collection("subscribers").where("email", "==", email).get();
-      if (existing.empty) {
-        res.status(404).json({ error: "Subscriber not found" });
-        return;
-      }
-      const sub = existing.docs[0].data() as any;
-      if (!sub.verificationToken || sub.verificationToken !== token) {
-        res.status(403).json({ error: "Invalid verification token" });
-        return;
-      }
-      await existing.docs[0].ref.update({ verified: true, verificationToken: null });
-    } else {
-      const { collection, getDocs, query, where, updateDoc, doc } = await import("firebase/firestore");
-      const q = query(collection(db, "subscribers"), where("email", "==", email));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        res.status(404).json({ error: "Subscriber not found" });
-        return;
-      }
-      const sub = snap.docs[0].data() as any;
-      if (!sub.verificationToken || sub.verificationToken !== token) {
-        res.status(403).json({ error: "Invalid verification token" });
-        return;
-      }
-      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null });
-    }
-    res.send("<h2>✅ اشتراكك مؤكد! سنرسل لك تنبيهات الحرائق.</h2>");
-  } catch (err) {
-    logger.error({ err }, "Failed to verify");
     res.status(500).json({ error: "Internal server error" });
   }
 });

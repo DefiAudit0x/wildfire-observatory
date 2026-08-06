@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, ArrowRight, Car, Compass, MapPin, Activity, RefreshCw } from "lucide-react";
+import { haversineKm } from "../utils/geo";
 
 interface SafeEvacuationProps {
   lang: "ar" | "fr";
@@ -22,16 +23,6 @@ const DEFAULT_ZONES: SafeZone[] = [
   { id: "z2", nameAr: "القطب الجامعي - تيزي وزو", nameFr: "Pôle Universitaire - Tizi Ouzou", capacity: 8000, lat: 36.717, lng: 4.064, hasMedical: true },
   { id: "z3", nameAr: "ساحة التضامن - بجاية", nameFr: "Place de la Solidarité - Béjaïa", capacity: 2000, lat: 36.7509, lng: 5.0567, hasMedical: false },
 ];
-
-function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
 
 export default function SafeEvacuation({ lang, userLocation }: SafeEvacuationProps) {
   const isArabic = lang === "ar";

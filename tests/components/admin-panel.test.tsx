@@ -1,30 +1,41 @@
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import AdminPanel from "../../src/components/AdminPanel";
 
 describe("AdminPanel", () => {
-  it("shows login form when not authenticated", () => {
-    render(<AdminPanel reports={[]} onRefresh={() => {}} lang="ar" />);
-    expect(screen.getByText(/لوحة تحكم المشرفين الأمنية/i)).toBeInTheDocument();
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    sessionStorage.clear();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ authenticated: false }), { status: 401, headers: { "Content-Type": "application/json" } }))
+    );
   });
 
-  it("shows password input field", () => {
+  it("shows login form when not authenticated", async () => {
+    render(<AdminPanel reports={[]} onRefresh={() => {}} lang="ar" />);
+    expect(await screen.findByText(/لوحة تحكم المشرفين الأمنية/i)).toBeInTheDocument();
+  });
+
+  it("shows password input field", async () => {
     render(<AdminPanel reports={[]} onRefresh={() => {}} lang="fr" />);
-    const input = screen.getByPlaceholderText(/Mot de passe/i);
+    const input = await screen.findByPlaceholderText(/Mot de passe/i);
     expect(input).toBeInTheDocument();
     expect(input).toHaveAttribute("type", "password");
   });
 
-  it("displays statistics when authenticated", () => {
+  it("displays statistics when authenticated", async () => {
     const reports = [
       { id: "1", status: "pending" as const, severity: "high" as const, lat: 36.8, lng: 7.5, locationName: "Test", wilaya: "test", description: "test", timestamp: new Date().toISOString(), consensusCount: 1, reporterType: "citizen" as const },
       { id: "2", status: "verified" as const, severity: "critical" as const, lat: 36.8, lng: 7.5, locationName: "Test2", wilaya: "test", description: "test", timestamp: new Date().toISOString(), consensusCount: 5, reporterType: "official" as const, reporterBadgeCode: "123" },
     ];
-    sessionStorage.setItem("admin_token", "test-token");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ authenticated: true }), { status: 200, headers: { "Content-Type": "application/json" } }))
+    );
     render(<AdminPanel reports={reports} onRefresh={() => {}} lang="ar" />);
-    expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument());
     expect(screen.getByText(/بلاغات قيد المراجعة/i)).toBeInTheDocument();
     expect(screen.getByText(/بلاغات موثقة/i)).toBeInTheDocument();
-    sessionStorage.clear();
   });
 });

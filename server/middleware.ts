@@ -15,12 +15,13 @@ export function generateAdminToken(): string {
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  const cookieToken = (req as any).cookies?.admin_token;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : cookieToken;
+  if (!token) {
     res.status(401).json({ error: "Unauthorized: missing or invalid token" });
     return;
   }
   try {
-    const token = authHeader.split(" ")[1];
     const decoded = jwt.verify(token, config.jwtSecret) as AuthPayload;
     (req as any).admin = decoded;
     next();

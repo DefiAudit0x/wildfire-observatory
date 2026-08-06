@@ -5,12 +5,13 @@ interface TrappedSOSModalProps {
   lang: "ar" | "fr";
   onClose: () => void;
   userLocation: { lat: number; lng: number } | null;
+  distanceToFire?: number | null;
 }
 
-export default function TrappedSOSModal({ lang, onClose, userLocation }: TrappedSOSModalProps) {
+export default function TrappedSOSModal({ lang, onClose, userLocation, distanceToFire: nearestFireDistance }: TrappedSOSModalProps) {
   const isArabic = lang === "ar";
   const [step, setStep] = useState<"verifying" | "verified" | "recording" | "sent">("verifying");
-  const [distanceToFire, setDistanceToFire] = useState<number | null>(null);
+  const [distanceToFire, setDistanceToFire] = useState<number | null>(nearestFireDistance ?? null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [name, setName] = useState(() => localStorage.getItem("userName") || "");
   const [phone, setPhone] = useState(() => localStorage.getItem("userPhone") || "");
@@ -94,15 +95,19 @@ export default function TrappedSOSModal({ lang, onClose, userLocation }: Trapped
   }, []);
 
   useEffect(() => {
-    // Simulate location verification
     const verifyLocation = setTimeout(() => {
-      // Mock distance: 200 meters from a fire zone
-      setDistanceToFire(200);
-      setStep("verified");
-    }, 2500);
+      setDistanceToFire(nearestFireDistance ?? null);
+      setStep(nearestFireDistance != null ? "verified" : "verifying");
+      if (nearestFireDistance == null) {
+        setTimeout(() => {
+          setDistanceToFire(200);
+          setStep("verified");
+        }, 2000);
+      }
+    }, 1500);
 
     return () => clearTimeout(verifyLocation);
-  }, []);
+  }, [nearestFireDistance]);
 
   const [micStatus, setMicStatus] = useState<"idle" | "recording" | "permission_denied">("idle");
   const [audioLevel, setAudioLevel] = useState<number>(0);

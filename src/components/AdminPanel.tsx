@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download, ScrollText } from "lucide-react";
 import { Report, Language } from "../types";
 import AuditLog from "./admin/AuditLog";
@@ -12,12 +12,11 @@ interface AdminPanelProps {
 
 export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps) {
   const [password, setPassword] = useState("");
-  const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return !!sessionStorage.getItem("admin_token");
-  });
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -25,6 +24,24 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const ITEMS_PER_PAGE = 20;
 
   const isArabic = lang === "ar";
+
+  useEffect(() => {
+    let cancelled = false;
+    const probeSession = async () => {
+      try {
+        const res = await fetch("/api/admin/session", { credentials: "same-origin" });
+        if (!cancelled) setIsAuthenticated(res.ok);
+      } catch {
+        if (!cancelled) setIsAuthenticated(false);
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    };
+    probeSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,6 +73,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     setIsAuthenticated(false);
     setPassword("");
     sessionStorage.removeItem("admin_token");
+    fetch("/api/admin/logout", { method: "POST" }).catch(() => {});
   };
 
   const getToken = () => sessionStorage.getItem("admin_token");
@@ -70,7 +88,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   };
 
   const updateReportStatus = async (id: string, newStatus: string) => {
-    setUpdatingId(id);
+    setUpdatingIds((prev) => new Set(prev).add(id));
     const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
@@ -87,12 +105,16 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     } catch (err) {
       console.error(err);
     } finally {
-      setUpdatingId(null);
+      setUpdatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
   const updateReportSeverity = async (id: string, newSeverity: string) => {
-    setUpdatingId(id);
+    setUpdatingIds((prev) => new Set(prev).add(id));
     const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
@@ -109,7 +131,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     } catch (err) {
       console.error(err);
     } finally {
-      setUpdatingId(null);
+      setUpdatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -118,7 +144,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       return;
     }
 
-    setUpdatingId(id);
+    setUpdatingIds((prev) => new Set(prev).add(id));
     const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/delete`, {
@@ -134,9 +160,24 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     } catch (err) {
       console.error(err);
     } finally {
-      setUpdatingId(null);
+      setUpdatingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
+
+  if (authChecking) {
+    return (
+      <div id="admin-auth-card" className="max-w-md mx-auto my-12 bg-zinc-950/80 border border-white/5 rounded-2xl p-8 shadow-[0_10px_50px_rgba(0,0,0,0.8)] text-center space-y-6">
+        <div className="mx-auto w-16 h-16 bg-red-600/10 border border-red-500/20 rounded-2xl flex items-center justify-center text-red-500">
+          <RefreshCw className="h-8 w-8 animate-spin" />
+        </div>
+        <p className="text-sm text-slate-300">{isArabic ? "جارٍ التحقق من الجلسة..." : "Vérification de la session..."}</p>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -206,7 +247,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   const exportToCSV = () => {
     const rows = [
-      ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الهاتف", "الوقت"].join(","),
+      ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
       ...reports.map((r) =>
         [
           r.id,
@@ -216,7 +257,6 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
           r.severity,
           `"${(r.description || "").replace(/"/g, '""')}"`,
           `"${(r.reporterName || "").replace(/"/g, '""')}"`,
-          r.reporterPhone || "",
           r.timestamp,
         ].join(",")
       ),
@@ -400,7 +440,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
               <div
                 key={rep.id}
                 className={`bg-black/50 p-4 rounded-xl border transition-all flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between ${
-                  updatingId === rep.id ? "opacity-50 pointer-events-none" : ""
+                  updatingIds.has(rep.id) ? "opacity-50 pointer-events-none" : ""
                 } ${
                   rep.status === "rejected" ? "border-red-950/40 opacity-70" : "border-white/5"
                 }`}

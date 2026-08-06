@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
+import { haversineKm } from "../utils/geo";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -273,19 +274,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   };
 
   // Client-side distance calculation (Haversine formula in km)
-  const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
-    const R = 6371; // km
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number =>
+    haversineKm(lat1, lng1, lat2, lng2);
 
   // Client-side bearing calculation (compass degrees 0-360)
   const calculateBearing = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
@@ -588,21 +578,22 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       const totalPixels = 50 * 50;
       const fireRatio = fireScore / totalPixels;
       const smokeRatio = smokeScore / totalPixels;
-      const confidence = Math.min(99, Math.round((fireRatio * 600) + (smokeRatio * 400) + 35));
+      const baseConfidence = (fireRatio * 600) + (smokeRatio * 400);
+      const confidence = Math.max(10, Math.min(99, Math.round(baseConfidence)));
       
       if (fireRatio > 0.008 || smokeRatio > 0.02) {
         setEdgeAiStatus({
           success: true,
-          confidence,
-          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${confidence}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}% لتوفير النطاق الترددي للشبكة.`,
-          messageFr: `✓ Signatures thermiques détectées localement (${confidence}%). Image compressée à ${compressionPercent ?? 0}% pour préserver la bande passante.`
+          confidence: Math.max(50, confidence),
+          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${Math.max(50, confidence)}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}% لتوفير النطاق الترددي للشبكة.`,
+          messageFr: `✓ Signatures thermiques détectées localement (${Math.max(50, confidence)}%). Image compressée à ${compressionPercent ?? 0}% pour préserver la bande passante.`
         });
       } else {
         setEdgeAiStatus({
           success: false,
-          confidence: 42,
-          messageAr: `⚠️ تنبيه Edge AI: لم يتم رصد وهج ناري واضح في الصورة. يرجى التقاط لقطة قريبة وواضحة للهب أو الدخان لتفادي البلاغات العشوائية وتوفير البيانات في الجبال.`,
-          messageFr: `⚠️ Alerte Edge AI : Contraste feu/fumée faible détecté. Veuillez cadrer directement le foyer pour éliminer les faux rapports.`
+          confidence,
+          messageAr: `⚠️ تنبيه Edge AI: لم يتم رصد وهج ناري واضح في الصورة (تقدير أولي ${confidence}%). يرجى التقاط لقطة قريبة وواضحة للهب أو الدخان لتفادي البلاغات العشوائية.`,
+          messageFr: `⚠️ Alerte Edge AI : Contraste feu/fumée faible détecté (≈${confidence}%). Veuillez cadrer directement le foyer pour éliminer les faux rapports.`
         });
       }
     };
@@ -749,6 +740,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setOriginalSize(null);
       setCompressedSize(null);
       setEdgeAiStatus(null);
+      setLat("");
+      setLng("");
       setIsSubmitting(false);
       return;
     }
@@ -764,6 +757,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setOriginalSize(null);
       setCompressedSize(null);
       setEdgeAiStatus(null);
+      setLat("");
+      setLng("");
     } catch (err: any) {
       const serverMsg = err?.data?.error || err?.response?.data?.error;
       setErrorMsg(
@@ -1426,7 +1421,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 type="text"
                 value={reporterName}
                 onChange={(e) => setReporterName(e.target.value)}
-                placeholder={isArabic ? "أحمد بوالشعور" : "Ahmed"}
+                placeholder={isArabic ? "مثال: محمد بلخير" : "Ex: Mohamed"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
               />
             </div>
@@ -1438,7 +1433,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 type="tel"
                 value={reporterPhone}
                 onChange={(e) => setReporterPhone(e.target.value)}
-                placeholder="0661-00-00-00"
+                placeholder="06XXXXXXXX"
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
               />
             </div>

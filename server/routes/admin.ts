@@ -59,6 +59,12 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
   }
   if (await verifyAdminPassword(password)) {
     const token = generateAdminToken();
+    res.cookie("admin_token", token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 24 * 60 * 60 * 1000,
+    });
     logAdminAction("admin.login", { success: true }).catch(() => {});
     res.json({ success: true, token });
   } else {
@@ -66,6 +72,15 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
     logAdminAction("admin.login", { success: false }).catch(() => {});
     res.status(401).json({ success: false, error: "Incorrect admin password" });
   }
+});
+
+router.get("/session", requireAdmin, (_req: Request, res: Response) => {
+  res.json({ authenticated: true });
+});
+
+router.post("/logout", (_req: Request, res: Response) => {
+  res.clearCookie("admin_token");
+  res.json({ success: true });
 });
 
 const adminActionLimiter = rateLimit({

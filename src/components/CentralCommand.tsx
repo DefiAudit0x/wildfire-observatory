@@ -33,8 +33,9 @@ function esc(value: unknown): string {
 }
 
 export default function CentralCommand({ reports, satellites, sosCalls = [], userLocation, lang, onRefresh }: CentralCommandProps) {
-  const [unlocked, setUnlocked] = useState(() => !!sessionStorage.getItem("command_token"));
-  const [commandToken, setCommandToken] = useState(() => sessionStorage.getItem("command_token") || "");
+  const [unlocked, setUnlocked] = useState(false);
+  const [commandToken, setCommandToken] = useState("");
+  const [authChecking, setAuthChecking] = useState(true);
   const [activeUsers, setActiveUsers] = useState<UserLocationData[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [dispatchLoading, setDispatchLoading] = useState(false);
@@ -87,6 +88,29 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       return () => clearInterval(interval);
     }
   }, [unlocked, fetchFullSos, fetchUserLocations]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const probeSession = async () => {
+      try {
+        const res = await fetch("/api/admin/session", { credentials: "same-origin" });
+        if (cancelled) return;
+        if (res.ok) {
+          const token = sessionStorage.getItem("command_token") || "";
+          setCommandToken(token);
+          setUnlocked(true);
+        }
+      } catch {
+        // no session
+      } finally {
+        if (!cancelled) setAuthChecking(false);
+      }
+    };
+    probeSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const teams = getTeamsStatusAndPositions(fullSos);
 
@@ -203,6 +227,19 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       `,
     });
   };
+
+  if (authChecking) {
+    return (
+      <div className="col-span-12 max-w-md mx-auto mt-12">
+        <div className="bg-zinc-900/70 border border-amber-500/20 rounded-2xl p-8 shadow-[0_8px_40px_rgba(0,0,0,0.6)] text-center space-y-4">
+          <div className="mx-auto w-12 h-12 bg-zinc-800 rounded-2xl flex items-center justify-center">
+            <RefreshCw className="h-6 w-6 text-amber-400 animate-spin" />
+          </div>
+          <p className="text-sm text-slate-300">{isArabic ? "جارٍ التحقق من الجلسة..." : "Vérification de la session..."}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!unlocked) {
     return <CommandLock lang={lang} onUnlocked={handleUnlocked} />;

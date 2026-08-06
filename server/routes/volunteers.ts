@@ -34,13 +34,14 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     return;
   }
   const { fullName, phone, email, wilaya, type, idNumber } = parsed.data;
+  const requestedType = type || "volunteer";
   const registration = {
     id: `reg-${Date.now()}`,
     fullName, phone,
     email: email || undefined,
     wilaya,
-    type: "volunteer",
-    requestedType: type || "volunteer",
+    type: requestedType,
+    requestedType,
     idNumber: idNumber || undefined,
     status: "pending",
     createdAt: new Date().toISOString(),

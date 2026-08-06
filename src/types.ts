@@ -49,6 +49,20 @@ export interface WilayaStatus {
 
 export type Language = 'ar' | 'fr';
 
+export type TabId =
+  | 'home'
+  | 'map'
+  | 'report'
+  | 'copilot'
+  | 'guides'
+  | 'radar'
+  | 'admin'
+  | 'volunteer'
+  | 'command'
+  | 'evac';
+
+export type TabIdOrEmpty = TabId | '';
+
 export interface EmergencyCenter {
   nameAr: string;
   nameFr: string;

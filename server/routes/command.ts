@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from "crypto";
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import config from "../config.js";
@@ -14,12 +15,17 @@ const heartbeatSchema = z.object({
   lat: z.union([z.number(), z.string()]),
   lng: z.union([z.number(), z.string()]),
   name: z.string().optional(),
-  role: z.string().optional(),
   badgeCode: z.string().optional(),
 });
 
+function safePasswordMatch(candidate: string, expected: string): boolean {
+  const candidateHash = createHash("sha256").update(candidate).digest();
+  const expectedHash = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(candidateHash, expectedHash);
+}
+
 async function checkSuperAdminPassword(candidate: string): Promise<boolean> {
-  if (config.superAdminPassword && candidate === config.superAdminPassword) return true;
+  if (config.superAdminPassword && safePasswordMatch(candidate, config.superAdminPassword)) return true;
   return verifyAdminPassword(candidate);
 }
 
@@ -29,9 +35,9 @@ router.post("/location/heartbeat", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Missing required fields" });
     return;
   }
-  const { deviceId, lat, lng, name, role, badgeCode } = parsed.data;
+  const { deviceId, lat, lng, name, badgeCode } = parsed.data;
   let finalName = name || "غير معروف";
-  let finalRole = role || "citizen";
+  let finalRole = "citizen";
 
   if (badgeCode) {
     try {
@@ -62,7 +68,14 @@ router.post("/auth/central-command", async (req: Request, res: Response) => {
     res.status(401).json({ valid: false });
     return;
   }
-  res.json({ valid: true, token: generateAdminToken() });
+  const token = generateAdminToken();
+  res.cookie("admin_token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.nodeEnv === "production",
+    maxAge: 24 * 60 * 60 * 1000,
+  });
+  res.json({ valid: true, token });
 });
 
 router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {

@@ -4,8 +4,9 @@ import path from "path";
 import fs from "fs";
 import helmet from "helmet";
 import cors from "cors";
+import compression from "compression";
+import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
-import { createServer as createViteServer } from "vite";
 import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
@@ -74,6 +75,8 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
+app.use(compression());
+app.use(cookieParser());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
@@ -97,6 +100,31 @@ const aiLimiter = rateLimit({
 app.use((req, _res, next) => {
   if (req.url.startsWith("//")) {
     req.url = req.url.replace(/^\/+/, "/");
+  }
+  next();
+});
+
+const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+function isSameOriginRequest(req: express.Request): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  if (config.corsOrigins.includes(origin)) return true;
+  const forwardedProto = req.headers["x-forwarded-proto"] || "http";
+  const host = req.headers.host;
+  if (host) {
+    const expected = `${forwardedProto}://${host}`;
+    if (origin === expected) return true;
+    const wsOrigin = `${forwardedProto === "https" ? "https" : "http"}://${host}`;
+    if (origin === wsOrigin) return true;
+  }
+  return false;
+}
+
+app.use((req, res, next) => {
+  if (MUTATING_METHODS.has(req.method) && !isSameOriginRequest(req) && !req.headers.authorization) {
+    res.status(403).json({ error: "Forbidden: cross-origin state change rejected" });
+    return;
   }
   next();
 });
@@ -126,6 +154,7 @@ app.use("/api", commandRouter);
 
 async function startServer() {
   if (config.nodeEnv !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -135,11 +164,12 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
 
-    app.get("/assets/*", (req, res) => {
+    app.get("/assets/*", async (req, res) => {
       const filePath = path.join(distPath, req.path);
-      if (fs.existsSync(filePath)) {
+      try {
+        await fs.promises.access(filePath, fs.constants.R_OK);
         res.sendFile(filePath);
-      } else {
+      } catch {
         logger.warn({ path: req.path }, "Asset not found");
         res.status(404).json({ error: "Asset not found" });
       }

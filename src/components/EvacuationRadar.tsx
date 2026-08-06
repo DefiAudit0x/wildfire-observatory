@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Compass, Wind, AlertTriangle, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
 import { Report } from "../types";
+import { haversineKm } from "../utils/geo";
 
 interface EvacuationRadarProps {
   reports: Report[];
@@ -80,19 +81,8 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   }, []);
 
   // Compute Haversine distance in km
-  const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-    const R = 6371;
-    const dLat = ((lat2 - lat1) * Math.PI) / 180;
-    const dLng = ((lng2 - lng1) * Math.PI) / 180;
-    const a =
-      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-      Math.cos((lat1 * Math.PI) / 180) *
-        Math.cos((lat2 * Math.PI) / 180) *
-        Math.sin(dLng / 2) *
-        Math.sin(dLng / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c;
-  };
+  const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number) =>
+    haversineKm(lat1, lng1, lat2, lng2);
 
   // Compute bearing angle between two coords (0-360)
   const getBearing = (lat1: number, lon1: number, lat2: number, lon2: number) => {
