@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import logger from "./logger.js";
+import { verifyMeshToken } from "./mesh-auth.js";
 
 export interface MeshNodeInfo {
   id: string;
@@ -21,6 +22,7 @@ const MESH_PATH = "/ws";
 const HEARTBEAT_MS = 30_000;
 const STALE_NODE_MS = 90_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
+const MAX_NODES = 250;
 
 class MeshHub {
   private wss: WebSocketServer | null = null;
@@ -58,7 +60,24 @@ class MeshHub {
             this.send(ws, { type: "error", message: "Invalid deviceId" });
             return;
           }
+
+          const token = String(message.authKey || message.token || "");
+          const payload = verifyMeshToken(token);
+          if (!payload || payload.deviceId !== deviceId) {
+            logger.warn({ ip }, "Mesh hello rejected — invalid token");
+            this.send(ws, { type: "error", message: "Unauthorized" });
+            ws.close(4001, "Unauthorized");
+            return;
+          }
+
           const label = String(message.label || "Mesh Node").slice(0, 64);
+
+          if (this.nodes.size >= MAX_NODES) {
+            logger.warn({ ip, deviceId }, "Mesh node rejected — node limit reached");
+            this.send(ws, { type: "error", message: "Node limit reached" });
+            ws.close(4001, "Too many nodes");
+            return;
+          }
 
           const previous = this.nodes.get(deviceId);
           if (previous && previous.ws !== ws) {

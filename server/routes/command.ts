@@ -10,6 +10,15 @@ const router = Router();
 
 const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number }>();
 
+const LOCATION_TTL_MS = 5 * 60 * 1000;
+const locationCleanupTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [deviceId, data] of activeUserLocations) {
+    if (now - data.lastSeen > LOCATION_TTL_MS) activeUserLocations.delete(deviceId);
+  }
+}, LOCATION_TTL_MS);
+locationCleanupTimer.unref();
+
 const heartbeatSchema = z.object({
   deviceId: z.string().min(1),
   lat: z.union([z.number(), z.string()]),
@@ -81,7 +90,7 @@ router.post("/auth/central-command", async (req: Request, res: Response) => {
 router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {
   const now = Date.now();
   activeUserLocations.forEach((val, key) => {
-    if (now - val.lastSeen > 5 * 60 * 1000) activeUserLocations.delete(key);
+    if (now - val.lastSeen > LOCATION_TTL_MS) activeUserLocations.delete(key);
   });
   const users = Array.from(activeUserLocations.entries()).map(([deviceId, data]) => ({
     deviceId,

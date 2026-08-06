@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from "vitest";
 import http from "http";
 import WebSocket from "ws";
 import { meshHub, MESH_PATH } from "../server/mesh.js";
+import { createMeshToken } from "../server/mesh-auth.js";
 
 function connectClient(server: http.Server, deviceId: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -12,7 +13,7 @@ function connectClient(server: http.Server, deviceId: string): Promise<WebSocket
     }
     const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
     ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "hello", deviceId, label: `node-${deviceId}` }));
+      ws.send(JSON.stringify({ type: "hello", deviceId, label: `node-${deviceId}`, token: createMeshToken(deviceId) }));
       resolve(ws);
     });
     ws.on("error", reject);
@@ -118,6 +119,37 @@ describe("mesh hub", () => {
     expect(String(message.message)).toContain("hello");
   });
 
+  it("rejects hello with an invalid mesh token", async () => {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Server not listening");
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
+    clients.push(ws);
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+
+    const errorMessage = waitForMessage(ws, "error");
+    ws.send(JSON.stringify({ type: "hello", deviceId: "evildude", label: "attacker", token: "not-a-valid-token" }));
+    const message = await errorMessage;
+    expect(String(message.message)).toContain("Unauthorized");
+  });
+
+  it("rejects a token issued for a different deviceId", async () => {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Server not listening");
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
+    clients.push(ws);
+    await new Promise<void>((resolve) => ws.on("open", () => resolve()));
+
+    const errorMessage = waitForMessage(ws, "error");
+    ws.send(JSON.stringify({
+      type: "hello",
+      deviceId: "impostor",
+      label: "attacker",
+      token: createMeshToken("other-device"),
+    }));
+    const message = await errorMessage;
+    expect(String(message.message)).toContain("Unauthorized");
+  });
+
   it("handles duplicate deviceId by replacing old connection", async () => {
     const nodeA = clients[0];
     const address = server.address();
@@ -131,7 +163,7 @@ describe("mesh hub", () => {
     clients.push(replacement);
     const welcome = waitForMessage(replacement, "welcome");
     await new Promise<void>((resolve) => replacement.on("open", () => resolve()));
-    replacement.send(JSON.stringify({ type: "hello", deviceId: "node-A", label: "replacement" }));
+    replacement.send(JSON.stringify({ type: "hello", deviceId: "node-A", label: "replacement", token: createMeshToken("node-A") }));
 
     await oldClosed;
     const welcomeMessage = await welcome;

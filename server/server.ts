@@ -14,6 +14,7 @@ import { errorHandler, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
 import { liveHub, LIVE_PATH } from "./live.js";
+import { createMeshToken } from "./mesh-auth.js";
 
 import { healthHandler } from "./routes/health.js";
 import reportsRouter from "./routes/reports.js";
@@ -139,6 +140,23 @@ if (!isProduction || process.env.ENABLE_SWAGGER === "true") {
 }
 
 app.get("/api/health", healthHandler);
+
+const meshTokenLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many mesh token requests" },
+});
+
+app.get("/api/mesh/token", meshTokenLimiter, (req, res) => {
+  const { deviceId } = req.query;
+  if (typeof deviceId !== "string" || !deviceId || deviceId.length > 128) {
+    res.status(400).json({ error: "Invalid deviceId" });
+    return;
+  }
+  res.json({ token: createMeshToken(deviceId) });
+});
 app.use("/api/reports", reportsRouter);
 app.use("/api/admin", adminRouter);
 app.use("/api/satellite-data", satelliteRouter);

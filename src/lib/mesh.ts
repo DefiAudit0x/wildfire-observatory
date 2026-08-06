@@ -39,6 +39,7 @@ class MeshClient {
   private reconnectTimer: number | null = null;
   private heartbeatTimer: number | null = null;
   private manualClosed = false;
+  private meshToken: string | null = null;
   private messageHandlers = new Set<MessageHandler>();
   private statusHandlers = new Set<StatusHandler>();
 
@@ -55,7 +56,7 @@ class MeshClient {
     if (this.ws || this.reconnectTimer !== null) return;
     this.manualClosed = false;
     this.setStatus("connecting");
-    this.openSocket();
+    void this.openSocket();
   }
 
   disconnect(): void {
@@ -75,14 +76,41 @@ class MeshClient {
     this.setStatus("offline");
   }
 
-  private openSocket(): void {
+  private async fetchMeshToken(): Promise<string | null> {
+    try {
+      const res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return null;
+      const data = (await res.json()) as { token?: string };
+      return data.token || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async openSocket(): Promise<void> {
+    if (!this.meshToken) {
+      this.meshToken = await this.fetchMeshToken();
+    }
+    if (!this.meshToken) {
+      this.setStatus("offline");
+      this.reconnectTimer = window.setTimeout(() => {
+        this.reconnectTimer = null;
+        this.meshToken = null;
+        void this.openSocket();
+      }, this.reconnectDelay);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
+      return;
+    }
+
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(`${protocol}//${location.host}/ws`);
     this.ws = ws;
 
     ws.onopen = () => {
       this.reconnectDelay = 1_000;
-      ws.send(JSON.stringify({ type: "hello", deviceId: this.deviceId, label: this.label }));
+      ws.send(JSON.stringify({ type: "hello", deviceId: this.deviceId, label: this.label, token: this.meshToken }));
       if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = window.setInterval(() => {
         if (this.ws?.readyState === WebSocket.OPEN) {
@@ -118,6 +146,7 @@ class MeshClient {
 
     ws.onclose = () => {
       this.ws = null;
+      this.meshToken = null; // token is short-lived; fetch a fresh one on reconnect
       if (this.heartbeatTimer !== null) {
         window.clearInterval(this.heartbeatTimer);
         this.heartbeatTimer = null;
@@ -126,7 +155,7 @@ class MeshClient {
         this.setStatus("offline");
         this.reconnectTimer = window.setTimeout(() => {
           this.reconnectTimer = null;
-          this.openSocket();
+          void this.openSocket();
         }, this.reconnectDelay);
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
       }
