@@ -33,7 +33,7 @@ function esc(value: unknown): string {
 
 export default function CentralCommand({ reports, satellites, sosCalls = [], userLocation, lang, onRefresh }: CentralCommandProps) {
   const [unlocked, setUnlocked] = useState(false);
-  const [enteredPassword, setEnteredPassword] = useState("");
+  const [commandToken, setCommandToken] = useState("");
   const [activeUsers, setActiveUsers] = useState<UserLocationData[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [dispatchLoading, setDispatchLoading] = useState(false);
@@ -43,7 +43,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const fetchUserLocations = useCallback(async () => {
     setLoadingUsers(true);
     try {
-      const res = await fetch(`/api/locations?password=${encodeURIComponent(enteredPassword)}`);
+      const res = await fetch("/api/locations", {
+        headers: { Authorization: `Bearer ${commandToken}` },
+      });
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
@@ -56,7 +58,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     } finally {
       setLoadingUsers(false);
     }
-  }, [enteredPassword, onRefresh]);
+  }, [commandToken, onRefresh]);
 
   useEffect(() => {
     if (unlocked) {
@@ -68,8 +70,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
 
   const teams = getTeamsStatusAndPositions(sosCalls);
 
-  const handleUnlocked = (password: string) => {
-    setEnteredPassword(password);
+  const handleUnlocked = (token: string) => {
+    sessionStorage.setItem("command_token", token);
+    setCommandToken(token);
     setUnlocked(true);
   };
 
@@ -80,7 +83,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     try {
       const res = await fetch(`/api/sos/${sosId}/dispatch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${commandToken}` },
         body: JSON.stringify({
           type,
           teamNameAr: names.nameAr,
@@ -114,7 +117,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     try {
       const res = await fetch(`/api/sos/${sosId}/dispatch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${commandToken}` },
         body: JSON.stringify({
           type: team.type,
           teamNameAr: team.teamNameAr,
@@ -136,7 +139,10 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const handleResolveSos = async (sos: TrappedSOS) => {
     if (!confirm(isArabic ? `تأكيد إنقاذ ${sos.name} وحل الاستغاثة؟` : `Marquer ${sos.name} comme secouru ?`)) return;
     try {
-      const res = await fetch(`/api/sos/${sos.id}/resolve`, { method: "POST" });
+      const res = await fetch(`/api/sos/${sos.id}/resolve`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${commandToken}` },
+      });
       if (res.ok && onRefresh) onRefresh();
     } catch (err) {
       console.error(err);

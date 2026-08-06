@@ -4,7 +4,7 @@ import { Language } from "../../types";
 
 interface CommandLockProps {
   lang: Language;
-  onUnlocked: (password: string) => void;
+  onUnlocked: (token: string) => void;
 }
 
 export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
@@ -23,8 +23,8 @@ export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
         body: JSON.stringify({ password }),
       });
       const data = await res.json();
-      if (data.valid) {
-        onUnlocked(password);
+      if (data.valid && data.token) {
+        onUnlocked(data.token);
       } else {
         setError(isArabic ? "كلمة السر غير صحيحة" : "Mot de passe incorrect");
       }
@@ -57,7 +57,7 @@ export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleUnlock()}
-            placeholder={isArabic ? "كلمة السر (superadmin123)" : "Mot de passe (superadmin123)"}
+            placeholder={isArabic ? "كلمة السر" : "Mot de passe"}
             className="w-full px-4 py-3 bg-black/60 border border-amber-500/30 rounded-xl text-sm text-center text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 transition-all"
             autoFocus
           />

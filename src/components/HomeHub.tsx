@@ -26,6 +26,7 @@ interface HomeHubProps {
   sosCount: number;
   reports?: Report[];
   userLocation?: { lat: number; lng: number } | null;
+  showAdminEntries?: boolean;
 }
 
 function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
@@ -38,7 +39,7 @@ function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): 
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], userLocation }: HomeHubProps) {
+export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], userLocation, showAdminEntries = false }: HomeHubProps) {
   const isArabic = lang === "ar";
   const [showAllServices, setShowAllServices] = useState(false);
 
@@ -112,7 +113,10 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       color: "border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 bg-emerald-950/20",
       icon: <Shield className="h-6 w-6 text-emerald-400" />
     }
-  ];
+  ].filter((entry) =>
+    !showAdminEntries &&
+    (entry.id === "admin" || entry.id === "command") ? false : true
+  );
 
   return (
     <div className="w-full space-y-6 animate-fadeIn max-w-4xl mx-auto px-2" dir={isArabic ? "rtl" : "ltr"}>

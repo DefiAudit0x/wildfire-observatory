@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate, docDelete } from "../fs.js";
 import { verifyAdminPassword } from "./admin.js";
+import { requireAdmin } from "../middleware.js";
 
 const router = Router();
 
@@ -26,7 +27,7 @@ async function loadBadges(): Promise<any[]> {
   return memoryBadges;
 }
 
-router.get("/", async (_req: Request, res: Response) => {
+router.get("/", requireAdmin, async (_req: Request, res: Response) => {
   const codes = await loadBadges();
   res.json(codes);
 });

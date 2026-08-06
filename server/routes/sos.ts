@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate } from "../fs.js";
+import { requireAdmin } from "../middleware.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -58,7 +59,7 @@ router.post("/", async (req: Request, res: Response) => {
   res.json(newSos);
 });
 
-router.post("/:id/resolve", async (req: Request, res: Response) => {
+router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
   await docUpdate("trappedSos", id, { status: "resolved" });
   const sos = memorySos.find((s: any) => s.id === id);
@@ -66,7 +67,7 @@ router.post("/:id/resolve", async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.post("/:id/dispatch", async (req: Request, res: Response) => {
+router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
   const parsed = dispatchSchema.safeParse(req.body);
   if (!parsed.success) {

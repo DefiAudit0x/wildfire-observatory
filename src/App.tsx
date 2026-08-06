@@ -43,6 +43,23 @@ export default function App() {
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac">("home");
+  const [privilegedTabVisible, setPrivilegedTabVisible] = useState(() =>
+    !!(sessionStorage.getItem("admin_token") || sessionStorage.getItem("command_token"))
+  );
+
+  useEffect(() => {
+    const syncPrivileged = () => {
+      setPrivilegedTabVisible(
+        !!(sessionStorage.getItem("admin_token") || sessionStorage.getItem("command_token"))
+      );
+    };
+    window.addEventListener("storage", syncPrivileged);
+    const poll = setInterval(syncPrivileged, 2000);
+    return () => {
+      window.removeEventListener("storage", syncPrivileged);
+      clearInterval(poll);
+    };
+  }, []);
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<string>("");
 
@@ -647,8 +664,12 @@ export default function App() {
           { id: "copilot", labelAr: "مساعد الذكاء الاصطناعي", labelFr: "Assistant Gemini IA", icon: <Sparkles className="h-4 w-4 text-purple-400" /> },
           { id: "guides", labelAr: "دليل النجاة والوقاية", labelFr: "Guides de Survie", icon: <BookOpen className="h-4 w-4 text-sky-400" /> },
           { id: "evac", labelAr: "مسارات الإخلاء", labelFr: "Évacuation", icon: <Navigation className="h-4 w-4 text-sky-400" /> },
-          { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
-          { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
+          ...(privilegedTabVisible
+            ? [
+                { id: "command", labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
+                { id: "admin", labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
+              ]
+            : []),
         ].map((tab) => (
           <button
             key={tab.id}
@@ -663,6 +684,16 @@ export default function App() {
             <span>{isArabic ? tab.labelAr : tab.labelFr}</span>
           </button>
         ))}
+        {!privilegedTabVisible && (
+          <button
+            onClick={() => setActiveTab("admin")}
+            className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer text-slate-500 hover:text-slate-300 hover:bg-white/5"
+            title={isArabic ? "وصول المشرفين" : "Accès administrateurs"}
+          >
+            <Shield className="h-4 w-4" />
+            <span>{isArabic ? "مشرف" : "Admin"}</span>
+          </button>
+        )}
       </div>
 
       {/* 4. MAIN LAYOUT GRID */}
@@ -679,6 +710,7 @@ export default function App() {
               sosCount={sosCalls.filter(s => s.status === "active").length}
               reports={reports}
               userLocation={userLocation}
+              showAdminEntries={privilegedTabVisible}
             />
           </div>
         )}

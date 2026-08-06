@@ -3,6 +3,7 @@ import { z } from "zod";
 import config from "../config.js";
 import { collectionGet } from "../fs.js";
 import { verifyAdminPassword } from "./admin.js";
+import { generateAdminToken, requireAdmin } from "../middleware.js";
 
 const router = Router();
 
@@ -61,15 +62,10 @@ router.post("/auth/central-command", async (req: Request, res: Response) => {
     res.status(401).json({ valid: false });
     return;
   }
-  res.json({ valid: true });
+  res.json({ valid: true, token: generateAdminToken() });
 });
 
-router.get("/locations", async (req: Request, res: Response) => {
-  const { password } = req.query;
-  if (!password || !(await checkSuperAdminPassword(String(password)))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {
   const now = Date.now();
   activeUserLocations.forEach((val, key) => {
     if (now - val.lastSeen > 5 * 60 * 1000) activeUserLocations.delete(key);
