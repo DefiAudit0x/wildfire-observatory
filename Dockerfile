@@ -12,7 +12,9 @@ WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# --ignore-scripts: avoid running "prepare: husky" during production install
+# (husky is a devDependency not present here; the app is already built in the builder stage)
+RUN npm ci --omit=dev --ignore-scripts
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/firebase-applet-config.json* ./
 USER nodejs
