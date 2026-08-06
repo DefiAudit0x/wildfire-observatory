@@ -101,6 +101,7 @@ export interface TrappedSOS {
   phone?: string;
   audioUrl?: string;
   audioDuration?: number;
+  hasAudio?: boolean;
   status: 'active' | 'resolved';
   timestamp: string;
   dispatchedTeams?: {

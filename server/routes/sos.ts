@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
-import { collectionGet, docSet, docUpdate } from "../fs.js";
+import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import logger from "../logger.js";
 
@@ -25,13 +25,39 @@ const dispatchSchema = z.object({
 
 const memorySos: any[] = [];
 
+function stripAudio(sos: any) {
+  if (!sos) return sos;
+  const hasAudio = Boolean(sos.audioUrl);
+  const { audioUrl, ...rest } = sos;
+  return hasAudio ? { ...rest, hasAudio } : sos;
+}
+
 router.get("/", async (_req: Request, res: Response) => {
-  let fromDb: any[] | null = null;
-  if (memorySos.length === 0) {
-    fromDb = await collectionGet("trappedSos", "timestamp", 100);
+  const fromDb = await collectionGet("trappedSos", "timestamp", 100);
+  let merged: any[];
+  if (fromDb && fromDb.length > 0) {
+    const dbIds = new Set(fromDb.map((s: any) => s.id));
+    const extra = memorySos.filter((s: any) => !dbIds.has(s.id));
+    merged = [...extra, ...fromDb];
+  } else {
+    merged = memorySos;
   }
-  const merged = fromDb && fromDb.length > 0 ? fromDb : memorySos;
-  res.json(merged);
+  res.json(merged.map(stripAudio));
+});
+
+router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const memory = memorySos.find((s: any) => s.id === id);
+  if (memory) {
+    res.json(memory);
+    return;
+  }
+  const doc = await docGet("trappedSos", id);
+  if (!doc) {
+    res.status(404).json({ error: "SOS not found" });
+    return;
+  }
+  res.json(doc);
 });
 
 router.post("/", async (req: Request, res: Response) => {

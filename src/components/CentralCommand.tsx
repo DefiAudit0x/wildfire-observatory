@@ -8,6 +8,7 @@ import SosPanel from "./command/SosPanel";
 import ActivityFeed from "./command/ActivityFeed";
 import TeamsTable from "./command/TeamsTable";
 import ActiveUsersTable from "./command/ActiveUsersTable";
+import ReportsTable from "./command/ReportsTable";
 import { getTeamsStatusAndPositions, getTeamNames, getTeamStatusBadge, TeamStatus } from "./command/teams";
 
 interface CentralCommandProps {
@@ -219,6 +220,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         satellites={satellites}
         sosCalls={sosCalls}
         activeUsers={activeUsers}
+        teams={teams}
       />
 
       {/* Map + Activity Layout */}
@@ -238,6 +240,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           <SosPanel
             isArabic={isArabic}
             sosCalls={sosCalls}
+            token={commandToken}
             dispatchLoading={dispatchLoading}
             onDispatch={handleDispatchSubmit}
             onResolve={handleResolveSos}
@@ -255,6 +258,14 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         dispatchLoading={dispatchLoading}
         onDirectDispatch={handleDirectDispatch}
         onTargetTeam={handleTargetTeam}
+      />
+
+      {/* Full Reports Registry */}
+      <ReportsTable
+        isArabic={isArabic}
+        reports={reports}
+        token={commandToken}
+        onChanged={onRefresh || (() => {})}
       />
 
       {/* User Locations Table */}
