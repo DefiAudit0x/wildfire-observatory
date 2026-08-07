@@ -7,6 +7,13 @@ export interface GeoPoint {
   lng: number;
 }
 
+const PROXIMITY_THRESHOLDS: Record<string, number> = {
+  critical: 10, // km
+  high: 7,
+  medium: 5,
+  low: 3,
+};
+
 export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | null) {
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
@@ -27,9 +34,10 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
       const nearReports = reports
         .map((rep) => {
           const dist = getProximityDistance(userLocation.lat, userLocation.lng, rep.lat, rep.lng);
-          return { ...rep, distance: dist };
+          const threshold = PROXIMITY_THRESHOLDS[rep.severity] ?? 5;
+          return { ...rep, distance: dist, isNear: dist <= threshold };
         })
-        .filter((rep) => rep.distance <= 30) // Within 30km radius
+        .filter((rep) => rep.isNear) // Severity-aware radius
         .sort((a, b) => a.distance - b.distance);
 
       setActiveAlerts(nearReports);

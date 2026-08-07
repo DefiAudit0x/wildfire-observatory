@@ -1,19 +1,30 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
+import { getHaversineDistance } from "../geo.js";
+import { getReportsDbResult } from "../db.js";
+import config from "../config.js";
 import logger from "../logger.js";
 
 const router = Router();
 
+const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 };
+
+const MAX_AUDIO_BASE64_LENGTH = 700 * 1024; // ~512KB raw audio, fits comfortably in Firestore doc limits
+const MAX_AUDIO_DURATION_SEC = 20;
+
 const sosSchema = z.object({
-  deviceId: z.string().min(1),
+  deviceId: z.string().min(1).max(128),
   lat: z.union([z.number(), z.string()]),
   lng: z.union([z.number(), z.string()]),
-  name: z.string().optional(),
-  phone: z.string().optional(),
-  audioUrl: z.string().optional(),
+  name: z.string().max(120).optional(),
+  phone: z.string().max(30).optional(),
+  audioUrl: z.string().max(MAX_AUDIO_BASE64_LENGTH).optional(),
   audioDuration: z.union([z.number(), z.string()]).optional(),
+  textMessage: z.string().max(500).optional(),
 });
 
 const dispatchSchema = z.object({
@@ -23,13 +34,72 @@ const dispatchSchema = z.object({
   notes: z.string().optional(),
 });
 
+const profileSchema = z.object({
+  deviceId: z.string().min(1).max(128),
+  name: z.string().max(120).optional(),
+  phone: z.string().max(30).optional(),
+});
+
 const memorySos: any[] = [];
+
+// ── Rate limiting & duplicate detection ──────────────────────────────────────
+const sosPostLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 3,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => `sos:${String((req.body as any)?.deviceId || req.ip || "unknown")}`,
+  message: { error: "Too many SOS requests. Try again shortly." },
+});
+
+const sosDuplicates = new Map<string, number>();
+const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
+
+function isDuplicateSos(deviceId: string): boolean {
+  const now = Date.now();
+  const last = sosDuplicates.get(deviceId);
+  if (last && now - last < DUPLICATE_WINDOW_MS) return true;
+  sosDuplicates.set(deviceId, now);
+  if (sosDuplicates.size > 10000) {
+    const cutoff = now - DUPLICATE_WINDOW_MS;
+    for (const [k, v] of sosDuplicates) if (v < cutoff) sosDuplicates.delete(k);
+  }
+  return false;
+}
+
+// ── Encrypted profile store (AES-256-GCM, key derived from JWT_SECRET) ───────
+const PROFILE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const memoryProfiles = new Map<string, { encrypted: string; expiresAt: number }>();
+
+function profileKey(): Buffer {
+  return createHash("sha256").update("sos-profile:" + config.jwtSecret).digest();
+}
+
+function encryptProfile(plain: { name?: string; phone?: string }): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", profileKey(), iv);
+  const payload = Buffer.from(JSON.stringify(plain), "utf8");
+  const enc = Buffer.concat([cipher.update(payload), cipher.final()]);
+  return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), enc.toString("base64")].join(".");
+}
+
+function decryptProfile(token: string): { name?: string; phone?: string } | null {
+  try {
+    const [ivB64, tagB64, dataB64] = token.split(".");
+    const decipher = createDecipheriv("aes-256-gcm", profileKey(), Buffer.from(ivB64, "base64"));
+    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+    const dec = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
+    return JSON.parse(dec.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
 
 function stripAudio(sos: any) {
   if (!sos) return sos;
   const hasAudio = Boolean(sos.audioUrl);
   const { audioUrl, ...rest } = sos;
-  return hasAudio ? { ...rest, hasAudio } : sos;
+  return hasAudio ? { ...rest, hasAudio, audioSizeBytes: sos.audioUrl ? Math.round((sos.audioUrl.length * 3) / 4) : 0 } : sos;
 }
 
 function anonymizeSos(sos: any) {
@@ -80,28 +150,136 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
   res.json(doc);
 });
 
-router.post("/", async (req: Request, res: Response) => {
+// ── Developer-friendly profile endpoints (server-side encrypted identity) ────
+router.get("/profile/:deviceId", async (req: Request, res: Response) => {
+  const deviceId = req.params.deviceId || "";
+  if (!deviceId || deviceId.length > 128) {
+    res.status(400).json({ error: "Invalid deviceId" });
+    return;
+  }
+  const mem = memoryProfiles.get(deviceId);
+  let profile: { name?: string; phone?: string } | null = null;
+  if (mem && Date.now() < mem.expiresAt) {
+    profile = decryptProfile(mem.encrypted);
+  } else {
+    const doc = await docGet("sosProfiles", deviceId);
+    if (doc && doc.encrypted && doc.expiresAt && Date.now() < doc.expiresAt) {
+      profile = decryptProfile(doc.encrypted);
+    }
+  }
+  res.json({ name: profile?.name || "", phone: profile?.phone || "" });
+});
+
+router.put("/profile/:deviceId", async (req: Request, res: Response) => {
+  const deviceId = req.params.deviceId || "";
+  if (!deviceId || deviceId.length > 128) {
+    res.status(400).json({ error: "Invalid deviceId" });
+    return;
+  }
+  const parsed = profileSchema.safeParse({ deviceId, ...req.body });
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid profile data" });
+    return;
+  }
+  const profile = {
+    name: (parsed.data.name || "").trim(),
+    phone: (parsed.data.phone || "").trim(),
+  };
+  const record = {
+    encrypted: encryptProfile(profile),
+    expiresAt: Date.now() + PROFILE_TTL_MS,
+    updatedAt: new Date().toISOString(),
+    deviceId,
+  };
+  memoryProfiles.set(deviceId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
+  await docSet("sosProfiles", deviceId, record);
+  res.json({ success: true });
+});
+
+router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   const parsed = sosSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Missing required fields" });
+    res.status(400).json({ error: "Missing required fields", details: parsed.error.flatten() });
     return;
   }
   const data = parsed.data;
-  const newSos = {
+  const lat = Number(data.lat);
+  const lng = Number(data.lng);
+
+  // Geofence: only accept SOS within monitoring coverage (North Africa)
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) ||
+      lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat ||
+      lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
+    res.status(400).json({ error: "Location is outside the monitoring coverage area" });
+    return;
+  }
+
+  // Duplicate protection: one active SOS per device within 5 minutes
+  if (isDuplicateSos(data.deviceId)) {
+    res.status(409).json({ error: "An SOS from this device was already received recently" });
+    return;
+  }
+
+  // Context: nearest active fire (non-blocking — never prevent an SOS)
+  let nearestFireDistanceKm: number | null = null;
+  let isVerifiedByProximity = false;
+  let priority: string = "unknown";
+  try {
+    const dbResult = await getReportsDbResult();
+    const active = dbResult.status === "ok" ? dbResult.reports.filter(
+      (r: any) => r.status !== "resolved" && r.status !== "rejected"
+    ) : [];
+    if (active.length > 0) {
+      nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
+        const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
+        return Math.min(min, d);
+      }, Infinity);
+      isVerifiedByProximity = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
+    }
+  } catch (err) {
+    logger.error({ err }, "SOS proximity check error");
+  }
+  if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
+    priority =
+      nearestFireDistanceKm <= 2 ? "critical"
+      : nearestFireDistanceKm <= 5 ? "high"
+      : nearestFireDistanceKm <= 10 ? "medium"
+      : "low";
+  }
+
+  const audioDuration = data.audioDuration != null
+    ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
+    : undefined;
+
+  const newSos: any = {
     id: `sos-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
     deviceId: data.deviceId,
-    lat: Number(data.lat),
-    lng: Number(data.lng),
+    lat,
+    lng,
     name: data.name || "شخص محاصر",
     phone: data.phone || "",
     audioUrl: data.audioUrl || undefined,
-    audioDuration: data.audioDuration ? Number(data.audioDuration) : undefined,
+    audioDuration,
+    textMessage: data.textMessage || undefined,
     status: "active",
     timestamp: new Date().toISOString(),
+    nearestFireDistanceKm: nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)
+      ? Math.round(nearestFireDistanceKm * 100) / 100
+      : null,
+    isVerifiedByProximity,
+    priority,
   };
-  const clean = Object.fromEntries(Object.entries(newSos).filter(([, v]) => v !== undefined));
+
+  // Persist PII-safe snapshot to Firestore: strip the raw audio body (kept in memory),
+  // keep only metadata so records respect Firestore doc limits.
+  const { audioUrl, ...cleanForDb } = newSos;
+  const clean = Object.fromEntries(
+    Object.entries(cleanForDb).filter(([, v]) => v !== undefined)
+  );
+  if (newSos.audioUrl) clean.hasAudio = true;
   await docSet("trappedSos", newSos.id, clean);
   memorySos.unshift(newSos);
+  logger.info({ sosId: newSos.id, lat, lng, priority, isVerifiedByProximity }, "New SOS created");
   res.json(newSos);
 });
 

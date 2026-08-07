@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Language, TabId } from "./types";
 import { useSessionProbe } from "./hooks/useSessionProbe";
 import { useStaffSession } from "./hooks/useAuth";
@@ -66,13 +66,27 @@ export default function App() {
 
   const handleNavigate = useCallback((tab: TabId) => setActiveTab(tab), []);
 
-  const distanceToFire =
-    userLocation && reports.length > 0
-      ? reports.reduce((nearest, rep) => {
-          const dist = getProximityDistance(userLocation.lat, userLocation.lng, rep.lat, rep.lng);
-          return Math.min(nearest, Math.round(dist * 1000));
-        }, Infinity)
-      : null;
+  // Nearest active danger to the user, combining citizen reports (non-resolved)
+  // and high-confidence satellite hotspots (>=70%).
+  const distanceToFire = useMemo(() => {
+    if (!userLocation) return null;
+
+    const fireSources: { lat: number; lng: number }[] = [
+      ...reports
+        .filter((r) => r.status !== "resolved" && r.status !== "rejected")
+        .map((r) => ({ lat: r.lat, lng: r.lng })),
+      ...satellites
+        .filter((s) => s.confidence >= 70)
+        .map((s) => ({ lat: s.lat, lng: s.lng })),
+    ];
+
+    if (fireSources.length === 0) return null;
+
+    return fireSources.reduce((nearest, fire) => {
+      const dist = getProximityDistance(userLocation.lat, userLocation.lng, fire.lat, fire.lng);
+      return Math.min(nearest, Math.round(dist * 1000));
+    }, Infinity);
+  }, [userLocation, reports, satellites, getProximityDistance]);
 
   return (
     <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>

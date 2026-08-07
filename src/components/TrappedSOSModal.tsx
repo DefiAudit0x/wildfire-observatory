@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { AlertTriangle, MapPin, Mic, RadioReceiver, ShieldAlert, X, Volume2, Activity, ShieldCheck, Play, Square } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { AlertTriangle, MapPin, Mic, RadioReceiver, ShieldAlert, X, Volume2, Activity, ShieldCheck, RefreshCw } from "lucide-react";
 
 interface TrappedSOSModalProps {
   lang: "ar" | "fr";
@@ -8,23 +8,60 @@ interface TrappedSOSModalProps {
   distanceToFire?: number | null;
 }
 
+type Step =
+  | "verifying"
+  | "no_location"
+  | "no_fires"
+  | "verified"
+  | "recording"
+  | "send_failed"
+  | "sent";
+
+const MAX_AUDIO_DURATION_SEC = 20;
+
 export default function TrappedSOSModal({ lang, onClose, userLocation, distanceToFire: nearestFireDistance }: TrappedSOSModalProps) {
   const isArabic = lang === "ar";
-  const [step, setStep] = useState<"verifying" | "verified" | "recording" | "sent">("verifying");
+  const [step, setStep] = useState<Step>("verifying");
   const [distanceToFire, setDistanceToFire] = useState<number | null>(nearestFireDistance ?? null);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [name, setName] = useState(() => localStorage.getItem("userName") || "");
-  const [phone, setPhone] = useState(() => localStorage.getItem("userPhone") || "");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
   const [isTestingSound, setIsTestingSound] = useState(false);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);
-  const [isPlayingRecorded, setIsPlayingRecorded] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [isSending, setIsSending] = useState(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const recordedAudioElemRef = useRef<HTMLAudioElement | null>(null);
+
+  // Load the user's saved (server-encrypted) identity once.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const storedId = sessionStorage.getItem("device_id") || localStorage.getItem("deviceId") || "";
+        if (!storedId) return;
+        const res = await fetch(`/api/sos/profile/${encodeURIComponent(storedId)}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (cancelled) return;
+        setName(data.name || "");
+        setPhone(data.phone || "");
+      } catch {
+        // fall back to empty identity (session-only) if profile is unavailable
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const getDeviceId = useCallback((): string => {
+    return sessionStorage.getItem("device_id") || localStorage.getItem("deviceId") || `web_${Math.random().toString(36).substring(2, 10)}`;
+  }, []);
 
   const playSOSTestSound = () => {
     if (isTestingSound) {
@@ -94,33 +131,31 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
     };
   }, []);
 
+  // Honest verification: report real risk detection, never fabricate a distance.
   useEffect(() => {
-    const verifyLocation = setTimeout(() => {
-      setDistanceToFire(nearestFireDistance ?? null);
-      setStep(nearestFireDistance != null ? "verified" : "verifying");
-      if (nearestFireDistance == null) {
-        setTimeout(() => {
-          setDistanceToFire(200);
-          setStep("verified");
-        }, 2000);
-      }
-    }, 1500);
-
-    return () => clearTimeout(verifyLocation);
-  }, [nearestFireDistance]);
+    if (!userLocation) {
+      setStep("no_location");
+      setDistanceToFire(null);
+      return;
+    }
+    if (nearestFireDistance == null) {
+      setStep("no_fires");
+      setDistanceToFire(null);
+      return;
+    }
+    setDistanceToFire(nearestFireDistance);
+    setStep("verified");
+  }, [userLocation, nearestFireDistance]);
 
   const [micStatus, setMicStatus] = useState<"idle" | "recording" | "permission_denied">("idle");
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const animFrameRef = useRef<number | null>(null);
 
   const startRecording = async () => {
-    // Save current details entered by user to localStorage
-    localStorage.setItem("userName", name);
-    localStorage.setItem("userPhone", phone);
-
     setStep("recording");
     setRecordingTime(0);
     setMicStatus("recording");
+    setSendError(null);
     audioChunksRef.current = [];
 
     // Attempt real microphone recording
@@ -129,7 +164,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         mediaStreamRef.current = stream;
 
-        // Determine supported MimeType
         let mimeType = "";
         if (typeof MediaRecorder !== "undefined") {
           if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) mimeType = "audio/webm;codecs=opus";
@@ -173,7 +207,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
           // Ignore analyzer error if any
         }
 
-        mediaRecorder.start(100); // Collect 100ms chunks
+        mediaRecorder.start(100);
       } else {
         setMicStatus("permission_denied");
       }
@@ -181,14 +215,35 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
       console.warn("Microphone access unavailable or denied:", err);
       setMicStatus("permission_denied");
     }
-    
+
     timerRef.current = setInterval(() => {
-      setRecordingTime((prev) => prev + 1);
+      setRecordingTime((prev) => {
+        if (prev + 1 >= MAX_AUDIO_DURATION_SEC) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+            try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
+          }
+          return prev;
+        }
+        return prev + 1;
+      });
     }, 1000);
   };
 
-  const generateVoiceAlertBase64 = async (): Promise<string> => {
-    // Generate an emergency voice alert synth audio when mic isn't permitted
+  // Build an informative text payload that travels with the SOS and can be
+  // shown to responders even if no audio could be captured.
+  const buildTextMessage = (finalName: string): string => {
+    return [
+      "استغاثة طارئة",
+      finalName ? `الأسم: ${finalName}` : "شخص محاصر بالنيران",
+      phone.trim() ? `الهاتف: ${phone.trim()}` : "",
+      userLocation ? `الموقع: ${userLocation.lat.toFixed(4)}, ${userLocation.lng.toFixed(4)}` : "",
+    ].filter(Boolean).join(". ") + ".";
+  };
+
+  // Generate an emergency alert audio when mic isn't permitted. The sound is a
+  // siren-like tone; the informative payload travels as `textMessage`.
+  const generateVoiceAlertBase64 = async (finalName: string): Promise<string> => {
     return new Promise((resolve) => {
       try {
         const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
@@ -197,7 +252,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
 
-        // Create human-like speech siren frequency modulation
         osc.type = "sine";
         osc.frequency.setValueAtTime(440, ctx.currentTime);
         osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.5);
@@ -228,14 +282,29 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
           osc.stop();
         }, 3000);
       } catch {
-        resolve("https://actions.google.com/sounds/v1/ambiences/outdoor_siren.ogg");
+        resolve("");
       }
     });
   };
 
+  const speakEmergency = useCallback((finalName: string) => {
+    if (!("speechSynthesis" in window)) return;
+    try {
+      const text = buildTextMessage(finalName);
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "ar-SA";
+      utterance.rate = 0.9;
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      // ignore
+    }
+  }, [phone, userLocation]);
+
   const stopRecordingAndSend = async () => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    setIsSending(true);
+    setSendError(null);
 
     let finalAudioBase64 = "";
 
@@ -275,48 +344,68 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
       mediaStreamRef.current = null;
     }
 
-    // If no audio chunk was captured (e.g. mic disabled), use voice alert
+    const finalName = name.trim() || (isArabic ? "مواطن محاصر" : "Citoyen Piégé");
+
+    // If no audio chunk was captured (e.g. mic disabled), generate a synthetic
+    // alert sound and speak the emergency message aloud as a live fallback.
     if (!finalAudioBase64 || finalAudioBase64.length < 100) {
-      finalAudioBase64 = await generateVoiceAlertBase64();
-      // Also speak via browser speech synthesis as a live voice fallback
-      if ('speechSynthesis' in window) {
-        try {
-          const text = name 
-            ? `استغاثة طارئة من ${name}. شخص محاصر بالنيران يحتاج لإنقاذ عاجل.`
-            : `استغاثة طارئة! شخص محاصر بالنيران يحتاج لإنقاذ عاجل.`;
-          const utterance = new SpeechSynthesisUtterance(text);
-          utterance.lang = "ar-SA";
-          window.speechSynthesis.speak(utterance);
-        } catch {}
-      }
+      finalAudioBase64 = await generateVoiceAlertBase64(finalName);
+      speakEmergency(finalName);
     }
 
     setRecordedAudioUrl(finalAudioBase64);
 
-    if (userLocation) {
-      try {
-        const storedId = sessionStorage.getItem("device_id") || `web_${Math.random().toString(36).substring(2, 10)}`;
-        const finalName = name.trim() || (isArabic ? "مواطن محاصر" : "Citoyen Piégé");
-
-        await fetch("/api/sos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            deviceId: storedId,
-            lat: userLocation.lat,
-            lng: userLocation.lng,
-            name: finalName,
-            phone: phone.trim(),
-            audioUrl: finalAudioBase64,
-            audioDuration: recordingTime || 5
-          }),
-        });
-      } catch (err) {
-        console.error("Failed to post SOS to server:", err);
-      }
+    if (!userLocation) {
+      setSendError(isArabic ? "لا يمكن تحديد موقعك. يرجى تفعيل GPS ثم المحاولة." : "Impossible de vous localiser. Activez le GPS puis réessayez.");
+      setStep("send_failed");
+      setIsSending(false);
+      return;
     }
 
-    setStep("sent");
+    try {
+      const storedId = getDeviceId();
+
+      // 1) Persist identity on the server (encrypted, TTL) for future sessions.
+      try {
+        await fetch(`/api/sos/profile/${encodeURIComponent(storedId)}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: finalName, phone: phone.trim() }),
+        });
+      } catch {
+        // Non-critical: identity persistence is best-effort
+      }
+
+      // 2) Send the SOS.
+      const res = await fetch("/api/sos", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          deviceId: storedId,
+          lat: userLocation.lat,
+          lng: userLocation.lng,
+          name: finalName,
+          phone: phone.trim(),
+          audioUrl: finalAudioBase64 || undefined,
+          audioDuration: recordingTime || 5,
+          textMessage: buildTextMessage(finalName),
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}`);
+      }
+
+      await res.json();
+      setStep("sent");
+    } catch (err: any) {
+      console.error("Failed to post SOS:", err);
+      setSendError(err?.message || (isArabic ? "تعذّر الاتصال بالخادم" : "Erreur de connexion"));
+      setStep("send_failed");
+    } finally {
+      setIsSending(false);
+    }
   };
 
   return (
@@ -335,7 +424,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
         </div>
 
         <div className="p-6">
-          
           {step === "verifying" && (
             <div className="flex flex-col items-center justify-center py-8 text-center space-y-4">
               <div className="relative">
@@ -348,10 +436,89 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                 {isArabic ? "جاري التحقق من موقعك..." : "Vérification de la position..."}
               </h3>
               <p className="text-sm text-slate-400">
-                {isArabic 
+                {isArabic
                   ? "نقوم بمقاطعة إحداثياتك مع بؤر النيران النشطة لتأكيد حالة الخطر الداهم."
                   : "Analyse de vos coordonnées par rapport aux feux actifs."}
               </p>
+            </div>
+          )}
+
+          {step === "no_location" && (
+            <div className="flex flex-col items-center text-center space-y-5 py-6 animate-fadeIn">
+              <div className="h-16 w-16 bg-amber-500/20 text-amber-400 rounded-full flex items-center justify-center border border-amber-500/50">
+                <MapPin className="h-8 w-8" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-amber-400 mb-2">
+                  {isArabic ? "تعذّر تحديد موقعك" : "Position indéterminée"}
+                </h3>
+                <p className="text-sm text-slate-300">
+                  {isArabic
+                    ? "لا يمكننا تحديد موقعك الحالي. تفعيل GPS ضروري لإرسال موقعك مع الاستغاثة."
+                    : "Impossible d'identifier votre position. Activez le GPS pour transmettre votre localisation."}
+                </p>
+              </div>
+              <button
+                onClick={onClose}
+                className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold transition-colors cursor-pointer"
+              >
+                {isArabic ? "إغلاق" : "Fermer"}
+              </button>
+            </div>
+          )}
+
+          {step === "no_fires" && (
+            <div className="flex flex-col items-center text-center space-y-5 py-6 animate-fadeIn">
+              <div className="h-16 w-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center border border-emerald-500/50">
+                <ShieldCheck className="h-8 w-8" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-emerald-400 mb-2">
+                  {isArabic ? "لا توجد حرائق نشطة قريبة" : "Aucun incendie actif détecté"}
+                </h3>
+                <p className="text-sm text-slate-300">
+                  {isArabic
+                    ? "لم يرصد النظام حريقاً نشطاً قريباً. إذا كنت تخاطر فعلياً، يمكنك مواصلة إرسال استغاثتك."
+                    : "Aucun incendie actif à proximité. Si vous êtes en danger réel, vous pouvez continuer l'alerte."}
+                </p>
+              </div>
+              <div className="w-full space-y-3 bg-black/40 p-4 rounded-xl border border-white/5" dir={isArabic ? "rtl" : "ltr"}>
+                <h4 className="text-xs font-bold text-slate-300 border-b border-white/5 pb-1.5 flex items-center gap-1.5 justify-start">
+                  <span>🚨</span>
+                  <span>{isArabic ? "معلومات تحديد الهوية للإنقاذ" : "Informations d'identification pour secours"}</span>
+                </h4>
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-400 text-start">
+                    {isArabic ? "الاسم الكامل (اختياري)" : "Nom Complet (Optionnel)"}
+                  </label>
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder={isArabic ? "مثال: أحمد بوعلام" : "Ex: Ahmed Boualam"}
+                    className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-start"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-[11px] font-semibold text-gray-400 text-start">
+                    {isArabic ? "رقم الهاتف للاتصال المباشر" : "Numéro téléphone direct"}
+                  </label>
+                  <input
+                    type="tel"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    placeholder={isArabic ? "مثال: 0661234567" : "Ex: 0661234567"}
+                    className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-left font-mono"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={startRecording}
+                className="w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-transform hover:scale-105 active:scale-95 shadow-xl cursor-pointer"
+              >
+                <Mic className="h-5 w-5" />
+                {isArabic ? "أنا في خطر — متابعة الاستغاثة" : "Je suis en danger — Continuer"}
+              </button>
             </div>
           )}
 
@@ -370,8 +537,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                   {isArabic ? "من حريق نشط." : "d'un feu actif."}
                 </p>
                 <p className="text-xs text-red-400 mt-2 p-2 bg-red-950/30 rounded border border-red-900/50">
-                  {isArabic 
-                    ? "تم فتح قناة الاتصال المباشر (Override) بجميع أعوان الحماية المدنية في النطاق الجغرافي." 
+                  {isArabic
+                    ? "تم فتح قناة الاتصال المباشر (Override) بجميع أعوان الحماية المدنية في النطاق الجغرافي."
                     : "Canal radio direct (Override) ouvert avec toutes les unités à proximité."}
                 </p>
               </div>
@@ -382,7 +549,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                   <span>🚨</span>
                   <span>{isArabic ? "معلومات تحديد الهوية للإنقاذ" : "Informations d'identification pour secours"}</span>
                 </h4>
-                
                 <div className="space-y-1">
                   <label className="block text-[11px] font-semibold text-gray-400 text-start">
                     {isArabic ? "الاسم الكامل (اختياري)" : "Nom Complet (Optionnel)"}
@@ -395,7 +561,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                     className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-start"
                   />
                 </div>
-
                 <div className="space-y-1">
                   <label className="block text-[11px] font-semibold text-gray-400 text-start">
                     {isArabic ? "رقم الهاتف للاتصال المباشر" : "Numéro de téléphone direct"}
@@ -415,7 +580,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                 type="button"
                 onClick={playSOSTestSound}
                 className={`w-full py-2.5 px-4 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border transition-all cursor-pointer ${
-                  isTestingSound 
+                  isTestingSound
                     ? "bg-amber-500/20 border-amber-500 text-amber-300 animate-pulse shadow-lg shadow-amber-500/20"
                     : "bg-black/50 border-white/10 hover:border-white/20 text-gray-300 hover:text-white"
                 }`}
@@ -446,7 +611,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                   <Mic className="h-10 w-10 text-white animate-pulse" />
                 </div>
               </div>
-              
+
               <div className="space-y-1">
                 <h3 className="text-xl font-bold text-white font-mono">00:{recordingTime < 10 ? `0${recordingTime}` : recordingTime}</h3>
                 <p className="text-sm text-red-400 animate-pulse font-bold flex items-center justify-center gap-1">
@@ -455,9 +620,9 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                 </p>
                 {micStatus === "permission_denied" && (
                   <p className="text-xs text-amber-300 bg-amber-950/60 p-2 rounded-lg border border-amber-500/30 font-semibold mt-2">
-                    {isArabic 
-                      ? "⚠️ الميكروفون مغلق في متصفحك. سيتم توليد استغاثة صوتية ناطقة آلياً باسمك."
-                      : "⚠️ Micro bloqué dans votre navigateur. Un SOS vocal automatique sera généré."}
+                    {isArabic
+                      ? "⚠️ الميكروفون مغلق في متصفحك. سيتم إرسال نص الاستغاثة مع الصوت الاحتياطي."
+                      : "⚠️ Micro bloqué dans votre navigateur. Un SOS textuel sera bien transmis."}
                   </p>
                 )}
               </div>
@@ -468,9 +633,9 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                   const factor = Math.sin((i / 20) * Math.PI);
                   const barHeight = Math.min(100, Math.max(15, (audioLevel * 1.5 * factor) + (Math.random() * 10)));
                   return (
-                    <div 
-                      key={i} 
-                      className={`w-2 rounded-full transition-all duration-75 ${barHeight > 60 ? "bg-red-500" : barHeight > 30 ? "bg-amber-400" : "bg-emerald-400"}`} 
+                    <div
+                      key={i}
+                      className={`w-2 rounded-full transition-all duration-75 ${barHeight > 60 ? "bg-red-500" : barHeight > 30 ? "bg-amber-400" : "bg-emerald-400"}`}
                       style={{ height: `${barHeight}%` }}
                     />
                   );
@@ -479,10 +644,35 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
 
               <button
                 onClick={stopRecordingAndSend}
-                className="w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl shadow-red-600/30 transition-all cursor-pointer"
+                disabled={isSending}
+                className={`w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 shadow-xl shadow-red-600/30 transition-all cursor-pointer ${isSending ? "opacity-60 cursor-wait" : ""}`}
               >
                 <div className="h-4 w-4 bg-white rounded-sm"></div>
-                {isArabic ? "إنهاء التسجيل وإرسال الصوت والموقع فوراً 🚨" : "Arrêter et envoyer le SOS vocal 🚨"}
+                {isSending
+                  ? (isArabic ? "جاري الإرسال..." : "Envoi en cours...")
+                  : (isArabic ? "إنهاء التسجيل وإرسال الصوت والموقع فوراً 🚨" : "Arrêter et envoyer le SOS vocal 🚨")}
+              </button>
+            </div>
+          )}
+
+          {step === "send_failed" && (
+            <div className="flex flex-col items-center text-center space-y-4 py-6 animate-fadeIn">
+              <div className="h-16 w-16 bg-red-500/20 text-red-400 rounded-full flex items-center justify-center border border-red-500/50">
+                <AlertTriangle className="h-8 w-8" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-red-400 mb-2">
+                  {isArabic ? "فشل إرسال الاستغاثة!" : "Échec de l'envoi du SOS !"}
+                </h3>
+                <p className="text-sm text-slate-300">{sendError}</p>
+              </div>
+              <button
+                onClick={stopRecordingAndSend}
+                disabled={isSending}
+                className="w-full py-3 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <RefreshCw className={`h-4 w-4 ${isSending ? "animate-spin" : ""}`} />
+                {isSending ? (isArabic ? "جاري إعادة المحاولة..." : "Nouvelle tentative...") : (isArabic ? "إعادة المحاولة الآن" : "Réessayer maintenant")}
               </button>
             </div>
           )}
@@ -497,33 +687,18 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                   {isArabic ? "تم استلام ونشر نداء الاستغاثة!" : "SOS vocal transmis !"}
                 </h3>
                 <p className="text-sm text-slate-300">
-                  {isArabic 
-                    ? "تم بث تسجيلك الصوتي وإحداثياتك الدقيقة لجميع أجهزة الحماية المدنية والقيادة المركزية." 
+                  {isArabic
+                    ? "تم بث تسجيلك الصوتي وإحداثياتك لإسم أجهزة الحماية المدنية والقيادة المركزية."
                     : "Votre message vocal et votre position ont été transmis à la Protection Civile et au Commandement."}
                 </p>
               </div>
 
-              {recordedAudioUrl && (
-                <div className="w-full bg-red-950/40 border border-red-500/30 rounded-xl p-3 text-start space-y-2">
-                  <div className="flex items-center justify-between text-xs font-bold text-red-300">
-                    <span className="flex items-center gap-1.5">
-                      <Volume2 className="h-4 w-4 text-red-400 animate-pulse" />
-                      <span>{isArabic ? "معاينة الاستغاثة الصوتية المرسلة" : "Aperçu de l'enregistrement SOS"}</span>
-                    </span>
-                    <span className="text-[10px] bg-red-500/20 px-1.5 py-0.5 rounded text-red-300">
-                      {recordingTime} {isArabic ? "ثانية" : "s"}
-                    </span>
-                  </div>
-                  <audio controls src={recordedAudioUrl} className="w-full h-8" />
-                </div>
-              )}
-
               <div className="w-full bg-slate-800/80 rounded-lg p-3 border border-slate-700 flex items-start gap-3 text-left">
                 <RadioReceiver className="h-5 w-5 text-indigo-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-slate-400">
-                  {isArabic 
-                    ? "نصيحة: ابق في مكان منخفض، غطِ فمك بقطعة قماش مبللة، ولا تغلق هاتفك. فرق الإنقاذ في طريقها إليك." 
-                    : "Conseil : Restez près du sol, couvrez votre bouche avec un tissu humide. Les secours arrivent."}
+                  {isArabic
+                    ? "نصيحة: ابق في مكان منخفض، غطِ فمك بقطعة قماش مبللة. لا تغلق هاتفك."
+                    : "Conseil : Restez près du sol, couvrez votre bouche avec un tissu humide. Gardez votre téléphone allumé."}
                 </p>
               </div>
               <button
