@@ -42,10 +42,23 @@ const profileSchema = z.object({
 
 const memorySos: any[] = [];
 
+// Background sweep: cap in-memory SOS (raw base64 audio held here only) to a
+// rolling window so long-running processes don't accumulate unbounded memory.
+const MEMORY_SOS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const MEMORY_SOS_MAX_ITEMS = 500;
+function sweepMemorySos() {
+  const cutoff = Date.now() - MEMORY_SOS_MAX_AGE_MS;
+  while (memorySos.length > 0 && new Date(memorySos[memorySos.length - 1].timestamp).getTime() < cutoff) {
+    memorySos.pop();
+  }
+}
+sweepMemorySos();
+setInterval(sweepMemorySos, 15 * 60 * 1000).unref();
+
 // ── Rate limiting & duplicate detection ──────────────────────────────────────
 const sosPostLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 3,
+  max: 2,
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req: Request) => `sos:${String((req.body as any)?.deviceId || req.ip || "unknown")}`,
@@ -192,6 +205,9 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
     deviceId,
   };
   memoryProfiles.set(deviceId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
+  if (memoryProfiles.size > 20000) {
+    for (const [k, v] of memoryProfiles) if (Date.now() > v.expiresAt) memoryProfiles.delete(k);
+  }
   await docSet("sosProfiles", deviceId, record);
   res.json({ success: true });
 });
@@ -279,6 +295,9 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   if (newSos.audioUrl) clean.hasAudio = true;
   await docSet("trappedSos", newSos.id, clean);
   memorySos.unshift(newSos);
+  if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
+    memorySos.length = MEMORY_SOS_MAX_ITEMS;
+  }
   logger.info({ sosId: newSos.id, lat, lng, priority, isVerifiedByProximity }, "New SOS created");
   res.json(newSos);
 });
