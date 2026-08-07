@@ -42,7 +42,10 @@ test.describe("Smoke tests", () => {
     const input = page.getByPlaceholder(/mot de passe|كلمة المرور/i);
     await expect(input).toBeVisible({ timeout: 5000 });
     await input.fill(adminPw);
-    await page.click('button:has-text("دخول")');
+    await page.click('button:has-text("ولوج المشرف")');
+    await expect(page.getByText(/أدمن نشط/i)).toBeVisible({ timeout: 5000 });
+    await page.reload();
+    await page.click('button:has-text("مشرف")');
     await expect(page.getByText(/أدمن نشط/i)).toBeVisible({ timeout: 5000 });
   });
 

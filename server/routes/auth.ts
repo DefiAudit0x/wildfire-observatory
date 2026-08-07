@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { generateStaffToken, requireAuth } from "../middleware.js";
 import { docGet } from "../fs.js";
+import config from "../config.js";
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
     res.cookie("staff_token", token, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: config.cookieSecure,
       maxAge: 24 * 60 * 60 * 1000,
     });
     logger.info({ agentId, role: user.role, unitId: user.unitId }, "Staff login");

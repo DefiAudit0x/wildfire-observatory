@@ -10,6 +10,7 @@ import { createNotification } from "./notifications.js";
 import { logAdminAction } from "./audit.js";
 import { liveHub } from "../live.js";
 import logger from "../logger.js";
+import config from "../config.js";
 
 const router = Router();
 
@@ -62,7 +63,7 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
     res.cookie("admin_token", token, {
       httpOnly: true,
       sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
+      secure: config.cookieSecure,
       maxAge: 24 * 60 * 60 * 1000,
     });
     logAdminAction("admin.login", { success: true }).catch(() => {});

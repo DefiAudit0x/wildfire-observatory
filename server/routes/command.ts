@@ -81,7 +81,7 @@ router.post("/auth/central-command", async (req: Request, res: Response) => {
   res.cookie("admin_token", token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: config.nodeEnv === "production",
+    secure: config.cookieSecure,
     maxAge: 24 * 60 * 60 * 1000,
   });
   res.json({ valid: true });

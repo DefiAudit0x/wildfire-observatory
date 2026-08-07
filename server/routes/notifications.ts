@@ -102,7 +102,7 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
   res.cookie("deviceId", deviceId, {
     httpOnly: true,
     sameSite: "lax",
-    secure: config.nodeEnv === "production",
+    secure: config.cookieSecure,
     maxAge: 365 * 24 * 60 * 60 * 1000,
   });
   const notifs = await getNotificationsFromDb(deviceId);

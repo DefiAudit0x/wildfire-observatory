@@ -27,6 +27,8 @@ export default defineConfig({
     env: {
       SKIP_FIREBASE: "true",
       NODE_ENV: "production",
+      COOKIE_SECURE: "false",
+      GENERAL_LIMIT_MAX: "10000",
       ENABLE_SWAGGER: "true",
       JWT_SECRET: "e2e-secret",
       ADMIN_PASSWORD: "test-admin",
