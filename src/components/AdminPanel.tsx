@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download, ScrollText, Building2 } from "lucide-react";
+import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download, ScrollText, Building2, BadgeCheck } from "lucide-react";
 import { Report, Language } from "../types";
 import AuditLog from "./admin/AuditLog";
 import SafeZonesManager from "./admin/SafeZonesManager";
 import StaffManager from "./admin/StaffManager";
+import BadgeManager from "./admin/BadgeManager";
 
 interface AdminPanelProps {
   reports: Report[];
@@ -21,7 +22,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
-  const [activeSection, setActiveSection] = useState<"reports" | "audit" | "zones" | "staff">("reports");
+  const [activeSection, setActiveSection] = useState<"reports" | "audit" | "zones" | "staff" | "badges">("reports");
   const ITEMS_PER_PAGE = 20;
 
   const isArabic = lang === "ar";
@@ -336,6 +337,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       <div className="flex items-center gap-2 flex-wrap">
         {([
           { id: "reports" as const, labelAr: "إدارة البلاغات", labelFr: "Signalements", icon: <Layers className="h-3.5 w-3.5" /> },
+          { id: "badges" as const, labelAr: "رموز الاعتماد", labelFr: "Badges", icon: <BadgeCheck className="h-3.5 w-3.5" /> },
           { id: "audit" as const, labelAr: "سجل التدقيق", labelFr: "Journal d'audit", icon: <ScrollText className="h-3.5 w-3.5" /> },
           { id: "zones" as const, labelAr: "المراكز الآمنة", labelFr: "Centres sûrs", icon: <MapPin className="h-3.5 w-3.5" /> },
           { id: "staff" as const, labelAr: "الكادر والوحدات", labelFr: "Personnel & Unités", icon: <Building2 className="h-3.5 w-3.5" /> },
@@ -357,6 +359,10 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
       {activeSection === "audit" && (
         <AuditLog lang={lang} token={getToken()} onAuthError={handleAuthError} />
+      )}
+
+      {activeSection === "badges" && (
+        <BadgeManager lang={lang} token={getToken()} onAuthError={handleAuthError} />
       )}
 
       {activeSection === "zones" && (

@@ -21,6 +21,15 @@ export function generateAdminToken(): string {
   return jwt.sign({ role: "admin" }, config.jwtSecret, { expiresIn: "24h" });
 }
 
+export function verifyAdminToken(token: string): { valid: boolean; role?: string } {
+  try {
+    const decoded = jwt.verify(token, config.jwtSecret) as AuthPayload;
+    return { valid: true, role: decoded.role };
+  } catch {
+    return { valid: false };
+  }
+}
+
 export function generateStaffToken(payload: Omit<AuthPayload, "iat">): string {
   return jwt.sign(payload, config.jwtSecret, { expiresIn: "24h" });
 }

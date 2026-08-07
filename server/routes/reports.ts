@@ -67,6 +67,10 @@ const badgeAttempts = new Map<string, { count: number; expiresAt: number }>();
 const BADGE_CACHE_TTL_MS = 5 * 60 * 1000;
 const badgeCache = new Map<string, { valid: boolean; expiresAt: number }>();
 
+export function invalidateBadgeCache(badgeCode: string): void {
+  badgeCache.delete(badgeCode);
+}
+
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 const cleanupTimers: NodeJS.Timeout[] = [];
 function scheduleBadgeCacheCleanup(): void {
