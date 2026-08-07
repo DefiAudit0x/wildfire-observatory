@@ -1,15 +1,16 @@
 import { memo } from "react";
-import { ShieldAlert, Layers, Compass, AlertCircle, BadgeCheck, Sparkles, BookOpen, Navigation, Crown, Shield } from "lucide-react";
+import { ShieldAlert, Layers, Compass, AlertCircle, BadgeCheck, Sparkles, BookOpen, Navigation, Crown, Shield, ClipboardList } from "lucide-react";
 import { TabId } from "../../types";
 
 interface TabBarProps {
   isArabic: boolean;
   activeTab: TabId;
   privilegedTabVisible: boolean;
+  rosterVisible: boolean;
   onSelectTab: (tab: TabId) => void;
 }
 
-function TabBar({ isArabic, activeTab, privilegedTabVisible, onSelectTab }: TabBarProps) {
+function TabBar({ isArabic, activeTab, privilegedTabVisible, rosterVisible, onSelectTab }: TabBarProps) {
   const tabs = [
     { id: "home" as TabId, labelAr: "بوابة الطوارئ السريعة", labelFr: "Accueil d'Urgence", icon: <ShieldAlert className="h-4 w-4 text-red-500 animate-pulse" /> },
     { id: "map" as TabId, labelAr: "المرصد والخريطة", labelFr: "Observatoire & Carte", icon: <Layers className="h-4 w-4" /> },
@@ -23,6 +24,11 @@ function TabBar({ isArabic, activeTab, privilegedTabVisible, onSelectTab }: TabB
       ? [
           { id: "command" as TabId, labelAr: "قيادة مركزية", labelFr: "Commandement Central", icon: <Crown className="h-4 w-4 text-amber-400 animate-pulse" /> },
           { id: "admin" as TabId, labelAr: "لوحة تحكم المشرف", labelFr: "Espace Admin", icon: <Shield className="h-4 w-4 text-emerald-400 animate-pulse" /> },
+        ]
+      : []),
+    ...(rosterVisible
+      ? [
+          { id: "roster" as TabId, labelAr: "جدول المناوبة", labelFr: "Tableau de Garde", icon: <ClipboardList className="h-4 w-4 text-sky-400" /> },
         ]
       : []),
   ];

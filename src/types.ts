@@ -59,7 +59,8 @@ export type TabId =
   | 'admin'
   | 'volunteer'
   | 'command'
-  | 'evac';
+  | 'evac'
+  | 'roster';
 
 export type TabIdOrEmpty = TabId | '';
 

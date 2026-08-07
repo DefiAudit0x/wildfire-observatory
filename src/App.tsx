@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { Language, TabId } from "./types";
 import { useSessionProbe } from "./hooks/useSessionProbe";
+import { useStaffSession } from "./hooks/useAuth";
 import { useGeolocation } from "./hooks/useGeolocation";
 import { useObservatoryData } from "./hooks/useObservatoryData";
 import { useProximityAlerts } from "./hooks/useProximityAlerts";
@@ -21,6 +22,8 @@ export default function App() {
 
   const isArabic = lang === "ar";
   const privilegedTabVisible = useSessionProbe();
+  const { session: staffSession } = useStaffSession();
+  const rosterVisible = staffSession.authenticated;
 
   const { userLocation } = useGeolocation(isArabic);
   const {
@@ -102,6 +105,7 @@ export default function App() {
         isArabic={isArabic}
         activeTab={activeTab}
         privilegedTabVisible={privilegedTabVisible}
+        rosterVisible={rosterVisible}
         onSelectTab={handleNavigate}
       />
 

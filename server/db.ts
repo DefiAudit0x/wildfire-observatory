@@ -17,10 +17,25 @@ export function invalidateReportsCache() {
   reportsCache = null;
 }
 
-export async function getReportsFromFirestore() {
-  if (reportsCache && Date.now() < reportsCache.expiresAt) return reportsCache.data;
+export type ReportsDbResult =
+  | { status: "ok"; reports: any[] }
+  | { status: "no-db" }
+  | { status: "empty" }
+  | { status: "error" };
+
+/**
+ * Returns a discriminated union so callers can distinguish:
+ *  - "ok": reports were read from Firestore
+ *  - "empty": Firestore reachable but the reports collection has no documents
+ *  - "no-db": no Firestore is configured (or SKIP_FIREBASE)
+ *  - "error": a read error occurred
+ */
+export async function getReportsDbResult(): Promise<ReportsDbResult> {
+  if (reportsCache && Date.now() < reportsCache.expiresAt) {
+    return reportsCache.data === null ? { status: "empty" } : { status: "ok", reports: reportsCache.data };
+  }
   const db = getDb();
-  if (!db) return null;
+  if (!db) return { status: "no-db" };
   try {
     let data: any[] | null = null;
     if (isAdminDb(db)) {
@@ -37,12 +52,18 @@ export async function getReportsFromFirestore() {
         data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));
       }
     }
+    if (data === null) return { status: "empty" };
     reportsCache = { data, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
-    return data;
+    return { status: "ok", reports: data };
   } catch (err) {
     logger.error({ err }, "Error reading reports from Firestore");
-    return null;
+    return { status: "error" };
   }
+}
+
+export async function getReportsFromFirestore() {
+  const result = await getReportsDbResult();
+  return result.status === "ok" ? result.reports : null;
 }
 
 export async function seedReportsToFirestore() {

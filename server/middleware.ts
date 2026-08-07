@@ -4,19 +4,38 @@ import rateLimit from "express-rate-limit";
 import config from "./config.js";
 import logger from "./logger.js";
 
+export type UserRole = "admin" | "superadmin" | "commander" | "agent";
+
 export interface AuthPayload {
-  role: "admin" | "superadmin";
+  role: UserRole;
+  unitId?: string;
+  name?: string;
+  agentId?: string;
   iat?: number;
 }
+
+export const ALL_ROLES: readonly UserRole[] = ["admin", "superadmin", "commander", "agent"];
+export const OFFICER_ROLES: readonly UserRole[] = ["admin", "superadmin", "commander"];
 
 export function generateAdminToken(): string {
   return jwt.sign({ role: "admin" }, config.jwtSecret, { expiresIn: "24h" });
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+export function generateStaffToken(payload: Omit<AuthPayload, "iat">): string {
+  return jwt.sign(payload, config.jwtSecret, { expiresIn: "24h" });
+}
+
+function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
-  const cookieToken = (req as any).cookies?.admin_token;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : cookieToken;
+  const cookieToken =
+    (req as any).cookies?.admin_token ||
+    (req as any).cookies?.staff_token;
+  return authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : cookieToken || null;
+}
+
+/** Any valid staff/admin session (role checked by callers when needed). */
+export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+  const token = extractToken(req);
   if (!token) {
     res.status(401).json({ error: "Unauthorized: missing or invalid token" });
     return;
@@ -28,6 +47,32 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   } catch {
     res.status(401).json({ error: "Unauthorized: invalid or expired token" });
   }
+}
+
+/** Backward-compatible: same behaviour as before, but also accepts staff tokens who hold an officer role. */
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  requireAuth(req, res, () => {
+    const role = (req as any).admin?.role;
+    if (role === "admin" || role === "superadmin") {
+      next();
+      return;
+    }
+    res.status(403).json({ error: "Forbidden: insufficient role" });
+  });
+}
+
+/** Requires the caller to hold one of the given roles. */
+export function requireRole(...roles: UserRole[]) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    requireAuth(req, res, () => {
+      const role = (req as any).admin?.role as UserRole | undefined;
+      if (role && roles.includes(role)) {
+        next();
+        return;
+      }
+      res.status(403).json({ error: "Forbidden: insufficient role" });
+    });
+  };
 }
 
 export const looseLimiter = rateLimit({

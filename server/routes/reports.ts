@@ -6,7 +6,7 @@ import { citizenReports } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
-  getReportsFromFirestore,
+  getReportsDbResult,
   seedReportsToFirestore,
   saveReportToFirestore,
   confirmReportInFirestore,
@@ -137,12 +137,10 @@ const createReportSchema = z.object({
 let initialReportsSeeded = false;
 
 async function getReportsFromDb() {
-  const reports = await getReportsFromFirestore();
-  if (reports) return reports;
-  if (!initialReportsSeeded) {
-    if (reports === null) {
-      seedReportsToFirestore();
-    }
+  const result = await getReportsDbResult();
+  if (result.status === "ok") return result.reports;
+  if (result.status === "empty" && !initialReportsSeeded) {
+    seedReportsToFirestore();
     initialReportsSeeded = true;
   }
   return citizenReports;

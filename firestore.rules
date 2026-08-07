@@ -28,5 +28,20 @@ service cloud.firestore {
     match /notifications/{id} {
       allow read, write: if false;
     }
+
+    // Civil-protection units: private — server only (writes via Admin SDK).
+    match /units/{unit} {
+      allow read, write: if false;
+    }
+
+    // Staff accounts (agents/commanders): private — server only.
+    match /users/{user} {
+      allow read, write: if false;
+    }
+
+    // Daily duty rosters per unit: private — server only (writes via Admin SDK).
+    match /units/{unit}/rosterDays/{date} {
+      allow read, write: if false;
+    }
   }
 }

@@ -12,6 +12,7 @@ import AdminPanel from "../AdminPanel";
 import VolunteerRegistration from "../VolunteerRegistration";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
+import RosterBoard from "../RosterBoard";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
 const InteractiveMap = lazy(() => import("../InteractiveMap"));
@@ -111,6 +112,13 @@ export default function MainContent({
         </Suspense>
       )}
 
+      {/* Staff duty roster */}
+      {activeTab === "roster" && (
+        <div className="col-span-12 animate-fadeIn">
+          <RosterBoard lang={lang} />
+        </div>
+      )}
+
       {/* Safe Evacuation View */}
       {activeTab === "evac" && (
         <div className="col-span-12 animate-fadeIn">
@@ -119,7 +127,7 @@ export default function MainContent({
       )}
 
       {/* Normal layout columns */}
-      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && (
+      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && activeTab !== "roster" && (
         <>
           {/* Live statistics summary cards */}
           {activeTab === "map" && (

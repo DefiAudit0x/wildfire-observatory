@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e",
-  timeout: 30000,
+  timeout: 60000,
   expect: { timeout: 10000 },
   fullyParallel: false,
   retries: 1,
@@ -20,13 +20,15 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev",
+    command: "cmd /c npm run build && node dist/server.cjs",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
-    timeout: 30000,
+    timeout: 120000,
     env: {
       SKIP_FIREBASE: "true",
-      NODE_ENV: "test",
+      NODE_ENV: "production",
+      ENABLE_SWAGGER: "true",
+      JWT_SECRET: "e2e-secret",
       ADMIN_PASSWORD: "test-admin",
     },
   },

@@ -1,0 +1,206 @@
+import { Request, Response, Router } from "express";
+import { z } from "zod";
+import bcrypt from "bcryptjs";
+import logger from "../logger.js";
+import { requireRole } from "../middleware.js";
+import { collectionGet, docGet, docSet, docUpdate, docDelete } from "../fs.js";
+import { toUnitId } from "./units.js";
+
+const router = Router();
+
+const ROLES = ["superadmin", "commander", "agent"] as const;
+
+const createUserSchema = z.object({
+  agentId: z.string().min(2).max(64).regex(/^[A-Za-z0-9._-]+$/),
+  name: z.string().min(2).max(120),
+  role: z.enum(ROLES),
+  unitId: z.string().min(1),
+  password: z.string().min(8).max(128),
+});
+
+const updateUserSchema = z
+  .object({
+    name: z.string().min(2).max(120).optional(),
+    role: z.enum(ROLES).optional(),
+    unitId: z.string().min(1).optional(),
+    isActive: z.boolean().optional(),
+    password: z.string().min(8).max(128).optional(),
+  })
+  .refine((data) => Object.keys(data).length > 0, { message: "At least one field required" });
+
+function sanitizeUser(u: any) {
+  return {
+    agentId: u.agentId,
+    name: u.name,
+    role: u.role,
+    unitId: u.unitId,
+    isActive: u.isActive !== false,
+    createdAt: u.createdAt,
+  };
+}
+
+// Determine which unit the caller is allowed to manage.
+// superadmin → any unit; commander → own unit (creating agents).
+function callerUnit(admin: any): { unitId: string | null; isSuperadmin: boolean } {
+  const isSuperadmin = admin?.role === "superadmin" || admin?.role === "admin";
+  return { unitId: isSuperadmin ? null : admin?.unitId || null, isSuperadmin };
+}
+
+router.get("/", requireRole("superadmin", "commander"), async (req: Request, res: Response) => {
+  try {
+    const admin = (req as any).admin;
+    const { unitId, isSuperadmin } = callerUnit(admin);
+    let users = (await collectionGet("users")) || [];
+    if (!isSuperadmin && unitId) {
+      users = users.filter((u: any) => u.unitId === unitId);
+    }
+    res.json({ users: users.map(sanitizeUser) });
+  } catch (err) {
+    logger.error({ err }, "Failed to list users");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.post("/", requireRole("superadmin", "commander"), async (req: Request, res: Response) => {
+  const parsed = createUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+    return;
+  }
+  const admin = (req as any).admin;
+  const { unitId: allowedUnit, isSuperadmin } = callerUnit(admin);
+
+  // A commander can only create agents inside their own unit.
+  if (!isSuperadmin) {
+    if (parsed.data.role !== "agent") {
+      res.status(403).json({ error: "Commanders can only create agent accounts" });
+      return;
+    }
+    if (parsed.data.unitId !== allowedUnit) {
+      res.status(403).json({ error: "Commanders can only add staff to their own unit" });
+      return;
+    }
+  }
+
+  try {
+    const existing = await docGet("users", parsed.data.agentId);
+    if (existing) {
+      res.status(409).json({ error: "agentId already exists" });
+      return;
+    }
+    const unit = await docGet("units", toUnitId(parsed.data.unitId));
+    if (!unit) {
+      res.status(404).json({ error: "Unit not found" });
+      return;
+    }
+    const passwordHash = await bcrypt.hash(parsed.data.password, 10);
+    const now = new Date().toISOString();
+    const user = {
+      agentId: parsed.data.agentId,
+      name: parsed.data.name,
+      role: parsed.data.role,
+      unitId: parsed.data.unitId,
+      passwordHash,
+      isActive: true,
+      createdAt: now,
+      createdBy: admin?.agentId || "admin",
+    };
+    const ok = await docSet("users", user.agentId, user);
+    if (!ok) {
+      res.status(503).json({ error: "Database not available" });
+      return;
+    }
+    res.status(201).json(sanitizeUser(user));
+  } catch (err) {
+    logger.error({ err }, "Failed to create user");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.put("/:agentId", requireRole("superadmin", "commander"), async (req: Request, res: Response) => {
+  const { agentId } = req.params;
+  const parsed = updateUserSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
+    return;
+  }
+  const admin = (req as any).admin;
+  const { unitId: allowedUnit, isSuperadmin } = callerUnit(admin);
+
+  try {
+    const existing = await docGet("users", agentId);
+    if (!existing) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+
+    if (!isSuperadmin) {
+      if (existing.unitId !== allowedUnit) {
+        res.status(403).json({ error: "Commanders can only manage their own unit's staff" });
+        return;
+      }
+      if (parsed.data.role && parsed.data.role !== "agent") {
+        res.status(403).json({ error: "Commanders cannot change roles outside of agent" });
+        return;
+      }
+      if (parsed.data.unitId && parsed.data.unitId !== allowedUnit) {
+        res.status(403).json({ error: "Commanders cannot move staff between units" });
+        return;
+      }
+    }
+
+    if (parsed.data.unitId) {
+      const unit = await docGet("units", toUnitId(parsed.data.unitId));
+      if (!unit) {
+        res.status(404).json({ error: "Unit not found" });
+        return;
+      }
+    }
+
+    const update: Record<string, any> = {};
+    if (parsed.data.name) update.name = parsed.data.name;
+    if (parsed.data.role) update.role = parsed.data.role;
+    if (parsed.data.unitId) update.unitId = parsed.data.unitId;
+    if (parsed.data.isActive !== undefined) update.isActive = parsed.data.isActive;
+    if (parsed.data.password) update.passwordHash = await bcrypt.hash(parsed.data.password, 10);
+    update.updatedAt = new Date().toISOString();
+    update.updatedBy = admin?.agentId || "admin";
+
+    const ok = await docUpdate("users", agentId, update);
+    if (!ok) {
+      res.status(503).json({ error: "Database not available" });
+      return;
+    }
+    res.json(sanitizeUser({ ...existing, ...update }));
+  } catch (err) {
+    logger.error({ err }, "Failed to update user");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
+  const { agentId } = req.params;
+  const admin = (req as any).admin;
+  if (admin?.agentId === agentId) {
+    res.status(400).json({ error: "Cannot delete your own account" });
+    return;
+  }
+  try {
+    const existing = await docGet("users", agentId);
+    if (!existing) {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    const ok = await docDelete("users", agentId);
+    if (!ok) {
+      res.status(503).json({ error: "Database not available" });
+      return;
+    }
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err }, "Failed to delete user");
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+export default router;

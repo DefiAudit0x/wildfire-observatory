@@ -6,9 +6,10 @@ test.describe("Smoke tests", () => {
     await expect(page).toHaveTitle(/المرصد|Observatoire|Observatory/i);
   });
 
-  test("homepage renders the interactive map", async ({ page }) => {
+  test("homepage renders the interactive map after opening the map tab", async ({ page }) => {
     await page.goto("/");
-    await expect(page.locator("#map")).toBeAttached({ timeout: 10000 });
+    await page.click('button:has-text("المرصد والخريطة")');
+    await expect(page.locator("#map-target").first()).toBeAttached({ timeout: 15000 });
   });
 
   test("API health endpoint returns OK", async ({ request }) => {
@@ -27,7 +28,7 @@ test.describe("Smoke tests", () => {
 
   test("admin panel login form is visible", async ({ page }) => {
     await page.goto("/");
-    await page.click('button:has-text("أدمن")');
+    await page.click('button:has-text("مشرف")');
     await expect(page.getByText(/لوحة تحكم المشرفين/i)).toBeVisible({ timeout: 5000 });
   });
 
@@ -37,7 +38,7 @@ test.describe("Smoke tests", () => {
       test.skip(!process.env.ADMIN_PASSWORD, "ADMIN_PASSWORD not set");
     }
     await page.goto("/");
-    await page.click('button:has-text("أدمن")');
+    await page.click('button:has-text("مشرف")');
     const input = page.getByPlaceholder(/mot de passe|كلمة المرور/i);
     await expect(input).toBeVisible({ timeout: 5000 });
     await input.fill(adminPw);
@@ -47,12 +48,22 @@ test.describe("Smoke tests", () => {
 
   test("reports tab shows the report form", async ({ page }) => {
     await page.goto("/");
-    await page.click('button:has-text("بلاغ")');
-    await expect(page.getByText(/الإبلاغ عن حريق/i)).toBeVisible({ timeout: 5000 });
+    await page.click('button:has-text("إرسال بلاغ حريق")');
+    await expect(page.getByText(/إرسال بلاغ عاجل عن حريق/i)).toBeVisible({ timeout: 5000 });
   });
 
   test("swagger docs page loads", async ({ page }) => {
     await page.goto("/api-docs");
-    await expect(page.locator(".swagger-ui")).toBeAttached({ timeout: 10000 });
+    await expect(page.locator(".swagger-ui").first()).toBeAttached({ timeout: 10000 });
+  });
+
+  test("GET /api/units requires a staff token (401)", async ({ request }) => {
+    const res = await request.get("/api/units");
+    expect(res.status()).toBe(401);
+  });
+
+  test("GET /api/roster/:date requires a staff token (401)", async ({ request }) => {
+    const res = await request.get("/api/roster/2099-01-01");
+    expect(res.status()).toBe(401);
   });
 });

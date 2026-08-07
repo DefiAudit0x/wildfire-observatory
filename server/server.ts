@@ -29,6 +29,10 @@ import volunteersRouter from "./routes/volunteers.js";
 import commandRouter from "./routes/command.js";
 import auditRouter from "./routes/audit.js";
 import safezonesRouter from "./routes/safezones.js";
+import authRouter from "./routes/auth.js";
+import unitsRouter from "./routes/units.js";
+import usersRouter from "./routes/users.js";
+import rosterRouter from "./routes/roster.js";
 
 const app = express();
 // Railway runs a single load-balancer hop in front of the app container.
@@ -168,6 +172,10 @@ app.use("/api/badges", badgesRouter);
 app.use("/api/volunteer", volunteersRouter);
 app.use("/api/audit", auditRouter);
 app.use("/api/safezones", safezonesRouter);
+app.use("/api/auth", authRouter);
+app.use("/api/units", unitsRouter);
+app.use("/api/users", usersRouter);
+app.use("/api/roster", rosterRouter);
 app.use("/api", commandRouter);
 
 async function startServer() {
