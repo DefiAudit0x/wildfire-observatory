@@ -72,7 +72,7 @@ async function main() {
   console.log(`✔ Ruleset created: ${rulesetData.name}`);
 
   const releaseIds = databaseId && !["(default)", "default"].includes(databaseId)
-    ? [`cloud.firestore.${databaseId}`]
+    ? [`cloud.firestore.${databaseId}`, `cloud.firestore/${databaseId}`]
     : ["cloud.firestore"];
 
   for (const releaseId of releaseIds) {
@@ -80,15 +80,13 @@ async function main() {
     const releaseBody = {
       release: { name: releaseName, rulesetName: rulesetData.name },
     };
+    const releaseUrl = `https://firebaserules.googleapis.com/v1/projects/${projectId}/releases/${encodeURIComponent(releaseId)}`;
 
-    let releaseRes = await fetch(
-      `https://firebaserules.googleapis.com/v1/projects/${projectId}/releases/${releaseId}`,
-      {
-        method: "PATCH",
-        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
-        body: JSON.stringify(releaseBody),
-      }
-    );
+    let releaseRes = await fetch(releaseUrl, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify(releaseBody),
+    });
 
     if (!releaseRes.ok && releaseRes.status === 404) {
       releaseRes = await fetch(
