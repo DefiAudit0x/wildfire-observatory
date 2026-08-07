@@ -181,6 +181,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   } | null>(null);
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
   const [includeTelemetry, setIncludeTelemetry] = useState(true);
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -478,6 +479,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     setImage(dataUrl);
+    // Live capture is watermark-proven (GPS/heading/timestamp burned into the
+    // frame) so no reliability warning is needed here.
+    setUploadWarning(null);
     // Note: telemetry overlay avoids raw image degradation while keeping a
     // high-fidelity snapshot for the Gemini vision verification.
     runEdgeAiPreScan(dataUrl);
@@ -633,6 +637,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           
           // Trigger local Edge AI analysis immediately
           runEdgeAiPreScan(dataUrl, compressionPercent);
+          // Honest disclosure: a file upload carries no EXIF/GPS watermark proof
+          // unlike a live capture, so a report backed only by an upload carries
+          // a lighter verification weight — surfaced here to the reporter.
+          setUploadWarning(
+            isArabic
+              ? "⚠️ الصور المرفوعة أقل موثوقية من التصوير المباشر — لا تحمل بيانات GPS/وقت التحقق."
+              : "⚠️ Les photos jointes sont moins fiables que la capture directe (pas de GPS/timestamp)."
+          );
         }
         setIsCompressing(false);
       };
@@ -1073,6 +1085,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                       <p className="mt-0.5">{compressedSize} <span className="line-through text-[8px] text-gray-600">({originalSize})</span></p>
                     </div>
                   </div>
+
+                  {uploadWarning && (
+                    <div className="p-2.5 rounded-lg border border-amber-500/40 bg-amber-950/25 text-amber-300 text-[10px] leading-relaxed">
+                      {uploadWarning}
+                    </div>
+                  )}
 
                   {edgeAiStatus && (
                     <div className={`p-2.5 rounded-lg border text-[10px] flex items-start gap-2 leading-relaxed ${

@@ -15,7 +15,7 @@ import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
-import { docGet } from "../fs.js";
+import { docGet, docUpdate } from "../fs.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -85,7 +85,7 @@ function scheduleBadgeCacheCleanup(): void {
 }
 scheduleBadgeCacheCleanup();
 
-async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: string): Promise<boolean> {
+async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: string, wilaya: string): Promise<boolean> {
   const cached = badgeCache.get(badgeCode);
   if (cached && Date.now() < cached.expiresAt) return cached.valid;
   let valid = false;
@@ -105,7 +105,15 @@ async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: strin
           : new Date(doc.expiresAt).getTime();
         if (Number.isFinite(exp)) notExpired = Date.now() < exp;
       }
-      valid = active && typeOk && notExpired;
+      // Optional per-badge usage cap.
+      let underUsage = true;
+      if (typeof doc.maxUses === "number" && doc.maxUses > 0) {
+        underUsage = Number(doc.usedCount || 0) < doc.maxUses;
+      }
+      // Optional wilaya restriction.
+      let wilayaOk = true;
+      if (doc.wilaya && wilaya && doc.wilaya !== wilaya) wilayaOk = false;
+      valid = active && typeOk && notExpired && underUsage && wilayaOk;
     }
   } catch (err) {
     logger.warn({ err, badgeCode }, "badgeCodes Firestore lookup failed — falling back to env-only");
@@ -211,11 +219,15 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   if (reporterType === "official" || reporterType === "volunteer") {
     const code = reporterBadgeCode?.trim();
     const envTrusted = !!code && VALID_BADGE_CODES.has(code) && !badgeRateLimited(code);
-    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code, reporterType)) && !badgeRateLimited(code);
+    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code, reporterType, wilaya)) && !badgeRateLimited(code);
     if (envTrusted || firestoreTrusted) {
       isTrusted = true;
       finalStatus = "verified";
       initialConsensus = 10;
+      // Bump the per-badge usage counter so maxUses constraints take effect.
+      if (!envTrusted && code) {
+        docUpdate("badgeCodes", code, { usedCount: Number((await docGet("badgeCodes", code))?.usedCount || 0) + 1 }).catch(() => {});
+      }
       logger.info(`Trusted report from ${reporterType}: ${code}`);
     } else {
       logger.warn(`Invalid badge code attempt: ${reporterBadgeCode}`);
