@@ -28,7 +28,6 @@ interface SessionInfo {
 
 interface StaffManagerProps {
   lang: Language;
-  adminToken?: string | null;
 }
 
 function roleLabel(role: string, isArabic: boolean): string {
@@ -41,7 +40,7 @@ function roleLabel(role: string, isArabic: boolean): string {
   return map[role] || role;
 }
 
-export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
+export default function StaffManager({ lang }: StaffManagerProps) {
   const isArabic = lang === "ar";
   const [session, setSession] = useState<SessionInfo | null>(null);
   const [authChecking, setAuthChecking] = useState(true);
@@ -61,15 +60,10 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const getToken = () => {
-    // Staff login token first; fall back to the superadmin panel token when present.
-    return sessionStorage.getItem("staff_token") || adminToken || null;
-  };
-
   const handleAuth = (res: Response) => {
     if (res.status === 401 || res.status === 403) {
       setSession(null);
-      sessionStorage.removeItem("staff_token");
+      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
       return true;
     }
     return false;
@@ -77,10 +71,7 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
 
   const probeSession = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/session", {
-        headers: { Authorization: `Bearer ${getToken()}` },
-        credentials: "same-origin",
-      });
+      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setSession(data.user);
@@ -100,9 +91,7 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
 
   const fetchUnits = useCallback(async () => {
     try {
-      const res = await fetch("/api/units", {
-        headers: { Authorization: `Bearer ${getToken()}` },
-      });
+      const res = await fetch("/api/units", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setUnits(Array.isArray(data.units) ? data.units : []);
@@ -114,9 +103,7 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch("/api/users", {
-        headers: { Authorization: `Bearer ${getToken()}` },
-      });
+      const res = await fetch("/api/users", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setUsers(Array.isArray(data.users) ? data.users : []);
@@ -154,11 +141,11 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ agentId: agentId.trim(), password }),
       });
       const data = await res.json();
-      if (res.ok && data.token) {
-        sessionStorage.setItem("staff_token", data.token);
+      if (res.ok && data.success) {
         setAgentId("");
         setPassword("");
         await probeSession();
@@ -173,15 +160,15 @@ export default function StaffManager({ lang, adminToken }: StaffManagerProps) {
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem("staff_token");
     setSession(null);
-    fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
   };
 
   const apiFetch = async (url: string, method: string, body?: unknown) => {
     const res = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${getToken()}` },
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
       body: body ? JSON.stringify(body) : undefined,
     });
     return res;

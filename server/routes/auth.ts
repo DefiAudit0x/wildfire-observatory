@@ -56,7 +56,6 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
     logger.info({ agentId, role: user.role, unitId: user.unitId }, "Staff login");
     res.json({
       success: true,
-      token,
       user: {
         agentId: user.agentId,
         name: user.name,

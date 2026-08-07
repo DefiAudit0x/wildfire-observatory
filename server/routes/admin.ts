@@ -66,7 +66,7 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
       maxAge: 24 * 60 * 60 * 1000,
     });
     logAdminAction("admin.login", { success: true }).catch(() => {});
-    res.json({ success: true, token });
+    res.json({ success: true });
   } else {
     logger.warn("Failed admin login attempt");
     logAdminAction("admin.login", { success: false }).catch(() => {});

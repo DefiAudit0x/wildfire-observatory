@@ -5,7 +5,6 @@ import { Report } from "../../types";
 interface ReportsTableProps {
   isArabic: boolean;
   reports: Report[];
-  token: string;
   onChanged: () => void;
 }
 
@@ -23,7 +22,7 @@ const SEVERITY_META: Record<string, { labelAr: string; labelFr: string; cls: str
   critical: { labelAr: "حرج", labelFr: "Critique", cls: "bg-red-600/20 text-red-400 border-red-500/30 animate-pulse" },
 };
 
-export default function ReportsTable({ isArabic, reports, token, onChanged }: ReportsTableProps) {
+export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTableProps) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
@@ -53,7 +52,8 @@ export default function ReportsTable({ isArabic, reports, token, onChanged }: Re
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(body),
       });
       if (res.ok) onChanged();

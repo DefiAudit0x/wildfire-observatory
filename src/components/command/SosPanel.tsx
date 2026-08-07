@@ -6,14 +6,13 @@ import { getTeamStatusText } from "./teams";
 interface SosPanelProps {
   isArabic: boolean;
   sosCalls: TrappedSOS[];
-  token: string;
   dispatchLoading: boolean;
   onDispatch: (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string) => Promise<boolean>;
   onResolve: (sos: TrappedSOS) => void;
   onFocusSos: (sos: TrappedSOS) => void;
 }
 
-export default function SosPanel({ isArabic, sosCalls, token, dispatchLoading, onDispatch, onResolve, onFocusSos }: SosPanelProps) {
+export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispatch, onResolve, onFocusSos }: SosPanelProps) {
   const [dispatchingSosId, setDispatchingSosId] = useState<string | null>(null);
   const [dispatchType, setDispatchType] = useState<'protection_civile' | 'volunteers'>('protection_civile');
   const [selectedTeam, setSelectedTeam] = useState('');
@@ -35,9 +34,7 @@ export default function SosPanel({ isArabic, sosCalls, token, dispatchLoading, o
     if (audioUrls[sos.id] || loadingAudio === sos.id) return;
     setLoadingAudio(sos.id);
     try {
-      const res = await fetch(`/api/sos/${sos.id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`/api/sos/${sos.id}`, { credentials: "same-origin" });
       if (res.ok) {
         const full = await res.json();
         if (full.audioUrl) {

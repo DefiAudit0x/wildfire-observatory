@@ -4,7 +4,7 @@ import { Language } from "../../types";
 
 interface CommandLockProps {
   lang: Language;
-  onUnlocked: (token: string) => void;
+  onUnlocked: () => void;
 }
 
 export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
@@ -20,11 +20,12 @@ export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
       const res = await fetch("/api/auth/central-command", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ password }),
       });
       const data = await res.json();
-      if (data.valid && data.token) {
-        onUnlocked(data.token);
+      if (data.valid) {
+        onUnlocked();
       } else {
         setError(isArabic ? "كلمة السر غير صحيحة" : "Mot de passe incorrect");
       }

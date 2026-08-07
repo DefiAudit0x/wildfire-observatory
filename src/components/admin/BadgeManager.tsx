@@ -29,7 +29,6 @@ interface Analytics {
 
 interface BadgeManagerProps {
   lang: Language;
-  token: string | null;
   onAuthError: (res: Response) => boolean;
 }
 
@@ -43,7 +42,7 @@ interface EditState {
 
 const EMPTY_FORM = { code: "", ownerName: "", type: "volunteer", wilaya: "", phone: "", maxUses: "", expiresAt: "" };
 
-export default function BadgeManager({ lang, token, onAuthError }: BadgeManagerProps) {
+export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const isArabic = lang === "ar";
   const [badges, setBadges] = useState<Badge[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
@@ -57,7 +56,8 @@ export default function BadgeManager({ lang, token, onAuthError }: BadgeManagerP
   const apiFetch = async (url: string, method: string, body?: unknown) => {
     const res = await fetch(url, {
       method,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
       body: body ? JSON.stringify(body) : undefined,
     });
     return res;
@@ -84,7 +84,7 @@ export default function BadgeManager({ lang, token, onAuthError }: BadgeManagerP
     } finally {
       setLoading(false);
     }
-  }, [token, onAuthError, isArabic]);
+  }, [onAuthError, isArabic]);
 
   useEffect(() => {
     loadAll();

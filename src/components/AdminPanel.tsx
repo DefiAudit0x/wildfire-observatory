@@ -51,16 +51,15 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     setLoading(true);
 
     try {
-      const res = await fetch("/api/admin/verify", {
+const res = await fetch("/api/admin/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ password }),
       });
-      const data = await res.json();
 
-      if (res.ok && data.token) {
+      if (res.ok) {
         setIsAuthenticated(true);
-        sessionStorage.setItem("admin_token", data.token);
       } else {
         setError(isArabic ? "رمز المرور غير صحيح!" : "Mot de passe incorrect !");
       }
@@ -74,11 +73,8 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const handleLogout = () => {
     setIsAuthenticated(false);
     setPassword("");
-    sessionStorage.removeItem("admin_token");
     fetch("/api/admin/logout", { method: "POST" }).catch(() => {});
   };
-
-  const getToken = () => sessionStorage.getItem("admin_token");
 
   const handleAuthError = (res: Response) => {
     if (res.status === 401) {
@@ -91,11 +87,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   const updateReportStatus = async (id: string, newStatus: string) => {
     setUpdatingIds((prev) => new Set(prev).add(id));
-    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ status: newStatus }),
       });
 
@@ -117,11 +113,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   const updateReportSeverity = async (id: string, newSeverity: string) => {
     setUpdatingIds((prev) => new Set(prev).add(id));
-    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/update-status`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ severity: newSeverity }),
       });
 
@@ -147,11 +143,11 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     }
 
     setUpdatingIds((prev) => new Set(prev).add(id));
-    const token = getToken();
     try {
       const res = await fetch(`/api/admin/reports/${id}/delete`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
       });
 
       if (res.ok) {
@@ -358,19 +354,19 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       </div>
 
       {activeSection === "audit" && (
-        <AuditLog lang={lang} token={getToken()} onAuthError={handleAuthError} />
+        <AuditLog lang={lang} onAuthError={handleAuthError} />
       )}
 
       {activeSection === "badges" && (
-        <BadgeManager lang={lang} token={getToken()} onAuthError={handleAuthError} />
+        <BadgeManager lang={lang} onAuthError={handleAuthError} />
       )}
 
       {activeSection === "zones" && (
-        <SafeZonesManager lang={lang} token={getToken()} onAuthError={handleAuthError} />
+        <SafeZonesManager lang={lang} onAuthError={handleAuthError} />
       )}
 
       {activeSection === "staff" && (
-        <StaffManager lang={lang} adminToken={getToken()} />
+        <StaffManager lang={lang} />
       )}
 
       {activeSection === "reports" && (

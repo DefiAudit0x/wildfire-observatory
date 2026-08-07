@@ -9,8 +9,7 @@ export interface StaffSession {
 }
 
 /**
- * Probes the staff/auth session (staff_token cookie or Authorization header
- * stored in sessionStorage by the StaffManager login) every 30s.
+ * Probes the staff/auth session every 30s using the httpOnly cookie.
  */
 export function useStaffSession(): { session: StaffSession; refetch: () => void } {
   const [session, setSession] = useState<StaffSession>({
@@ -22,12 +21,8 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void 
   });
 
   const refetch = useCallback(async () => {
-    const token = sessionStorage.getItem("staff_token");
     try {
-      const res = await fetch("/api/auth/session", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        credentials: "same-origin",
-      });
+      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setSession({

@@ -15,11 +15,10 @@ interface SafeZoneItem {
 
 interface SafeZonesManagerProps {
   lang: Language;
-  token: string | null;
   onAuthError: (res: Response) => boolean;
 }
 
-export default function SafeZonesManager({ lang, token, onAuthError }: SafeZonesManagerProps) {
+export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManagerProps) {
   const isArabic = lang === "ar";
   const [zones, setZones] = useState<SafeZoneItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -58,8 +57,8 @@ export default function SafeZonesManager({ lang, token, onAuthError }: SafeZones
       method,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
       },
+      credentials: "same-origin",
       body: body ? JSON.stringify(body) : undefined,
     });
     return res;

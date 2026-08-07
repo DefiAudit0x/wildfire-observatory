@@ -67,17 +67,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [newPost, setNewPost] = useState({ labelAr: "", vehicle: "" });
 
-  const getToken = () => sessionStorage.getItem("staff_token");
-
   const isWritable = session.authenticated && (session.role === "commander" || session.role === "superadmin" || session.role === "admin");
 
   const probeSession = useCallback(async () => {
-    const token = getToken();
     try {
-      const res = await fetch("/api/auth/session", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        credentials: "same-origin",
-      });
+      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setSession({
@@ -101,11 +95,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const fetchRoster = useCallback(async () => {
     setLoading(true);
     setMsg(null);
-    const token = getToken();
     try {
-      const res = await fetch(`/api/roster/${date}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      });
+      const res = await fetch(`/api/roster/${date}`, { credentials: "same-origin" });
       const data = await res.json();
       if (res.ok) {
         setRoster(data);
@@ -128,10 +119,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   }, [session.authenticated, fetchRoster]);
 
   const fetchStaff = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
     try {
-      const res = await fetch("/api/users", { headers: { Authorization: `Bearer ${token}` } });
+      const res = await fetch("/api/users", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setStaff(Array.isArray(data.users) ? data.users.filter((u: any) => u.isActive) : []);
@@ -149,11 +138,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     if (!roster) return;
     setSaving(true);
     setMsg(null);
-    const token = getToken();
     try {
       const res = await fetch(`/api/roster/${date}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({ posts: roster.posts }),
       });
       const data = await res.json();
@@ -175,11 +164,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     if (!confirm(isArabic ? `نسخ جدول ${date} إلى اليوم الموالي (${target})؟` : `Copier ${date} vers ${target} ?`)) return;
     setSaving(true);
     setMsg(null);
-    const token = getToken();
     try {
       const res = await fetch(`/api/roster/${date}/copy-to/${target}`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
       });
       const data = await res.json();
       if (res.status === 201) {
@@ -202,11 +191,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     }
     setSaving(true);
     setMsg(null);
-    const token = getToken();
     try {
       const res = await fetch(`/api/roster/${date}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify({
           labelAr: newPost.labelAr.trim(),
           vehicle: newPost.vehicle.trim() || undefined,
@@ -294,8 +283,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem("staff_token");
-    fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
     setSession({ authenticated: false, role: null, unitId: null, name: null });
     setRoster(null);
   };

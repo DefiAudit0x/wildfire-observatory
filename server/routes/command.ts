@@ -84,7 +84,7 @@ router.post("/auth/central-command", async (req: Request, res: Response) => {
     secure: config.nodeEnv === "production",
     maxAge: 24 * 60 * 60 * 1000,
   });
-  res.json({ valid: true, token });
+  res.json({ valid: true });
 });
 
 router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {

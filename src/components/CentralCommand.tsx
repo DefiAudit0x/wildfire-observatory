@@ -34,7 +34,6 @@ function esc(value: unknown): string {
 
 export default function CentralCommand({ reports, satellites, sosCalls = [], userLocation, lang, onRefresh }: CentralCommandProps) {
   const [unlocked, setUnlocked] = useState(false);
-  const [commandToken, setCommandToken] = useState("");
   const [authChecking, setAuthChecking] = useState(true);
   const [activeUsers, setActiveUsers] = useState<UserLocationData[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
@@ -44,25 +43,21 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const isArabic = lang === "ar";
 
   const fetchFullSos = useCallback(async () => {
-    if (!commandToken) return;
+    if (!unlocked) return;
     try {
-      const res = await fetch("/api/sos/full", {
-        headers: { Authorization: `Bearer ${commandToken}` },
-      });
+      const res = await fetch("/api/sos/full", { credentials: "same-origin" });
       if (res.ok) {
         setFullSos(await res.json());
       }
     } catch (err) {
       console.error("Failed to fetch full SOS list:", err);
     }
-  }, [commandToken]);
+  }, [unlocked]);
 
   const fetchUserLocations = useCallback(async () => {
     setLoadingUsers(true);
     try {
-      const res = await fetch("/api/locations", {
-        headers: { Authorization: `Bearer ${commandToken}` },
-      });
+      const res = await fetch("/api/locations", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
@@ -75,7 +70,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     } finally {
       setLoadingUsers(false);
     }
-  }, [commandToken, onRefresh]);
+  }, [onRefresh]);
 
   useEffect(() => {
     if (unlocked) {
@@ -96,8 +91,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         const res = await fetch("/api/admin/session", { credentials: "same-origin" });
         if (cancelled) return;
         if (res.ok) {
-          const token = sessionStorage.getItem("command_token") || "";
-          setCommandToken(token);
           setUnlocked(true);
         }
       } catch {
@@ -114,9 +107,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
 
   const teams = getTeamsStatusAndPositions(fullSos);
 
-  const handleUnlocked = (token: string) => {
-    sessionStorage.setItem("command_token", token);
-    setCommandToken(token);
+  const handleUnlocked = () => {
     setUnlocked(true);
   };
 
@@ -134,7 +125,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     try {
       const res = await fetch(`/api/sos/${sosId}/dispatch`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${commandToken}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
         body: JSON.stringify(body),
       });
       if (res.ok) {
@@ -192,7 +184,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     try {
       const res = await fetch(`/api/sos/${sos.id}/resolve`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${commandToken}` },
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
       });
       if (res.ok && onRefresh) onRefresh();
     } catch (err) {
@@ -303,7 +296,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           <SosPanel
             isArabic={isArabic}
             sosCalls={fullSos}
-            token={commandToken}
             dispatchLoading={dispatchLoading}
             onDispatch={handleDispatchSubmit}
             onResolve={handleResolveSos}
@@ -327,7 +319,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       <ReportsTable
         isArabic={isArabic}
         reports={reports}
-        token={commandToken}
         onChanged={onRefresh || (() => {})}
       />
 

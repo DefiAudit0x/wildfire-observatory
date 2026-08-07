@@ -11,11 +11,10 @@ interface AuditEntry {
 
 interface AuditLogProps {
   lang: Language;
-  token: string | null;
   onAuthError: (res: Response) => boolean;
 }
 
-export default function AuditLog({ lang, token, onAuthError }: AuditLogProps) {
+export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
   const isArabic = lang === "ar";
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -23,9 +22,7 @@ export default function AuditLog({ lang, token, onAuthError }: AuditLogProps) {
   const fetchEntries = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/audit", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch("/api/audit", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setEntries(data);
@@ -37,7 +34,7 @@ export default function AuditLog({ lang, token, onAuthError }: AuditLogProps) {
     } finally {
       setLoading(false);
     }
-  }, [token, onAuthError]);
+  }, [onAuthError]);
 
   useEffect(() => {
     fetchEntries();
