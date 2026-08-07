@@ -54,10 +54,15 @@ export function useObservatoryData() {
 
   useEffect(() => {
     fetchData();
-    // Poll every 30 seconds for live updates
-    const interval = setInterval(fetchData, 30000);
+    // Adaptive polling: refresh faster while active (unresolved) reports exist,
+    // otherwise drop to a slower cadence to save bandwidth.
+    const hasActiveActivity =
+      reports.some((r) => r.status === "pending" || r.status === "verified") ||
+      sosCalls.some((s) => s.status === "active");
+    const intervalMs = hasActiveActivity ? 10000 : 60000;
+    const interval = setInterval(fetchData, intervalMs);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, reports, sosCalls]);
 
   // Server push events (report created/updated/deleted, safezones changed) → refresh
   const lastLiveRefreshRef = useRef(0);

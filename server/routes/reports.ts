@@ -85,13 +85,28 @@ function scheduleBadgeCacheCleanup(): void {
 }
 scheduleBadgeCacheCleanup();
 
-async function isBadgeApprovedInFirestore(badgeCode: string): Promise<boolean> {
+async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: string): Promise<boolean> {
   const cached = badgeCache.get(badgeCode);
   if (cached && Date.now() < cached.expiresAt) return cached.valid;
   let valid = false;
   try {
     const doc = await docGet("badgeCodes", badgeCode);
-    valid = !!doc && doc.isActive !== false;
+    if (doc) {
+      // Require an explicitly-active badge. A badge whose isActive is unset or
+      // false is never trusted, regardless of the collection's contents.
+      const active = doc.isActive === true;
+      // The badge's role must match the reporter type claimed.
+      const typeOk = !doc.type || doc.type === reporterType;
+      // Optional expiry gate (ISO string or epoch millis).
+      let notExpired = true;
+      if (doc.expiresAt) {
+        const exp = typeof doc.expiresAt === "number"
+          ? doc.expiresAt
+          : new Date(doc.expiresAt).getTime();
+        if (Number.isFinite(exp)) notExpired = Date.now() < exp;
+      }
+      valid = active && typeOk && notExpired;
+    }
   } catch (err) {
     logger.warn({ err, badgeCode }, "badgeCodes Firestore lookup failed — falling back to env-only");
   }
@@ -196,7 +211,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   if (reporterType === "official" || reporterType === "volunteer") {
     const code = reporterBadgeCode?.trim();
     const envTrusted = !!code && VALID_BADGE_CODES.has(code) && !badgeRateLimited(code);
-    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code)) && !badgeRateLimited(code);
+    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code, reporterType)) && !badgeRateLimited(code);
     if (envTrusted || firestoreTrusted) {
       isTrusted = true;
       finalStatus = "verified";

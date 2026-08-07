@@ -180,6 +180,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     messageFr: string;
   } | null>(null);
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
+  const [includeTelemetry, setIncludeTelemetry] = useState(true);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -416,43 +417,18 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    if (stream && videoRef.current) {
+    if (stream && videoRef.current && videoRef.current.videoWidth > 0) {
       ctx.drawImage(videoRef.current, 0, 0, 640, 480);
     } else {
-      // Stunning futuristic dark tactical camera wireframe simulation if physical webcam is sandboxed
-      const grad = ctx.createLinearGradient(0, 0, 0, 480);
-      grad.addColorStop(0, "#090d16");
-      grad.addColorStop(0.5, "#131032");
-      grad.addColorStop(1, "#09090e");
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 640, 480);
-
-      // Terrain lines
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.3)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(0, 360);
-      ctx.quadraticCurveTo(150, 330, 300, 370);
-      ctx.quadraticCurveTo(450, 410, 640, 340);
-      ctx.stroke();
-
-      ctx.strokeStyle = "rgba(239, 68, 68, 0.15)";
-      ctx.beginPath();
-      ctx.moveTo(0, 410);
-      ctx.quadraticCurveTo(200, 370, 400, 430);
-      ctx.quadraticCurveTo(550, 460, 640, 400);
-      ctx.stroke();
-
-      // Wildfire plume visualization
-      ctx.fillStyle = "rgba(239, 68, 68, 0.5)";
-      ctx.beginPath();
-      ctx.arc(320, 350, 45, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = "rgba(245, 158, 11, 0.7)";
-      ctx.beginPath();
-      ctx.arc(320, 360, 25, 0, Math.PI * 2);
-      ctx.fill();
+      // Never fabricate a fake photo: if the camera is unavailable, tell the
+      // user and let the report proceed without an image (or via file upload).
+      setErrorMsg(
+        isArabic
+          ? "⚠️ الكاميرا غير متاحة. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة."
+          : "⚠️ Caméra indisponible. Vous pouvez joindre une photo ou continuer sans image."
+      );
+      stopCamera();
+      return;
     }
 
     // Overlay technical HUD overlay onto the image
@@ -500,17 +476,20 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       ctx.fillText("LOCK TARGET MATCH: NEW UNRESOLVED SECTOR OUTBREAK", 30, 185);
     }
 
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     setImage(dataUrl);
+    // Note: telemetry overlay avoids raw image degradation while keeping a
+    // high-fidelity snapshot for the Gemini vision verification.
     runEdgeAiPreScan(dataUrl);
 
-    // Auto-update report form text details to include coordinates and compass bearing info!
+    // Auto-update report form text details to include coordinates and compass
+    // bearing info — only when the user opted in via the telemetry checkbox.
     const directionStr = getBearingDirection(heading);
     const calibrationDetails = isArabic 
       ? `\n\n[معايرة الاستشعار والبوصلة الذكية: اتجاه ${heading}° ${directionStr} | زاوية الارتفاع ${pitch}° | مطابقة البيانات: ${alignmentAccuracy ? `${alignmentAccuracy}%` : "بؤرة حريق جديدة بالكامل"}]`
       : `\n\n[Calibrage boussole: Direction ${heading}° ${directionStr} | Pitch ${pitch}° | Corrélation: ${alignmentAccuracy ? `${alignmentAccuracy}%` : "Nouveau foyer isolé"}]`;
     
-    if (!description.includes("[Calibrage") && !description.includes("[معايرة")) {
+    if (includeTelemetry && !description.includes("[Calibrage") && !description.includes("[معايرة")) {
       setDescription((prev) => prev + calibrationDetails);
     }
 
@@ -545,7 +524,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     );
   };
 
-  // --- LIGHTWEIGHT ON-DEVICE EDGE AI PRE-SCANNER ---
+  // --- LIGHTWEIGHT ON-DEVICE HEURISTIC PRE-SCANNER ---
+  // Note: this is a coarse color-based heuristic (feasible in-browser without a
+  // model download). It never verifies a report — final verification is done
+  // by the backend Gemini vision model. It only nudges the user to frame the
+  // fire clearly.
   const runEdgeAiPreScan = (dataUrl: string, compressionPercent: number | null = null) => {
     const tempImg = new Image();
     tempImg.onload = () => {
@@ -585,15 +568,15 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         setEdgeAiStatus({
           success: true,
           confidence: Math.max(50, confidence),
-          messageAr: `✓ تم الكشف محلياً عن بصمات حرارية (${Math.max(50, confidence)}%) غازات/لهب متصاعد. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}% لتوفير النطاق الترددي للشبكة.`,
-          messageFr: `✓ Signatures thermiques détectées localement (${Math.max(50, confidence)}%). Image compressée à ${compressionPercent ?? 0}% pour préserver la bande passante.`
+          messageAr: `🔎 تحذير أولي (فحص محلي تقديري): ألوان متوافقة مع ظلال نارية/دخانية (${Math.max(50, confidence)}%). التحقق النهائي يتم بالذكاء الاصطناعي في الخادم. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}%.`,
+          messageFr: `🔎 Aperçu local (heuristique couleur) : teintes compatibles feu/fumée (${Math.max(50, confidence)}%). La vérification finale est faite par l'IA serveur. Image compressée à ${compressionPercent ?? 0}%.`
         });
       } else {
         setEdgeAiStatus({
           success: false,
           confidence,
-          messageAr: `⚠️ تنبيه Edge AI: لم يتم رصد وهج ناري واضح في الصورة (تقدير أولي ${confidence}%). يرجى التقاط لقطة قريبة وواضحة للهب أو الدخان لتفادي البلاغات العشوائية.`,
-          messageFr: `⚠️ Alerte Edge AI : Contraste feu/fumée faible détecté (≈${confidence}%). Veuillez cadrer directement le foyer pour éliminer les faux rapports.`
+          messageAr: `⚠️ تنبيه أولي (فحص محلي تقديري): لم تُرصد تدرجات نارية/دخانية واضحة (${confidence}%). الالتقاط المقرّب والصريح يساعد التحقق الخادمي.`,
+          messageFr: `⚠️ Aperçu local : contraste feu/fumée faible (≈${confidence}%). Cadrez clairement le foyer pour faciliter la vérification serveur.`
         });
       }
     };
@@ -637,7 +620,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
         if (ctx) {
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.6);
+          const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
           setImage(dataUrl);
           
           const stringLength = dataUrl.length - "data:image/jpeg;base64,".length;
@@ -1070,6 +1053,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 <Camera className="h-4 w-4" />
                 <span>{isArabic ? "كاميرا التثليث والبوصلة" : "Caméra & Boussole"}</span>
               </button>
+
+              <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={includeTelemetry}
+                  onChange={(e) => setIncludeTelemetry(e.target.checked)}
+                  className="accent-red-500 h-3.5 w-3.5"
+                />
+                <span>{isArabic ? "إضافة بيانات المعايرة التقنية للوصف" : "Ajouter les données de calibrage"}</span>
+              </label>
 
               {image && (
                 <div className="flex flex-col gap-2">
