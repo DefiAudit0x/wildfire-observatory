@@ -97,12 +97,12 @@ export const citizenReports: Report[] = [
 ];
 
 export const satelliteHotspots: SatelliteHotspot[] = [
-  { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: "2026-07-21T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: "2026-07-21T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: "2026-07-21T11:02:00Z", satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
-  { id: "sat-tn-1", lat: 36.650, lng: 8.780, brightness: 348.6, confidence: 94, scanTime: "2026-07-21T12:00:00Z", satellite: "VIIRS", wilaya: "تونس - جندوبة (Tunisie - Jendouba)" },
-  { id: "sat-ma-1", lat: 35.580, lng: -5.360, brightness: 339.2, confidence: 91, scanTime: "2026-07-21T11:50:00Z", satellite: "MODIS", wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)" },
-  { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: "2026-07-21T11:40:00Z", satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
+  { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: "2026-08-08T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
+  { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: "2026-08-08T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
+  { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: "2026-08-08T11:02:00Z", satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
+  { id: "sat-tn-1", lat: 36.650, lng: 8.780, brightness: 348.6, confidence: 94, scanTime: "2026-08-08T12:00:00Z", satellite: "VIIRS", wilaya: "تونس - جندوبة (Tunisie - Jendouba)" },
+  { id: "sat-ma-1", lat: 35.580, lng: -5.360, brightness: 339.2, confidence: 91, scanTime: "2026-08-08T11:50:00Z", satellite: "MODIS", wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)" },
+  { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: "2026-08-08T11:40:00Z", satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
 ];
 
 export const wilayasStatus: WilayaStatus[] = [

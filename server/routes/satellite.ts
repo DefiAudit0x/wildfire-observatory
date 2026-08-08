@@ -42,24 +42,28 @@ async function fetchFirmsData(source: string): Promise<any[]> {
 
     const hotspots: any[] = [];
     for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(",");
-      if (cols.length < 10) continue;
-      const lat = parseFloat(cols[0]);
-      const lng = parseFloat(cols[1]);
-      const brightness = parseFloat(cols[2]);
-      const scanDate = cols[5];
-      const scanTimeRaw = cols[6].padStart(4, "0");
-      const satType = cols[8];
-      const confidenceStr = cols[9];
-      const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
-      if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
-          lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
-          isInKnownWilaya(lat, lng)) {
-        hotspots.push({
-          id: `sat-live-${source}-${i}`, lat, lng, brightness, confidence,
-          scanTime: `${scanDate}T${scanTimeRaw.substring(0, 2)}:${scanTimeRaw.substring(2, 4)}:00Z`,
-          satellite: satType, wilaya: determineWilayaByCoords(lat, lng),
-        });
+      try {
+        const cols = lines[i].split(",");
+        if (cols.length < 10) continue;
+        const lat = parseFloat(cols[0]);
+        const lng = parseFloat(cols[1]);
+        const brightness = parseFloat(cols[2]);
+        const scanDate = cols[5];
+        const scanTimeRaw = cols[6].padStart(4, "0");
+        const satType = cols[8];
+        const confidenceStr = cols[9];
+        const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
+        if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
+            lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
+            isInKnownWilaya(lat, lng)) {
+          hotspots.push({
+            id: `sat-live-${source}-${i}`, lat, lng, brightness, confidence,
+            scanTime: `${scanDate}T${scanTimeRaw.substring(0, 2)}:${scanTimeRaw.substring(2, 4)}:00Z`,
+            satellite: satType, wilaya: determineWilayaByCoords(lat, lng),
+          });
+        }
+      } catch {
+        // skip malformed CSV line
       }
     }
     return hotspots;
@@ -90,9 +94,23 @@ export async function getLiveSatelliteData() {
   }
 
   if (hotspots.length > 0) {
-    cachedHotspots = hotspots;
+    // Deduplicate: the same burning area often appears in both VIIRS and MODIS
+    const unique: any[] = [];
+    for (const h of hotspots) {
+      const existing = unique.find(
+        (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
+      );
+      if (!existing) {
+        unique.push(h);
+      } else if (h.confidence > existing.confidence) {
+        existing.confidence = h.confidence;
+        existing.brightness = h.brightness;
+        existing.satellite = `${existing.satellite}/${h.satellite}`;
+      }
+    }
+    cachedHotspots = unique;
     cacheTimestamp = now;
-    return hotspots;
+    return unique;
   }
 
   return satelliteHotspots.map((sat: any) => {
@@ -100,7 +118,7 @@ export async function getLiveSatelliteData() {
     const timePart = sat.scanTime.split("T")[1];
     const [hours, minutes] = timePart.split(":");
     nowD.setUTCHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-    return { ...sat, scanTime: nowD.toISOString() };
+    return { ...sat, scanTime: nowD.toISOString(), isFallback: true };
   });
 }
 

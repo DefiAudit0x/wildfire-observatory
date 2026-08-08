@@ -35,6 +35,7 @@ export interface SatelliteHotspot {
   scanTime: string;
   satellite: 'MODIS' | 'VIIRS';
   wilaya: string;
+  isFallback?: boolean;
 }
 
 export interface WilayaStatus {

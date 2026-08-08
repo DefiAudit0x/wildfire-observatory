@@ -12,12 +12,12 @@ interface StatisticsPanelProps {
 export default function StatisticsPanel({ reports, satellites, wilayas, lang }: StatisticsPanelProps) {
   const isArabic = lang === "ar";
 
-  const totalReports = reports.length;
+  const totalReports = reports.filter((r) => r.status === "pending" || r.status === "verified").length;
   const verifiedReports = reports.filter((r) => r.status === "verified").length;
   const criticalReports = reports.filter((r) => r.severity === "critical").length;
   const totalSatellites = satellites.length;
 
-  const verificationRate = totalReports > 0 ? Math.round((verifiedReports / totalReports) * 100) : 100;
+  const verificationRate = totalReports > 0 ? Math.round((verifiedReports / totalReports) * 100) : 0;
 
   // Most threatened wilayas, computed live from the wilaya status API
   const mostThreatenedWilayas = useMemo(() => {

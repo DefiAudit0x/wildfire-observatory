@@ -232,6 +232,7 @@ export default function InteractiveMap({
             <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${safeNumber(sat.confidence)}%</p>
             <p><strong>${isArabic ? "توقيت الرصد" : "Heure de détection"}:</strong> ${esc(new Date(sat.scanTime).toLocaleTimeString())}</p>
           </div>
+          ${sat.isFallback ? `<p class="mt-2 bg-amber-500/10 border border-amber-500/30 rounded p-1.5 text-[9px] text-amber-400 text-center">⚠️ ${isArabic ? "بيانات احتياطية (تعذر وصول NASA حالياً)" : "Données de secours (NASA actuellement indisponible)"}</p>` : ""}
           <p class="text-[10px] text-slate-400 mt-2 italic text-center">
             ${isArabic ? "مصدر البيانات: وكالة ناسا FIRMS" : "Source : NASA FIRMS Near Real-Time"}
           </p>

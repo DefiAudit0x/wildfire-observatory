@@ -2,10 +2,15 @@ import { Request, Response, Router } from "express";
 import { wilayasStatus } from "../data.js";
 import { getReportsFromFirestore } from "../db.js";
 import { getLiveSatelliteData } from "./satellite.js";
+import logger from "../logger.js";
 
 const router = Router();
 
 const SEVERITY_PRIORITY: Record<string, number> = { safe: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
+const CACHE_TTL_MS = 60 * 1000;
+let cachedResponse: unknown = null;
+let cacheTimestamp = 0;
 
 export function normalizeWilayaName(input: string): string {
   return input
@@ -33,7 +38,7 @@ export function wilayaMatches(input: string, nameAr: string, nameFr: string): bo
   const candidates = [normalizeWilayaName(nameAr), normalizeWilayaName(nameFr)];
   for (const candidate of candidates) {
     if (candidate === normalizedInput) return true;
-    if (candidate.includes(normalizedInput) && normalizedInput.length >= 4) return true;
+    if (candidate.includes(normalizedInput) && normalizedInput.length >= 3) return true;
   }
   const allCandidateWords = new Set(candidates.flatMap((c) => c.split(" ")));
   const meaningfulInputWords = normalizedInput.split(" ").filter((word) => word.length >= 3);
@@ -44,9 +49,31 @@ export function wilayaMatches(input: string, nameAr: string, nameFr: string): bo
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const firestoreReports = await getReportsFromFirestore();
-  const currentReports = firestoreReports || [];
-  const hotspots = await getLiveSatelliteData();
+  const now = Date.now();
+  if (cachedResponse && now - cacheTimestamp < CACHE_TTL_MS) {
+    return res.json(cachedResponse);
+  }
+
+  let currentReports: any[] = [];
+  try {
+    const firestoreReports = await getReportsFromFirestore();
+    currentReports = firestoreReports || [];
+  } catch (err) {
+    logger.warn(
+      { msg: err instanceof Error ? err.message : String(err) },
+      "Wilayas route: Firestore reports unavailable — falling back to static baseline"
+    );
+  }
+
+  let hotspots: any[] = [];
+  try {
+    hotspots = await getLiveSatelliteData();
+  } catch (err) {
+    logger.warn(
+      { msg: err instanceof Error ? err.message : String(err) },
+      "Wilayas route: satellite data unavailable"
+    );
+  }
 
   const dynamicWilayas = wilayasStatus.map((w) => ({
     ...w,
@@ -82,7 +109,11 @@ router.get("/", async (_req: Request, res: Response) => {
     }
   });
 
-  res.json(dynamicWilayas);
+  const response = dynamicWilayas;
+  cachedResponse = response;
+  cacheTimestamp = now;
+  res.setHeader("X-Last-Updated", new Date(now).toISOString());
+  res.json(response);
 });
 
 export default router;
