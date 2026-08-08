@@ -10,6 +10,7 @@ import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
+import { scrubSentryEvent } from "./sentry-scrub.js";
 import { errorHandler, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
@@ -48,51 +49,6 @@ if (config.sentryDsn) {
     integrations: [Sentry.expressIntegration()],
     beforeSend: (event) => scrubSentryEvent(event),
   });
-}
-
-const SENSITIVE_FIELDS = new Set([
-  "imageBase64",
-  "image",
-  "photo",
-  "audioData",
-  "audio",
-  "sosAudio",
-  "deviceId",
-  "phone",
-  "email",
-  "name",
-  "lastName",
-  "firstName",
-]);
-
-function scrubSentryEvent(event: Sentry.ErrorEvent): Sentry.ErrorEvent {
-  try {
-    const req = (event as { request?: { data?: unknown } }).request;
-    if (req?.data) {
-      try {
-        const parsed = typeof req.data === "string" ? JSON.parse(req.data) : req.data;
-        if (parsed && typeof parsed === "object") {
-          const clean: Record<string, unknown> = {};
-          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-            clean[k] = SENSITIVE_FIELDS.has(k) ? "[redacted]" : v;
-          }
-          req.data = typeof req.data === "string" ? JSON.stringify(clean) : clean;
-        }
-      } catch {
-        req.data = "[redacted]";
-      }
-    }
-    if (event.extra) {
-      for (const key of Object.keys(event.extra)) {
-        if (SENSITIVE_FIELDS.has(key) || /image|audio|base64|device|phone|email/i.test(key)) {
-          event.extra[key] = "[redacted]";
-        }
-      }
-    }
-  } catch {
-    /* never let scrubbing break error reporting */
-  }
-  return event;
 }
 
 const isProduction = config.nodeEnv === "production";

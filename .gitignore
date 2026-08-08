@@ -15,3 +15,5 @@ android/release.keystore
 android/local.properties
 *.keystore
 *.jks
+
+start-server.ps1
