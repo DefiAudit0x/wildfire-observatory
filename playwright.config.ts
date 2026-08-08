@@ -20,7 +20,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "cmd /c npm run build && node dist/server.cjs",
+    command: "npm run build && node dist/server.cjs",
     url: "http://localhost:3000",
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
