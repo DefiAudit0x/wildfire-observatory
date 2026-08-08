@@ -93,6 +93,7 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },
+  skip: (req) => !req.path.startsWith("/api"),
 });
 app.use(generalLimiter);
 

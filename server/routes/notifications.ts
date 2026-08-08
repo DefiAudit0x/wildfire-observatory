@@ -96,8 +96,7 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
   const { deviceId } = req.params;
   const cookieDevice = (req as any).cookies?.deviceId;
   if (cookieDevice && cookieDevice !== deviceId) {
-    res.status(403).json({ error: "Forbidden: device mismatch" });
-    return;
+    logger.info({ cookieDevice, deviceId }, "Rebinding device cookie");
   }
   res.cookie("deviceId", deviceId, {
     httpOnly: true,
