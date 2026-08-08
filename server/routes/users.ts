@@ -10,12 +10,19 @@ const router = Router();
 
 const ROLES = ["superadmin", "commander", "agent"] as const;
 
+const passwordSchema = z
+  .string()
+  .min(10, "Password must be at least 10 characters")
+  .max(128)
+  .regex(/[A-Za-z]/, "Password must contain at least one letter")
+  .regex(/[0-9]/, "Password must contain at least one number");
+
 const createUserSchema = z.object({
   agentId: z.string().min(2).max(64).regex(/^[A-Za-z0-9._-]+$/),
   name: z.string().min(2).max(120),
   role: z.enum(ROLES),
   unitId: z.string().min(1),
-  password: z.string().min(8).max(128),
+  password: passwordSchema,
 });
 
 const updateUserSchema = z
@@ -24,7 +31,7 @@ const updateUserSchema = z
     role: z.enum(ROLES).optional(),
     unitId: z.string().min(1).optional(),
     isActive: z.boolean().optional(),
-    password: z.string().min(8).max(128).optional(),
+    password: passwordSchema.optional(),
   })
   .refine((data) => Object.keys(data).length > 0, { message: "At least one field required" });
 

@@ -1,11 +1,20 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { requireAuth } from "../middleware.js";
 import { docGet, docSet, docDelete } from "../fs.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
+
+const rosterWriteLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many roster updates, please slow down" },
+});
 
 /**
  * Daily duty roster (جدول المناوبة).
@@ -75,6 +84,14 @@ function isArchivedDate(date: string): boolean {
   return date < todayISO();
 }
 
+const MAX_FUTURE_DAYS = 365;
+
+/** Roster planning beyond a year ahead is rejected. */
+function isTooFarFuture(date: string): boolean {
+  const target = new Date(`${date}T12:00:00Z`).getTime();
+  return target - Date.now() > MAX_FUTURE_DAYS * 24 * 60 * 60 * 1000;
+}
+
 function ensurePostIds(posts: any[]): any[] {
   return posts.map((p) => ({
     ...p,
@@ -118,7 +135,7 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
 });
 
 // PUT /api/roster/:date — replace the whole day roster (commander/superadmin)
-router.put("/:date", requireAuth, async (req: Request, res: Response) => {
+router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const { date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
@@ -132,6 +149,10 @@ router.put("/:date", requireAuth, async (req: Request, res: Response) => {
   }
   if (isArchivedDate(date)) {
     res.status(409).json({ error: "Past dates are archived (read-only). Move the roster to today instead." });
+    return;
+  }
+  if (isTooFarFuture(date)) {
+    res.status(400).json({ error: `Cannot plan rosters more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
 
@@ -156,12 +177,23 @@ router.put("/:date", requireAuth, async (req: Request, res: Response) => {
   const posts = ensurePostIds(parsed.data.posts);
   const day = { unitId, date, posts, updatedAt: new Date().toISOString() };
   try {
+    const existing = await docGet(rosterPath(unitId), date);
     const ok = await docSet(rosterPath(unitId), date, day);
     if (!ok) {
       res.status(503).json({ error: "Database not available" });
       return;
     }
-    logger.info({ unitId, date, actor: admin?.agentId || "admin" }, "Roster saved");
+    const existingPosts: any[] = existing?.posts || [];
+    const existingIds = new Set(existingPosts.map((p: any) => p.id));
+    const newIds = new Set(posts.map((p) => p.id));
+    const diff = {
+      added: posts.filter((p) => !existingIds.has(p.id)).length,
+      removed: existingPosts.filter((p: any) => !newIds.has(p.id)).length,
+      modified: posts.filter(
+        (p) => existingIds.has(p.id) && JSON.stringify(existingPosts.find((e: any) => e.id === p.id)) !== JSON.stringify(p)
+      ).length,
+    };
+    logger.info({ unitId, date, actor: admin?.agentId || "admin", diff }, "Roster saved");
     res.json(day);
   } catch (err) {
     logger.error({ err }, "Failed to save roster");
@@ -170,7 +202,7 @@ router.put("/:date", requireAuth, async (req: Request, res: Response) => {
 });
 
 // POST /api/roster/:date — append one post to the day (same write rules)
-router.post("/:date", requireAuth, async (req: Request, res: Response) => {
+router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const { date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
@@ -189,6 +221,10 @@ router.post("/:date", requireAuth, async (req: Request, res: Response) => {
   }
   if (isArchivedDate(date)) {
     res.status(409).json({ error: "Past dates are archived (read-only)." });
+    return;
+  }
+  if (isTooFarFuture(date)) {
+    res.status(400).json({ error: `Cannot plan rosters more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
   try {
@@ -218,7 +254,7 @@ router.post("/:date", requireAuth, async (req: Request, res: Response) => {
 });
 
 // DELETE /api/roster/:date — clear the day
-router.delete("/:date", requireAuth, async (req: Request, res: Response) => {
+router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const { date } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
@@ -232,6 +268,10 @@ router.delete("/:date", requireAuth, async (req: Request, res: Response) => {
   }
   if (isArchivedDate(date)) {
     res.status(409).json({ error: "Past dates are archived (read-only)." });
+    return;
+  }
+  if (isTooFarFuture(date)) {
+    res.status(400).json({ error: `Cannot plan rosters more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
   try {
@@ -253,7 +293,7 @@ router.delete("/:date", requireAuth, async (req: Request, res: Response) => {
 });
 
 // POST /api/roster/:date/copy-to/:target — duplicate a day's posts into another date
-router.post("/:date/copy-to/:target", requireAuth, async (req: Request, res: Response) => {
+router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const { date, target } = req.params;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(target)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
@@ -267,6 +307,10 @@ router.post("/:date/copy-to/:target", requireAuth, async (req: Request, res: Res
   }
   if (isArchivedDate(target)) {
     res.status(409).json({ error: "Cannot copy into an archived (past) date." });
+    return;
+  }
+  if (isTooFarFuture(target)) {
+    res.status(400).json({ error: `Cannot copy into a date more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
   try {

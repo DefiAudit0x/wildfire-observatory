@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { ClipboardList, Plus, Trash2, Save, ChevronLeft, ChevronRight, CalendarDays, UserPlus, X, Wrench, AlertTriangle, LogOut, RefreshCw, Building2, ShieldCheck, Copy } from "lucide-react";
 import { Language } from "../types";
+import ConfirmDialog from "./ui/ConfirmDialog";
 
 interface StaffUser {
   agentId: string;
@@ -66,6 +67,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   });
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [newPost, setNewPost] = useState({ labelAr: "", vehicle: "" });
+  const [confirmAction, setConfirmAction] = useState<null | { kind: "copy"; target: string } | { kind: "removePost"; postId: string }>(null);
 
   const isWritable = session.authenticated && (session.role === "commander" || session.role === "superadmin" || session.role === "admin");
 
@@ -151,17 +153,17 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         setMsg(isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré.");
       } else {
         setMsg(isArabic ? (data.error || "فشل الحفظ") : (data.error || "Échec de l'enregistrement"));
+        await fetchRoster();
       }
     } catch {
       setMsg(isArabic ? "تعذر حفظ الجدول." : "Erreur d'enregistrement.");
+      await fetchRoster();
     } finally {
       setSaving(false);
     }
   };
 
-  const copyToNextDay = async () => {
-    const target = shiftDate(date, 1);
-    if (!confirm(isArabic ? `نسخ جدول ${date} إلى اليوم الموالي (${target})؟` : `Copier ${date} vers ${target} ?`)) return;
+  const doCopyToNextDay = async (target: string) => {
     setSaving(true);
     setMsg(null);
     try {
@@ -182,6 +184,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const copyToNextDay = () => {
+    if (!roster || roster.posts.length === 0) return;
+    setConfirmAction({ kind: "copy", target: shiftDate(date, 1) });
   };
 
   const addPost = async () => {
@@ -217,7 +224,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     }
   };
 
-  const removePost = async (postId: string) => {
+  const removePost = (postId: string) => {
+    setConfirmAction({ kind: "removePost", postId });
+  };
+
+  const doRemovePost = (postId: string) => {
     if (!roster) return;
     const updated = { ...roster, posts: roster.posts.filter((p) => p.id !== postId) };
     setRoster(updated);
@@ -257,20 +268,19 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setRoster(updated);
   };
 
-  const updatePersonnel = (postId: string, index: number, field: "name" | "rank", value: string) => {
+  const updatePersonnel = (postId: string, agentId: string, field: "name" | "rank", value: string) => {
     if (!roster) return;
-    const updated = {
-      ...roster,
-      posts: roster.posts.map((p) =>
+    setRoster((r) => ({
+      ...r!,
+      posts: r!.posts.map((p) =>
         p.id === postId
           ? {
               ...p,
-              personnel: p.personnel.map((x, i) => (i === index ? { ...x, [field]: value } : x)),
+              personnel: p.personnel.map((x) => (x.agentId === agentId ? { ...x, [field]: value } : x)),
             }
           : p
       ),
-    };
-    setRoster(updated);
+    }));
   };
 
   const setPostStatus = (postId: string, status: Post["status"]) => {
@@ -313,7 +323,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   }
 
   return (
-    <div className="space-y-5 w-full animate-fade-in">
+    <>
+      <div className="space-y-5 w-full animate-fade-in">
       {/* Header */}
       <div className="bg-zinc-900/50 border border-white/5 p-5 rounded-2xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -460,8 +471,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
                   {isArabic ? "لا يوجد مناوبون بعد — أضف من الأسفل." : "Aucun agent affecté — ajoutez ci-dessous."}
                 </p>
               )}
-              {post.personnel.map((person, idx) => (
-                <div key={`${person.agentId}-${idx}`} className="flex items-center gap-2 bg-black/40 border border-white/5 rounded-lg px-3 py-2">
+              {post.personnel.map((person) => (
+                <div key={person.agentId} className="flex items-center gap-2 bg-black/40 border border-white/5 rounded-lg px-3 py-2">
                   <div className="w-7 h-7 bg-sky-600/10 border border-sky-500/20 rounded-full flex items-center justify-center text-sky-400 text-xs font-black shrink-0">
                     {person.name.charAt(0).toUpperCase()}
                   </div>
@@ -469,14 +480,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
                     <input
                       value={person.name}
                       disabled={!isWritable}
-                      onChange={(e) => updatePersonnel(post.id, idx, "name", e.target.value)}
+                      onChange={(e) => updatePersonnel(post.id, person.agentId, "name", e.target.value)}
                       className="bg-transparent border border-transparent focus:border-white/10 rounded text-xs font-bold text-slate-100 placeholder:text-gray-600 px-1 py-0.5 focus:outline-none disabled:opacity-100"
                     />
                     <div className="flex items-center gap-2">
                       <input
                         value={person.rank || ""}
                         disabled={!isWritable}
-                        onChange={(e) => updatePersonnel(post.id, idx, "rank", e.target.value)}
+                        onChange={(e) => updatePersonnel(post.id, person.agentId, "rank", e.target.value)}
                         placeholder={isArabic ? "الرتبة/المهمة (سائق، منقذ…)" : "Rang (chauffeur, secouriste…)"}
                         className="bg-transparent border border-transparent focus:border-white/10 rounded text-[10px] text-gray-300 placeholder:text-gray-600 px-1 py-0.5 focus:outline-none disabled:opacity-100 w-full"
                       />
@@ -503,11 +514,17 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
                     className="flex-1 bg-black/50 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-slate-300 focus:outline-none cursor-pointer"
                   >
                     <option value="">{isArabic ? "+ أضف مناوباً إلى هذا المنصب" : "+ Ajouter un agent à ce poste"}</option>
-                    {staff.map((s) => (
-                      <option key={s.agentId} value={s.agentId}>
-                        {s.name} ({s.agentId})
+                    {staff.length === 0 ? (
+                      <option value="" disabled>
+                        {isArabic ? "لا يوجد موظفون متاحون" : "Aucun agent disponible"}
                       </option>
-                    ))}
+                    ) : (
+                      staff.map((s) => (
+                        <option key={s.agentId} value={s.agentId}>
+                          {s.name} ({s.agentId})
+                        </option>
+                      ))
+                    )}
                   </select>
                 </div>
               )}
@@ -531,7 +548,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
               />
               <input
                 value={newPost.vehicle}
-                onChange={(e) => setNewPost((f) => ({ ...f, vehicle: e.target.value }))}
+                onChange={(e) => setNewPost((f) => ({ ...f, vehicle: e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g, "") }))}
+                maxLength={20}
                 placeholder={isArabic ? "الوسيلة / الرمز (VSAV-1)" : "Véhicule / code"}
                 className="bg-black/50 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-slate-200 placeholder:text-gray-600 font-mono focus:ring-1 focus:ring-sky-500/40"
               />
@@ -576,5 +594,32 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         </div>
       )}
     </div>
+
+    <ConfirmDialog
+      open={confirmAction !== null}
+      lang={lang}
+      title={isArabic ? "تأكيد العملية" : "Confirmer"}
+      message={
+        confirmAction?.kind === "copy"
+          ? isArabic
+            ? `نسخ مناصب ${date} إلى ${confirmAction.target}؟`
+            : `Copier les postes de ${date} vers ${confirmAction.target} ?`
+          : isArabic
+            ? "إزالة هذا المنصب من الجدول؟ (تظهر بعد الحفظ)"
+            : "Retirer ce poste du tableau ? (visible après enregistrement)"
+      }
+      confirmLabel={isArabic ? "تأكيد" : "Confirmer"}
+      danger
+      onCancel={() => setConfirmAction(null)}
+      onConfirm={() => {
+        if (confirmAction?.kind === "copy") {
+          void doCopyToNextDay(confirmAction.target);
+        } else if (confirmAction?.kind === "removePost") {
+          doRemovePost(confirmAction.postId);
+        }
+        setConfirmAction(null);
+      }}
+    />
+    </>
   );
 }
