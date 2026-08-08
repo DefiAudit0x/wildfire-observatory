@@ -26,6 +26,8 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const ITEMS_PER_PAGE = 20;
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: reports.length };
@@ -46,6 +48,12 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
       );
     });
   }, [reports, statusFilter, search]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const paginated = filtered.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
+
+  const resetPage = () => setPage(1);
 
   const updateStatus = async (id: string, body: Record<string, string>) => {
     setUpdatingId(id);
@@ -85,7 +93,7 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
           ].map(([val, label]) => (
             <button
               key={val}
-              onClick={() => setStatusFilter(val)}
+              onClick={() => { setStatusFilter(val); resetPage(); }}
               className={`px-2 py-0.5 rounded-full text-[9px] font-bold border transition-all cursor-pointer ${
                 statusFilter === val
                   ? "bg-amber-500/20 text-amber-400 border-amber-500/40"
@@ -98,14 +106,19 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
         </div>
       </div>
 
-      <div className="px-4 py-2 border-b border-white/5">
+      <div className="px-4 py-2 border-b border-white/5 flex items-center gap-2">
         <input
           type="text"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => { setSearch(e.target.value); resetPage(); }}
           placeholder={isArabic ? "بحث بالموقع، الولاية، الوصف..." : "Rechercher lieu, wilaya, description..."}
           className="w-full bg-zinc-950 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] text-slate-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
         />
+        {totalPages > 1 && (
+          <span className="text-[10px] text-gray-500 font-mono shrink-0">
+            {safePage}/{totalPages}
+          </span>
+        )}
       </div>
 
       <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
@@ -122,7 +135,7 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
             </tr>
           </thead>
           <tbody>
-            {filtered.map((rep) => {
+            {paginated.map((rep) => {
               const sMeta = STATUS_META[rep.status] || STATUS_META.pending;
               const sevMeta = SEVERITY_META[rep.severity] || SEVERITY_META.low;
               return (
@@ -198,6 +211,25 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
           </tbody>
         </table>
       </div>
+      {totalPages > 1 && (
+        <div className="px-4 py-2.5 border-t border-white/5 flex items-center justify-center gap-3">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={safePage <= 1}
+            className="px-3 py-1 bg-zinc-950 hover:bg-zinc-800 border border-white/10 rounded-lg text-[10px] font-bold text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+          >
+            {isArabic ? "السابق" : "Précédent"}
+          </button>
+          <span className="text-[10px] text-gray-500 font-mono">{safePage} / {totalPages}</span>
+          <button
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={safePage >= totalPages}
+            className="px-3 py-1 bg-zinc-950 hover:bg-zinc-800 border border-white/10 rounded-lg text-[10px] font-bold text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
+          >
+            {isArabic ? "التالي" : "Suivant"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

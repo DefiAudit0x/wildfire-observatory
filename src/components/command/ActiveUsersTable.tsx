@@ -1,4 +1,5 @@
-import { Users } from "lucide-react";
+import { useState } from "react";
+import { Users, Search } from "lucide-react";
 import { UserLocationData } from "./StatCards";
 
 interface ActiveUsersTableProps {
@@ -7,6 +8,18 @@ interface ActiveUsersTableProps {
 }
 
 export default function ActiveUsersTable({ isArabic, activeUsers }: ActiveUsersTableProps) {
+  const [search, setSearch] = useState("");
+
+  const filtered = activeUsers.filter((u) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      u.name.toLowerCase().includes(q) ||
+      u.role.toLowerCase().includes(q) ||
+      u.deviceId.toLowerCase().includes(q)
+    );
+  });
+
   return (
     <div className="bg-zinc-900/60 border border-white/5 rounded-xl shadow-[0_4px_25px_rgba(0,0,0,0.3)]">
       <div className="px-4 py-2.5 border-b border-white/5 flex items-center gap-2">
@@ -15,6 +28,18 @@ export default function ActiveUsersTable({ isArabic, activeUsers }: ActiveUsersT
           {isArabic ? "المستخدمون النشطون" : "Utilisateurs actifs"}
           <span className="text-gray-500 font-normal ml-1">({activeUsers.length})</span>
         </span>
+      </div>
+      <div className="px-4 py-2 border-b border-white/5">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3 w-3 text-gray-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={isArabic ? "ابحث بالاسم، الدور، أو ID..." : "Rechercher par nom, rôle, ID..."}
+            className="w-full bg-zinc-950 border border-white/10 rounded-lg py-1.5 pl-9 pr-3 text-[11px] text-slate-300 placeholder:text-gray-600 focus:outline-none focus:border-sky-500/40"
+          />
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-[11px] font-mono">
@@ -28,7 +53,7 @@ export default function ActiveUsersTable({ isArabic, activeUsers }: ActiveUsersT
             </tr>
           </thead>
           <tbody>
-            {activeUsers.map((u) => (
+            {filtered.map((u) => (
               <tr key={u.deviceId} className="border-b border-white/5 hover:bg-white/5 transition-colors">
                 <td className="px-4 py-2 text-slate-200 font-bold">{u.name}</td>
                 <td className="px-4 py-2">

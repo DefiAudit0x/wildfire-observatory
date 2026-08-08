@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Shield, HeartHandshake, MapPin, Truck } from "lucide-react";
+import { Shield, HeartHandshake, MapPin, Truck, Search } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { TeamStatus, getTeamStatusBadge } from "./teams";
 
@@ -17,6 +17,17 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
   const [tableDispatchNotes, setTableDispatchNotes] = useState<Record<string, string>>({});
   const [dispatchResult, setDispatchResult] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [dispatchingTeamId, setDispatchingTeamId] = useState<string | null>(null);
+  const [teamSearch, setTeamSearch] = useState("");
+
+  const filteredTeams = teams.filter((t) => {
+    const q = teamSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      t.id.toLowerCase().includes(q) ||
+      t.teamNameAr.toLowerCase().includes(q) ||
+      t.teamNameFr.toLowerCase().includes(q)
+    );
+  });
 
   const activeSos = sosCalls
     .filter((s) => s.status === "active")
@@ -86,6 +97,18 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
           </span>
         </div>
       </div>
+      <div className="px-4 py-2 border-b border-white/5">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500" />
+          <input
+            type="text"
+            value={teamSearch}
+            onChange={(e) => setTeamSearch(e.target.value)}
+            placeholder={isArabic ? "ابحث عن فرقة بالاسم أو ID..." : "Rechercher une équipe..."}
+            className="w-full bg-zinc-950 border border-white/10 rounded-lg py-1.5 pl-9 pr-3 text-[11px] text-slate-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
+          />
+        </div>
+      </div>
 
       <div className="overflow-x-auto">
         <table className="w-full text-xs text-start">
@@ -99,7 +122,7 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
             </tr>
           </thead>
           <tbody>
-            {teams.map((team) => {
+            {filteredTeams.map((team) => {
               const teamName = isArabic ? team.teamNameAr : team.teamNameFr;
               const isPC = team.type === "protection_civile";
               const selectedSosIdForTeam = tableDispatchSosId[team.id] || "";

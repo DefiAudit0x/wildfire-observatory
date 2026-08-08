@@ -10,9 +10,10 @@ interface SosPanelProps {
   onDispatch: (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string) => Promise<boolean>;
   onResolve: (sos: TrappedSOS) => void;
   onFocusSos: (sos: TrappedSOS) => void;
+  onAudioError?: () => void;
 }
 
-export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispatch, onResolve, onFocusSos }: SosPanelProps) {
+export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispatch, onResolve, onFocusSos, onAudioError }: SosPanelProps) {
   const [dispatchingSosId, setDispatchingSosId] = useState<string | null>(null);
   const [dispatchType, setDispatchType] = useState<'protection_civile' | 'volunteers'>('protection_civile');
   const [selectedTeam, setSelectedTeam] = useState('');
@@ -43,6 +44,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
       }
     } catch (err) {
       console.error("Failed to load SOS audio:", err);
+      onAudioError?.();
     } finally {
       setLoadingAudio(null);
     }

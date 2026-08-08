@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Report, SatelliteHotspot, Language, TrappedSOS } from "../types";
 import { Crown, RefreshCw } from "lucide-react";
 import CommandLock from "./command/CommandLock";
@@ -9,6 +9,9 @@ import ActivityFeed from "./command/ActivityFeed";
 import TeamsTable from "./command/TeamsTable";
 import ActiveUsersTable from "./command/ActiveUsersTable";
 import ReportsTable from "./command/ReportsTable";
+import ConfirmDialog from "./ui/ConfirmDialog";
+import ToastStack from "./ui/ToastStack";
+import useToasts from "../hooks/useToasts";
 import { getTeamsStatusAndPositions, getTeamNames, getTeamStatusBadge, TeamStatus } from "./command/teams";
 
 interface CentralCommandProps {
@@ -41,6 +44,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const [focus, setFocus] = useState<FocusTarget | null>(null);
   const [fullSos, setFullSos] = useState<TrappedSOS[]>(sosCalls);
   const isArabic = lang === "ar";
+  const [confirmResolve, setConfirmResolve] = useState<TrappedSOS | null>(null);
+  const { toasts, push } = useToasts();
+  const reportedErrorRef = useRef(false);
 
   const fetchFullSos = useCallback(async () => {
     if (!unlocked) return;
@@ -48,10 +54,19 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       const res = await fetch("/api/sos/full", { credentials: "same-origin" });
       if (res.ok) {
         setFullSos(await res.json());
+        reportedErrorRef.current = false;
+      } else if (!reportedErrorRef.current) {
+        reportedErrorRef.current = true;
+        push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");
       }
     } catch (err) {
       console.error("Failed to fetch full SOS list:", err);
+      if (!reportedErrorRef.current) {
+        reportedErrorRef.current = true;
+        push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");
+      }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked]);
 
   const fetchUserLocations = useCallback(async () => {
@@ -61,15 +76,23 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
+      } else if (!reportedErrorRef.current) {
+        reportedErrorRef.current = true;
+        push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
       }
       if (onRefresh) {
         onRefresh();
       }
     } catch (err) {
       console.error("Failed to fetch user locations:", err);
+      if (!reportedErrorRef.current) {
+        reportedErrorRef.current = true;
+        push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
+      }
     } finally {
       setLoadingUsers(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRefresh]);
 
   useEffect(() => {
@@ -180,16 +203,22 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const handleResolveSos = async (sos: TrappedSOS) => {
-    if (!confirm(isArabic ? `تأكيد إنقاذ ${sos.name} وحل الاستغاثة؟` : `Marquer ${sos.name} comme secouru ?`)) return;
     try {
       const res = await fetch(`/api/sos/${sos.id}/resolve`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
       });
-      if (res.ok && onRefresh) onRefresh();
+      if (res.ok) {
+        if (onRefresh) onRefresh();
+        setFullSos((prev) => prev.filter((s) => s.id !== sos.id));
+        push(isArabic ? `تم إثبات النجدة — ${sos.name} بأمان` : `SOS résolu — ${sos.name} sain et sauf`);
+      } else {
+        push(isArabic ? "فشل حل الاستغاثة" : "Échec de résolution du SOS", "error");
+      }
     } catch (err) {
       console.error(err);
+      push(isArabic ? "فشل حل الاستغاثة" : "Échec de résolution du SOS", "error");
     }
   };
 
@@ -298,8 +327,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
             sosCalls={fullSos}
             dispatchLoading={dispatchLoading}
             onDispatch={handleDispatchSubmit}
-            onResolve={handleResolveSos}
+            onResolve={(sos) => setConfirmResolve(sos)}
             onFocusSos={handleFocusSos}
+            onAudioError={() => push(isArabic ? "تعذر تحميل التسجيل الصوتي" : "Impossible de charger l'audio", "error")}
           />
           <ActivityFeed isArabic={isArabic} reports={reports} />
         </div>
@@ -324,6 +354,23 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
 
       {/* User Locations Table */}
       <ActiveUsersTable isArabic={isArabic} activeUsers={activeUsers} />
+      <ConfirmDialog
+        open={confirmResolve !== null}
+        title={isArabic ? "تأكيد الإثبات" : "Confirmer le sauvetage"}
+        message={confirmResolve
+          ? (isArabic ? `هل تم إنقاذ ${confirmResolve.name} وحل الاستغاثة؟` : `Marquer ${confirmResolve.name} comme secouru ?`)
+          : ""}
+        confirmLabel={isArabic ? "تم الإنقاذ" : "Secouru"}
+        danger={false}
+        onConfirm={() => {
+          const sos = confirmResolve;
+          setConfirmResolve(null);
+          if (sos) handleResolveSos(sos);
+        }}
+        onCancel={() => setConfirmResolve(null)}
+        lang={lang}
+      />
+      <ToastStack toasts={toasts} />
     </div>
   );
 }
