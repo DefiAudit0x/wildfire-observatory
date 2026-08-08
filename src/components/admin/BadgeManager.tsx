@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { BadgeCheck, Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Save, X, AlertTriangle, Users, Activity, Ban, TimerOff, Gauge } from "lucide-react";
 import { Language } from "../../types";
+import ConfirmDialog from "../ui/ConfirmDialog";
 
 interface Badge {
   code: string;
@@ -52,6 +53,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingCode, setEditingCode] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditState>({ ownerName: "", type: "", wilaya: "", maxUses: "", expiresAt: "" });
+  const [confirmDelete, setConfirmDelete] = useState<Badge | null>(null);
 
   const apiFetch = async (url: string, method: string, body?: unknown) => {
     const res = await fetch(url, {
@@ -138,7 +140,6 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   };
 
   const handleDelete = async (badge: Badge) => {
-    if (!confirm(isArabic ? `حذف البادج "${badge.code}" نهائياً؟` : `Supprimer le badge "${badge.code}" ?`)) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -423,7 +424,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
                             {badge.isActive === true ? <ToggleRight className="h-3.5 w-3.5 text-emerald-400" /> : <ToggleLeft className="h-3.5 w-3.5" />}
                           </button>
                           <button
-                            onClick={() => handleDelete(badge)}
+                            onClick={() => setConfirmDelete(badge)}
                             disabled={busy}
                             className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-950/20 rounded-lg cursor-pointer transition-colors"
                             title={isArabic ? "حذف" : "Supprimer"}
@@ -492,6 +493,22 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title={isArabic ? "تأكيد الحذف" : "Confirmation"}
+        message={confirmDelete
+          ? (isArabic ? `حذف البادج "${confirmDelete.code}" نهائياً؟` : `Supprimer le badge "${confirmDelete.code}" ?`)
+          : ""}
+        confirmLabel={isArabic ? "حذف نهائياً" : "Supprimer"}
+        danger
+        onConfirm={() => {
+          const badge = confirmDelete;
+          setConfirmDelete(null);
+          if (badge) handleDelete(badge);
+        }}
+        onCancel={() => setConfirmDelete(null)}
+        lang={lang}
+      />
     </div>
   );
 }

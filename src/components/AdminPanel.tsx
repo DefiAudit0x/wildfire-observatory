@@ -5,6 +5,16 @@ import AuditLog from "./admin/AuditLog";
 import SafeZonesManager from "./admin/SafeZonesManager";
 import StaffManager from "./admin/StaffManager";
 import BadgeManager from "./admin/BadgeManager";
+import ConfirmDialog from "./ui/ConfirmDialog";
+import ToastStack from "./ui/ToastStack";
+import useToasts from "../hooks/useToasts";
+
+interface ConfirmState {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  onConfirm: () => void;
+}
 
 interface AdminPanelProps {
   reports: Report[];
@@ -24,6 +34,8 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [page, setPage] = useState(1);
   const [activeSection, setActiveSection] = useState<"reports" | "audit" | "zones" | "staff" | "badges">("reports");
   const ITEMS_PER_PAGE = 20;
+  const [confirm, setConfirm] = useState<ConfirmState | null>(null);
+  const { toasts, push, dismiss } = useToasts();
 
   const isArabic = lang === "ar";
 
@@ -79,7 +91,7 @@ const res = await fetch("/api/admin/verify", {
   const handleAuthError = (res: Response) => {
     if (res.status === 401) {
       handleLogout();
-      alert(isArabic ? "انتهت صلاحية جلستك — سجّل الدخول مجدداً" : "Session expirée — veuillez vous reconnecter");
+      push(isArabic ? "انتهت صلاحية جلستك — سجّل الدخول مجدداً" : "Session expirée — veuillez vous reconnecter", "warning");
       return true;
     }
     return false;
@@ -97,8 +109,9 @@ const res = await fetch("/api/admin/verify", {
 
       if (res.ok) {
         onRefresh();
+        push(isArabic ? "تم تحديث حالة البلاغ" : "État du signalement mis à jour");
       } else if (!handleAuthError(res)) {
-        alert(isArabic ? "فشل تحديث الحالة" : "Échec de la mise à jour de l'état");
+        push(isArabic ? "فشل تحديث الحالة" : "Échec de la mise à jour de l'état", "error");
       }
     } catch (err) {
       console.error(err);
@@ -123,8 +136,9 @@ const res = await fetch("/api/admin/verify", {
 
       if (res.ok) {
         onRefresh();
+        push(isArabic ? "تم تحديث درجة خطورة البلاغ" : "Gravité du signalement mise à jour");
       } else if (!handleAuthError(res)) {
-        alert(isArabic ? "فشل تحديث درجة الخطورة" : "Échec de la mise à jour de la gravité");
+        push(isArabic ? "فشل تحديث درجة الخطورة" : "Échec de la mise à jour de la gravité", "error");
       }
     } catch (err) {
       console.error(err);
@@ -137,33 +151,39 @@ const res = await fetch("/api/admin/verify", {
     }
   };
 
-  const deleteReport = async (id: string) => {
-    if (!confirm(isArabic ? "هل أنت متأكد من رغبتك في حذف هذا البلاغ نهائياً؟" : "Êtes-vous sûr de vouloir supprimer définitivement ce signalement ?")) {
-      return;
-    }
+  const deleteReport = (id: string) => {
+    setConfirm({
+      title: isArabic ? "تأكيد الحذف النهائي" : "Confirmation de suppression",
+      message: isArabic ? "هل أنت متأكد من رغبتك في حذف هذا البلاغ نهائياً؟ هذا الإجراء لا يمكن التراجع عنه." : "Êtes-vous sûr de vouloir supprimer définitivement ce signalement ? Cette action est irréversible.",
+      confirmLabel: isArabic ? "حذف نهائياً" : "Supprimer",
+      onConfirm: async () => {
+        setConfirm(null);
+        setUpdatingIds((prev) => new Set(prev).add(id));
+        try {
+          const res = await fetch(`/api/admin/reports/${id}/delete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "same-origin",
+          });
 
-    setUpdatingIds((prev) => new Set(prev).add(id));
-    try {
-      const res = await fetch(`/api/admin/reports/${id}/delete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-      });
-
-      if (res.ok) {
-        onRefresh();
-      } else if (!handleAuthError(res)) {
-        alert(isArabic ? "فشل حذف البلاغ" : "Échec de la suppression du signalement");
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setUpdatingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
+          if (res.ok) {
+            onRefresh();
+            push(isArabic ? "تم حذف البلاغ نهائياً" : "Signalement supprimé définitivement");
+          } else if (!handleAuthError(res)) {
+            push(isArabic ? "فشل حذف البلاغ" : "Échec de la suppression du signalement", "error");
+          }
+        } catch (err) {
+          console.error(err);
+          push(isArabic ? "حدث خطأ أثناء الحذف" : "Erreur lors de la suppression", "error");
+        } finally {
+          setUpdatingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+        }
+      },
+    });
   };
 
   if (authChecking) {
@@ -640,6 +660,17 @@ const res = await fetch("/api/admin/verify", {
       </div>
       </>
       )}
+      <ConfirmDialog
+        open={confirm !== null}
+        title={confirm?.title || ""}
+        message={confirm?.message || ""}
+        confirmLabel={confirm?.confirmLabel || ""}
+        danger
+        onConfirm={confirm?.onConfirm || (() => {})}
+        onCancel={() => setConfirm(null)}
+        lang={lang}
+      />
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

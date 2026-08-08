@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import { Lock, ShieldCheck, Users, Landmark, Plus, Trash2, RefreshCw, KeyRound, AlertTriangle, LogOut, Eye, EyeOff, Unlock } from "lucide-react";
 import { Language } from "../../types";
+import ConfirmDialog from "../ui/ConfirmDialog";
+
+interface ConfirmState {
+  title: string;
+  message: string;
+  onConfirm: () => void;
+}
 
 interface Unit {
   id: string;
@@ -59,6 +66,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   const [userForm, setUserForm] = useState({ agentId: "", name: "", role: "agent", unitId: "", password: "" });
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
   const handleAuth = (res: Response) => {
     if (res.status === 401 || res.status === 403) {
@@ -201,7 +209,6 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   };
 
   const handleDeleteUnit = async (unit: Unit) => {
-    if (!confirm(isArabic ? `حذف وحدة "${unit.nameAr}" نهائياً؟` : `Supprimer l'unité "${unit.nameFr}" ?`)) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -266,7 +273,6 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   };
 
   const handleDeleteUser = async (user: StaffUser) => {
-    if (!confirm(isArabic ? `حذف حساب "${user.name}" نهائياً؟` : `Supprimer le compte de "${user.name}" ?`)) return;
     setBusy(true);
     setMsg(null);
     try {
@@ -451,7 +457,11 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                   <p className="text-[10px] text-gray-400 mt-1 truncate">{unit.nameFr} · {unit.wilaya}</p>
                 </div>
                 <button
-                  onClick={() => handleDeleteUnit(unit)}
+                  onClick={() => setConfirmState({
+                    title: isArabic ? "حذف الوحدة" : "Supprimer l'unité",
+                    message: isArabic ? `حذف وحدة "${unit.nameAr}" نهائياً؟` : `Supprimer l'unité "${unit.nameFr}" ?`,
+                    onConfirm: () => handleDeleteUnit(unit),
+                  })}
                   disabled={busy}
                   className="p-2 bg-zinc-900 hover:bg-red-650/25 border border-white/5 text-gray-400 hover:text-red-400 rounded-lg cursor-pointer transition-colors"
                   title={isArabic ? "حذف الوحدة" : "Supprimer l'unité"}
@@ -567,7 +577,11 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                 <div className="flex items-center gap-1.5 shrink-0">
                   {isSuper && (
                     <button
-                      onClick={() => handleDeleteUser(user)}
+                      onClick={() => setConfirmState({
+                        title: isArabic ? "حذف الحساب" : "Supprimer le compte",
+                        message: isArabic ? `حذف حساب "${user.name}" نهائياً؟` : `Supprimer le compte de "${user.name}" ?`,
+                        onConfirm: () => handleDeleteUser(user),
+                      })}
                       disabled={busy}
                       className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-red-950/20 rounded-lg cursor-pointer transition-colors"
                       title={isArabic ? "حذف الحساب" : "Supprimer le compte"}
@@ -591,6 +605,19 @@ export default function StaffManager({ lang }: StaffManagerProps) {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmState !== null}
+        title={confirmState?.title || ""}
+        message={confirmState?.message || ""}
+        confirmLabel={isArabic ? "حذف نهائياً" : "Supprimer"}
+        danger
+        onConfirm={() => {
+          confirmState?.onConfirm();
+          setConfirmState(null);
+        }}
+        onCancel={() => setConfirmState(null)}
+        lang={lang}
+      />
     </div>
   );
 }

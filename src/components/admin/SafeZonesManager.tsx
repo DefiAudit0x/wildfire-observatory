@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
-import { MapPin, Plus, Trash2, RefreshCw, ShieldCheck, AlertTriangle, Save } from "lucide-react";
+import { MapPin, Plus, Trash2, RefreshCw, ShieldCheck, AlertTriangle, Save, Search } from "lucide-react";
 import { Language } from "../../types";
+import ConfirmDialog from "../ui/ConfirmDialog";
+import ToastStack from "../ui/ToastStack";
+import useToasts from "../../hooks/useToasts";
 
 interface SafeZoneItem {
   id: string;
@@ -32,6 +35,10 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
     capacity: "1000",
     hasMedical: false,
   });
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const { toasts, push } = useToasts();
 
   const fetchZones = useCallback(async () => {
     setLoading(true);
@@ -88,7 +95,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
       if (res.ok) {
         setForm({ nameAr: "", nameFr: "", lat: "", lng: "", capacity: "1000", hasMedical: false });
         fetchZones();
-        setMsg(isArabic ? "✓ تمت إضافة المركز الآمن." : "✓ Centre ajouté.");
+        push(isArabic ? "تمت إضافة المركز الآمن بنجاح" : "Centre sécurisé ajouté");
       } else if (!onAuthError(res)) {
         setMsg(isArabic ? "فشل إضافة المركز." : "Échec de l'ajout.");
       }
@@ -119,15 +126,28 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   };
 
   const handleDeleteZone = async (id: string) => {
-    if (!confirm(isArabic ? "حذف هذا المركز الآمن نهائياً؟" : "Supprimer ce centre définitivement ?")) return;
     try {
       const res = await apiFetch(`/api/safezones/${id}`, "DELETE");
-      if (res.ok) fetchZones();
-      else onAuthError(res);
+      if (res.ok) {
+        fetchZones();
+        push(isArabic ? "تم حذف المركز الآمن" : "Centre sécurisé supprimé");
+      } else onAuthError(res);
     } catch (err) {
       console.error(err);
     }
   };
+
+  const filteredZones = zones.filter((z) => {
+    const matchesSearch =
+      !searchQuery.trim() ||
+      z.nameAr.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      z.nameFr.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus =
+      statusFilter === "all" ||
+      (statusFilter === "active" && z.isActive !== false) ||
+      (statusFilter === "inactive" && z.isActive === false);
+    return matchesSearch && matchesStatus;
+  });
 
   return (
     <div className="space-y-4">
@@ -216,13 +236,35 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
           </button>
         </div>
 
+        <div className="flex flex-col sm:flex-row items-stretch gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={isArabic ? "ابحث عن مركز بالاسم..." : "Rechercher un centre..."}
+              className="w-full bg-black/50 border border-white/10 rounded-lg py-2 pl-9 pr-3 text-xs text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-1 focus:ring-sky-500/40"
+            />
+          </div>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as "all" | "active" | "inactive")}
+            className="bg-black/50 border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 font-bold focus:ring-1 focus:ring-sky-500/40 focus:outline-none cursor-pointer"
+          >
+            <option value="all">{isArabic ? "كل الحالات" : "Tous"}</option>
+            <option value="active">{isArabic ? "نشط" : "Actif"}</option>
+            <option value="inactive">{isArabic ? "معطل" : "Inactif"}</option>
+          </select>
+        </div>
+
         <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-          {zones.length === 0 ? (
+          {filteredZones.length === 0 ? (
             <div className="text-center py-8 text-xs text-gray-500">
-              {isArabic ? "لا توجد مراكز مسجلة." : "Aucun centre enregistré."}
+              {isArabic ? "لا توجد مراكز مطابقة." : "Aucun centre correspondant."}
             </div>
           ) : (
-            zones.map((z) => (
+            filteredZones.map((z) => (
               <div key={z.id} className={`bg-black/40 border rounded-lg p-3 flex items-center justify-between gap-3 ${z.isActive === false ? "border-white/5 opacity-60" : "border-emerald-500/20"}`}>
                 <div className="min-w-0 space-y-0.5">
                   <p className="text-xs font-bold text-slate-200 truncate flex items-center gap-1.5">
@@ -245,8 +287,9 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
                     {z.isActive === false ? (isArabic ? "مُعطّل" : "Inactif") : (isArabic ? "نشط" : "Actif")}
                   </button>
                   <button
-                    onClick={() => handleDeleteZone(z.id)}
+                    onClick={() => setConfirmDelete(z.id)}
                     className="p-1.5 bg-zinc-900 hover:bg-red-650/25 border border-white/10 text-gray-400 hover:text-red-400 rounded transition-all cursor-pointer"
+                    title={isArabic ? "حذف المركز" : "Supprimer le centre"}
                   >
                     <Trash2 className="h-3 w-3" />
                   </button>
@@ -256,6 +299,21 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title={isArabic ? "تأكيد الحذف" : "Confirmation"}
+        message={isArabic ? "هل أنت متأكد من حذف هذا المركز الآمن نهائياً؟" : "Supprimer ce centre définitivement ?"}
+        confirmLabel={isArabic ? "حذف نهائياً" : "Supprimer"}
+        danger
+        onConfirm={() => {
+          const id = confirmDelete;
+          setConfirmDelete(null);
+          if (id) handleDeleteZone(id);
+        }}
+        onCancel={() => setConfirmDelete(null)}
+        lang={lang}
+      />
+      <ToastStack toasts={toasts} />
     </div>
   );
 }
