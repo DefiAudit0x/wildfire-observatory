@@ -22,6 +22,12 @@ function pastDateISO(daysAgo: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+function todayISO(): string {
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 function futureDateISO(daysAhead: number): string {
   const d = new Date();
   d.setDate(d.getDate() + daysAhead);
@@ -69,7 +75,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
   it("forbids an agent from writing", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("agent", "DZ16")}`)
       .send({ posts: [] });
     expect(res.status).toBe(403);
@@ -79,7 +85,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
     const app = createApp();
     // DB is skipped in tests: docSet fails → 503 (proves permission passed).
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`)
       .send({ posts: [] });
     expect([503, 500]).toContain(res.status);
@@ -88,7 +94,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
   it("allows a superadmin to write to a unit via ?unit=", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07?unit=ALG")
+      .put(`/api/roster/${todayISO()}?unit=ALG`)
       .set("Authorization", `Bearer ${token("superadmin")}`)
       .send({ posts: [] });
     expect([503, 500]).toContain(res.status);
@@ -97,7 +103,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
   it("rejects a superadmin without a unit", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("superadmin")}`)
       .send({ posts: [] });
     expect(res.status).toBe(403);
@@ -106,7 +112,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
   it("rejects assigning the same agent twice on one day", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`)
       .send({
         posts: [
@@ -124,7 +130,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
       name: `Agent ${i}`,
     }));
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`)
       .send({ posts: [{ labelAr: "منصب", personnel }] });
     expect(res.status).toBe(400);
@@ -134,7 +140,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
     const app = createApp();
     const posts = Array.from({ length: MAX_POSTS_PER_DAY + 1 }, (_, i) => ({ labelAr: `منصب ${i}`, personnel: [] }));
     const res = await supertest(app)
-      .put("/api/roster/2026-08-07")
+      .put(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`)
       .send({ posts });
     expect(res.status).toBe(400);
@@ -145,7 +151,7 @@ describe("POST /api/roster/:date (single post)", () => {
   it("forbids agents", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .post("/api/roster/2026-08-07")
+      .post(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("agent", "DZ16")}`)
       .send({ labelAr: "منصب", personnel: [] });
     expect(res.status).toBe(403);
@@ -154,7 +160,7 @@ describe("POST /api/roster/:date (single post)", () => {
   it("accepts a commander post with multiple personnel (allowed)", async () => {
     const app = createApp();
     const res = await supertest(app)
-      .post("/api/roster/2026-08-07")
+      .post(`/api/roster/${todayISO()}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`)
       .send({
         labelAr: "سيارة إسعاف",
