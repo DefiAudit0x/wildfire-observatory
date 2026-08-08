@@ -132,7 +132,7 @@ export default function MainContent({
           {/* Live statistics summary cards */}
           {activeTab === "map" && (
             <div className="col-span-12">
-              <StatisticsPanel reports={reports} satellites={satellites} lang={lang} />
+              <StatisticsPanel reports={reports} satellites={satellites} wilayas={wilayas} lang={lang} />
             </div>
           )}
 

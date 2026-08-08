@@ -1,13 +1,15 @@
+import { useMemo } from "react";
 import { Flame, ShieldAlert, Users, Radio } from "lucide-react";
-import { Report, SatelliteHotspot } from "../types";
+import { Report, SatelliteHotspot, WilayaStatus } from "../types";
 
 interface StatisticsPanelProps {
   reports: Report[];
   satellites: SatelliteHotspot[];
+  wilayas: WilayaStatus[];
   lang: "ar" | "fr";
 }
 
-export default function StatisticsPanel({ reports, satellites, lang }: StatisticsPanelProps) {
+export default function StatisticsPanel({ reports, satellites, wilayas, lang }: StatisticsPanelProps) {
   const isArabic = lang === "ar";
 
   const totalReports = reports.length;
@@ -16,6 +18,37 @@ export default function StatisticsPanel({ reports, satellites, lang }: Statistic
   const totalSatellites = satellites.length;
 
   const verificationRate = totalReports > 0 ? Math.round((verifiedReports / totalReports) * 100) : 100;
+
+  // Most threatened wilayas, computed live from the wilaya status API
+  const mostThreatenedWilayas = useMemo(() => {
+    if (!wilayas || wilayas.length === 0) return [];
+    const severityPriority: Record<string, number> = { safe: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    return [...wilayas]
+      .filter((w) => w.severity !== "safe")
+      .sort((a, b) => {
+        if (a.evacuationRecommended !== b.evacuationRecommended) return b.evacuationRecommended ? 1 : -1;
+        const sev = severityPriority[b.severity] - severityPriority[a.severity];
+        if (sev !== 0) return sev;
+        const fires = b.activeFires - a.activeFires;
+        if (fires !== 0) return fires;
+        return b.satelliteHotspots - a.satelliteHotspots;
+      })
+      .slice(0, 2);
+  }, [wilayas]);
+
+  const cleanName = (name: string) => name.split(" - ").pop() || name;
+  const threatenedWilayasText =
+    mostThreatenedWilayas.length > 0
+      ? mostThreatenedWilayas.map((w) => (isArabic ? cleanName(w.nameAr) : cleanName(w.nameFr))).join(" / ")
+      : isArabic
+        ? "لا توجد ولايات مهددة"
+        : "Aucune wilaya menacée";
+  const threatenedWilayasDesc =
+    mostThreatenedWilayas.length > 0
+      ? mostThreatenedWilayas.some((w) => w.evacuationRecommended)
+        ? (isArabic ? "إجراءات إخلاء نشطة في هذه المناطق" : "Évacuations en cours dans ces zones")
+        : (isArabic ? "مراقبة مكثفة وفرق تدخل جاهزة" : "Surveillance intensive, équipes en alerte")
+      : (isArabic ? "جميع المناطق تحت السيطرة" : "Toutes les zones sous contrôle");
 
   const stats = [
     {
@@ -53,14 +86,16 @@ export default function StatisticsPanel({ reports, satellites, lang }: Statistic
     },
     {
       id: "stat-4",
-      titleAr: "ولايات الشرق الأكثر تهديداً",
-      titleFr: "Wilayas de l'Est Menacées",
-      value: isArabic ? "الطارف / سكيكدة" : "El Tarf / Skikda",
-      descAr: "الحماية المدنية والجيش يجليان الأهالي",
-      descFr: "Secours et évacuations en cours",
+      titleAr: "الولايات الأكثر تهديداً",
+      titleFr: "Wilayas les Plus Menacées",
+      value: threatenedWilayasText,
+      descAr: threatenedWilayasDesc,
+      descFr: threatenedWilayasDesc,
       icon: <ShieldAlert className="h-5 w-5 text-amber-500" />,
       glowColor: "text-amber-400",
-      bg: "bg-zinc-900/40 border-white/5",
+      bg: mostThreatenedWilayas.length > 0
+        ? "bg-zinc-900/40 border-amber-500/20"
+        : "bg-emerald-950/10 border-emerald-500/20",
     },
   ];
 
