@@ -40,7 +40,10 @@ export default function InteractiveMap({
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.LayerGroup | null>(null);
   const heatRef = useRef<L.LayerGroup | null>(null);
+  const markersSigRef = useRef("");
+  const heatSigRef = useRef("");
   const onMapClickRef = useRef(onMapClick);
+  const onConfirmReportRef = useRef(onConfirmReport);
   const [severityFilter, setSeverityFilter] = useState<Set<string>>(new Set(["low", "medium", "high", "critical"]));
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [heatEnabled, setHeatEnabled] = useState(false);
@@ -48,6 +51,10 @@ export default function InteractiveMap({
   useEffect(() => {
     onMapClickRef.current = onMapClick;
   }, [onMapClick]);
+
+  useEffect(() => {
+    onConfirmReportRef.current = onConfirmReport;
+  }, [onConfirmReport]);
 
   const isArabic = lang === "ar";
 
@@ -114,13 +121,91 @@ export default function InteractiveMap({
     };
   }, []);
 
-  // Update markers when reports or satellites change
+  // Single delegated listener for all popup confirm buttons (no per-popup DOM listeners)
+  useEffect(() => {
+    const container = mapContainerRef.current;
+    if (!container) return;
+
+    const handleClick = (ev: MouseEvent) => {
+      const target = ev.target as HTMLElement | null;
+      if (!target || !target.closest) return;
+      const btn = target.closest("[data-confirm-report]") as HTMLElement | null;
+      if (!btn) return;
+      const reportId = btn.getAttribute("data-confirm-report");
+      if (!reportId) return;
+      onConfirmReportRef.current(reportId);
+      const countEl = btn.parentElement?.querySelector("strong");
+      if (countEl) {
+        const currentVal = parseInt(countEl.textContent || "0", 10);
+        countEl.textContent = String(currentVal + 1);
+      }
+      btn.setAttribute("disabled", "true");
+      btn.className = "px-2 py-1 bg-slate-800 text-slate-500 rounded text-xs cursor-not-allowed";
+      btn.textContent = btn.getAttribute("data-done-text") || "✓";
+    };
+
+    container.addEventListener("click", handleClick);
+    return () => container.removeEventListener("click", handleClick);
+  }, []);
+
+  // Update markers only when the underlying data actually changed
+  // (avoids clearing and rebuilding the whole map on every polling tick)
   useEffect(() => {
     const map = mapRef.current;
     const markerGroup = markersRef.current;
     if (!map || !markerGroup) return;
 
-    markerGroup.clearLayers();
+    // 2. Plot citizen reports (filtered)
+    const visibleReports = reports.filter(
+      (r) => severityFilter.has(r.severity) && (statusFilter === "all" || r.status === statusFilter)
+    );
+
+    const getSeverityColor = (sev: string) => {
+      switch (sev) {
+        case "critical":
+          return "#ef4444"; // red
+        case "high":
+          return "#f97316"; // orange
+        case "medium":
+          return "#f59e0b"; // amber
+        default:
+          return "#10b981"; // green
+      }
+    };
+
+    // Heat layer toggle/refresh is tracked separately from markers
+    const heatLayer = heatRef.current;
+    const heatSig = `${heatEnabled ? 1 : 0}|${visibleReports.map((r) => `${r.id}:${r.severity}`).join(",")}`;
+    if (heatSig !== heatSigRef.current && heatLayer) {
+      heatSigRef.current = heatSig;
+      heatLayer.clearLayers();
+      if (heatEnabled) {
+        visibleReports.forEach((rep) => {
+          const weight = rep.severity === "critical" ? 0.5 : rep.severity === "high" ? 0.38 : rep.severity === "medium" ? 0.26 : 0.16;
+          L.circle([rep.lat, rep.lng], {
+            radius: 900,
+            color: getSeverityColor(rep.severity),
+            weight: 0,
+            fillColor: getSeverityColor(rep.severity),
+            fillOpacity: weight,
+            interactive: false,
+          }).addTo(heatLayer);
+        });
+      }
+    }
+
+    const markerSig = [
+      satellites
+        .map((s) => `${s.id}|${s.lat}|${s.lng}|${s.brightness}|${s.confidence}|${s.scanTime}|${s.wilaya}|${s.satellite}`)
+        .join(";"),
+      visibleReports
+        .map((r) =>
+          `${r.id}|${r.lat}|${r.lng}|${r.severity}|${r.status}|${r.locationName}|${r.wilaya}|${r.timestamp}|${r.description}|${r.image || ""}|${r.reporterType || ""}|${r.consensusCount}|${r.clusterSize || 0}|${r.clusterId || ""}|${r.isClusterLeader ? 1 : 0}|${r.aiVerification?.confidence || ""}|${r.aiVerification?.aiComments || ""}|${isArabic ? 1 : 0}`
+        )
+        .join(";"),
+    ].join("~");
+    if (markerSig === markersSigRef.current) return;
+    markersSigRef.current = markerSig;
 
     // 1. Plot NASA satellite thermal spots (MODIS/VIIRS)
     satellites.forEach((sat) => {
@@ -158,40 +243,7 @@ export default function InteractiveMap({
         .addTo(markerGroup);
     });
 
-    // 2. Plot citizen reports (filtered)
-    const visibleReports = reports.filter(
-      (r) => severityFilter.has(r.severity) && (statusFilter === "all" || r.status === statusFilter)
-    );
-
-    // Heat layer: semi-transparent intensity circles per report
-    const getSeverityColor = (sev: string) => {
-      switch (sev) {
-        case "critical":
-          return "#ef4444"; // red
-        case "high":
-          return "#f97316"; // orange
-        case "medium":
-          return "#f59e0b"; // amber
-        default:
-          return "#10b981"; // green
-      }
-    };
-
-    const heatLayer = heatRef.current;
-    if (heatLayer) heatLayer.clearLayers();
-    if (heatEnabled && heatLayer) {
-      visibleReports.forEach((rep) => {
-        const weight = rep.severity === "critical" ? 0.5 : rep.severity === "high" ? 0.38 : rep.severity === "medium" ? 0.26 : 0.16;
-        L.circle([rep.lat, rep.lng], {
-          radius: 900,
-          color: getSeverityColor(rep.severity),
-          weight: 0,
-          fillColor: getSeverityColor(rep.severity),
-          fillOpacity: weight,
-          interactive: false,
-        }).addTo(heatLayer);
-      });
-    }
+    markerGroup.clearLayers();
 
     visibleReports.forEach((rep) => {
       const color = getSeverityColor(rep.severity);
@@ -293,7 +345,7 @@ export default function InteractiveMap({
           <span class="text-[11px] text-slate-400">
             ${isArabic ? "تأكيدات المجتمع:" : "Confirmations:"} <strong>${rep.consensusCount}</strong>
           </span>
-          <button id="upvote-btn-${esc(rep.id)}" class="px-2 py-1 bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white rounded text-xs transition-colors font-bold cursor-pointer flex items-center gap-1">
+          <button data-confirm-report="${esc(rep.id)}" data-done-text="${isArabic ? "✓ تم التأكيد" : "✓ Confirmé"}" class="px-2 py-1 bg-red-500/20 hover:bg-red-500 text-red-400 hover:text-white rounded text-xs transition-colors font-bold cursor-pointer flex items-center gap-1">
             🔥 ${isArabic ? "تأكيد وجود حريق" : "Confirmer le feu"}
           </button>
         </div>
@@ -317,26 +369,8 @@ export default function InteractiveMap({
       const marker = L.marker([rep.lat, rep.lng], { icon: citizenIcon })
         .bindPopup(popupContent, { maxWidth: 300 })
         .addTo(markerGroup);
-
-      marker.on("popupopen", () => {
-        const btn = document.getElementById(`upvote-btn-${rep.id}`);
-        if (btn) {
-          btn.addEventListener("click", () => {
-            onConfirmReport(rep.id);
-            // Quick local visual update inside popup text
-            const countEl = btn.parentElement?.querySelector("strong");
-            if (countEl) {
-              const currentVal = parseInt(countEl.textContent || "0", 10);
-              countEl.textContent = String(currentVal + 1);
-            }
-            btn.setAttribute("disabled", "true");
-            btn.className = "px-2 py-1 bg-slate-800 text-slate-500 rounded text-xs cursor-not-allowed";
-            btn.textContent = isArabic ? "✓ تم التأكيد" : "✓ Confirmé";
-          });
-        }
-      });
     });
-  }, [reports, satellites, lang, onConfirmReport, isArabic, severityFilter, statusFilter, heatEnabled]);
+  }, [reports, satellites, lang, isArabic, severityFilter, statusFilter]);
 
   // Handle flyTo when a selected report is clicked in list
   useEffect(() => {

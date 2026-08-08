@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Compass, Wind, AlertTriangle, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
 import { Report } from "../types";
 import { haversineKm } from "../utils/geo";
@@ -11,7 +11,6 @@ interface EvacuationRadarProps {
 
 export default function EvacuationRadar({ reports, userLocation, lang }: EvacuationRadarProps) {
   const isArabic = lang === "ar";
-  const [radarAngle, setRadarAngle] = useState(0);
   const [wind, setWind] = useState({
     direction: 260,
     speed: 35,
@@ -72,13 +71,13 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
     return () => clearInterval(timer);
   }, []);
 
-  // Rotate the radar sweep line
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setRadarAngle((prev) => (prev + 3) % 360);
-    }, 30);
-    return () => clearInterval(timer);
-  }, []);
+  // Rotate the radar sweep line with CSS animation (no state churn)
+  const sweepStyle = `
+    @keyframes radar-sweep {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+  `;
 
   // Compute Haversine distance in km
   const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number) =>
@@ -117,13 +116,16 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   const activeLoc = userLocation || { lat: 36.72, lng: 5.08 };
 
   // Calculate distances to all reports
-  const reportsWithDistance = reports
-    .map((r) => {
-      const dist = getDistance(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
-      const bearing = getBearing(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
-      return { ...r, distance: dist, bearing };
-    })
-    .sort((a, b) => a.distance - b.distance);
+  const reportsWithDistance = useMemo(() => {
+    return reports
+      .map((r) => {
+        const dist = getDistance(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
+        const bearing = getBearing(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
+        return { ...r, distance: dist, bearing };
+      })
+      .sort((a, b) => a.distance - b.distance);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reports, activeLoc.lat, activeLoc.lng]);
 
   const closestFire = reportsWithDistance[0];
 
@@ -188,11 +190,12 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
             <div className="absolute h-full w-px bg-red-500/15"></div>
             <div className="absolute w-full h-px bg-red-500/15"></div>
 
-            {/* Radar Sweep Line */}
-            <div 
-              className="absolute top-0 bottom-1/2 right-1/2 left-0 origin-bottom-right border-r border-red-500/40 bg-gradient-to-l from-red-500/15 to-transparent rounded-tl-full"
-              style={{ transform: `rotate(${radarAngle}deg)` }}
-            ></div>
+            {/* Radar Sweep Line (CSS animation — no React state churn) */}
+          <style>{sweepStyle}</style>
+          <div 
+            className="absolute top-0 bottom-1/2 right-1/2 left-0 origin-bottom-right border-r border-red-500/40 bg-gradient-to-l from-red-500/15 to-transparent rounded-tl-full"
+            style={{ animation: "radar-sweep 12s linear infinite" }}
+          ></div>
 
             {/* Blips/Fires on radar */}
             {reportsWithDistance.slice(0, 3).map((fire, idx) => {
