@@ -1,3 +1,4 @@
+import "./sentry-init.js";
 import * as Sentry from "@sentry/node";
 import express from "express";
 import path from "path";
@@ -10,7 +11,6 @@ import rateLimit from "express-rate-limit";
 import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
-import { scrubSentryEvent } from "./sentry-scrub.js";
 import { errorHandler, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
@@ -40,16 +40,6 @@ const app = express();
 // "trust proxy 1" lets req.ip resolve to the real client IP (used for vote dedup).
 app.set("trust proxy", 1);
 const PORT = config.port;
-
-if (config.sentryDsn) {
-  Sentry.init({
-    dsn: config.sentryDsn,
-    environment: config.nodeEnv,
-    tracesSampleRate: config.nodeEnv === "production" ? 0.1 : 0,
-    integrations: [Sentry.expressIntegration()],
-    beforeSend: (event) => scrubSentryEvent(event),
-  });
-}
 
 const isProduction = config.nodeEnv === "production";
 
