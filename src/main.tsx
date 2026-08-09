@@ -2,6 +2,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import * as Sentry from "@sentry/react";
+import { registerSW } from "virtual:pwa-register";
 import App from "./App.tsx";
 import "leaflet/dist/leaflet.css";
 import "./index.css";
@@ -14,11 +15,7 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   });
 }
 
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
-  });
-}
+registerSW({ immediate: true });
 
 createRoot(document.getElementById("app")!).render(
   <StrictMode>

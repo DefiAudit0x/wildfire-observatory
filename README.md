@@ -144,8 +144,8 @@ observatory/
 │       └── WilayaList.tsx      # Region status list
 ├── tests/                     # Unit + API + Playwright E2E tests (see Testing ↓)
 ├── public/
-│   ├── sw.js                  # Service worker (offline cache)
-│   └── manifest.json          # PWA manifest
+│   ├── manifest.json          # PWA manifest
+│   └── favicon.svg            # App icon (precached by the generated SW)
 ├── .github/workflows/ci.yml   # CI/CD pipeline
 ├── Dockerfile                 # Multi-stage production build
 └── vitest.server.config.ts    # Vitest config

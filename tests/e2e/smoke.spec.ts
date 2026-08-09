@@ -33,10 +33,9 @@ test.describe("Smoke tests", () => {
   });
 
   test("admin login flow succeeds with correct password", async ({ page }) => {
-    const adminPw = process.env.ADMIN_PASSWORD || "test-admin";
-    if (!process.env.ADMIN_PASSWORD) {
-      test.skip(!process.env.ADMIN_PASSWORD, "ADMIN_PASSWORD not set");
-    }
+    // Synced with ADMIN_PASSWORD in playwright.config.ts webServer env — the
+    // test runner's own shell env must not gate this scenario.
+    const adminPw = "test-admin";
     await page.goto("/");
     await page.click('button:has-text("مشرف")');
     const input = page.getByPlaceholder(/mot de passe|كلمة المرور/i);

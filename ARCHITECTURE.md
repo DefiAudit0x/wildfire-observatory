@@ -162,7 +162,8 @@ observatory/
 │   │   └── admin-panel.test.tsx
 │   └── e2e/
 ├── public/
-│   └── sw.js                ← Service Worker
+│   ├── manifest.json ← PWA manifest
+│   └── favicon.svg   ← App icon
 ├── assets/
 ├── .github/
 ├── .husky/
@@ -191,7 +192,7 @@ observatory/
 | **Auth** | JWT Bearer token for admin routes |
 | **Coordinates** | Wilaya bounds validation (server-side) |
 | **Voting** | IP-based duplicate detection |
-| **Service Worker** | Cache-first for GET only (non-GET pass-through) |
+| **Service Worker** | Workbox precache for built assets (GET only) · NetworkFirst for `/api/*` with 120s expiry |
 | **XSS** | `esc()` sanitization on HTML template injection |
 | **ID Generation** | `crypto.randomUUID()` (not `Date.now()`) |
 | **Dependency** | Minimal attack surface; npm audit clean |

@@ -36,12 +36,12 @@ test.describe("PWA shell", () => {
     expect(manifest.display).toBe("standalone");
   });
 
-  test("service worker serves with cache lifecycle handlers", async ({ request }) => {
+  test("service worker serves workbox-generated cache handlers", async ({ request }) => {
     const res = await request.get("/sw.js");
     expect(res.ok()).toBeTruthy();
     const code = await res.text();
-    expect(code).toContain("activate");
-    expect(code).toContain("clients.claim");
+    expect(code).toContain("precacheAndRoute");
+    expect(code).toContain("registerRoute");
   });
 
   test("service worker registers and activates on the client", async ({ page }) => {
