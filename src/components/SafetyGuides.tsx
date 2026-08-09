@@ -6,7 +6,7 @@ interface SafetyGuidesProps {
 }
 
 export default function SafetyGuides({ lang }: SafetyGuidesProps) {
-  const [activeTab, setActiveTab] = useState<"before" | "during" | "after" | "firstaid">("during");
+  const [activeTab, setActiveTab] = useState<"before" | "during" | "after" | "firstaid">("before");
   const [speaking, setSpeaking] = useState(false);
 
   const isArabic = lang === "ar";
@@ -36,6 +36,20 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     setSpeaking(true);
   };
 
+  const tabIds = ["before", "during", "after", "firstaid"] as const;
+
+  const onTabKeyDown = (e: React.KeyboardEvent, current: string) => {
+    const currentIndex = tabIds.indexOf(current as any);
+    let nextIndex = currentIndex;
+    if (e.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabIds.length;
+    else if (e.key === "ArrowLeft") nextIndex = (currentIndex - 1 + tabIds.length) % tabIds.length;
+    else if (e.key === "Home") nextIndex = 0;
+    else if (e.key === "End") nextIndex = tabIds.length - 1;
+    else return;
+    e.preventDefault();
+    setActiveTab(tabIds[nextIndex]);
+  };
+
   return (
     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)]" dir={isArabic ? "rtl" : "ltr"}>
       {/* Title */}
@@ -62,6 +76,8 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
               role="tab"
               aria-selected={activeTab === tab.id}
               aria-controls="guide-panel"
+              tabIndex={activeTab === tab.id ? 0 : -1}
+              onKeyDown={(e) => onTabKeyDown(e, tab.id)}
               onClick={() => setActiveTab(tab.id as any)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer flex-1 justify-center min-w-[120px] ${
                 activeTab === tab.id

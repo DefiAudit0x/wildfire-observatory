@@ -31,6 +31,18 @@ const registerSchema = z.object({
   website: z.string().optional(),
 });
 
+const approveSchema = z.object({
+  status: z.enum(["approved", "rejected", "pending"]).optional(),
+  assignedCode: z.string().regex(/^[A-Z0-9]{4,12}$/, "Invalid badge code format").optional(),
+  ownerName: z.string().min(2).max(120).optional(),
+  type: z.enum(["official", "volunteer"]).optional(),
+  wilaya: z.string().min(2).max(120).optional(),
+  phone: z
+    .string()
+    .max(20)
+    .optional(),
+});
+
 const registerLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 3,
@@ -146,7 +158,7 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
 
 async function loadRegs(): Promise<any[]> {
   if (memoryRegs.length === 0) {
-    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 100).catch(() => null);
+    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
     if (fromDb && fromDb.length > 0) memoryRegs.push(...fromDb);
   }
   return memoryRegs;
@@ -159,9 +171,26 @@ router.get("/pending", requireAdmin, async (_req: Request, res: Response) => {
 
 router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { status, assignedCode, ownerName, type, wilaya, phone } = req.body;
+  if (!/^[a-z0-9-]{1,64}$/.test(id)) {
+    res.status(400).json({ error: "Invalid registration id" });
+    return;
+  }
+  const parsed = approveSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid approval payload", details: parsed.error.flatten() });
+    return;
+  }
+  const { status, assignedCode, ownerName, type, wilaya, phone } = parsed.data;
   const finalStatus = status === "approved" || status === "rejected" ? status : "pending";
   const finalType = type === "official" || type === "volunteer" ? type : undefined;
+
+  if (assignedCode) {
+    const badgeExists = await docGet("badgeCodes", assignedCode).catch(() => null);
+    if (badgeExists) {
+      res.status(409).json({ error: "This badge code is already in use" });
+      return;
+    }
+  }
 
   await docUpdate("volunteerRegistrations", id, { status: finalStatus, assignedCode });
 

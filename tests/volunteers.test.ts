@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import volunteersRouter from "../server/routes/volunteers.js";
+import { generateAdminToken } from "../server/middleware.js";
 
 function createVolunteersApp() {
   const app = express();
@@ -64,5 +65,31 @@ describe("POST /api/volunteer/register", () => {
     });
     expect(res.status).toBe(200);
     expect(res.body.id).toMatch(/^reg-fake-[0-9a-f]{8}$/);
+  });
+});
+
+describe("POST /api/volunteer/:id/approve", () => {
+  const app = createVolunteersApp();
+  const adminToken = generateAdminToken();
+
+  it("rejects unauthenticated approval requests", async () => {
+    const res = await supertest(app).post("/api/volunteer/reg-123456/approve").send({ status: "approved" });
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects invalid badge code formats", async () => {
+    const res = await supertest(app)
+      .post("/api/volunteer/reg-123456/approve")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ status: "approved", assignedCode: "bad code!!" });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects malformed registration ids (path traversal chars)", async () => {
+    const res = await supertest(app)
+      .post("/api/volunteer/abc.def%2F..%2Fetc/approve")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ status: "approved" });
+    expect([400, 404]).toContain(res.status);
   });
 });

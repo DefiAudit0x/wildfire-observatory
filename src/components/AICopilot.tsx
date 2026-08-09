@@ -16,6 +16,8 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
   const CACHE_TTL_MS = 60 * 60 * 1000;
   const MIN_REQUEST_INTERVAL_MS = 5000;
   const lastRequestRef = useRef(0);
+  const latestRequestRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   const getCacheKey = () => {
     const lat = userLocation?.lat?.toFixed(4) || "36.8";
@@ -25,6 +27,7 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
   };
 
   const fetchGuidance = async (force = false, attempt = 0) => {
+    const requestId = ++latestRequestRef.current;
     const cacheKey = getCacheKey();
 
     if (!force) {
@@ -48,6 +51,10 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
     }
     lastRequestRef.current = now;
 
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setLoading(true);
     let status = 0;
     try {
@@ -60,10 +67,12 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
           wilaya: activeWilaya || (isArabic ? "الشرق الجزائري" : "Est de l'Algérie"),
           lang: lang,
         }),
+        signal: controller.signal,
       });
       status = response.status;
       if (!response.ok) throw new Error(`HTTP ${status}`);
       const data = await response.json();
+      if (requestId !== latestRequestRef.current || controller.signal.aborted) return;
       const text = data.guidance || "";
       setGuidance(text);
       if (text) {
@@ -75,6 +84,7 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
       }
     } catch (err) {
       console.error(err);
+      if ((controller.signal.aborted || (err instanceof Error && err.name === "AbortError"))) return;
       if (attempt < 2 && status === 0) {
         setTimeout(() => void fetchGuidance(true, attempt + 1), 2000);
         return;
@@ -94,14 +104,18 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
           ? "⚠️ عذراً، تعذر الاتصال بمركز الاستجابة الذكي حالياً. يرجى مراجعة شبكة الاتصال الخاصة بك."
           : "⚠️ Échec de connexion avec le serveur d'IA. Veuillez vérifier votre connexion.";
       }
+      if (requestId !== latestRequestRef.current || controller.signal.aborted) return;
       setGuidance(message);
     } finally {
-      setLoading(false);
+      if (requestId === latestRequestRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchGuidance();
+    void fetchGuidance();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [lang, userLocation, activeWilaya]);
 
   return (
