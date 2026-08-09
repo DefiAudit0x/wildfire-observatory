@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import { Sparkles, Loader2, RefreshCw, Send, Shield, PhoneCall } from "lucide-react";
 
@@ -14,14 +14,17 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
 
   const isArabic = lang === "ar";
   const CACHE_TTL_MS = 60 * 60 * 1000;
+  const MIN_REQUEST_INTERVAL_MS = 5000;
+  const lastRequestRef = useRef(0);
 
   const getCacheKey = () => {
-    const lat = userLocation?.lat?.toFixed(2) || "36.8";
-    const lng = userLocation?.lng?.toFixed(2) || "7.5";
-    return `ai_guidance_${lang}_${lat}_${lng}_${activeWilaya}`;
+    const lat = userLocation?.lat?.toFixed(4) || "36.8";
+    const lng = userLocation?.lng?.toFixed(4) || "7.5";
+    const hourBucket = Math.floor(Date.now() / CACHE_TTL_MS);
+    return `ai_guidance_${lang}_${lat}_${lng}_${activeWilaya}_${hourBucket}`;
   };
 
-  const fetchGuidance = async (force = false) => {
+  const fetchGuidance = async (force = false, attempt = 0) => {
     const cacheKey = getCacheKey();
 
     if (!force) {
@@ -39,7 +42,14 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
       }
     }
 
+    const now = Date.now();
+    if (now - lastRequestRef.current < MIN_REQUEST_INTERVAL_MS && attempt === 0) {
+      return;
+    }
+    lastRequestRef.current = now;
+
     setLoading(true);
+    let status = 0;
     try {
       const response = await fetch("/api/ai/guidance", {
         method: "POST",
@@ -51,6 +61,8 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
           lang: lang,
         }),
       });
+      status = response.status;
+      if (!response.ok) throw new Error(`HTTP ${status}`);
       const data = await response.json();
       const text = data.guidance || "";
       setGuidance(text);
@@ -63,11 +75,26 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
       }
     } catch (err) {
       console.error(err);
-      setGuidance(
-        isArabic
+      if (attempt < 2 && status === 0) {
+        setTimeout(() => void fetchGuidance(true, attempt + 1), 2000);
+        return;
+      }
+      const code = String(status || (err && typeof err === "object" && "message" in err ? (err as Error).message : ""));
+      let message: string;
+      if (code.includes("429")) {
+        message = isArabic
+          ? "⚠️ تم تجاوز الحد الأقصى للطلبات. يرجى المحاولة بعد قليل."
+          : "⚠️ Trop de requêtes, réessayez dans quelques instants.";
+      } else if (code.includes("503")) {
+        message = isArabic
+          ? "⚠️ خدمة الذكاء الاصطناعي غير متاحة مؤقتاً."
+          : "⚠️ Service d'IA temporairement indisponible.";
+      } else {
+        message = isArabic
           ? "⚠️ عذراً، تعذر الاتصال بمركز الاستجابة الذكي حالياً. يرجى مراجعة شبكة الاتصال الخاصة بك."
-          : "⚠️ Échec de connexion avec le serveur d'IA. Veuillez vérifier votre connexion."
-      );
+          : "⚠️ Échec de connexion avec le serveur d'IA. Veuillez vérifier votre connexion.";
+      }
+      setGuidance(message);
     } finally {
       setLoading(false);
     }

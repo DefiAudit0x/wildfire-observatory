@@ -1,20 +1,34 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
+import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { logAdminAction } from "./audit.js";
 import logger from "../logger.js";
+import config from "../config.js";
 
 const router = Router();
 
+const PHONE_DZ = /^(?:\+213|0)(5|6|7)\d{8}$/;
+const PHONE_TN = /^(?:\+216)?[2-9]\d{7}$/;
+const PHONE_MA = /^(?:\+212|0)(?:5|6|7)\d{8}$/;
+const PHONE_LY = /^(?:\+218|0)[2-9]\d{8}$/;
+const PHONE_RULES = new RegExp(`^(?:${PHONE_DZ.source}|${PHONE_TN.source}|${PHONE_MA.source}|${PHONE_LY.source})$`);
+
 const registerSchema = z.object({
   fullName: z.string().min(2).max(120),
-  phone: z.string().min(6).max(20),
+  phone: z
+    .string()
+    .min(10)
+    .max(20)
+    .regex(PHONE_RULES, "Invalid phone number — expected a Maghreb number (DZ/TN/MA/LY)"),
   email: z.string().email().max(120).optional(),
   wilaya: z.string().min(2).max(120),
   type: z.enum(["volunteer", "official"]).optional(),
   idNumber: z.string().max(30).optional(),
+  website: z.string().optional(),
 });
 
 const registerLimiter = rateLimit({
@@ -26,34 +40,113 @@ const registerLimiter = rateLimit({
 });
 
 const memoryRegs: any[] = [];
+const MAX_MEMORY_REGS = 500;
+
+function getPiiKey(): Buffer {
+  return createHash("sha256").update("volunteer-pii:" + config.jwtSecret).digest();
+}
+
+function encryptPII(data: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", getPiiKey(), iv);
+  const encrypted = Buffer.concat([cipher.update(data, "utf8"), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return [iv.toString("base64"), authTag.toString("base64"), encrypted.toString("base64")].join(".");
+}
+
+function decryptPII(token: string | undefined): string {
+  if (!token) return "";
+  try {
+    const [ivB64, tagB64, dataB64] = token.split(".");
+    const decipher = createDecipheriv("aes-256-gcm", getPiiKey(), Buffer.from(ivB64, "base64"));
+    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+    return Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]).toString("utf8");
+  } catch (err) {
+    logger.error({ err }, "PII decryption failed");
+    return "";
+  }
+}
+
+/** Readable projection for admin screens — PII decrypted only when needed. */
+function toReadable(r: any): any {
+  return {
+    ...r,
+    fullName: decryptPII(r.fullName),
+    phone: r.phone ? decryptPII(r.phone) : undefined,
+    email: r.email ? decryptPII(r.email) : undefined,
+    idNumber: r.idNumber ? decryptPII(r.idNumber) : undefined,
+  };
+}
 
 router.post("/register", registerLimiter, async (req: Request, res: Response) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ error: "Missing required fields" });
+    res.status(400).json({ error: "Missing or invalid fields" });
     return;
   }
-  const { fullName, phone, email, wilaya, type, idNumber } = parsed.data;
+  const { fullName, phone, email, wilaya, type, idNumber, website } = parsed.data;
+
+  if (website) {
+    logger.warn({ ip: req.ip || "unknown" }, "Bot detected via honeypot — silent fake success");
+    res.json({ id: `reg-fake-${crypto.randomBytes(4).toString("hex")}`, status: "pending" });
+    return;
+  }
+
   const requestedType = type || "volunteer";
+
+  const existing = await loadRegs();
+  const phoneHash = createHash("sha256").update(phone).digest("hex");
+  if (existing && existing.some((r: any) => r.status !== "rejected" && r.phoneHash === phoneHash)) {
+    res.status(409).json({ error: "This phone number is already registered" });
+    return;
+  }
+  if (existing && email && existing.some((r: any) => r.status !== "rejected" && r.email && decryptPII(r.email) === email)) {
+    res.status(409).json({ error: "This email is already registered" });
+    return;
+  }
+  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  if (
+    existing &&
+    existing.some(
+      (r: any) =>
+        r.status !== "rejected" &&
+        decryptPII(r.fullName) === fullName &&
+        r.wilaya === wilaya &&
+        new Date(r.createdAt || 0).getTime() > thirtyDaysAgo
+    )
+  ) {
+    res.status(409).json({ error: "A similar registration already exists in the last 30 days" });
+    return;
+  }
+
   const registration = {
-    id: `reg-${Date.now()}`,
-    fullName, phone,
-    email: email || undefined,
+    id: `reg-${crypto.randomBytes(6).toString("hex")}`,
+    fullName: encryptPII(fullName),
+    phone: encryptPII(phone),
+    phoneHash,
+    email: email ? encryptPII(email) : undefined,
     wilaya,
     type: requestedType,
     requestedType,
-    idNumber: idNumber || undefined,
+    idNumber: idNumber ? encryptPII(idNumber) : undefined,
     status: "pending",
     createdAt: new Date().toISOString(),
+    registrationIp: req.ip || (req.headers["x-forwarded-for"] as string) || "unknown",
+    userAgent: (req.headers["user-agent"] as string) || "unknown",
   };
   await docSet("volunteerRegistrations", registration.id, registration);
   memoryRegs.unshift(registration);
+  if (memoryRegs.length > MAX_MEMORY_REGS) memoryRegs.length = MAX_MEMORY_REGS;
+  logger.info(
+    { registrationId: registration.id, ip: registration.registrationIp, wilaya, type: requestedType },
+    "New volunteer registration"
+  );
   res.json({ id: registration.id, status: registration.status });
 });
 
 async function loadRegs(): Promise<any[]> {
   if (memoryRegs.length === 0) {
-    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 100);
+    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 100).catch(() => null);
     if (fromDb && fromDb.length > 0) memoryRegs.push(...fromDb);
   }
   return memoryRegs;
@@ -61,7 +154,7 @@ async function loadRegs(): Promise<any[]> {
 
 router.get("/pending", requireAdmin, async (_req: Request, res: Response) => {
   const registrations = await loadRegs();
-  res.json(registrations);
+  res.json(registrations.map(toReadable));
 });
 
 router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) => {
@@ -85,13 +178,15 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
     if (assignedCode) reg.assignedCode = assignedCode;
   }
 
+  const readable = reg ? toReadable(reg) : undefined;
+
   if (finalStatus === "approved" && assignedCode) {
     const newBadge = {
       code: assignedCode,
-      ownerName: ownerName || reg?.fullName || "متطوع",
+      ownerName: ownerName || readable?.fullName || "متطوع",
       type: finalType || "volunteer",
-      wilaya: wilaya || reg?.wilaya || "",
-      phone: phone || reg?.phone || undefined,
+      wilaya: wilaya || readable?.wilaya || "",
+      phone: phone || readable?.phone || undefined,
       createdAt: new Date().toISOString(),
       isActive: true,
     };

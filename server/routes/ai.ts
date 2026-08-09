@@ -1,9 +1,18 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
+import rateLimit from "express-rate-limit";
 import { getAiClient, getAiModel } from "../ai.js";
 import logger from "../logger.js";
 
 const router = Router();
+
+const aiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many AI requests. Please wait before trying again." },
+});
 
 const guidanceSchema = z.object({
   lat: z.number().min(18).max(38).optional(),
@@ -12,19 +21,54 @@ const guidanceSchema = z.object({
   lang: z.enum(["ar", "fr"]).default("ar"),
 });
 
-const PROMPT_INJECTION_PATTERNS = /(\bignore\b|\bforget\b|\bdisregard\b|\byou are\b|\bnow respond\b|\bsystem prompt\b|\bsystem:|instructions?:|return json|overwrite|تجاهل|انسَ|اتبع التعليمات|أوامر النظام|أنت الآن|رد الآن|تعليمات)/gi;
+const PROMPT_INJECTION_PATTERNS =
+  /\b(ignore|ignore all|forget|disregard|override|you are|act as|pretend|now respond|system|system prompt|prompt|instructions?|instructions are|return\s+j(?:s)?on|new instructions|previous instructions|do anything now|DAN|out of character|jailbreak)\b|\bsystem:|تجاهل|انسَ|اتبع التعليمات|اتبع التعليمات المذكورة|أوامر النظام|أنت الآن|رد الآن|تعليمات|التعليمات السابقة|الرد على شكل|أعد json|تجاوز|احذف التعليمات/gi;
 
-function sanitizeForPrompt(value: string | undefined, maxLength: number): string {
+/** Guard against prompt-injection attempts in user input. */
+export function sanitizeForPrompt(value: string | undefined, maxLength: number): string {
   if (!value) return "";
-  return value
+  const raw = value
     .normalize("NFKC")
-    .replace(PROMPT_INJECTION_PATTERNS, "")
+    .replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g, "");
+  if (PROMPT_INJECTION_PATTERNS.test(raw)) {
+    logger.warn({ input: raw.slice(0, 120) }, "Prompt injection pattern detected");
+  }
+  return raw
+    .replace(/[\u0300-\u036F]/gu, "")
+    .replace(PROMPT_INJECTION_PATTERNS, "[بيانات المستخدم]")
     .replace(/[^\p{L}\p{N}\s\-(),./@]/gu, "")
     .slice(0, maxLength)
     .trim();
 }
 
-router.post("/", async (req: Request, res: Response) => {
+const DAILY_AI_CALL_BUDGET = 200;
+let aiCallsToday = 0;
+let aiDayResetAt = Date.now();
+
+/** True while the daily AI call budget is not exhausted. */
+function aiBudgetAvailable(): boolean {
+  const now = Date.now();
+  if (now - aiDayResetAt > 24 * 60 * 60 * 1000) {
+    aiCallsToday = 0;
+    aiDayResetAt = now;
+  }
+  if (aiCallsToday >= DAILY_AI_CALL_BUDGET) {
+    logger.warn({ aiCallsToday, budget: DAILY_AI_CALL_BUDGET }, "AI daily budget exhausted — serving offline guidance");
+    return false;
+  }
+  return true;
+}
+
+/** Removes HTML and dangerous markdown from AI output before it reaches the client. */
+function sanitizeAiOutput(text: string): string {
+  return text
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/\b(javascript|vbscript):/gi, "blocked:")
+    .slice(0, 4000);
+}
+
+router.post("/", aiLimiter, async (req: Request, res: Response) => {
   const parsed = guidanceSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
@@ -51,8 +95,9 @@ router.post("/", async (req: Request, res: Response) => {
   const criticalReports = nearbyReports.filter((r) => r.severity === "critical" || r.severity === "high").length;
 
   const ai = getAiClient();
-  if (ai) {
+  if (ai && aiBudgetAvailable()) {
     try {
+      aiCallsToday += 1;
       const languageInstruction = isArabic
         ? "أجب باللغة العربية بأسلوب وقور، مطمئن، ومباشر لإنقاذ الأرواح وإعطاء إرشادات سلامة للتعامل مع دخان وحرائق الغابات."
         : "Répondez en français de manière calme, directe et rassurante afin d'aider les personnes face aux incendies.";
@@ -70,7 +115,7 @@ router.post("/", async (req: Request, res: Response) => {
         model: getAiModel(),
         contents: prompt,
       });
-      res.json({ guidance: response.text });
+      res.json({ guidance: sanitizeAiOutput(response.text || "") });
       return;
     } catch (err) {
       logger.error({ err }, "AI guidance error");

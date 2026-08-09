@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldAlert, BookOpen, HeartPulse, Flame, Home, EyeOff } from "lucide-react";
+import { ShieldAlert, BookOpen, HeartPulse, Flame, Home, Printer, Volume2 } from "lucide-react";
 
 interface SafetyGuidesProps {
   lang: "ar" | "fr";
@@ -7,6 +7,7 @@ interface SafetyGuidesProps {
 
 export default function SafetyGuides({ lang }: SafetyGuidesProps) {
   const [activeTab, setActiveTab] = useState<"before" | "during" | "after" | "firstaid">("during");
+  const [speaking, setSpeaking] = useState(false);
 
   const isArabic = lang === "ar";
 
@@ -16,6 +17,24 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     { id: "after", labelAr: "بعد الحريق (الحيطة)", labelFr: "Après (Sécurité)", icon: <ShieldAlert className="h-4 w-4" /> },
     { id: "firstaid", labelAr: "الإسعافات الأولية", labelFr: "Premiers Secours", icon: <HeartPulse className="h-4 w-4 text-emerald-500" /> },
   ];
+
+  const readAloud = () => {
+    if (!("speechSynthesis" in window)) return;
+    if (speaking) {
+      window.speechSynthesis.cancel();
+      setSpeaking(false);
+      return;
+    }
+    const el = document.getElementById("guide-panel");
+    const text = (el?.innerText || "").replace(/\n{2,}/g, " ").slice(0, 3000);
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = isArabic ? "ar-DZ" : "fr-FR";
+    utterance.rate = 0.95;
+    utterance.onend = () => setSpeaking(false);
+    utterance.onerror = () => setSpeaking(false);
+    window.speechSynthesis.speak(utterance);
+    setSpeaking(true);
+  };
 
   return (
     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)]" dir={isArabic ? "rtl" : "ltr"}>
@@ -35,25 +54,50 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
       </div>
 
       {/* Tabs */}
-      <div className="flex flex-wrap gap-1.5 mb-4 bg-black/50 p-1 rounded-lg border border-white/5">
-        {tabs.map((tab) => (
+      <div className="flex items-center gap-1.5 mb-2">
+        <div role="tablist" aria-label={isArabic ? "أقسام دليل السلامة" : "Rubriques du guide"} className="flex flex-wrap gap-1.5 bg-black/50 p-1 rounded-lg border border-white/5 flex-1">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              aria-controls="guide-panel"
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer flex-1 justify-center min-w-[120px] ${
+                activeTab === tab.id
+                  ? "bg-zinc-800 text-red-400 shadow-sm border border-white/5"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              {tab.icon}
+              <span>{isArabic ? tab.labelAr : tab.labelFr}</span>
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-1.5 shrink-0">
           <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id as any)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer flex-1 justify-center min-w-[120px] ${
-              activeTab === tab.id
-                ? "bg-zinc-800 text-red-400 shadow-sm border border-white/5"
-                : "text-slate-400 hover:text-slate-200"
+            onClick={readAloud}
+            className={`p-2 rounded-lg border transition-all cursor-pointer ${
+              speaking ? "bg-red-600/20 border-red-500/30 text-red-400" : "bg-black/50 border-white/5 text-gray-400 hover:text-slate-200"
             }`}
+            title={isArabic ? "قراءة الدليل بصوت عالٍ" : "Lire le guide à voix haute"}
+            aria-label={isArabic ? "قراءة الدليل بصوت عالٍ" : "Lire à voix haute"}
           >
-            {tab.icon}
-            <span>{isArabic ? tab.labelAr : tab.labelFr}</span>
+            {speaking ? <Volume2 className="h-4 w-4 animate-pulse" /> : <Volume2 className="h-4 w-4" />}
           </button>
-        ))}
+          <button
+            onClick={() => window.print()}
+            className="p-2 bg-black/50 border border-white/5 text-gray-400 hover:text-slate-200 rounded transition cursor-pointer"
+            title={isArabic ? "طباعة هذا القسم" : "Imprimer ce guide"}
+            aria-label={isArabic ? "طباعة هذا القسم" : "Imprimer"}
+          >
+            <Printer className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
       {/* Content Area */}
-      <div className="bg-black/50 rounded-xl p-4 border border-white/5 min-h-[220px]">
+      <div id="guide-panel" role="tabpanel" aria-label={activeTab} className="bg-black/50 rounded-xl p-4 border border-white/5 min-h-[220px]">
         {activeTab === "before" && (
           <div className="space-y-4 text-slate-300 text-xs leading-relaxed">
             <h4 className="font-extrabold text-slate-200 border-b border-white/5 pb-1.5 flex items-center gap-1.5">
