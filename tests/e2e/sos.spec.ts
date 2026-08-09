@@ -56,4 +56,21 @@ test.describe("PWA shell", () => {
     );
     expect(active).toBeTruthy();
   });
+
+  test("app remains usable offline once the service worker is active", async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await page.reload();
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 10000 });
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Network.enable");
+    await cdp.send("Network.emulateNetworkConditions", {
+      offline: true,
+      latency: 0,
+      downloadThroughput: 0,
+      uploadThroughput: 0,
+    });
+    await page.reload();
+    await expect(page).toHaveTitle(/المرصد|Observatoire|Observatory/i);
+  });
 });

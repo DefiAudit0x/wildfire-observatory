@@ -16,7 +16,12 @@ COPY package.json package-lock.json ./
 # (husky is a devDependency not present here; the app is already built in the builder stage)
 RUN npm ci --omit=dev --ignore-scripts
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/firebase-applet-config.json* ./
+# firebase-applet-config.json is ignored in .dockerignore (contains credentials),
+# so it cannot be COPYed here without failing the build when absent.
+# Provide it at runtime via:
+#   docker run -v ./firebase-applet-config.json:/app/firebase-applet-config.json ...
+# or set FIREBASE_SERVICE_ACCOUNT. Without config the server runs degraded
+# (see server/firebase.ts).
 USER nodejs
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

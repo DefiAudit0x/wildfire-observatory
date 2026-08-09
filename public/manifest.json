@@ -7,6 +7,7 @@
   "dir": "rtl",
   "categories": ["utilities", "navigation"],
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0a0505",
   "theme_color": "#dc2626",

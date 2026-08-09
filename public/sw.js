@@ -5,7 +5,10 @@ const STATIC_FILES = ["/", "/index.html"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_FILES))
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => cache.addAll(STATIC_FILES))
+      .catch(() => {})
   );
   self.skipWaiting();
 });
@@ -64,7 +67,14 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
           return response;
         })
-        .catch(() => caches.match(event.request))
+        .catch(() => caches.match("/index.html"))
+    );
+    return;
+  }
+
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request, { cache: "no-store" }).catch(() => caches.match("/index.html"))
     );
     return;
   }
