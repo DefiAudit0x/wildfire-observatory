@@ -10,11 +10,26 @@ import org.json.JSONObject
  * Provides encrypted mesh messaging, key management, and device info.
  * The MeshService instance is resolved lazily via [meshProvider] so the
  * bridge always talks to the service instance actually bound by MainActivity.
+ *
+ * Security: every method is gated on [isTrustedOrigin] — the bridge answers
+ * ONLY while the main frame is our own HTTPS PWA origin (or a local dev
+ * host). If the WebView ever lands on another origin (redirect/XSS), the
+ * native surface goes inert instead of handing out keys and signatures.
  */
-class WebAppInterface(private val meshProvider: () -> MeshService?) {
+class WebAppInterface(
+    private val meshProvider: () -> MeshService?,
+    private val urlProvider: () -> String = { "" }
+) {
 
     private val meshService: MeshService?
         get() = meshProvider()
+
+    private fun isTrustedOrigin(): Boolean {
+        val url = urlProvider().lowercase().trim()
+        return url.startsWith("https://wildfire-observatory-production.up.railway.app") ||
+            url.startsWith("https://") && (url.contains("localhost") || url.contains("10.0.2.2")) ||
+            url.startsWith("http://localhost") || url.startsWith("http://10.0.2.2")
+    }
 
     // ========================
     // CAPABILITY DETECTION
@@ -24,13 +39,13 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
     fun isMeshSupported(): Boolean = true
 
     @JavascriptInterface
-    fun getDeviceId(): String = meshService?.getEphemeralId() ?: ""
+    fun getDeviceId(): String = if (isTrustedOrigin()) meshService?.getEphemeralId() ?: "" else ""
 
     @JavascriptInterface
-    fun getPublicKey(): String = CryptoEngine.getPublicKeyBase64()
+    fun getPublicKey(): String = if (isTrustedOrigin()) CryptoEngine.getPublicKeyBase64() else ""
 
     @JavascriptInterface
-    fun getIdentityKey(): String = CryptoEngine.getIdentityPublicKeyBase64()
+    fun getIdentityKey(): String = if (isTrustedOrigin()) CryptoEngine.getIdentityPublicKeyBase64() else ""
 
     // ========================
     // MESSAGING
@@ -45,17 +60,20 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun broadcastMessage(plaintext: String, type: String, lat: Double, lng: Double) {
-        meshService?.broadcastMessage(plaintext, type, lat, lng)
+        if (isTrustedOrigin()) {
+            meshService?.broadcastMessage(plaintext, type, lat, lng)
+        }
     }
 
     /**
      * Encrypt a message for a specific peer by their public key (E2EE).
-     * @param peerPublicKey Base64-encoded X25519 public key
+     * @param peerPublicKey Base64-encoded ECDH (secp256r1 / P-256) public key
      * @param plaintext The message content
      * @return JSON string with { ciphertext, iv, signature, ephemeralId }
      */
     @JavascriptInterface
     fun encryptForPeer(peerPublicKey: String, plaintext: String, lat: Double, lng: Double): String {
+        if (!isTrustedOrigin()) return ""
         val secureMsg = CryptoEngine.encryptForPeer(
             peerPublicKeyBase64 = peerPublicKey,
             payload = plaintext.toByteArray(Charsets.UTF_8),
@@ -83,6 +101,7 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun decryptFromPeer(jsonMessage: String, peerPublicKey: String?): String {
+        if (!isTrustedOrigin()) return ""
         return try {
             val json = JSONObject(jsonMessage)
             val msg = CryptoEngine.SecureMessage(
@@ -113,6 +132,7 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun getConnectedPeers(): String {
+        if (!isTrustedOrigin()) return "[]"
         val peers = meshService?.getConnectedPeers() ?: emptyList()
         val arr = JSONArray()
         peers.forEach { peer ->
@@ -126,6 +146,7 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun getPeerReputation(endpointId: String): Int {
+        if (!isTrustedOrigin()) return 0
         return meshService?.getReputation(endpointId) ?: 0
     }
 
@@ -141,6 +162,7 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun solvePoW(prefix: String, difficulty: Int): Int {
+        if (!isTrustedOrigin()) return -1
         return CryptoEngine.ProofOfWork.solve(prefix, difficulty)
     }
 
@@ -149,16 +171,18 @@ class WebAppInterface(private val meshProvider: () -> MeshService?) {
      */
     @JavascriptInterface
     fun verifyPoW(prefix: String, nonce: Int, difficulty: Int): Boolean {
+        if (!isTrustedOrigin()) return false
         return CryptoEngine.ProofOfWork.verify(prefix, nonce, difficulty)
     }
 
     /**
      * Sign arbitrary data with the current ephemeral key (ECDSA P-256).
      * @param dataBase64 Data to sign (base64 encoded)
-     * @return Base64-encoded signature, or empty string when no key pair exists
+     * @return Base64-encoded signature, or empty string when not on a trusted origin
      */
     @JavascriptInterface
     fun signData(dataBase64: String): String {
+        if (!isTrustedOrigin()) return ""
         val data = Base64.decode(dataBase64, Base64.NO_WRAP)
         return Base64.encodeToString(CryptoEngine.signWithEphemeralKey(data), Base64.NO_WRAP)
     }

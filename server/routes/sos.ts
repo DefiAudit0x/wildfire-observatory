@@ -147,7 +147,7 @@ function stripAudio(sos: any) {
 
 function anonymizeSos(sos: any) {
   if (!sos) return sos;
-  const { name, phone, audioUrl, dispatchedTeams, ...rest } = sos;
+  const { name, phone, audioUrl, dispatchedTeams, deviceId, ...rest } = sos;
   return {
     ...rest,
     lat: Math.round(sos.lat * 100) / 100,
@@ -266,9 +266,12 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     return;
   }
 
-  // Context: nearest active fire (non-blocking — never prevent an SOS)
+  // Context: nearest active fire (non-blocking — never prevent an SOS).
+  // IMPORTANT: proximity to a fire corroborates the caller's claim; it is NOT
+  // verification that the person is actually trapped. The field is named
+  // accordingly (`nearbyFireCorroborated`) on purpose.
   let nearestFireDistanceKm: number | null = null;
-  let isVerifiedByProximity = false;
+  let nearbyFireCorroborated = false;
   let priority: string = "unknown";
   try {
     const dbResult = await getReportsDbResult();
@@ -280,7 +283,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
         const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
         return Math.min(min, d);
       }, Infinity);
-      isVerifiedByProximity = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
+      nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
     }
   } catch (err) {
     logger.error({ err }, "SOS proximity check error");
@@ -312,7 +315,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     nearestFireDistanceKm: nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)
       ? Math.round(nearestFireDistanceKm * 100) / 100
       : null,
-    isVerifiedByProximity,
+    nearbyFireCorroborated,
     priority,
   };
 
@@ -328,7 +331,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
   }
-  logger.info({ sosId: newSos.id, lat, lng, priority, isVerifiedByProximity }, "New SOS created");
+  logger.info({ sosId: newSos.id, lat, lng, priority, nearbyFireCorroborated }, "New SOS created");
   res.json(stripAudio(newSos));
 });
 

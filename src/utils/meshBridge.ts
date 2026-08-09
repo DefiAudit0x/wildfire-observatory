@@ -7,10 +7,10 @@
  * 
  * Security layers:
  * - E2EE: AES-256-GCM via Web Crypto API (browser) or native (Android)
- * - ECDSA signatures via Web Crypto (browser) or SpongyCastle (Android)
+ * - ECDSA signatures (P-256) via Web Crypto (browser) or SpongyCastle (Android)
  * - Anti-replay nonce tracking
  * - Reputation scoring
- * - Lightweight Proof-of-Work anti-spam
+ * - Lightweight Proof-of-Work anti-spam (32-bit window, matches CryptoEngine.kt)
  * - Ephemeral identity rotation
  */
 
@@ -73,7 +73,12 @@ export async function initMesh(): Promise<{ supported: boolean; deviceId: string
 }
 
 function getAndroidBridge(): AndroidBridge | null {
+  if (typeof window === "undefined") return null;
   return (window as any).AndroidBridge || null;
+}
+
+export function isMeshSupported(): boolean {
+  return getAndroidBridge() !== null;
 }
 
 interface AndroidBridge {
@@ -108,9 +113,15 @@ export function broadcastMessage(
     const prefix = `${Date.now()}-${bridge.getDeviceId()}`;
     const nonce = bridge.solvePoW(prefix, 8);
 
-    // Add PoW metadata to message
+    // Add PoW metadata to message, plus the type/coordinates needed by any
+    // ONLINE device that receives this message to relay it to /api/reports
+    // (store-and-forward gateway: A offline → B → C → D online → API).
     const enrichedMsg = JSON.stringify({
       payload: plaintext,
+      type,
+      lat,
+      lng,
+      ts: Date.now(),
       powNonce: nonce,
       powPrefix: prefix,
       powDifficulty: 8,
@@ -401,21 +412,26 @@ export async function solvePoW(prefix: string, difficulty: number = 8): Promise<
   const bridge = getAndroidBridge();
   if (bridge) return bridge.solvePoW(prefix, difficulty);
 
-  // Browser fallback
-  let nonce = 0;
-  const target = BigInt(1) << BigInt(256 - difficulty);
+  // Browser fallback — MUST match CryptoEngine.kt semantics exactly:
+  // compare the first 8 hex chars (32 bits) against 2^(32-difficulty).
+  // (Comparing 64 bits against a 256-bit target would pass ~always.)
+  const d = Math.min(Math.max(Math.floor(difficulty), 1), 31);
+  const target = BigInt(1) << BigInt(32 - d);
   const encoder = new TextEncoder();
+  const MAX_ITERATIONS = 5_000_000;
 
-  while (true) {
+  let nonce = 0;
+  while (nonce < MAX_ITERATIONS) {
     const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`${prefix}${nonce}`));
     const hashHex = Array.from(new Uint8Array(hash))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-    const value = BigInt("0x" + hashHex.substring(0, 16));
+    const value = BigInt("0x" + hashHex.substring(0, 8));
 
     if (value < target) return nonce;
     nonce++;
   }
+  throw new Error("Proof-of-work exceeded iteration budget");
 }
 
 export async function verifyPoW(
@@ -426,13 +442,14 @@ export async function verifyPoW(
   const bridge = getAndroidBridge();
   if (bridge) return bridge.verifyPoW(prefix, nonce, difficulty);
 
+  const d = Math.min(Math.max(Math.floor(difficulty), 1), 31);
   const encoder = new TextEncoder();
   const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`${prefix}${nonce}`));
   const hashHex = Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-  const value = BigInt("0x" + hashHex.substring(0, 16));
-  const target = BigInt(1) << BigInt(256 - difficulty);
+  const value = BigInt("0x" + hashHex.substring(0, 8));
+  const target = BigInt(1) << BigInt(32 - d);
   return value < target;
 }
 

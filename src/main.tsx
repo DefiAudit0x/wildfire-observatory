@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import * as Sentry from "@sentry/react";
 import { registerSW } from "virtual:pwa-register";
 import App from "./App.tsx";
+import { initMeshRelay } from "./lib/meshRelay.ts";
 import "leaflet/dist/leaflet.css";
 import "./index.css";
 
@@ -16,6 +17,9 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 }
 
 registerSW({ immediate: true });
+
+// Store-and-forward mesh gateway: relay decryptable offline reports to the API
+initMeshRelay();
 
 createRoot(document.getElementById("app")!).render(
   <StrictMode>

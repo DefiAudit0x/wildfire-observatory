@@ -271,6 +271,29 @@ Each service: independent Docker image, Railway project, database, rate limits, 
 
 ---
 
+## 7.b Known Limitations & Honest Gaps / حدود معلنة ونواقص صريحة
+
+Fuel for the ongoing security/protocol audit — nothing here is hidden.
+
+| Area | Status | Notes |
+|------|--------|-------|
+| **Geofencing precision** | Known limitation | `WILAYA_BOUNDS` covers 22 fine-grained bounding boxes; the remaining wilayas rely on a country-level rectangle fallback (`determineWilayaByCoords`). Boxes can overlap; `find()` takes the first match. Real **GeoJSON polygons** for all wilayas are a pilot-phase task. |
+| **Report clustering complexity** | Known limitation | `runClustering` is O(n²) and transitive (A~B, B~C ⇒ cluster even if A~C far). Fine to a few thousand reports; beyond that a spatial index (geohash / H3 / PostGIS) is required. |
+| **Duplicate protection** | Known limitation | `recentReports` is in-memory. A race was closed (reservation happens before any `await`), but running **multiple instances** gives each its own window — a distributed Redis/GeoFirestore dedup is required before horizontal scaling. |
+| **Mesh E2EE vs. relay** | Open protocol design | A broadcast is encrypted for one "best peer" (per-recipient ECDH). Peer public keys are now learned from signed messages (relays expose `origPublicKey`), but **only the addressed peer can decrypt** — an arbitrary online device D can relay a hop to the API only when it holds the key. The store-and-forward gateway (`src/lib/meshRelay.ts`) enforces PoW + dedup + queue and submits whatever plaintext this device CAN decrypt; full any-to-any relay needs the protocol work below. |
+| **Identity ↔ ephemeral binding** | Open protocol design | Messaging signatures use the hourly ephemeral key; the persistent `identityKeyPair` is exposed but **not yet cryptographically bound** to the ephemeral key. A device-authentication handshake (identity-signed ephemeral keys) is on the audit list. |
+| **PoW receiving-side enforcement** | Defensive depth | Senders attach PoW; the native relay verifies envelope PoW before submission. The nearby-wire layer currently filters by reputation instead of verifying PoW on every hop. |
+| **deviceId as bearer token** | Documented trade-off | The app's device identity (deviceId cookie + mesh token endpoint) is treated as a bearer credential throughout (notifications GET now refuses cross-device fetches). Long-term: real per-device auth or key-based proofs. |
+
+### Mesh protocol audit checklist (خطوة المراجعة القادمة)
+
+- [ ] Peer key exchange handshake (identity-signed ephemeral keys) — see `CryptoEngine.kt` + `MeshService.kt`
+- [ ] Hybrid encryption (wrap a random data key per recipient) or signed-plaintext envelope for **report** broadcasts so any relay can forward
+- [ ] PoW verification on every incoming relayed hop
+- [ ] Unified Transport abstraction: `InternetTransport` (WebSocket MeshHub) · `NearbyTransport` (Android) · `LoRaTransport` (T-Beam/Meshtastic, future) · `StoreAndForwardQueue`
+
+---
+
 ## 8. Traffic & Scaling / التحمّل والتوسع
 
 | Metric | Current (Monolith) | Phase 3 (Microservices) |

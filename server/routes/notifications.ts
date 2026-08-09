@@ -95,15 +95,21 @@ router.get("/verify", verifyLimiter, async (req: Request, res: Response) => {
 router.get("/:deviceId", async (req: Request, res: Response) => {
   const { deviceId } = req.params;
   const cookieDevice = (req as any).cookies?.deviceId;
+  // The deviceId cookie acts as the bearer proof of ownership. A request that
+  // claims a DIFFERENT deviceId than the one this browser is bound to is an
+  // IDOR probe — refuse instead of silently rebinding to the attacker's value.
   if (cookieDevice && cookieDevice !== deviceId) {
-    logger.info({ cookieDevice, deviceId }, "Rebinding device cookie");
+    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device." });
+    return;
   }
-  res.cookie("deviceId", deviceId, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: config.cookieSecure,
-    maxAge: 365 * 24 * 60 * 60 * 1000,
-  });
+  if (!cookieDevice) {
+    res.cookie("deviceId", deviceId, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.cookieSecure,
+      maxAge: 365 * 24 * 60 * 60 * 1000,
+    });
+  }
   const notifs = await getNotificationsFromDb(deviceId);
   res.json(notifs);
 });

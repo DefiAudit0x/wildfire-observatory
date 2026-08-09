@@ -128,8 +128,13 @@ class MainActivity : AppCompatActivity() {
 
         // Expose JS bridge — the bound MeshService instance is resolved lazily so
         // the same bridge handles the service even after the async bind completes.
+        // The bridge only answers while the main frame is on our trusted origin:
+        // if the WebView is ever navigated elsewhere, the native surface goes inert.
         webView.addJavascriptInterface(
-            WebAppInterface { meshService },
+            WebAppInterface(
+                meshProvider = { meshService },
+                urlProvider = { webView.url ?: "" }
+            ),
             "AndroidBridge"
         )
 

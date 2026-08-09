@@ -344,6 +344,15 @@ class MeshService : Service() {
                 return
             }
 
+            // Learn the peer's public key from a signed message: without this
+            // the peers map never holds real keys and broadcast E2EE falls
+            // back to self-encryption (getBestPeerPublicKey returns "").
+            peers[endpointId]?.let { info ->
+                if (info.publicKey.isBlank() && payload.origPublicKey.isNotBlank()) {
+                    peers[endpointId] = info.copy(publicKey = payload.origPublicKey)
+                }
+            }
+
             val decrypted = if (payload.type == MESSAGE_TYPE_ECHO) {
                 // Echo messages are plaintext hop counters by design
                 Base64.decode(payload.payloadB64, Base64.NO_WRAP)

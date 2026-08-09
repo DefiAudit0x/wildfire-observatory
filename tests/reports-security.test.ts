@@ -144,13 +144,15 @@ describe("POST /api/reports — badge trust hardening", () => {
     expect(res.body.consensusCount).toBe(10);
   });
 
-  it("never leaks the reporter phone on the response", async () => {
+  it("never leaks reporter PII on the public response (phone, name, badge, deviceId)", async () => {
     const app = createApp();
     const res = await supertest(app)
       .post("/api/reports")
-      .send({ ...baseReport(), reporterName: "مختبر", reporterPhone: "0661234567" });
+      .send({ ...baseReport(), reporterName: "مختبر", reporterPhone: "0661234567", reporterBadgeCode: "707", deviceId: "dev-abc" });
     expect(res.body.reporterPhone).toBeUndefined();
-    expect(res.body.reporterName).toBeDefined();
+    expect(res.body.reporterName).toBeUndefined();
+    expect(res.body.reporterBadgeCode).toBeUndefined();
+    expect(res.body.deviceId).toBeUndefined();
   });
 
   it("rejects coordinates outside the North Africa geofence", async () => {

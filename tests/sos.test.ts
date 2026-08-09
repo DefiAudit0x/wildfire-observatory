@@ -82,12 +82,12 @@ describe("POST /api/sos", () => {
     expect(res.status).toBe(400);
   });
 
-  it("exposes metadata (priority, verified proximity) on successful SOS", async () => {
+  it("exposes metadata (priority, nearby-fire corroboration) on successful SOS", async () => {
     const app = createApp();
     const res = await supertest(app).post("/api/sos").send(validBody());
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("priority");
-    expect(res.body).toHaveProperty("isVerifiedByProximity");
+    expect(res.body).toHaveProperty("nearbyFireCorroborated");
     expect(res.body).toHaveProperty("nearestFireDistanceKm");
   });
 
@@ -102,7 +102,7 @@ describe("POST /api/sos", () => {
     expect(res.body.hasAudio).toBe(true);
   });
 
-  it("does not leak PII on the public list endpoint (audio stripped)", async () => {
+  it("does not leak PII on the public list endpoint (audio, phone, deviceId stripped)", async () => {
     const app = createApp();
     await supertest(app).post("/api/sos").send({
       ...validBody(),
@@ -113,6 +113,8 @@ describe("POST /api/sos", () => {
     for (const item of list.body) {
       expect(item.audioUrl).toBeUndefined();
       expect(item.phone).toBeUndefined();
+      expect(item.name).toBeUndefined();
+      expect(item.deviceId).toBeUndefined();
     }
   });
 });

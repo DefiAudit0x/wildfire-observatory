@@ -47,6 +47,28 @@ function isDuplicateReport(lat: number, lng: number): boolean {
   return false;
 }
 
+/**
+ * Public wire DTO. Everything a citizen reporter submits that could identify
+ * them (phone, name, badge code, device id) stays server-side (and on the
+ * admin/command endpoints); the public map, websockets and POST responses
+ * only ever see this shape.
+ */
+export function sanitizePublicReport(report: any): any {
+  if (!report) return report;
+  const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, ...safe } = report;
+  return safe;
+}
+
+const aiVerificationSchema = z.object({
+  isVerified: z.boolean(),
+  confidence: z.number().min(0).max(100),
+  detectedSigns: z.array(z.string().max(200)).max(20).default([]),
+  aiComments: z.string().max(1000).default(""),
+  suggestedSeverity: z
+    .enum(["LOW", "MEDIUM", "HIGH", "CRITICAL", "low", "medium", "high", "critical"])
+    .transform((s) => s.toLowerCase()),
+});
+
 const DEFAULT_BADGE_CODES = "";
 const VALID_BADGE_CODES = new Set(
   (process.env.TRUSTED_BADGE_CODES || DEFAULT_BADGE_CODES)
@@ -68,8 +90,19 @@ const badgeAttempts = new Map<string, { count: number; expiresAt: number }>();
 const BADGE_CACHE_TTL_MS = 5 * 60 * 1000;
 const badgeCache = new Map<string, { valid: boolean; expiresAt: number }>();
 
+/**
+ * Cache key must include every input that shapes the badge decision:
+ * reporterType and wilaya both change the outcome, so a plain badgeCode key
+ * could serve a stale verdict for a different context.
+ */
+function badgeCacheKey(badgeCode: string, reporterType: string, wilaya: string): string {
+  return `${badgeCode}::${reporterType}::${wilaya}`;
+}
+
 export function invalidateBadgeCache(badgeCode: string): void {
-  badgeCache.delete(badgeCode);
+  for (const key of badgeCache.keys()) {
+    if (key.startsWith(`${badgeCode}::`)) badgeCache.delete(key);
+  }
 }
 
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
@@ -91,7 +124,8 @@ function scheduleBadgeCacheCleanup(): void {
 scheduleBadgeCacheCleanup();
 
 async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: string, wilaya: string): Promise<boolean> {
-  const cached = badgeCache.get(badgeCode);
+  const cacheKey = badgeCacheKey(badgeCode, reporterType, wilaya);
+  const cached = badgeCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) return cached.valid;
   let valid = false;
   try {
@@ -123,7 +157,7 @@ async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: strin
   } catch (err) {
     logger.warn({ err, badgeCode }, "badgeCodes Firestore lookup failed — falling back to env-only");
   }
-  badgeCache.set(badgeCode, { valid, expiresAt: Date.now() + BADGE_CACHE_TTL_MS });
+  badgeCache.set(cacheKey, { valid, expiresAt: Date.now() + BADGE_CACHE_TTL_MS });
   return valid;
 }
 
@@ -178,7 +212,7 @@ async function getReportsFromDb() {
 router.get("/", async (_req: Request, res: Response) => {
   const currentReports = await getReportsFromDb();
   const clustered = runClustering(currentReports);
-  res.json(clustered);
+  res.json(clustered.map(sanitizePublicReport));
 });
 
 const reportLimiter = rateLimit({
@@ -218,6 +252,11 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     return;
   }
 
+  // Reserve the location in the duplicate window BEFORE any await below:
+  // badge lookups and AI calls are async, and two concurrent identical
+  // submissions must not both pass the check before either reserves.
+  recentReports.push({ lat, lng, timestamp: Date.now() });
+
   let isTrusted = false;
   let finalStatus: "pending" | "verified" = "pending";
   let initialConsensus = 1;
@@ -254,8 +293,6 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     consensusCount: initialConsensus,
   };
 
-  recentReports.push({ lat, lng, timestamp: Date.now() });
-
   if (image && image.startsWith("data:image")) {
     const ai = getAiClient();
     if (ai) {
@@ -288,23 +325,28 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
 
         if (response.text) {
           const result = JSON.parse(response.text.trim());
+          const parsedAi = aiVerificationSchema.safeParse(result);
+          if (!parsedAi.success) {
+            throw new Error("Gemini returned an invalid verification payload");
+          }
+          const v = parsedAi.data;
           newReport.aiVerification = {
-            isVerified: result.isVerified,
-            confidence: result.confidence,
-            detectedSigns: result.detectedSigns,
-            aiComments: result.aiComments,
-            suggestedSeverity: result.suggestedSeverity,
+            isVerified: v.isVerified,
+            confidence: v.confidence,
+            detectedSigns: v.detectedSigns,
+            aiComments: v.aiComments,
+            suggestedSeverity: v.suggestedSeverity,
           };
-          if (result.isVerified && result.confidence >= 75) {
+          if (v.isVerified && v.confidence >= 75) {
             newReport.status = "verified";
-            if (result.suggestedSeverity) {
-              newReport.severity = result.suggestedSeverity.toLowerCase();
-            }
+            newReport.severity = v.suggestedSeverity;
           }
         }
       } catch (err) {
         logger.error({ err }, "Gemini Vision verification error");
-        newReport.status = "pending";
+        // An official/volunteer badge already verified this report — an AI
+        // outage must never downgrade trusted reporting to pending.
+        if (!isTrusted) newReport.status = "pending";
       }
     }
   } else if (isTrusted) {
@@ -327,7 +369,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     }
   }
 
-  const { reporterPhone: _rp, ...safeReport } = newReport;
+  const safeReport = sanitizePublicReport(newReport);
   if (safeReport.severity === "critical" || safeReport.severity === "high") {
     sendFireAlert(safeReport).catch((err) =>
       logger.error({ err }, "Failed to send fire alert email")

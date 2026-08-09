@@ -292,7 +292,7 @@ npm run test:e2e
 ```
 
 Current test coverage:
-- **Server unit/API tests**: 17 suites covering reports, SOS (incl. encryption + rate limits), badges, AI guidance (sanitization + provider failure/timeout paths), volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
+- **Server unit/API tests**: 18 suites / 155 tests covering reports (incl. PII-safe public DTO + badge trust), SOS (incl. encryption + rate limits + anonymization), badges, AI guidance (sanitization + provider failure/timeout paths), mesh PoW & relay envelope, volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
 - **React component tests**: 3 (admin panel)
 - **Playwright E2E**: 18 passed — smoke API, admin login flow, PWA offline shell, SOS flow, full citizen report pipeline (submit → persisted → confirm via map popup → consensus grows)
 - **0 errors** on `tsc --noEmit`
@@ -342,7 +342,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 |---|---|
 | JWT admin auth, rate limiting, Helmet headers, CORS, Zod validation | ✅ Implemented |
 | Modular backend with Pino structured logging & centralized error handling | ✅ Implemented |
-| Automated tests (16 server suites + React + Playwright E2E) & CI pipeline | ✅ Implemented |
+| Automated tests (18 server suites + React + Playwright E2E) & CI pipeline | ✅ Implemented |
 | Swagger/OpenAPI docs + bilingual README | ✅ Implemented |
 | Multi-stage Docker build + GitHub Actions + Husky | ✅ Implemented |
 | Sentry monitoring (server + React) | ✅ Implemented |
@@ -357,7 +357,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 - ✅ **Architecture**: Monolithic 1082-line `server.ts` split into 15 modular files
 - ✅ **Logging**: `console.log` replaced with Pino structured logger
 - ✅ **Error Handling**: Centralized error handler middleware
-- ✅ **Testing**: 16 Vitest server suites + React tests + 17 Playwright E2E
+- ✅ **Testing**: 18 Vitest server suites (155 tests) + React tests + 18 Playwright E2E
 - ✅ **CI/CD**: GitHub Actions pipeline + Husky pre-commit hooks
 - ✅ **API Docs**: Swagger UI at `/api-docs`
 - ✅ **Docker**: Multi-stage production build

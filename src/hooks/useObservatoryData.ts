@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Report, SatelliteHotspot, WilayaStatus, TrappedSOS } from "../types";
 import { fetchWithRetry } from "../utils/api";
 import { meshClient } from "../lib/mesh";
+import { broadcastMessage, isMeshSupported } from "../utils/meshBridge";
 import { useLiveEvents } from "../utils/live";
 import { getDeviceId } from "../utils/device";
 
@@ -54,7 +55,7 @@ export function useObservatoryData() {
 
   // Stable self-rescheduling poll: the timer re-arms itself inside its own
   // callback, so incoming data (reports/sosCalls) never resets it mid-cycle.
-  // Cadence stays adaptive: faster while unresolved activity exists.
+  // Cadence stays adaptive: faster while activity is pending/verified/unresolved.
   const reportsRef = useRef(reports);
   const sosRef = useRef(sosCalls);
   useEffect(() => {
@@ -182,6 +183,20 @@ export function useObservatoryData() {
 
       const newReport = await res.json();
       setReports((prev) => [newReport, ...prev]);
+
+      // Inside the Android WebView, fan the report out over the local Bluetooth
+      // mesh: offline peers relay it hop-to-hop until an online device can
+      // submit it (meshRelay.ts). The mesh copy never carries PII.
+      if (isMeshSupported()) {
+        try {
+          const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = payload;
+          const lat = Number(meshPayload.lat) || 0;
+          const lng = Number(meshPayload.lng) || 0;
+          broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
+        } catch (err) {
+          console.error("Mesh broadcast failed:", err);
+        }
+      }
 
       // Refresh stats and statuses
       fetchData();
