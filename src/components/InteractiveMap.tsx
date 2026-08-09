@@ -228,9 +228,10 @@ export default function InteractiveMap({
           <div class="space-y-1 mt-2 text-xs border-t border-slate-700 pt-2 text-slate-300">
             <p><strong>${isArabic ? "الولاية" : "Wilaya"}:</strong> ${esc(sat.wilaya)}</p>
             <p><strong>${isArabic ? "القمر الصناعي" : "Satellite"}:</strong> NASA ${esc(sat.satellite)}</p>
+            <p><strong>${isArabic ? "الإحداثيات" : "Coordonnées"}:</strong> ${safeNumber(sat.lat).toFixed(4)}, ${safeNumber(sat.lng).toFixed(4)}</p>
             <p><strong>${isArabic ? "شدة الحرارة" : "Luminosité"}:</strong> ${safeNumber(sat.brightness).toFixed(1)} K</p>
             <p><strong>${isArabic ? "نسبة التأكيد" : "Confiance"}:</strong> ${safeNumber(sat.confidence)}%</p>
-            <p><strong>${isArabic ? "توقيت الرصد" : "Heure de détection"}:</strong> ${esc(new Date(sat.scanTime).toLocaleTimeString())}</p>
+            <p><strong>${isArabic ? "آخر تحديث" : "Dernière mise à jour"}:</strong> ${esc(new Date(sat.scanTime).toLocaleString(isArabic ? "ar-DZ" : "fr-FR"))}</p>
           </div>
           ${sat.isFallback ? `<p class="mt-2 bg-amber-500/10 border border-amber-500/30 rounded p-1.5 text-[9px] text-amber-400 text-center">⚠️ ${isArabic ? "بيانات احتياطية (تعذر وصول NASA حالياً)" : "Données de secours (NASA actuellement indisponible)"}</p>` : ""}
           <p class="text-[10px] text-slate-400 mt-2 italic text-center">

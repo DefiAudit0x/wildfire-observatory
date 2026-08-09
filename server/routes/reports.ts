@@ -159,6 +159,7 @@ const createReportSchema = z.object({
     .refine((v) => !v || v.startsWith("data:image/"), {
       message: "Image must be a data:image URI",
     })
+    .nullable()
     .optional(),
 });
 

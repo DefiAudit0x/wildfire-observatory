@@ -137,9 +137,13 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
           setTimeout(() => reject(new Error("AI request timed out")), 15000)
         ),
       ]);
-      logger.info({ wilaya, nearby: activeReportsCount, critical: criticalReports }, "AI guidance generated");
-      res.json({ guidance: sanitizeAiOutput(response.text || "") });
-      return;
+      const text = response?.text?.trim() || "";
+      if (text) {
+        logger.info({ wilaya, nearby: activeReportsCount, critical: criticalReports }, "AI guidance generated");
+        res.json({ guidance: sanitizeAiOutput(text) });
+        return;
+      }
+      logger.warn({ wilaya }, "AI returned empty guidance — serving fallback");
     } catch (err) {
       logger.error({ err }, "AI guidance error");
     }

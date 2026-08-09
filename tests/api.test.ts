@@ -65,4 +65,20 @@ describe("POST /api/reports", () => {
     expect(res.body.severity).toBe("medium");
     expect(res.body.status).toBe("pending");
   });
+
+  it("accepts a photo-less report sent with image: null (as the browser does)", async () => {
+    const app = createTestApp();
+    const res = await supertest(app).post("/api/reports").send({
+      lat: 36.75,
+      lng: 7.5,
+      locationName: "Test Location No Photo",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغ نصي بدون صورة يجب أن يمر",
+      severity: "low",
+      image: null,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("id");
+    expect(res.body.image ?? null).toBeNull();
+  });
 });

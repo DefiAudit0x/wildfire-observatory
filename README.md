@@ -5,6 +5,7 @@
 <p align="center">North African Wildfire Observatory — Community-Driven Early Warning System</p>
 
 [![CI](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml/badge.svg)](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Railway-brightgreen)](https://wildfire-observatory-production.up.railway.app/)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
 ![Express](https://img.shields.io/badge/Express-4.21-green)
@@ -222,6 +223,8 @@ npm run dev
 
 Open http://localhost:3000 in your browser.
 
+> 🌐 **Live deployment (Railway):** https://wildfire-observatory-production.up.railway.app/
+
 ### Environment Variables / متغيرات البيئة
 
 | Variable | Required | Description |
@@ -289,9 +292,9 @@ npm run test:e2e
 ```
 
 Current test coverage:
-- **Server unit/API tests**: 16 suites covering reports, SOS (incl. encryption + rate limits), badges, AI guidance (with sanitization), volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
+- **Server unit/API tests**: 17 suites covering reports, SOS (incl. encryption + rate limits), badges, AI guidance (sanitization + provider failure/timeout paths), volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
 - **React component tests**: 3 (admin panel)
-- **Playwright E2E**: 17 passed — smoke API, admin login flow, PWA offline shell, SOS flow
+- **Playwright E2E**: 18 passed — smoke API, admin login flow, PWA offline shell, SOS flow, full citizen report pipeline (submit → persisted → confirm via map popup → consensus grows)
 - **0 errors** on `tsc --noEmit`
 - **CI pipeline** runs lint → tests → build → E2E on every push/PR
 
