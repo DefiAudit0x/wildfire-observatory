@@ -8,14 +8,14 @@ import WilayaList from "../WilayaList";
 import AICopilot from "../AICopilot";
 import SafetyGuides from "../SafetyGuides";
 import EvacuationRadar from "../EvacuationRadar";
-import AdminPanel from "../AdminPanel";
 import VolunteerRegistration from "../VolunteerRegistration";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
-import RosterBoard from "../RosterBoard";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
 const InteractiveMap = lazy(() => import("../InteractiveMap"));
+const AdminPanel = lazy(() => import("../AdminPanel"));
+const RosterBoard = lazy(() => import("../RosterBoard"));
 
 const PanelFallback = () => (
   <div className="col-span-12 py-24 flex items-center justify-center text-sm text-gray-500 font-bold animate-pulse">
@@ -94,7 +94,9 @@ export default function MainContent({
       {/* Admin Moderation Panel View */}
       {activeTab === "admin" && (
         <div className="col-span-12">
-          <AdminPanel reports={reports} onRefresh={onRefresh} lang={lang} />
+          <Suspense fallback={<PanelFallback />}>
+            <AdminPanel reports={reports} onRefresh={onRefresh} lang={lang} />
+          </Suspense>
         </div>
       )}
 
@@ -115,7 +117,9 @@ export default function MainContent({
       {/* Staff duty roster */}
       {activeTab === "roster" && (
         <div className="col-span-12 animate-fadeIn">
-          <RosterBoard lang={lang} />
+          <Suspense fallback={<PanelFallback />}>
+            <RosterBoard lang={lang} />
+          </Suspense>
         </div>
       )}
 

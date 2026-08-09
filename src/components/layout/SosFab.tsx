@@ -10,6 +10,7 @@ function SosFab({ isArabic, onTrigger }: SosFabProps) {
   return (
     <button
       onClick={onTrigger}
+      aria-label={isArabic ? "أنا محاصر — نداء استغاثة" : "Je suis bloqué — SOS"}
       className="fixed bottom-6 right-6 z-[1500] w-16 h-16 bg-gradient-to-br from-red-600 to-red-700 hover:from-red-500 hover:to-red-600 text-white rounded-full shadow-[0_8px_32px_rgba(220,38,38,0.5)] flex items-center justify-center transition-all duration-300 hover:scale-110 active:scale-95 border border-red-400/30 group"
     >
       <div className="relative flex items-center justify-center">
