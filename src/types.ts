@@ -33,7 +33,7 @@ export interface SatelliteHotspot {
   brightness: number; // in Kelvin
   confidence: number; // 0 - 100
   scanTime: string;
-  satellite: 'MODIS' | 'VIIRS';
+  satellite: 'MODIS' | 'VIIRS' | 'MODIS/VIIRS' | 'VIIRS/MODIS';
   wilaya: string;
   isFallback?: boolean;
 }

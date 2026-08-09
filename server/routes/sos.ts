@@ -42,10 +42,27 @@ const profileSchema = z.object({
 
 const memorySos: any[] = [];
 
+export interface SosSummary {
+  id: string;
+  timestamp: string;
+  status: string;
+  priority: string;
+}
+
+/** Metadata-only snapshot of in-memory SOS (no audio bodies) for analytics. */
+export function getSosSummarySnapshot(): SosSummary[] {
+  return memorySos.map((s) => ({
+    id: s.id,
+    timestamp: s.timestamp,
+    status: s.status,
+    priority: s.priority,
+  }));
+}
+
 // Background sweep: cap in-memory SOS (raw base64 audio held here only) to a
 // rolling window so long-running processes don't accumulate unbounded memory.
-const MEMORY_SOS_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const MEMORY_SOS_MAX_ITEMS = 500;
+const MEMORY_SOS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const MEMORY_SOS_MAX_ITEMS = 200;
 function sweepMemorySos() {
   const cutoff = Date.now() - MEMORY_SOS_MAX_AGE_MS;
   while (memorySos.length > 0 && new Date(memorySos[memorySos.length - 1].timestamp).getTime() < cutoff) {

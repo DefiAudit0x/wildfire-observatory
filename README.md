@@ -34,9 +34,9 @@
 
 ## 🌍 Overview / نظرة عامة
 
-**AR:** منصة إنسانية مفتوحة المصدر تهدف إلى إنقاذ الأرواح في المناطق المعرضة لحرائق الغابات في شمال أفريقيا (الجزائر، تونس، المغرب، ليبيا). تعتمد المنصة على الذكاء الاصطناعي (Google Gemini) وبيانات الأقمار الصناعية (NASA FIRMS) والإجماع البشري للتحقق من البلاغات في الوقت الفعلي.
+**AR:** منصة إنسانية مفتوحة المصدر تهدف إلى إنقاذ الأرواح في المناطق المعرضة لحرائق الغابات في شمال أفريقيا (الجزائر، تونس، المغرب، ليبيا). تعتمد المنصة على الذكاء الاصطناعي (Google Gemini) وبيانات الأقمار الصناعية (NASA FIRMS، شبه فورية Near-real-time) والإجماع البشري للتحقق من البلاغات.
 
-**FR:** Plateforme humanitaire open source visant à sauver des vies dans les zones sujettes aux feux de forêt en Afrique du Nord (Algérie, Tunisie, Maroc, Libye). Elle s'appuie sur l'IA (Google Gemini), les données satellitaires (NASA FIRMS) et le consensus citoyen pour la vérification en temps réel.
+**FR:** Plateforme humanitaire open source visant à sauver des vies dans les zones sujettes aux feux de forêt en Afrique du Nord (Algérie, Tunisie, Maroc, Libye). Elle s'appuie sur l'IA (Google Gemini), les données satellitaires (NASA FIRMS, quasi temps réel / near-real-time) et le consensus citoyen pour la vérification des signalements.
 
 ---
 
@@ -46,9 +46,11 @@
 
 | Feature | Description |
 |---|---|
-| 🗺️ **Interactive Map** | Real-time wildfire monitoring with Leaflet, satellite hotspots (MODIS/VIIRS) & citizen reports |
+| 🗺️ **Interactive Map** | Near-real-time wildfire monitoring with Leaflet, satellite hotspots (MODIS/VIIRS) & citizen reports |
 | 🤖 **AI Verification** | Google Gemini Vision API analyzes uploaded images for fire/smoke detection |
-| 🛰️ **Satellite Data** | Live NASA FIRMS integration for thermal hotspot detection |
+| 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time over a Cloudflare proxy; graceful static fallback when unreachable) |
+| 📊 **Fire Risk Index** | Deterministic 0–100 risk indicator from citizen reports, satellite hotspots & wilaya severity |
+| 📈 **History & Open Export** | 30-day activity chart + public CSV/GeoJSON export of reports and hotspots |
 | 👥 **Consensus Engine** | Citizen upvoting system — 5+ confirmations auto-verifies a report |
 | 📍 **Geo-Clustering** | Automatic grouping of nearby reports within 3km radius |
 | 🌐 **Bilingual UI** | Arabic / French interface |
@@ -56,6 +58,10 @@
 | 🔐 **Admin Panel** | Secure JWT-based moderation, report management, severity control |
 | 🧭 **Compass Triangulation** | Device orientation + GPS + camera alignment for precise reporting |
 | 🚨 **Proximity Alerts** | Audio/visual alerts for fires within 30km of user location |
+
+### Screenshots / لقطات الشاشة
+
+![Live map view](docs/screenshots/map-view.png)
 
 ---
 
@@ -134,11 +140,9 @@ observatory/
 │       ├── AICopilot.tsx       # AI guidance assistant
 │       ├── EvacuationRadar.tsx # Evacuation radar view
 │       ├── SafetyGuides.tsx    # Safety guides
-│       ├── StatisticsPanel.tsx # Wilaya statistics
+│       ├── StatisticsPanel.tsx # Live stats, fire risk, history & export
 │       └── WilayaList.tsx      # Region status list
-├── tests/                     # Unit tests (14 tests)
-│   ├── geo.test.ts            # 9 geo/clustering tests
-│   └── api.test.ts            # 5 API endpoint tests
+├── tests/                     # Unit + API + Playwright E2E tests (see Testing ↓)
 ├── public/
 │   ├── sw.js                  # Service worker (offline cache)
 │   └── manifest.json          # PWA manifest
@@ -248,17 +252,26 @@ http://localhost:3000/api-docs
 # Run server unit tests
 npm run test:server
 
+# Run React component tests
+npm run test:react
+
 # Type check
 npm run lint     # (tsc --noEmit)
 
 # Full build
 npm run build
+
+# End-to-end tests (Playwright + Chromium)
+npx playwright install chromium
+npm run test:e2e
 ```
 
 Current test coverage:
-- **14 unit tests** (9 geo + 5 API)
+- **Server unit/API tests**: 16 suites covering reports, SOS (incl. encryption + rate limits), badges, AI guidance (with sanitization), volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
+- **React component tests**: 3 (admin panel)
+- **Playwright E2E**: 16 passed + 1 intentionally skipped (admin login flow) — smoke API, PWA offline shell, SOS flow
 - **0 errors** on `tsc --noEmit`
-- **CI pipeline** runs lint → test → build on every push/PR
+- **CI pipeline** runs lint → tests → build → E2E on every push/PR
 
 ---
 
@@ -288,7 +301,9 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`):
 1. `npm ci`
 2. `npm run lint` (tsc --noEmit)
 3. `npm run test:server` (vitest)
-4. `npm run build` (vite + esbuild)
+4. `npm run test:react` (vitest)
+5. `npm run build` (vite + esbuild)
+6. Playwright E2E (Chromium) — artifacts uploaded on failure
 
 Husky pre-commit hook runs `tsc --noEmit` before each commit.
 
@@ -302,7 +317,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 |---|---|
 | Security | 8/10 ✅ (JWT, Helmet, CORS, rate limiting) |
 | Code Quality | 7/10 ✅ (modular structure, Pino logging, error handling) |
-| Testing | 6/10 ⬆️ (14 unit tests, CI pipeline) |
+| Testing | 8/10 ⬆️ (13 server suites + React + 16 Playwright E2E, CI pipeline) |
 | Documentation | 7/10 ✅ (Swagger API docs, bilingual README) |
 | Architecture | 7/10 ✅ (clean separation, lazy Firebase init) |
 | **Overall** | **7/10** |
@@ -313,7 +328,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 - ✅ **Architecture**: Monolithic 1082-line `server.ts` split into 15 modular files
 - ✅ **Logging**: `console.log` replaced with Pino structured logger
 - ✅ **Error Handling**: Centralized error handler middleware
-- ✅ **Testing**: 14 unit tests with Vitest
+- ✅ **Testing**: 13 Vitest server suites + React tests + 16 Playwright E2E
 - ✅ **CI/CD**: GitHub Actions pipeline + Husky pre-commit hooks
 - ✅ **API Docs**: Swagger UI at `/api-docs`
 - ✅ **Docker**: Multi-stage production build

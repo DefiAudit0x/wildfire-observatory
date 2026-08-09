@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { subscribeSessionPoll } from "../lib/session";
 
 export interface StaffSession {
   authenticated: boolean;
@@ -9,7 +10,8 @@ export interface StaffSession {
 }
 
 /**
- * Probes the staff/auth session every 30s using the httpOnly cookie.
+ * Probes the staff/auth session on the single shared session poller
+ * (one interval for the whole app, every 60s) using the httpOnly cookie.
  */
 export function useStaffSession(): { session: StaffSession; refetch: () => void } {
   const [session, setSession] = useState<StaffSession>({
@@ -41,9 +43,8 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void 
   }, []);
 
   useEffect(() => {
-    refetch();
-    const interval = setInterval(refetch, 15000);
-    return () => clearInterval(interval);
+    const unsubscribe = subscribeSessionPoll(refetch);
+    return unsubscribe;
   }, [refetch]);
 
   return { session, refetch };

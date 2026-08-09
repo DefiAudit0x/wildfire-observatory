@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "crypto";
 import { Request, Response, Router } from "express";
+import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import config from "../config.js";
 import { collectionGet } from "../fs.js";
@@ -18,6 +19,38 @@ const locationCleanupTimer = setInterval(() => {
   }
 }, LOCATION_TTL_MS);
 locationCleanupTimer.unref();
+
+// Heartbeat hardening: no session exists for volunteer tracking, so bound abuse:
+//  - per-IP request cap
+//  - minimum interval per deviceId (prevents flooding one device's location)
+//  - max distinct badge codes per IP per minute (prevents badge-identity spraying)
+const heartbeatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many location heartbeats from this address." },
+});
+
+const HEARTBEAT_DEVICE_MIN_MS = 3000;
+const heartbeatDeviceTimes = new Map<string, number>();
+const HEARTBEAT_MAX_BADGES_PER_IP = 5;
+const heartbeatBadgesPerIp = new Map<string, Map<string, number>>();
+
+function pruneHeartbeatMaps() {
+  const now = Date.now();
+  for (const [deviceId, last] of heartbeatDeviceTimes) {
+    if (now - last > 60 * 1000) heartbeatDeviceTimes.delete(deviceId);
+  }
+  for (const [ip, codes] of heartbeatBadgesPerIp) {
+    for (const [code, ts] of codes) {
+      if (now - ts > 60 * 1000) codes.delete(code);
+    }
+    if (codes.size === 0) heartbeatBadgesPerIp.delete(ip);
+  }
+}
+const heartbeatCleanupTimer = setInterval(pruneHeartbeatMaps, 60 * 1000);
+heartbeatCleanupTimer.unref();
 
 const heartbeatSchema = z.object({
   deviceId: z.string().min(1),
@@ -38,13 +71,42 @@ async function checkSuperAdminPassword(candidate: string): Promise<boolean> {
   return verifyAdminPassword(candidate);
 }
 
-router.post("/location/heartbeat", async (req: Request, res: Response) => {
+router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: Response) => {
   const parsed = heartbeatSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Missing required fields" });
     return;
   }
   const { deviceId, lat, lng, name, badgeCode } = parsed.data;
+
+  const now = Date.now();
+  const lastSeen = heartbeatDeviceTimes.get(deviceId);
+  if (lastSeen && now - lastSeen < HEARTBEAT_DEVICE_MIN_MS) {
+    res.status(429).json({ error: "Heartbeat too frequent for this device." });
+    return;
+  }
+  heartbeatDeviceTimes.set(deviceId, now);
+
+  if (badgeCode) {
+    const ip = req.ip || "unknown";
+    let codes = heartbeatBadgesPerIp.get(ip);
+    if (!codes) {
+      codes = new Map<string, number>();
+      heartbeatBadgesPerIp.set(ip, codes);
+    }
+    const seenAt = codes.get(badgeCode);
+    if (!seenAt) {
+      codes.set(badgeCode, now);
+      for (const [code, ts] of codes) {
+        if (now - ts > 60 * 1000) codes.delete(code);
+      }
+      if (codes.size > HEARTBEAT_MAX_BADGES_PER_IP) {
+        res.status(429).json({ error: "Too many badge codes from this address." });
+        return;
+      }
+    }
+  }
+
   let finalName = name || "غير معروف";
   let finalRole = "citizen";
 

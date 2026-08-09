@@ -34,6 +34,7 @@ import authRouter from "./routes/auth.js";
 import unitsRouter from "./routes/units.js";
 import usersRouter from "./routes/users.js";
 import rosterRouter from "./routes/roster.js";
+import historyRouter from "./routes/history.js";
 
 const app = express();
 // Railway runs a single load-balancer hop in front of the app container.
@@ -169,6 +170,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/units", unitsRouter);
 app.use("/api/users", usersRouter);
 app.use("/api/roster", rosterRouter);
+app.use("/api/history", historyRouter);
 app.use("/api", commandRouter);
 
 async function startServer() {

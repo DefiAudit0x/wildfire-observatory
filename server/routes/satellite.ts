@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { satelliteHotspots } from "../data.js";
 import { determineWilayaByCoords, isInKnownWilaya } from "../geo.js";
+import { SatelliteHotspot } from "../../src/types.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -8,10 +9,10 @@ const router = Router();
 
 const NORTH_AFRICA_BBOX = { minLat: 18, maxLat: 38, minLng: -17, maxLng: 25 };
 const CACHE_TTL_MS = 10 * 60 * 1000;
-let cachedHotspots: any[] | null = null;
+let cachedHotspots: SatelliteHotspot[] | null = null;
 let cacheTimestamp = 0;
 
-async function fetchFirmsData(source: string): Promise<any[]> {
+async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
   const apiKey = config.nasaFirmsKey;
   const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
   if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return [];
@@ -40,7 +41,7 @@ async function fetchFirmsData(source: string): Promise<any[]> {
     const lines = text.trim().split("\n");
     if (lines.length <= 1) return [];
 
-    const hotspots: any[] = [];
+    const hotspots: SatelliteHotspot[] = [];
     for (let i = 1; i < lines.length; i++) {
       try {
         const cols = lines[i].split(",");
@@ -50,7 +51,8 @@ async function fetchFirmsData(source: string): Promise<any[]> {
         const brightness = parseFloat(cols[2]);
         const scanDate = cols[5];
         const scanTimeRaw = cols[6].padStart(4, "0");
-        const satType = cols[8];
+        const satType = cols[8] === "MODIS_NRT" ? "MODIS" : cols[8] === "VIIRS_SNPP_NRT" ? "VIIRS" : null;
+        if (!satType) continue;
         const confidenceStr = cols[9];
         const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
         if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
@@ -86,7 +88,7 @@ export async function getLiveSatelliteData() {
   }
 
   const sources = ["VIIRS_SNPP_NRT", "MODIS_NRT"];
-  let hotspots: any[] = [];
+  let hotspots: SatelliteHotspot[] = [];
 
   for (const source of sources) {
     const data = await fetchFirmsData(source);
@@ -95,7 +97,7 @@ export async function getLiveSatelliteData() {
 
   if (hotspots.length > 0) {
     // Deduplicate: the same burning area often appears in both VIIRS and MODIS
-    const unique: any[] = [];
+    const unique: SatelliteHotspot[] = [];
     for (const h of hotspots) {
       const existing = unique.find(
         (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
@@ -105,7 +107,7 @@ export async function getLiveSatelliteData() {
       } else if (h.confidence > existing.confidence) {
         existing.confidence = h.confidence;
         existing.brightness = h.brightness;
-        existing.satellite = `${existing.satellite}/${h.satellite}`;
+        existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
       }
     }
     cachedHotspots = unique;
@@ -113,13 +115,18 @@ export async function getLiveSatelliteData() {
     return unique;
   }
 
-  return satelliteHotspots.map((sat: any) => {
+  const fallback = satelliteHotspots.map((sat) => {
     const nowD = new Date();
     const timePart = sat.scanTime.split("T")[1];
     const [hours, minutes] = timePart.split(":");
     nowD.setUTCHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
     return { ...sat, scanTime: nowD.toISOString(), isFallback: true };
   });
+  // Cache the fallback too: avoids hammering the upstream on every request
+  // when FIRMS is unreachable (same 10-min window as live data).
+  cachedHotspots = fallback;
+  cacheTimestamp = now;
+  return fallback;
 }
 
 router.get("/", async (_req: Request, res: Response) => {

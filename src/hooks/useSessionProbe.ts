@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { subscribeSessionPoll } from "../lib/session";
 
 export function useSessionProbe(): boolean {
   const [privilegedTabVisible, setPrivilegedTabVisible] = useState(false);
@@ -13,11 +14,10 @@ export function useSessionProbe(): boolean {
         if (!cancelled) setPrivilegedTabVisible(false);
       }
     };
-    probeSession();
-    const poll = setInterval(probeSession, 15000);
+    const unsubscribe = subscribeSessionPoll(probeSession);
     return () => {
       cancelled = true;
-      clearInterval(poll);
+      unsubscribe();
     };
   }, []);
 

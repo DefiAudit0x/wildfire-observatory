@@ -1,6 +1,16 @@
-import { useMemo } from "react";
-import { Flame, ShieldAlert, Users, Radio } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, Flame, ShieldAlert, Users, Radio, Gauge, History } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus } from "../types";
+import { computeFireRisk, RiskLevel } from "../utils/fireRisk";
+import { reportsToCsv, hotspotsToGeoJson } from "../utils/export";
+
+interface HistoryBucket {
+  date: string;
+  reports: number;
+  verified: number;
+  sos: number;
+  hotspots: number;
+}
 
 interface StatisticsPanelProps {
   reports: Report[];
@@ -8,6 +18,13 @@ interface StatisticsPanelProps {
   wilayas: WilayaStatus[];
   lang: "ar" | "fr";
 }
+
+const RISK_STYLES: Record<RiskLevel, { bar: string; text: string; labelAr: string; labelFr: string }> = {
+  low: { bar: "bg-emerald-500", text: "text-emerald-400", labelAr: "منخفض", labelFr: "Faible" },
+  moderate: { bar: "bg-amber-500", text: "text-amber-400", labelAr: "متوسط", labelFr: "Modéré" },
+  high: { bar: "bg-orange-500", text: "text-orange-400", labelAr: "مرتفع", labelFr: "Élevé" },
+  extreme: { bar: "bg-red-600", text: "text-red-500", labelAr: "قصوى", labelFr: "Extrême" },
+};
 
 export default function StatisticsPanel({ reports, satellites, wilayas, lang }: StatisticsPanelProps) {
   const isArabic = lang === "ar";
@@ -17,7 +34,27 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   const criticalReports = reports.filter((r) => r.severity === "critical").length;
   const totalSatellites = satellites.length;
 
-  const verificationRate = totalReports > 0 ? Math.round((verifiedReports / totalReports) * 100) : 0;
+  // Shared, honest rate: verified over every report the system received,
+  // not only the currently active subset — otherwise it reads inflated.
+  const verificationRate = reports.length > 0 ? Math.round((verifiedReports / reports.length) * 100) : 0;
+
+  const risk = useMemo(() => computeFireRisk(reports, satellites, wilayas), [reports, satellites, wilayas]);
+
+  const [history, setHistory] = useState<HistoryBucket[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/history?days=30")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.buckets) setHistory(data.buckets);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const historyMax = Math.max(1, ...(history?.map((b) => b.reports + b.sos + b.hotspots) || [1]));
 
   // Most threatened wilayas, computed live from the wilaya status API
   const mostThreatenedWilayas = useMemo(() => {
@@ -78,8 +115,8 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
       titleAr: "معدل المصادقة الفورية للذكاء الاصطناعي",
       titleFr: "Taux de Validation par l'IA",
       value: `${verificationRate}%`,
-      descAr: "مطابقة الصور والإحداثيات آلياً بالـ Gemini",
-      descFr: "Rapports photo vérifiés par Gemini",
+      descAr: "من إجمالي بلاغات النظام (النشطة والمحلولة)",
+      descFr: "Sur tous les signalements (actifs et traités)",
       icon: <Flame className="h-5 w-5 text-emerald-500" />,
       glowColor: "text-emerald-400",
       bg: "bg-emerald-950/10 border-emerald-500/20",
@@ -99,34 +136,133 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
     },
   ];
 
-  return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" dir={isArabic ? "rtl" : "ltr"}>
-      {stats.map((st) => (
-        <div
-          key={st.id}
-          className={`${st.bg} rounded-xl p-4 border shadow-[0_4px_20px_rgba(0,0,0,0.3)] transition-all hover:border-red-500/30 relative overflow-hidden group`}
-        >
-          {/* subtle decorative pulse on corner */}
-          <div className="absolute top-0 right-0 w-12 h-12 bg-red-500/2 opacity-[0.02] group-hover:opacity-[0.08] transition-opacity rounded-bl-full"></div>
+  const downloadFile = (content: string, filename: string, mime: string) => {
+    const blob = new Blob(["\ufeff" + content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
 
-          <div className="flex items-start justify-between">
-            <div className="space-y-1">
-              <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold leading-tight">
-                {isArabic ? st.titleAr : st.titleFr}
-              </p>
-              <h4 className={`text-xl md:text-2xl font-light font-mono leading-none mt-1.5 ${st.glowColor}`}>
-                {st.value}
-              </h4>
+  const riskStyle = RISK_STYLES[risk.level];
+  const topWilaya = risk.topWilayaNameAr ? cleanName(risk.topWilayaNameAr) : null;
+  const topWilayaFr = risk.topWilayaNameFr ? cleanName(risk.topWilayaNameFr) : null;
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" dir={isArabic ? "rtl" : "ltr"}>
+        {stats.map((st) => (
+          <div
+            key={st.id}
+            className={`${st.bg} rounded-xl p-4 border shadow-[0_4px_20px_rgba(0,0,0,0.3)] transition-all hover:border-red-500/30 relative overflow-hidden group`}
+          >
+            <div className="absolute top-0 right-0 w-12 h-12 bg-red-500/2 opacity-[0.02] group-hover:opacity-[0.08] transition-opacity rounded-bl-full"></div>
+
+            <div className="flex items-start justify-between">
+              <div className="space-y-1">
+                <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold leading-tight">
+                  {isArabic ? st.titleAr : st.titleFr}
+                </p>
+                <h4 className={`text-xl md:text-2xl font-light font-mono leading-none mt-1.5 ${st.glowColor}`}>
+                  {st.value}
+                </h4>
+              </div>
+              <div className="p-2 bg-black/40 rounded-lg border border-white/5 flex items-center justify-center">
+                {st.icon}
+              </div>
             </div>
-            <div className="p-2 bg-black/40 rounded-lg border border-white/5 flex items-center justify-center">
-              {st.icon}
-            </div>
+            <p className="text-[10px] text-gray-500 mt-3 font-light italic leading-relaxed">
+              {isArabic ? st.descAr : st.descFr}
+            </p>
           </div>
-          <p className="text-[10px] text-gray-500 mt-3 font-light italic leading-relaxed">
-            {isArabic ? st.descAr : st.descFr}
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4" dir={isArabic ? "rtl" : "ltr"}>
+        <div className="rounded-xl p-4 border bg-zinc-900/40 border-red-500/20 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+          <div className="flex items-center justify-between">
+            <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold">
+              {isArabic ? "مؤشر الخطر الحالي" : "Indice de Risque Actuel"}
+            </p>
+            <Gauge className="h-4 w-4 text-red-500" />
+          </div>
+          <div className="mt-2 flex items-end gap-3">
+            <span className={`text-3xl font-light font-mono ${riskStyle.text}`}>{risk.score}</span>
+            <span className="text-xs text-gray-400 pb-1">/ 100</span>
+            <span className={`ml-auto text-xs font-bold px-2 py-1 rounded-md ${riskStyle.bar} bg-opacity-20 border border-white/10 ${riskStyle.text}`}>
+              {isArabic ? riskStyle.labelAr : riskStyle.labelFr}
+            </span>
+          </div>
+          <div className="mt-2 h-2 w-full rounded-full bg-black/50 overflow-hidden">
+            <div
+              className={`h-full rounded-full ${riskStyle.bar} transition-all duration-700`}
+              style={{ width: `${risk.score}%` }}
+            />
+          </div>
+          <p className="text-[10px] text-gray-500 mt-2 font-light">
+            {isArabic
+              ? `${risk.activeFires} حريق نشط · ${risk.liveHotspots} بقعة حرارية مباشرة` +
+                (topWilaya ? ` · أشد ولاية: ${topWilaya}` : "")
+              : `${risk.activeFires} foyers actifs · ${risk.liveHotspots} détections directes` +
+                (topWilayaFr ? ` · Risque max: ${topWilayaFr}` : "")}
           </p>
         </div>
-      ))}
+
+        <div className="md:col-span-2 rounded-xl p-4 border bg-zinc-900/40 border-amber-500/20 shadow-[0_4px_20px_rgba(0,0,0,0.3)]">
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold flex items-center gap-2">
+              <History className="h-4 w-4 text-amber-500" />
+              {isArabic ? "نشاط آخر 30 يوماً (بلاغات + نداءات + أقمار)" : "Activité 30 derniers jours"}
+            </p>
+            <span className="text-[10px] text-gray-500">{isArabic ? "اليوم في أقصى اليسار" : "Aujourd'hui à gauche"}</span>
+          </div>
+          <div className="flex items-end gap-[3px] h-16" dir="ltr">
+            {(history || []).map((bucket) => {
+              const total = bucket.reports + bucket.sos + bucket.hotspots;
+              const height = Math.max(2, Math.round((total / historyMax) * 100));
+              return (
+                <div
+                  key={bucket.date}
+                  title={`${bucket.date} — بلاغات: ${bucket.reports} · نداءات: ${bucket.sos} · أقمار: ${bucket.hotspots}`}
+                  className="flex-1 rounded-t bg-red-500/50 hover:bg-red-500 transition-colors"
+                  style={{ height: `${height}%` }}
+                />
+              );
+            })}
+          </div>
+          <p className="text-[10px] text-gray-500 mt-2 font-light">
+            {isArabic
+              ? "حسب تواريخ البلاغات والنداءات والبقع الحرارية المستقبلة من المزودين."
+              : "Selon les dates des signalements, SOS et détections reçues."}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3" dir={isArabic ? "rtl" : "ltr"}>
+        <button
+          type="button"
+          onClick={() => downloadFile(reportsToCsv(reports), `reports_${new Date().toISOString().slice(0, 10)}.csv`, "text/csv;charset=utf-8")}
+          disabled={reports.length === 0}
+          className="inline-flex items-center gap-2 text-xs font-bold px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-emerald-500/40 text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {isArabic ? "تصدير CSV (البلاغات)" : "Exporter CSV"}
+        </button>
+        <button
+          type="button"
+          onClick={() => downloadFile(hotspotsToGeoJson(reports, satellites), `hotspots_${new Date().toISOString().slice(0, 10)}.geojson`, "application/geo+json")}
+          disabled={reports.length === 0 && satellites.length === 0}
+          className="inline-flex items-center gap-2 text-xs font-bold px-3 py-2 rounded-lg border border-white/10 bg-black/40 hover:border-sky-500/40 text-sky-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {isArabic ? "تصدير GeoJSON (خرائط GIS)" : "Exporter GeoJSON"}
+        </button>
+        <span className="text-[10px] text-gray-500 font-light">
+          {isArabic ? "بيانات حية كما تعرضها المنصة — متاحة للجميع" : "Données en direct, ouvertes à tous"}
+        </span>
+      </div>
     </div>
   );
 }

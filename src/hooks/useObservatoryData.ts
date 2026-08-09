@@ -52,17 +52,35 @@ export function useObservatoryData() {
     }
   }, [deviceId]);
 
+  // Stable self-rescheduling poll: the timer re-arms itself inside its own
+  // callback, so incoming data (reports/sosCalls) never resets it mid-cycle.
+  // Cadence stays adaptive: faster while unresolved activity exists.
+  const reportsRef = useRef(reports);
+  const sosRef = useRef(sosCalls);
+  useEffect(() => {
+    reportsRef.current = reports;
+  }, [reports]);
+  useEffect(() => {
+    sosRef.current = sosCalls;
+  }, [sosCalls]);
+
   useEffect(() => {
     fetchData();
-    // Adaptive polling: refresh faster while active (unresolved) reports exist,
-    // otherwise drop to a slower cadence to save bandwidth.
-    const hasActiveActivity =
-      reports.some((r) => r.status === "pending" || r.status === "verified") ||
-      sosCalls.some((s) => s.status === "active");
-    const intervalMs = hasActiveActivity ? 10000 : 60000;
-    const interval = setInterval(fetchData, intervalMs);
-    return () => clearInterval(interval);
-  }, [fetchData, reports, sosCalls]);
+    let timer: number | null = null;
+    const scheduleNext = (delayMs: number) => {
+      timer = window.setTimeout(() => {
+        const hasActiveActivity =
+          reportsRef.current.some((r) => r.status === "pending" || r.status === "verified") ||
+          sosRef.current.some((s) => s.status === "active");
+        fetchData();
+        scheduleNext(hasActiveActivity ? 10000 : 60000);
+      }, delayMs);
+    };
+    scheduleNext(60000);
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [fetchData]);
 
   // Server push events (report created/updated/deleted, safezones changed) → refresh
   const lastLiveRefreshRef = useRef(0);
