@@ -25,6 +25,7 @@ const config = {
   superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || "",
   jwtSecret: nodeEnv === "production" ? jwtSecret! : devJwtSecret,
   cookieSecure,
+  sosEncryptionKey: process.env.SOS_ENCRYPTION_KEY || "",
   meshSecret: process.env.MESH_SECRET || "",
   corsOrigins: process.env.CORS_ORIGINS?.split(",") || ["http://localhost:3000", "http://localhost:5173"],
   logLevel: process.env.LOG_LEVEL || "info",

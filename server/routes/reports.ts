@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import multer from "multer";
 import { citizenReports } from "../data.js";
 import { getAiClient, getAiModel } from "../ai.js";
+import { sanitizeForPrompt } from "./ai.js";
 import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
   getReportsDbResult,
@@ -15,7 +16,7 @@ import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
-import { docGet, docUpdate } from "../fs.js";
+import { docGet, incrementDocField } from "../fs.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -230,7 +231,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
       initialConsensus = 10;
       // Bump the per-badge usage counter so maxUses constraints take effect.
       if (!envTrusted && code) {
-        docUpdate("badgeCodes", code, { usedCount: Number((await docGet("badgeCodes", code))?.usedCount || 0) + 1 }).catch(() => {});
+        incrementDocField("badgeCodes", code, "usedCount", 1).catch(() => {});
       }
       logger.info(`Trusted report from ${reporterType}: ${code}`);
     } else {
@@ -260,7 +261,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
       try {
         const base64Data = image.split(",")[1];
         const mimeType = image.split(";")[0].split(":")[1];
-        const safeDescription = (description || "").replace(/[^\p{L}\p{N}\s\-(),./]/gu, "").slice(0, 500);
+        const safeDescription = sanitizeForPrompt(description || "", 500);
         const prompt = `Analyze this photo submitted by a reporter regarding a wildfire.
           Perform a thorough Computer Vision inspection. Goals:
           1. Detect fire-specific markers (active flames, intense smoke, thermal ash, forest damage).

@@ -22,7 +22,7 @@ async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
 export async function createNotification(notif: { deviceId: string; titleAr: string; titleFr: string; bodyAr: string; bodyFr: string; type: "success" | "warning" | "error" | "info" }) {
   const newNotif = {
     ...notif,
-    id: `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    id: `notif-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
     timestamp: new Date().toISOString(),
     read: false,
   };
@@ -220,12 +220,15 @@ const unsubscribeLimiter = rateLimit({
   message: { error: "Too many unsubscribe requests. Try again shortly." },
 });
 
+const unsubscribeSchema = z.object({ email: z.string().email().max(200) });
+
 router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Response) => {
-  const { email } = req.body;
-  if (!email || typeof email !== "string") {
-    res.status(400).json({ error: "Email is required" });
+  const parsed = unsubscribeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "A valid email is required" });
     return;
   }
+  const { email } = parsed.data;
 
   try {
     const { getDb, isAdminDb } = await import("../firebase.js");

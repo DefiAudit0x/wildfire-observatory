@@ -90,6 +90,10 @@ function toReadable(r: any): any {
   };
 }
 
+function hashOf(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 router.post("/register", registerLimiter, async (req: Request, res: Response) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -112,17 +116,32 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     res.status(409).json({ error: "This phone number is already registered" });
     return;
   }
-  if (existing && email && existing.some((r: any) => r.status !== "rejected" && r.email && decryptPII(r.email) === email)) {
+  const emailHash = email ? hashOf(email.trim().toLowerCase()) : undefined;
+  const normalizedEmail = email ? email.trim().toLowerCase() : "";
+  if (
+    existing &&
+    emailHash &&
+    existing.some(
+      (r: any) =>
+        r.status !== "rejected" &&
+        (r.emailHash
+          ? r.emailHash === emailHash
+          : r.email && decryptPII(r.email).trim().toLowerCase() === normalizedEmail)
+    )
+  ) {
     res.status(409).json({ error: "This email is already registered" });
     return;
   }
+  const fullNameHash = hashOf(fullName.trim().toLowerCase());
   const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
   if (
     existing &&
     existing.some(
       (r: any) =>
         r.status !== "rejected" &&
-        decryptPII(r.fullName) === fullName &&
+        (r.fullNameHash
+          ? r.fullNameHash === fullNameHash
+          : decryptPII(r.fullName).trim().toLowerCase() === fullName.trim().toLowerCase()) &&
         r.wilaya === wilaya &&
         new Date(r.createdAt || 0).getTime() > thirtyDaysAgo
     )
@@ -136,6 +155,8 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     fullName: encryptPII(fullName),
     phone: encryptPII(phone),
     phoneHash,
+    emailHash,
+    fullNameHash,
     email: email ? encryptPII(email) : undefined,
     wilaya,
     type: requestedType,

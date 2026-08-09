@@ -31,7 +31,14 @@ vi.mock("../server/fs.js", () => ({
 }));
 
 vi.mock("../server/middleware.js", () => ({
-  requireAdmin: (_req: any, _res: any, next: () => void) => next(),
+  requireAdmin: (req: any, res: any, next: () => void) => {
+    const authHeader = req?.headers?.authorization || "";
+    if (!authHeader.startsWith("Bearer ")) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    next();
+  },
   verifyAdminToken: () => ({ valid: true, role: "admin" }),
 }));
 
@@ -87,6 +94,7 @@ describe("POST /api/badges", () => {
     const app = createApp();
     const res = await supertest(app)
       .post("/api/badges")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret", code: "VOL-001", ownerName: "أحمد", type: "volunteer", wilaya: "الجزائر - عنابة (Algérie - Annaba)" });
     expect(res.status).toBe(409);
   });
@@ -106,6 +114,7 @@ describe("PUT /api/badges/:code", () => {
     const app = createApp();
     const res = await supertest(app)
       .put("/api/badges/VOL-001")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret", maxUses: 10, expiresAt: "2027-06-01T00:00:00", wilaya: "الجزائر - تلمسان (Algérie - Tlemcen)" });
     expect(res.status).toBe(200);
     expect(res.body.maxUses).toBe(10);
@@ -117,6 +126,7 @@ describe("PUT /api/badges/:code", () => {
     const app = createApp();
     const res = await supertest(app)
       .put("/api/badges/NOPE")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret", maxUses: 3 });
     expect(res.status).toBe(404);
   });
@@ -128,11 +138,13 @@ describe("POST /api/badges/:code/toggle", () => {
     const app = createApp();
     const res = await supertest(app)
       .post("/api/badges/VOL-001/toggle")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret" });
     expect(res.status).toBe(200);
     expect(res.body.isActive).toBe(false);
     const res2 = await supertest(app)
       .post("/api/badges/VOL-001/toggle")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret" });
     expect(res2.body.isActive).toBe(true);
   });
@@ -144,6 +156,7 @@ describe("DELETE /api/badges/:code", () => {
     const app = createApp();
     const res = await supertest(app)
       .delete("/api/badges/VOL-001")
+      .set("Authorization", "Bearer fake-token")
       .send({ password: "admin-secret" });
     expect(res.status).toBe(200);
     expect(mockDocs.has("badgeCodes/VOL-001")).toBe(false);

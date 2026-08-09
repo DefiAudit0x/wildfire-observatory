@@ -66,6 +66,38 @@ describe("POST /api/volunteer/register", () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toMatch(/^reg-fake-[0-9a-f]{8}$/);
   });
+
+  it("rejects a duplicate email (hashed lookup, no PII decryption needed)", async () => {
+    const first = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "مختبر بريد 1",
+      phone: "0731311111",
+      email: "dup-email@example.com",
+      wilaya: "الجزائر - الجزائر",
+    });
+    expect(first.status).toBe(200);
+    const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "مختبر بريد 2",
+      phone: "0731312222",
+      email: "DUP-EMAIL@example.com",
+      wilaya: "الجزائر - تيبازة",
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("rejects the same name+wilaya within 30 days (normalized hash)", async () => {
+    const first = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "أحمد بن عمر",
+      phone: "0731313333",
+      wilaya: "الجزائر - وهران",
+    });
+    expect(first.status).toBe(200);
+    const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "   أحمد بن عمر ",
+      phone: "0731314444",
+      wilaya: "الجزائر - وهران",
+    });
+    expect(res.status).toBe(409);
+  });
 });
 
 describe("POST /api/volunteer/:id/approve", () => {

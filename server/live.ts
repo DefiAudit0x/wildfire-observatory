@@ -1,12 +1,26 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import logger from "./logger.js";
+import config from "./config.js";
 
 const LIVE_PATH = "/api/live";
+
+const CONN_WINDOW_MS = 60 * 1000;
+const MAX_CONNS_PER_IP = 10;
+
+// Browsers send an Origin header on the WS upgrade; native apps do not.
+function originAllowed(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (config.corsOrigins.includes(origin)) return true;
+  const host = origin.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+  const appHost = config.appUrl.replace(/^https?:\/\//, "");
+  return appHost !== "" && appHost === host;
+}
 
 class LiveHub {
   private wss: WebSocketServer | null = null;
   private clients = new Set<WebSocket>();
+  private connCount = new Map<string, { count: number; expiresAt: number }>();
 
   attach(server: Server): void {
     if (this.wss) return;
@@ -15,6 +29,26 @@ class LiveHub {
     server.on("upgrade", (req, socket, head) => {
       const pathname = new URL(req.url || "/", "http://localhost").pathname;
       if (pathname !== LIVE_PATH || !this.wss) return;
+
+      if (!originAllowed(req.headers.origin)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      const ip = String((req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown");
+      const now = Date.now();
+      const entry = this.connCount.get(ip);
+      if (!entry || now > entry.expiresAt) {
+        this.connCount.set(ip, { count: 1, expiresAt: now + CONN_WINDOW_MS });
+      } else {
+        entry.count += 1;
+        if (entry.count > MAX_CONNS_PER_IP) {
+          socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      }
+
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         this.wss!.emit("connection", ws, req);
       });
@@ -25,6 +59,12 @@ class LiveHub {
       ws.on("close", () => this.clients.delete(ws));
       ws.on("error", (err) => logger.warn({ err }, "Live socket error"));
     });
+
+    const sweep = () => {
+      const now = Date.now();
+      for (const [k, v] of this.connCount) if (now > v.expiresAt) this.connCount.delete(k);
+    };
+    setInterval(sweep, CONN_WINDOW_MS).unref();
 
     logger.info(`Live hub attached at ${LIVE_PATH}`);
   }

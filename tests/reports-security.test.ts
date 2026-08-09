@@ -12,6 +12,7 @@ vi.mock("express-rate-limit", () => ({
 vi.mock("../server/fs.js", () => ({
   docGet: async (collection: string, id: string) => mockDocs.get(`${collection}/${id}`) ?? null,
   docUpdate: async () => true,
+  incrementDocField: async () => true,
 }));
 
 const { default: reportsRouter } = await import("../server/routes/reports.js");

@@ -39,14 +39,14 @@ export async function getReportsDbResult(): Promise<ReportsDbResult> {
   try {
     let data: any[] | null = null;
     if (isAdminDb(db)) {
-      const snapshot = await db.collection("reports").orderBy("timestamp", "desc").get();
+      const snapshot = await db.collection("reports").orderBy("timestamp", "desc").limit(999).get();
       if (!snapshot.empty) {
         data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as any[];
       }
     } else {
-      const { collection, getDocs, query, orderBy } = await loadClientSdk();
+      const { collection, getDocs, query, orderBy, limit } = await loadClientSdk();
       const reportsCol = collection(db, "reports");
-      const q = query(reportsCol, orderBy("timestamp", "desc"));
+      const q = query(reportsCol, orderBy("timestamp", "desc"), limit(999));
       const snapshot = await getDocs(q);
       if (!snapshot.empty) {
         data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));

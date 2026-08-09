@@ -169,6 +169,26 @@ object CryptoEngine {
         }
     }
 
+    /**
+     * Verify the ECDSA signature over (ciphertext + iv) using the sender's
+     * public key. Any relay can run this — no AES key required — and should
+     * reject messages whose wire signature does not match.
+     */
+    fun verifyMessageSignature(message: SecureMessage): Boolean {
+        return try {
+            val ciphertext = Base64.decode(message.ciphertext, Base64.NO_WRAP)
+            val iv = Base64.decode(message.iv, Base64.NO_WRAP)
+            val signature = Base64.decode(message.signature, Base64.NO_WRAP)
+            verifySignature(
+                ciphertext + iv,
+                signature,
+                decodePublicKey(message.senderPublicKey)
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun generateECKeyPair(): KeyPair {
         val kpg = KeyPairGenerator.getInstance(EC_ALGORITHM, PROVIDER)
         kpg.initialize(ECGenParameterSpec("secp256r1"), SecureRandom())
@@ -212,28 +232,52 @@ object CryptoEngine {
         return (1..16).map { chars[Random.nextInt(chars.length)] }.joinToString("")
     }
 
-    // Lightweight Proof-of-Work: find a nonce such that SHA-256(prefix + nonce) starts with 'difficulty' zero bits
+    // Lightweight Proof-of-Work: find a nonce such that the first 8 hex chars of
+    // SHA-256(prefix + nonce) are numerically below the difficulty target.
     object ProofOfWork {
+        private const val MAX_DIFFICULTY = 31
+        private const val MAX_ITERATIONS = 5_000_000
+
+        private fun target(difficulty: Int): Long {
+            val d = difficulty.coerceIn(1, MAX_DIFFICULTY)
+            return 1L shl (32 - d)
+        }
+
         fun solve(prefix: String, difficulty: Int = 8): Int {
+            val t = target(difficulty)
             var nonce = 0
-            val target = 1 shl (256 - difficulty)
-            while (true) {
+            while (nonce < MAX_ITERATIONS) {
                 val hash = sha256("$prefix$nonce")
                 val value = hash.take(8).fold(0L) { acc, c -> (acc shl 4) + c.digitToInt(16) }
-                if (value < target) return nonce
+                if (value < t) return nonce
                 nonce++
             }
+            throw SecurityException("Proof-of-work exceeded iteration budget")
         }
 
         fun verify(prefix: String, nonce: Int, difficulty: Int = 8): Boolean {
             val hash = sha256("$prefix$nonce")
             val value = hash.take(8).fold(0L) { acc, c -> (acc shl 4) + c.digitToInt(16) }
-            return value < (1L shl (256 - difficulty))
+            return value < target(difficulty)
         }
 
         private fun sha256(input: String): String {
             val digest = MessageDigest.getInstance("SHA-256")
             return digest.digest(input.toByteArray()).joinToString("") { "%02x".format(it) }
         }
+    }
+
+    /**
+     * Sign arbitrary data with the current ephemeral key (ECDSA P-256).
+     * Used by the JS bridge for mesh message signing (ciphertext + iv).
+     */
+    @Synchronized
+    fun signWithEphemeralKey(data: ByteArray): ByteArray {
+        rotateIfNeeded()
+        val keyPair = ephemeralKeyPair ?: run {
+            rotateEphemeralKey()
+            ephemeralKeyPair
+        }
+        return signData(data, keyPair!!.private)
     }
 }

@@ -127,6 +127,32 @@ export async function docUpdate(
   }
 }
 
+/** Atomic counter bump — avoids the read-then-write race on hot docs. */
+export async function incrementDocField(
+  collectionName: string,
+  id: string,
+  field: string,
+  amount = 1
+): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    if (isAdminDb(db)) {
+      const { FieldValue } = await import("firebase-admin/firestore");
+      await db.collection(collectionName).doc(id).update({ [field]: FieldValue.increment(amount) });
+    } else {
+      const { doc, updateDoc, increment } = await loadClientSdk();
+      await updateDoc(doc(db, collectionName, id), { [field]: increment(amount) });
+    }
+    invalidateCollectionCache(collectionName);
+    invalidateDocCache(collectionName, id);
+    return true;
+  } catch (err) {
+    logger.error({ err, collectionName, id, field }, "Firestore field increment failed");
+    return false;
+  }
+}
+
 export async function docDelete(collectionName: string, id: string): Promise<boolean> {
   const db = getDb();
   if (!db) return false;

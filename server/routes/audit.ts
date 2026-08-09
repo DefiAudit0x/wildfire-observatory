@@ -1,5 +1,6 @@
 import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
+import { randomBytes } from "crypto";
 import { collectionGet, docSet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import logger from "../logger.js";
@@ -10,7 +11,7 @@ const memoryAudit: any[] = [];
 
 export async function logAdminAction(action: string, details: Record<string, unknown> = {}): Promise<void> {
   const entry = {
-    id: `audit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `audit-${Date.now()}-${randomBytes(3).toString("hex")}`,
     action,
     details,
     timestamp: new Date().toISOString(),

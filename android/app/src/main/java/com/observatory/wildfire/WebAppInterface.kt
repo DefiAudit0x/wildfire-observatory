@@ -8,8 +8,13 @@ import org.json.JSONObject
 /**
  * JavaScript bridge exposed to the WebView as `window.AndroidBridge`.
  * Provides encrypted mesh messaging, key management, and device info.
+ * The MeshService instance is resolved lazily via [meshProvider] so the
+ * bridge always talks to the service instance actually bound by MainActivity.
  */
-class WebAppInterface(private val meshService: MeshService) {
+class WebAppInterface(private val meshProvider: () -> MeshService?) {
+
+    private val meshService: MeshService?
+        get() = meshProvider()
 
     // ========================
     // CAPABILITY DETECTION
@@ -19,7 +24,7 @@ class WebAppInterface(private val meshService: MeshService) {
     fun isMeshSupported(): Boolean = true
 
     @JavascriptInterface
-    fun getDeviceId(): String = meshService.getEphemeralId()
+    fun getDeviceId(): String = meshService?.getEphemeralId() ?: ""
 
     @JavascriptInterface
     fun getPublicKey(): String = CryptoEngine.getPublicKeyBase64()
@@ -40,7 +45,7 @@ class WebAppInterface(private val meshService: MeshService) {
      */
     @JavascriptInterface
     fun broadcastMessage(plaintext: String, type: String, lat: Double, lng: Double) {
-        meshService.broadcastMessage(plaintext, type, lat, lng)
+        meshService?.broadcastMessage(plaintext, type, lat, lng)
     }
 
     /**
@@ -108,7 +113,7 @@ class WebAppInterface(private val meshService: MeshService) {
      */
     @JavascriptInterface
     fun getConnectedPeers(): String {
-        val peers = meshService.getConnectedPeers()
+        val peers = meshService?.getConnectedPeers() ?: emptyList()
         val arr = JSONArray()
         peers.forEach { peer ->
             arr.put(JSONObject(peer))
@@ -121,7 +126,7 @@ class WebAppInterface(private val meshService: MeshService) {
      */
     @JavascriptInterface
     fun getPeerReputation(endpointId: String): Int {
-        return meshService.getReputation(endpointId)
+        return meshService?.getReputation(endpointId) ?: 0
     }
 
     // ========================
@@ -148,27 +153,13 @@ class WebAppInterface(private val meshService: MeshService) {
     }
 
     /**
-     * Generate an ECDSA signature for arbitrary data.
+     * Sign arbitrary data with the current ephemeral key (ECDSA P-256).
      * @param dataBase64 Data to sign (base64 encoded)
-     * @return Base64-encoded signature
+     * @return Base64-encoded signature, or empty string when no key pair exists
      */
     @JavascriptInterface
     fun signData(dataBase64: String): String {
         val data = Base64.decode(dataBase64, Base64.NO_WRAP)
-        val keyPair = CryptoEngine::class.java.getDeclaredMethod("generateECKeyPair")
-        keyPair.isAccessible = true
-        // Use CryptoEngine's signing capability
-        return android.util.Base64.encodeToString(
-            java.security.Signature.getInstance("SHA256withECDSA", "BC").let { sig ->
-                sig.initSign(
-                    CryptoEngine::class.java.getDeclaredField("ephemeralKeyPair").apply {
-                        isAccessible = true
-                    }.get(null) as java.security.KeyPair
-                )
-                sig.update(data)
-                sig.sign()
-            },
-            android.util.Base64.NO_WRAP
-        )
+        return Base64.encodeToString(CryptoEngine.signWithEphemeralKey(data), Base64.NO_WRAP)
     }
 }

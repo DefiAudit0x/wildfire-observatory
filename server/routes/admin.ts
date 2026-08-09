@@ -52,12 +52,15 @@ const updateStatusSchema = z
     message: "At least one of status or severity must be provided",
   });
 
+const adminVerifySchema = z.object({ password: z.string().min(1).max(128) });
+
 router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
-  const { password } = req.body;
-  if (!password) {
+  const parsed = adminVerifySchema.safeParse(req.body);
+  if (!parsed.success) {
     res.status(400).json({ success: false, error: "Password required" });
     return;
   }
+  const { password } = parsed.data;
   if (await verifyAdminPassword(password)) {
     const token = generateAdminToken();
     res.cookie("admin_token", token, {

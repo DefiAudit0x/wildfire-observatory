@@ -91,6 +91,17 @@ describe("POST /api/sos", () => {
     expect(res.body).toHaveProperty("nearestFireDistanceKm");
   });
 
+  it("does not leak raw audio in the POST response (only a hasAudio flag)", async () => {
+    const app = createApp();
+    const res = await supertest(app).post("/api/sos").send({
+      ...validBody(),
+      audioUrl: "data:audio/webm;base64,AAAA",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.audioUrl).toBeUndefined();
+    expect(res.body.hasAudio).toBe(true);
+  });
+
   it("does not leak PII on the public list endpoint (audio stripped)", async () => {
     const app = createApp();
     await supertest(app).post("/api/sos").send({

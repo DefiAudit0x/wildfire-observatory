@@ -88,11 +88,13 @@ class MeshService : Service() {
     )
     private val peers = ConcurrentHashMap<String, EndpointInfo>()
 
-    // Message queue for Trickle algorithm
+    // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
+    // so intermediate nodes never see plaintext.
     private data class MeshMessage(
         val messageId: String,
         val type: String,
-        val payload: ByteArray,
+        val payloadB64: String,
+        val iv: String,
         val hopCount: Int,
         val origEphemeralId: String,
         val origPublicKey: String,
@@ -297,6 +299,7 @@ class MeshService : Service() {
         val messageId: String,
         val type: String,
         val payloadB64: String,
+        val iv: String,
         val hopCount: Int,
         val origEphemeralId: String,
         val origPublicKey: String,
@@ -321,12 +324,13 @@ class MeshService : Service() {
             if (seenMessageHashes.containsKey(msgHash)) return
             seenMessageHashes[msgHash] = System.currentTimeMillis()
 
-            // Verify ECDSA signature
+            // Verify the ECDSA signature over (ciphertext + iv) — public-key integrity
+            // check available to every relay, independent of the AES key.
             val secureMsg = CryptoEngine.SecureMessage(
                 ephemeralId = payload.origEphemeralId,
                 senderPublicKey = payload.origPublicKey,
                 ciphertext = payload.payloadB64,
-                iv = "",
+                iv = payload.iv,
                 signature = payload.signature,
                 timestamp = payload.timestamp,
                 lat = payload.lat,
@@ -334,8 +338,14 @@ class MeshService : Service() {
                 nonce = payload.nonce
             )
 
+            if (payload.type != MESSAGE_TYPE_ECHO && !CryptoEngine.verifyMessageSignature(secureMsg)) {
+                Log.w(TAG, "Invalid signature on wire message")
+                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                return
+            }
+
             val decrypted = if (payload.type == MESSAGE_TYPE_ECHO) {
-                // Echo messages don't need E2EE decryption at relay
+                // Echo messages are plaintext hop counters by design
                 Base64.decode(payload.payloadB64, Base64.NO_WRAP)
             } else {
                 CryptoEngine.decryptFromPeer(secureMsg)
@@ -351,7 +361,8 @@ class MeshService : Service() {
                     val relayMsg = MeshMessage(
                         messageId = payload.messageId,
                         type = payload.type,
-                        payload = decrypted,
+                        payloadB64 = payload.payloadB64,
+                        iv = payload.iv,
                         hopCount = payload.hopCount + 1,
                         origEphemeralId = payload.origEphemeralId,
                         origPublicKey = payload.origPublicKey,
@@ -364,8 +375,9 @@ class MeshService : Service() {
                 // Update reputation
                 updateReputation(endpointId, REPUTATION_CONFIRM_MATCH)
             } else {
-                // Failed decryption → bad actor
-                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                // E2EE: the message is targeted at another peer. Not decryptable
+                // ≠ malicious — never punish relays for not holding the key.
+                Log.d(TAG, "Message not addressed to this device (E2EE)")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Message handling error", e)
@@ -395,6 +407,7 @@ class MeshService : Service() {
             messageId = messageId,
             type = reportType,
             payloadB64 = encrypted.ciphertext,
+            iv = encrypted.iv,
             hopCount = 0,
             origEphemeralId = encrypted.ephemeralId,
             origPublicKey = encrypted.senderPublicKey,
@@ -417,11 +430,12 @@ class MeshService : Service() {
             connectionsClient.sendPayload(endpointId, Payload.fromBytes(compressed))
         }
 
-        // Also queue for Trickle relay
+        // Also queue for Trickle relay (keeps ciphertext, never plaintext)
         pendingMessages.add(MeshMessage(
             messageId = messageId,
             type = reportType,
-            payload = plaintext.toByteArray(Charsets.UTF_8),
+            payloadB64 = encrypted.ciphertext,
+            iv = encrypted.iv,
             hopCount = 0,
             origEphemeralId = encrypted.ephemeralId,
             origPublicKey = encrypted.senderPublicKey,
@@ -471,11 +485,13 @@ class MeshService : Service() {
                         reputation.getOrDefault(id, REPUTATION_INITIAL) > REPUTATION_MIN / 2
                     }
 
-                    // Spatio-temporal stamped relay
+                    // Ciphertext + IV relayed verbatim; signature covers both and is
+                    // preserved end-to-end so any relay can spot tampering.
                     val relayPayload = MeshPayload(
                         messageId = messageId,
                         type = msg.type,
-                        payloadB64 = Base64.encodeToString(msg.payload, Base64.NO_WRAP),
+                        payloadB64 = msg.payloadB64,
+                        iv = msg.iv,
                         hopCount = msg.hopCount,
                         origEphemeralId = msg.origEphemeralId,
                         origPublicKey = msg.origPublicKey,
@@ -620,19 +636,20 @@ class MeshService : Service() {
     private fun parseJsonToPayload(json: String): MeshPayload? {
         return try {
             val parts = json.split("|")
-            if (parts.size < 11) return null
+            if (parts.size < 12) return null
             MeshPayload(
                 messageId = parts[0],
                 type = parts[1],
                 payloadB64 = parts[2],
-                hopCount = parts[3].toInt(),
-                origEphemeralId = parts[4],
-                origPublicKey = parts[5],
-                timestamp = parts[6].toLong(),
-                signature = parts[7],
-                nonce = parts[8].toInt(),
-                lat = parts[9].toDouble(),
-                lng = parts[10].toDouble()
+                iv = parts[3],
+                hopCount = parts[4].toInt(),
+                origEphemeralId = parts[5],
+                origPublicKey = parts[6],
+                timestamp = parts[7].toLong(),
+                signature = parts[8],
+                nonce = parts[9].toInt(),
+                lat = parts[10].toDouble(),
+                lng = parts[11].toDouble()
             )
         } catch (e: Exception) {
             null
@@ -644,6 +661,7 @@ class MeshService : Service() {
             payload.messageId,
             payload.type,
             payload.payloadB64,
+            payload.iv,
             payload.hopCount.toString(),
             payload.origEphemeralId,
             payload.origPublicKey,

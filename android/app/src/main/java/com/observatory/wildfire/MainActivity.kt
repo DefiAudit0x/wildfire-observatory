@@ -19,6 +19,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -53,16 +54,12 @@ class MainActivity : AppCompatActivity() {
             meshService = binder.getService()
             meshBound = true
 
-            // Forward received mesh messages to WebView
+            // Forward received mesh messages to WebView (sanitized JSON string)
             meshService?.addMessageListener { message ->
                 runOnUiThread {
+                    val messageJs = JSONObject.quote(message)
                     webView.evaluateJavascript(
-                        """
-                        (function() {
-                            var event = new CustomEvent('meshMessage', { detail: $message });
-                            window.dispatchEvent(event);
-                        })();
-                        """.trimIndent(), null
+                        "window.dispatchEvent(new CustomEvent('meshMessage', { detail: $messageJs }));", null
                     )
                 }
             }
@@ -112,18 +109,27 @@ class MainActivity : AppCompatActivity() {
             allowFileAccess = false
             allowContentAccess = false
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                handler?.proceed()  // Allow self-signed certs in emergency
+                // Never bypass TLS in production. Only allow self-signed hostname
+                // mismatch on debuggable builds (local emulator testing).
+                val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                if (isDebuggable && error?.primaryError == SslError.SSL_IDMISMATCH) {
+                    handler?.proceed()
+                } else {
+                    handler?.cancel()
+                    Toast.makeText(this@MainActivity, "Secure connection error. Using a secure URL is required.", Toast.LENGTH_LONG).show()
+                }
             }
         }
 
-        // Expose JS bridge
+        // Expose JS bridge — the bound MeshService instance is resolved lazily so
+        // the same bridge handles the service even after the async bind completes.
         webView.addJavascriptInterface(
-            WebAppInterface(meshService ?: MeshService()),
+            WebAppInterface { meshService },
             "AndroidBridge"
         )
 

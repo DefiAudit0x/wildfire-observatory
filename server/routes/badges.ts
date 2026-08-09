@@ -1,8 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate, docDelete } from "../fs.js";
-import { verifyAdminPassword } from "./admin.js";
-import { requireAdmin, verifyAdminToken } from "../middleware.js";
+import { requireAdmin } from "../middleware.js";
 import { invalidateBadgeCache } from "./reports.js";
 import { logAdminAction } from "./audit.js";
 
@@ -29,20 +28,6 @@ async function loadBadges(): Promise<any[]> {
     memoryBadges.push(...fromDb.map((b: any) => ({ code: b.id, ...b })));
   }
   return memoryBadges;
-}
-
-/** Accepts either a valid admin session token (header/cookie) or the admin password in the body. */
-async function isAuthorized(req: Request): Promise<boolean> {
-  const authHeader = req.headers.authorization;
-  const cookieToken = (req as any).cookies?.admin_token;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.split(" ")[1] : cookieToken || null;
-  if (token) {
-    const check = verifyAdminToken(token);
-    if (check.valid && (check.role === "admin" || check.role === "superadmin")) return true;
-  }
-  const password = typeof req.body?.password === "string" ? req.body.password : "";
-  if (password && (await verifyAdminPassword(password))) return true;
-  return false;
 }
 
 router.get("/", requireAdmin, async (_req: Request, res: Response) => {
@@ -88,13 +73,8 @@ router.get("/analytics", requireAdmin, async (_req: Request, res: Response) => {
   });
 });
 
-router.post("/", async (req: Request, res: Response) => {
-  if (!(await isAuthorized(req))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-  const { password: _pw, ...rest } = req.body as Record<string, unknown>;
-  const parsed = badgeSchema.safeParse(rest);
+router.post("/", requireAdmin, async (req: Request, res: Response) => {
+  const parsed = badgeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Missing or invalid required fields", details: parsed.error.flatten() });
     return;
@@ -126,14 +106,9 @@ router.post("/", async (req: Request, res: Response) => {
   res.json(newBadge);
 });
 
-router.put("/:code", async (req: Request, res: Response) => {
-  if (!(await isAuthorized(req))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
   const { code } = req.params;
-  const { password: _pw, ...rest } = req.body as Record<string, unknown>;
-  const parsed = updateBadgeSchema.safeParse(rest);
+  const parsed = updateBadgeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid fields", details: parsed.error.flatten() });
     return;
@@ -163,11 +138,7 @@ router.put("/:code", async (req: Request, res: Response) => {
   res.json(current);
 });
 
-router.delete("/:code", async (req: Request, res: Response) => {
-  if (!(await isAuthorized(req))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
   const { code } = req.params;
   const ok = await docDelete("badgeCodes", code);
   if (!ok) {
@@ -181,11 +152,7 @@ router.delete("/:code", async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.post("/:code/toggle", async (req: Request, res: Response) => {
-  if (!(await isAuthorized(req))) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
+router.post("/:code/toggle", requireAdmin, async (req: Request, res: Response) => {
   const { code } = req.params;
   const existing = await loadBadges();
   const badge = existing.find((b: any) => b.code === code);

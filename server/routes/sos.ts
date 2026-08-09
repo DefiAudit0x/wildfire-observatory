@@ -80,12 +80,37 @@ function isDuplicateSos(deviceId: string): boolean {
   return false;
 }
 
-// ── Encrypted profile store (AES-256-GCM, key derived from JWT_SECRET) ───────
+// ── Encrypted profile store (AES-256-GCM, key derived from SOS_ENCRYPTION_KEY) ─
 const PROFILE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 const memoryProfiles = new Map<string, { encrypted: string; expiresAt: number }>();
 
+// Prefer a dedicated SOS_ENCRYPTION_KEY so profiles are not encrypted with the
+// JWT secret (which also signs session tokens).
 function profileKey(): Buffer {
-  return createHash("sha256").update("sos-profile:" + config.jwtSecret).digest();
+  return createHash("sha256").update("sos-profile:" + (config.sosEncryptionKey || config.jwtSecret)).digest();
+}
+
+function tryDecryptProfile(token: string, key: Buffer): { name?: string; phone?: string } | null {
+  try {
+    const [ivB64, tagB64, dataB64] = token.split(".");
+    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
+    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+    const dec = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
+    return JSON.parse(dec.toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// Legacy fallback: decrypt records still carrying the old JWT-derived key.
+function decryptProfile(token: string): { name?: string; phone?: string } | null {
+  const primary = tryDecryptProfile(token, profileKey());
+  if (primary !== null) return primary;
+  if (config.sosEncryptionKey) {
+    const legacy = createHash("sha256").update("sos-profile:" + config.jwtSecret).digest();
+    return tryDecryptProfile(token, legacy);
+  }
+  return null;
 }
 
 function encryptProfile(plain: { name?: string; phone?: string }): string {
@@ -94,18 +119,6 @@ function encryptProfile(plain: { name?: string; phone?: string }): string {
   const payload = Buffer.from(JSON.stringify(plain), "utf8");
   const enc = Buffer.concat([cipher.update(payload), cipher.final()]);
   return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), enc.toString("base64")].join(".");
-}
-
-function decryptProfile(token: string): { name?: string; phone?: string } | null {
-  try {
-    const [ivB64, tagB64, dataB64] = token.split(".");
-    const decipher = createDecipheriv("aes-256-gcm", profileKey(), Buffer.from(ivB64, "base64"));
-    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-    const dec = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
-    return JSON.parse(dec.toString("utf8"));
-  } catch {
-    return null;
-  }
 }
 
 function stripAudio(sos: any) {
@@ -268,7 +281,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     : undefined;
 
   const newSos: any = {
-    id: `sos-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+    id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
     deviceId: data.deviceId,
     lat,
     lng,
@@ -299,7 +312,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
   }
   logger.info({ sosId: newSos.id, lat, lng, priority, isVerifiedByProximity }, "New SOS created");
-  res.json(newSos);
+  res.json(stripAudio(newSos));
 });
 
 router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) => {
