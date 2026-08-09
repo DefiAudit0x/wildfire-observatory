@@ -11,6 +11,10 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-1.0.0-orange)
 
+<p align="center">
+  <img alt="Live dashboard" src="docs/screenshots/home-map.png" width="820" />
+</p>
+
 </div>
 
 ---
@@ -20,6 +24,7 @@
 - [Overview / نظرة عامة](#overview)
 - [Features / الميزات](#features)
 - [Tech Stack / التقنيات](#tech-stack)
+- [Satellite & Data Sources / الأقمار ومصادر البيانات](#satellite-data)
 - [Architecture / البنية](#architecture)
 - [Getting Started / التشغيل](#getting-started)
 - [API Documentation / توثيق API](#api-documentation)
@@ -63,6 +68,10 @@
 
 ![Live map view](docs/screenshots/map-view.png)
 
+<p>
+  <img alt="Mobile view" src="docs/screenshots/mobile-view.png" width="330" />
+</p>
+
 ---
 
 <a name="tech-stack"></a>
@@ -103,6 +112,19 @@
 | Docker | Multi-stage container build |
 | GitHub Actions | CI/CD pipeline (lint → test → build) |
 | Husky | Pre-commit hooks (tsc --noEmit) |
+
+---
+
+<a name="satellite-data"></a>
+
+## 🛰️ Satellite & Data Sources / الأقمار ومصادر البيانات
+
+- **NASA FIRMS** — Near-real-time thermal anomalies (fire hotspots) over the Maghreb region, fetched through a Cloudflare proxy and degraded gracefully to a static snapshot when unreachable (fully offline-safe).
+- **MODIS vs VIIRS** — MODIS offers ~1 km resolution with 2–4 passes/day; VIIRS ~375 m with more frequent passes. Every hotspot carries its source satellite, brightness (fire radiative power proxy), confidence and detection time.
+- **What a hotspot means** — a thermal anomaly flagged by the sensor is a *signal to verify*, not a confirmed fire. The pipeline cross-checks it against citizen reports, AI image analysis and the consensus engine before status decisions.
+- **Confidence** — nominal confidence is normalized to a percentage; high-confidence hotspots (≥70%) trigger proximity alerts.
+- **Google Gemini Vision** — AI-assisted image verification (fire/smoke detection) with confidence scoring; outputs are informational and subject to human/consensus review.
+- Complete data provenance, endpoints and fallback behavior: [DATA_SOURCES.md](DATA_SOURCES.md).
 
 ---
 
@@ -269,7 +291,7 @@ npm run test:e2e
 Current test coverage:
 - **Server unit/API tests**: 16 suites covering reports, SOS (incl. encryption + rate limits), badges, AI guidance (with sanitization), volunteers, roster, mesh, geo, wilayas, history, fire-risk & export utilities
 - **React component tests**: 3 (admin panel)
-- **Playwright E2E**: 16 passed + 1 intentionally skipped (admin login flow) — smoke API, PWA offline shell, SOS flow
+- **Playwright E2E**: 17 passed — smoke API, admin login flow, PWA offline shell, SOS flow
 - **0 errors** on `tsc --noEmit`
 - **CI pipeline** runs lint → tests → build → E2E on every push/PR
 
@@ -313,14 +335,18 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 
 ## 📊 Project Status / حالة المشروع
 
-| Criterion | Rating |
+| Area | Status |
 |---|---|
-| Security | 8/10 ✅ (JWT, Helmet, CORS, rate limiting) |
-| Code Quality | 7/10 ✅ (modular structure, Pino logging, error handling) |
-| Testing | 8/10 ⬆️ (13 server suites + React + 16 Playwright E2E, CI pipeline) |
-| Documentation | 7/10 ✅ (Swagger API docs, bilingual README) |
-| Architecture | 7/10 ✅ (clean separation, lazy Firebase init) |
-| **Overall** | **7/10** |
+| JWT admin auth, rate limiting, Helmet headers, CORS, Zod validation | ✅ Implemented |
+| Modular backend with Pino structured logging & centralized error handling | ✅ Implemented |
+| Automated tests (16 server suites + React + Playwright E2E) & CI pipeline | ✅ Implemented |
+| Swagger/OpenAPI docs + bilingual README | ✅ Implemented |
+| Multi-stage Docker build + GitHub Actions + Husky | ✅ Implemented |
+| Sentry monitoring (server + React) | ✅ Implemented |
+| PWA offline (Workbox precache + API cache) | ✅ Implemented |
+| Full user-flow E2E coverage beyond smoke paths | ⬜ In progress |
+| Dependency scanning / dependency review in CI | ⬜ Planned |
+| Load testing & capacity checks | ⬜ Planned |
 
 ### What was improved / التحسينات المنجزة
 
@@ -328,7 +354,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 - ✅ **Architecture**: Monolithic 1082-line `server.ts` split into 15 modular files
 - ✅ **Logging**: `console.log` replaced with Pino structured logger
 - ✅ **Error Handling**: Centralized error handler middleware
-- ✅ **Testing**: 13 Vitest server suites + React tests + 16 Playwright E2E
+- ✅ **Testing**: 16 Vitest server suites + React tests + 17 Playwright E2E
 - ✅ **CI/CD**: GitHub Actions pipeline + Husky pre-commit hooks
 - ✅ **API Docs**: Swagger UI at `/api-docs`
 - ✅ **Docker**: Multi-stage production build

@@ -65,10 +65,21 @@ try {
   await page.waitForTimeout(1200);
   await page.screenshot({ path: join(outDir, "home-map.png"), fullPage: false });
 
+  const mobile = await browser.newPage({
+    viewport: { width: 412, height: 892 },
+    isMobile: true,
+    hasTouch: true,
+    deviceScaleFactor: 1.5,
+  });
+  await mobile.goto("http://127.0.0.1:3000/", { waitUntil: "networkidle" });
+  await mobile.waitForTimeout(800);
+  await mobile.screenshot({ path: join(outDir, "mobile-view.png"), fullPage: false });
+
   await browser.close();
   console.log("Saved screenshots:");
   console.log("  docs/screenshots/map-view.png");
   console.log("  docs/screenshots/home-map.png");
+  console.log("  docs/screenshots/mobile-view.png");
 } catch (err) {
   console.error("Screenshot failed:", err.message);
   process.exitCode = 1;
