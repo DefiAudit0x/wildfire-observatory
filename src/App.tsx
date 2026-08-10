@@ -35,7 +35,7 @@ export default function App() {
     notifications,
     loading,
     lastRefreshed,
-    lastFetchFailed,
+    datasetHealth,
     meshStatus,
     meshNodeCount,
     fetchData,
@@ -49,9 +49,10 @@ export default function App() {
   const handleToggleLang = useCallback(() => setLang((prev) => (prev === "ar" ? "fr" : "ar")), []);
 
   const handleMapClick = useCallback((lat: number, lng: number) => {
+    // Prefill the report form with the clicked coordinates and drop any
+    // previously selected pin so the form relates to the new spot.
     setMapClickedCoords({ lat, lng });
     setSelectedReportId(null);
-    // Switch to report tab on mobile so they can see the form filled immediately
     setActiveTab("report");
   }, []);
 
@@ -61,8 +62,9 @@ export default function App() {
     setActiveTab("map");
   }, []);
 
-  // "View the nearest threat on the map": highlights the closest active fire
-  // cluster for the user instead of claiming any GPS relocation.
+  // "View the nearest threat on the map": highlights the closest active alert.
+  // useProximityAlerts sorts its list by distance (ascending), so [0] IS the
+  // nearest one — this never relies on server ordering.
   const handleShowThreatOnMap = useCallback(() => {
     if (activeAlerts.length > 0 && userLocation) {
       setSelectedReportId(activeAlerts[0].id);
@@ -76,7 +78,10 @@ export default function App() {
   // Nearest active danger to the user, combining clustered citizen reports
   // (non-resolved) and high-confidence satellite hotspots (>=70%) through the
   // single shared threat helper (same definition as the home emergency banner).
-  const distanceToFire = useMemo(() => {
+  // The EXACT KIND of the nearest source travels with the distance: a
+  // satellite hotspot is "a thermal point detected from orbit", NOT a
+  // confirmed fire — the SOS modal labels it accordingly.
+  const nearestThreat = useMemo(() => {
     if (!userLocation) return null;
 
     const { nearest } = getNearestActiveThreat({
@@ -86,7 +91,7 @@ export default function App() {
       satellites,
     });
 
-    return nearest ? Math.round(nearest.distanceKm * 1000) : null;
+    return nearest ? { distanceM: Math.round(nearest.distanceKm * 1000), kind: nearest.kind } : null;
   }, [userLocation, reports, satellites]);
 
   return (
@@ -96,7 +101,7 @@ export default function App() {
         lang={lang}
         notifications={notifications}
         lastRefreshed={lastRefreshed}
-        lastFetchFailed={lastFetchFailed}
+        datasetHealth={datasetHealth}
         loading={loading}
         meshStatus={meshStatus}
         meshNodeCount={meshNodeCount}
@@ -159,7 +164,7 @@ export default function App() {
             fetchData();
           }}
           userLocation={userLocation}
-          distanceToFire={distanceToFire}
+          nearestThreat={nearestThreat}
         />
       )}
 

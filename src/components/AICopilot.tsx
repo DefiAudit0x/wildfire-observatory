@@ -13,6 +13,7 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   const [activeWilaya, setActiveWilaya] = useState<string>("");
 
   const isArabic = lang === "ar";
+  const hasLocation = mapClickedCoords !== null;
   const CACHE_TTL_MS = 60 * 60 * 1000;
   const MIN_REQUEST_INTERVAL_MS = 5000;
   const lastRequestRef = useRef(0);
@@ -20,10 +21,13 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   const abortRef = useRef<AbortController | null>(null);
 
   const getCacheKey = () => {
-    const lat = mapClickedCoords?.lat?.toFixed(4) || "36.8";
-    const lng = mapClickedCoords?.lng?.toFixed(4) || "7.5";
+    // No silent default coordinates: without a map click the key says "unknown
+    // location", so a general answer is never cached as if it were local.
+    const locationKey = hasLocation
+      ? `${mapClickedCoords.lat.toFixed(4)}_${mapClickedCoords.lng.toFixed(4)}`
+      : "loc:unknown";
     const hourBucket = Math.floor(Date.now() / CACHE_TTL_MS);
-    return `ai_guidance_${lang}_${lat}_${lng}_${activeWilaya}_${hourBucket}`;
+    return `ai_guidance_${lang}_${locationKey}_${activeWilaya}_${hourBucket}`;
   };
 
   const fetchGuidance = async (force = false, attempt = 0) => {
@@ -62,9 +66,12 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          lat: mapClickedCoords?.lat || 36.8,
-          lng: mapClickedCoords?.lng || 7.5,
-          wilaya: activeWilaya || (isArabic ? "الشرق الجزائري" : "Est de l'Algérie"),
+          // Coordinates and wilaya are sent ONLY when actually known. The
+          // server falls back to its own generic context and the UI shows an
+          // explicit "location unknown" notice — no silent regional default.
+          lat: mapClickedCoords?.lat,
+          lng: mapClickedCoords?.lng,
+          wilaya: activeWilaya || undefined,
           lang: lang,
         }),
         signal: controller.signal,
@@ -182,6 +189,16 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
           )}
         </div>
       </div>
+
+      {/* No-coordinate transparency: without a map click the answer is general
+          and must never read as if it were about the user's whereabouts. */}
+      {!hasLocation && (
+        <div className="mb-3 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 text-[11px] text-amber-300 font-medium">
+          {isArabic
+            ? "⚠️ الموقع غير محدد — الإجابة عامة ولا تعكس موقعك الحالي. اضغط على الخريطة في تبويب «المرصد والخريطة» للحصول على إرشادات محلية."
+            : "⚠️ Position inconnue — réponse générale sans votre contexte local. Cliquez sur la carte (onglet Observatoire) pour des consignes localisées."}
+        </div>
+      )}
 
       {/* Main Guidance Text Container */}
       <div className="flex-1 min-h-[220px] max-h-[360px] overflow-y-auto bg-black/50 rounded-xl p-4 border border-white/5 relative scroll-smooth">

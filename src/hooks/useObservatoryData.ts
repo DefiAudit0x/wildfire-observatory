@@ -1,10 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Report, SatelliteHotspot, WilayaStatus, TrappedSOS } from "../types";
+import { Report, SatelliteHotspot, WilayaStatus, TrappedSOS, Notification } from "../types";
 import { fetchWithRetry } from "../utils/api";
 import { meshClient } from "../lib/mesh";
 import { broadcastMessage, isMeshSupported } from "../utils/meshBridge";
 import { useLiveEvents } from "../utils/live";
 import { getDeviceId } from "../utils/device";
+import { DATASET_KEYS, DatasetHealth, DatasetKey } from "../utils/datasetHealth";
+
+export type { DatasetKey, DatasetHealth };
+export { DATASET_KEYS };
+
+const EMPTY_DATASET_HEALTH: Record<DatasetKey, DatasetHealth> = {
+  reports: { lastSuccess: null, lastAttemptOk: true },
+  satellites: { lastSuccess: null, lastAttemptOk: true },
+  wilayas: { lastSuccess: null, lastAttemptOk: true },
+  sos: { lastSuccess: null, lastAttemptOk: true },
+  notifications: { lastSuccess: null, lastAttemptOk: true },
+};
+
+export interface FetchOutcome {
+  /** True when the data returned by this poll contains pending/verified reports or active SOS. */
+  hasActiveActivity: boolean;
+  /** Every dataset answered OK in this poll. */
+  allOk: boolean;
+  /** At least one dataset answered OK in this poll (backend reachable). */
+  anyOk: boolean;
+}
 
 export function useObservatoryData() {
   const deviceId = getDeviceId();
@@ -12,89 +33,121 @@ export function useObservatoryData() {
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
-  const [notifications, setNotifications] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState<number>(0);
-  const [lastFetchFailed, setLastFetchFailed] = useState(false);
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
   const [meshNodeCount, setMeshNodeCount] = useState(0);
+  const [datasetHealth, setDatasetHealth] = useState<Record<DatasetKey, DatasetHealth>>(EMPTY_DATASET_HEALTH);
 
-  // Parallel data fetching from Express backend
-  const fetchData = useCallback(async () => {
+  // Parallel data fetching from Express backend, tracked per dataset. A single
+  // endpoint outage never marks the whole backend dead, and a single success
+  // never claims the whole observatory is fresh.
+  const fetchData = useCallback(async (): Promise<FetchOutcome> => {
     setLoading(true);
-    try {
-      const [reportsRes, satellitesRes, wilayasRes, sosRes, notifsRes] = await Promise.allSettled([
-        fetch("/api/reports"),
-        fetch("/api/satellite-data"),
-        fetch("/api/wilayas"),
-        fetch("/api/sos"),
-        fetch(`/api/notifications/${deviceId}`),
-      ]);
 
-      if (reportsRes.status === "fulfilled" && reportsRes.value.ok) {
-        setReports(await reportsRes.value.json());
+    const commit = async (
+      key: DatasetKey,
+      promise: Promise<Response>,
+      apply: (data: unknown) => void
+    ): Promise<boolean> => {
+      try {
+        const res = await promise;
+        if (!res.ok) return false;
+        const data = await res.json();
+        apply(data);
+        return true;
+      } catch {
+        return false;
       }
-      if (satellitesRes.status === "fulfilled" && satellitesRes.value.ok) {
-        setSatellites(await satellitesRes.value.json());
+    };
+
+    let freshReports: Report[] = [];
+    let freshSos: TrappedSOS[] = [];
+
+    const results = await Promise.all([
+      commit("reports", fetch("/api/reports"), (data) => {
+        const list = Array.isArray(data) ? (data as Report[]) : [];
+        freshReports = list;
+        setReports(list);
+      }),
+      commit("satellites", fetch("/api/satellite-data"), (data) => {
+        if (Array.isArray(data)) setSatellites(data as SatelliteHotspot[]);
+      }),
+      commit("wilayas", fetch("/api/wilayas"), (data) => {
+        if (Array.isArray(data)) setWilayas(data as WilayaStatus[]);
+      }),
+      commit("sos", fetch("/api/sos"), (data) => {
+        const list = Array.isArray(data) ? (data as TrappedSOS[]) : [];
+        freshSos = list;
+        setSosCalls(list);
+      }),
+      commit("notifications", fetch(`/api/notifications/${deviceId}`), (data) => {
+        if (Array.isArray(data)) setNotifications(data as Notification[]);
+      }),
+    ]);
+
+    const okMap: Record<DatasetKey, boolean> = {
+      reports: results[0],
+      satellites: results[1],
+      wilayas: results[2],
+      sos: results[3],
+      notifications: results[4],
+    };
+    const anyOk = DATASET_KEYS.some((k) => okMap[k]);
+    const allOk = DATASET_KEYS.every((k) => okMap[k]);
+    const now = Date.now();
+
+    setDatasetHealth((prev) => {
+      const next: Record<DatasetKey, DatasetHealth> = { ...prev };
+      for (const key of DATASET_KEYS) {
+        next[key] = {
+          lastSuccess: okMap[key] ? now : prev[key].lastSuccess,
+          lastAttemptOk: okMap[key],
+        };
       }
-      if (wilayasRes.status === "fulfilled" && wilayasRes.value.ok) {
-        setWilayas(await wilayasRes.value.json());
-      }
-      if (sosRes.status === "fulfilled" && sosRes.value.ok) {
-        setSosCalls(await sosRes.value.json());
-      }
-      if (notifsRes.status === "fulfilled" && notifsRes.value.ok) {
-        setNotifications(await notifsRes.value.json());
-      }
-      const anyEndpointOk = [
-        reportsRes,
-        satellitesRes,
-        wilayasRes,
-        sosRes,
-        notifsRes,
-      ].some((r) => r.status === "fulfilled" && r.value.ok);
-      if (anyEndpointOk) {
-        // At least one endpoint answered: the backend is reachable, so the
-        // connection is alive even if a single dataset failed mid-poll.
-        setLastFetchFailed(false);
-        setLastRefreshed(Date.now());
-      } else {
-        setLastFetchFailed(true);
-      }
-    } catch (err) {
-      setLastFetchFailed(true);
-      console.error("Failed to fetch fire data:", err);
-    } finally {
-      setLoading(false);
+      return next;
+    });
+
+    if (anyOk) {
+      // A poll where at least one dataset succeeded means the backend is
+      // reachable — but "all fresh" is derived per-dataset by the UI.
+      setLastRefreshed(now);
     }
+
+    const hasActiveActivity =
+      freshReports.some((r) => r.status === "pending" || r.status === "verified") ||
+      freshSos.some((s) => s.status === "active");
+
+    return { hasActiveActivity, allOk, anyOk };
   }, [deviceId]);
 
   // Stable self-rescheduling poll: the timer re-arms itself inside its own
-  // callback, so incoming data (reports/sosCalls) never resets it mid-cycle.
-  // Cadence stays adaptive: faster while activity is pending/verified/unresolved.
-  const reportsRef = useRef(reports);
-  const sosRef = useRef(sosCalls);
+  // callback. Cadence is computed from the data THIS poll just returned
+  // (fresh payloads, not the pre-poll state), so a new SOS shortens the next
+  // wait immediately instead of one cycle later.
   useEffect(() => {
-    reportsRef.current = reports;
-  }, [reports]);
-  useEffect(() => {
-    sosRef.current = sosCalls;
-  }, [sosCalls]);
-
-  useEffect(() => {
-    fetchData();
+    let cancelled = false;
     let timer: number | null = null;
     const scheduleNext = (delayMs: number) => {
-      timer = window.setTimeout(() => {
-        const hasActiveActivity =
-          reportsRef.current.some((r) => r.status === "pending" || r.status === "verified") ||
-          sosRef.current.some((s) => s.status === "active");
-        fetchData();
-        scheduleNext(hasActiveActivity ? 10000 : 60000);
+      timer = window.setTimeout(async () => {
+        try {
+          const outcome = await fetchData();
+          if (cancelled) return;
+          scheduleNext(outcome.hasActiveActivity ? 10000 : 60000);
+        } catch {
+          // fetchData is rejection-safe; the guard is for unforeseen failures.
+          if (!cancelled) scheduleNext(60000);
+        }
       }, delayMs);
     };
-    scheduleNext(60000);
+    void (async () => {
+      const outcome = await fetchData();
+      if (cancelled) return;
+      scheduleNext(outcome.hasActiveActivity ? 10000 : 60000);
+    })();
     return () => {
+      cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
   }, [fetchData]);
@@ -159,16 +212,24 @@ export function useObservatoryData() {
       let res: Response;
 
       if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
-        // Multipart upload: avoids sending base64 through the JSON body parser
-        const fd = new FormData();
+        // Multipart upload: avoids sending base64 through the JSON body parser.
+        // The data URL is decoded via fetch() into a Blob — the browser-native
+        // decoder beats a JS atob() loop on large images (low-bandwidth tool).
         const imgData = payload.image;
         const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
-        const base64 = imgData.split(",")[1] || "";
-        const bin = atob(base64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const blob = new Blob([bytes], { type: mime });
+        let blob: Blob;
+        try {
+          blob = await (await fetch(imgData)).blob();
+        } catch {
+          // Older WebViews may refuse to fetch data URLs: fall back to atob.
+          const base64 = imgData.split(",")[1] || "";
+          const bin = atob(base64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          blob = new Blob([bytes], { type: mime });
+        }
         const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+        const fd = new FormData();
         fd.append("image", blob, `report-${Date.now()}.${ext}`);
         for (const [k, v] of Object.entries(payload)) {
           if (k === "image") continue;
@@ -200,9 +261,10 @@ export function useObservatoryData() {
       const newReport = await res.json();
       setReports((prev) => [newReport, ...prev]);
 
-      // Inside the Android WebView, fan the report out over the local Bluetooth
-      // mesh: offline peers relay it hop-to-hop until an online device can
-      // submit it (meshRelay.ts). The mesh copy never carries PII.
+      // When the local mesh transport is supported (native bridge, PWA peer
+      // layer, ...), fan the report out to offline peers: they relay it
+      // hop-to-hop until an online device can submit it (meshRelay.ts). The
+      // mesh copy never carries PII.
       if (isMeshSupported()) {
         try {
           const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = payload;
@@ -263,7 +325,7 @@ export function useObservatoryData() {
     notifications,
     loading,
     lastRefreshed,
-    lastFetchFailed,
+    datasetHealth,
     meshStatus,
     meshNodeCount,
     deviceId,

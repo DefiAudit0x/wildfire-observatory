@@ -5,7 +5,14 @@ interface TrappedSOSModalProps {
   lang: "ar" | "fr";
   onClose: () => void;
   userLocation: { lat: number; lng: number } | null;
-  distanceToFire?: number | null;
+  /**
+   * Distance to the nearest ACTIVE danger and what kind of source it is:
+   * "report" = citizen-signaled fire, "satellite" = thermal hotspot detected
+   * from orbit (a detection, NOT an on-the-ground confirmation). The modal
+   * wording reflects the kind so a hotspot is never presented as a confirmed
+   * fire.
+   */
+  nearestThreat?: { distanceM: number; kind: "report" | "satellite" } | null;
 }
 
 type Step =
@@ -19,10 +26,10 @@ type Step =
 
 const MAX_AUDIO_DURATION_SEC = 20;
 
-export default function TrappedSOSModal({ lang, onClose, userLocation, distanceToFire: nearestFireDistance }: TrappedSOSModalProps) {
+export default function TrappedSOSModal({ lang, onClose, userLocation, nearestThreat }: TrappedSOSModalProps) {
   const isArabic = lang === "ar";
   const [step, setStep] = useState<Step>("verifying");
-  const [distanceToFire, setDistanceToFire] = useState<number | null>(nearestFireDistance ?? null);
+  const [nearestThreatState, setNearestThreatState] = useState<TrappedSOSModalProps["nearestThreat"]>(nearestThreat ?? null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -135,17 +142,17 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
   useEffect(() => {
     if (!userLocation) {
       setStep("no_location");
-      setDistanceToFire(null);
+      setNearestThreatState(null);
       return;
     }
-    if (nearestFireDistance == null) {
+    if (nearestThreat == null) {
       setStep("no_fires");
-      setDistanceToFire(null);
+      setNearestThreatState(null);
       return;
     }
-    setDistanceToFire(nearestFireDistance);
+    setNearestThreatState(nearestThreat);
     setStep("verified");
-  }, [userLocation, nearestFireDistance]);
+  }, [userLocation, nearestThreat]);
 
   const [micStatus, setMicStatus] = useState<"idle" | "recording" | "permission_denied">("idle");
   const [audioLevel, setAudioLevel] = useState<number>(0);
@@ -533,13 +540,19 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                 </h3>
                 <p className="text-sm text-slate-300">
                   {isArabic ? "أنت متواجد على بُعد " : "Vous êtes à "}
-                  <span className="font-bold text-white px-1">{distanceToFire} {isArabic ? "متر" : "mètres"}</span>
-                  {isArabic ? "من حريق نشط." : "d'un feu actif."}
+                  <span className="font-bold text-white px-1">{nearestThreatState?.distanceM} {isArabic ? "متر" : "mètres"}</span>
+                  {nearestThreatState?.kind === "satellite"
+                    ? (isArabic
+                        ? "من بؤرة حرارية رصدها القمر الصناعي — يُفحص موقعها ميدانياً الآن."
+                        : "d'un point chaud détecté par satellite — vérification terrain en cours.")
+                    : (isArabic
+                        ? "من حريق نشط أبلغ عنه مواطنون."
+                        : "d'un feu actif signalé par des citoyens.")}
                 </p>
                 <p className="text-xs text-red-400 mt-2 p-2 bg-red-950/30 rounded border border-red-900/50">
                   {isArabic
-                    ? "تم فتح قناة الاتصال المباشر (Override) بجميع أعوان الحماية المدنية في النطاق الجغرافي."
-                    : "Canal radio direct (Override) ouvert avec toutes les unités à proximité."}
+                    ? "تصل استغاثتك إلى غرفة عمليات المنصة وتُعرض على فرق الاستجابة الميدانية القريبة."
+                    : "Votre alerte est transmise à la salle des opérations et affichée aux unités de terrain proches."}
                 </p>
               </div>
 
@@ -688,8 +701,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, distanceT
                 </h3>
                 <p className="text-sm text-slate-300">
                   {isArabic
-                    ? "تم بث تسجيلك الصوتي وإحداثياتك لإسم أجهزة الحماية المدنية والقيادة المركزية."
-                    : "Votre message vocal et votre position ont été transmis à la Protection Civile et au Commandement."}
+                    ? "أُرسل تسجيلك الصوتي وموقعك إلى غرفة عمليات المنصة، وتُعرض استغاثتك على فرق الاستجابة القريبة."
+                    : "Votre message vocal et votre position ont été envoyés à la salle des opérations et sont visibles par les unités proches."}
                 </p>
               </div>
 
