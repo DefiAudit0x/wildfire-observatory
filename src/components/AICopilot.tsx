@@ -42,6 +42,11 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
           const parsed = JSON.parse(cached);
           if (parsed.guidance && Date.now() - parsed.timestamp < CACHE_TTL_MS) {
             setGuidance(parsed.guidance);
+            // A cached answer supersedes whatever request may still be in
+            // flight: abort it (no wasted bandwidth) and release the spinner
+            // (its own finally can't, because latestRequestRef moved on).
+            abortRef.current?.abort();
+            setLoading(false);
             return;
           }
         }

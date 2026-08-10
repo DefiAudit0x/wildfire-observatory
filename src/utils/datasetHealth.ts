@@ -9,11 +9,19 @@
 export type DatasetKey = "reports" | "satellites" | "wilayas" | "sos" | "notifications";
 
 export interface DatasetHealth {
-  /** Epoch ms of the last time THIS dataset returned parseable data (null = never). */
+  /** Epoch ms of the last time THIS dataset passed transport + JSON + schema
+   *  validation (null = never). A response that does NOT match the dataset
+   *  shape is NOT a success: see FailureReason. */
   lastSuccess: number | null;
-  /** Whether the latest poll attempt for THIS dataset succeeded. */
+  /** Whether the latest poll attempt for THIS dataset succeeded end-to-end. */
   lastAttemptOk: boolean;
+  /** Why the latest attempt failed when lastAttemptOk is false. */
+  lastFailureReason?: FailureReason;
 }
+
+/** Why a dataset attempt failed — lets the UI distinguish "network down",
+ *  "server error", "unparsable body" and "structurally invalid payload". */
+export type FailureReason = "transport" | "http" | "parse" | "schema";
 
 export const DATASET_KEYS: DatasetKey[] = ["reports", "satellites", "wilayas", "sos", "notifications"];
 

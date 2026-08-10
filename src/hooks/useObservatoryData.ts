@@ -5,10 +5,18 @@ import { meshClient } from "../lib/mesh";
 import { broadcastMessage, isMeshSupported } from "../utils/meshBridge";
 import { useLiveEvents } from "../utils/live";
 import { getDeviceId } from "../utils/device";
-import { DATASET_KEYS, DatasetHealth, DatasetKey } from "../utils/datasetHealth";
+import { DATASET_KEYS, DatasetHealth, DatasetKey, FailureReason } from "../utils/datasetHealth";
+import { validateDataset } from "../utils/datasetValidators";
 
 export type { DatasetKey, DatasetHealth };
 export { DATASET_KEYS };
+
+/** Result of one dataset attempt: valid payload carried for real data. */
+interface DatasetAttempt {
+  ok: boolean;
+  reason: FailureReason;
+  data?: unknown[];
+}
 
 const EMPTY_DATASET_HEALTH: Record<DatasetKey, DatasetHealth> = {
   reports: { lastSuccess: null, lastAttemptOk: true },
@@ -42,68 +50,93 @@ export function useObservatoryData() {
 
   // Parallel data fetching from Express backend, tracked per dataset. A single
   // endpoint outage never marks the whole backend dead, and a single success
-  // never claims the whole observatory is fresh.
+  // never claims the whole observatory is fresh. Dataset commit requires
+  // transport + HTTP + JSON + schema validation to pass (datasetValidators);
+  // an invalid payload fails THAT dataset only and preserves its previous
+  // state — it can never wipe live reports/SOS from the UI.
   const fetchData = useCallback(async (): Promise<FetchOutcome> => {
     setLoading(true);
 
-    const commit = async (
-      key: DatasetKey,
-      promise: Promise<Response>,
-      apply: (data: unknown) => void
-    ): Promise<boolean> => {
+    const commit = async (key: DatasetKey, promise: Promise<Response>): Promise<DatasetAttempt> => {
+      let res: Response;
       try {
-        const res = await promise;
-        if (!res.ok) return false;
-        const data = await res.json();
-        apply(data);
-        return true;
+        res = await promise;
       } catch {
-        return false;
+        return { ok: false, reason: "transport" };
+      }
+      if (!res.ok) return { ok: false, reason: "http" };
+
+      let data: unknown;
+      try {
+        data = await res.json();
+      } catch {
+        return { ok: false, reason: "parse" };
+      }
+
+      try {
+        // Schema validation: 200 + JSON is NOT a successful dataset. An
+        // invalid payload fails this source only and preserves its prior
+        // state — it can never blank reports/SOS from the UI.
+        const validated = validateDataset(key, data);
+        return { ok: true, reason: "schema", data: validated };
+      } catch {
+        return { ok: false, reason: "schema" };
       }
     };
 
     let freshReports: Report[] = [];
     let freshSos: TrappedSOS[] = [];
 
-    const results = await Promise.all([
-      commit("reports", fetch("/api/reports"), (data) => {
-        const list = Array.isArray(data) ? (data as Report[]) : [];
-        freshReports = list;
-        setReports(list);
-      }),
-      commit("satellites", fetch("/api/satellite-data"), (data) => {
-        if (Array.isArray(data)) setSatellites(data as SatelliteHotspot[]);
-      }),
-      commit("wilayas", fetch("/api/wilayas"), (data) => {
-        if (Array.isArray(data)) setWilayas(data as WilayaStatus[]);
-      }),
-      commit("sos", fetch("/api/sos"), (data) => {
-        const list = Array.isArray(data) ? (data as TrappedSOS[]) : [];
-        freshSos = list;
-        setSosCalls(list);
-      }),
-      commit("notifications", fetch(`/api/notifications/${deviceId}`), (data) => {
-        if (Array.isArray(data)) setNotifications(data as Notification[]);
-      }),
-    ]);
-
-    const okMap: Record<DatasetKey, boolean> = {
-      reports: results[0],
-      satellites: results[1],
-      wilayas: results[2],
-      sos: results[3],
-      notifications: results[4],
+    const applyDataset = (key: DatasetKey, validated: unknown[]) => {
+      switch (key) {
+        case "reports": {
+          const list = validated as Report[];
+          freshReports = list;
+          setReports(list);
+          break;
+        }
+        case "satellites":
+          setSatellites(validated as SatelliteHotspot[]);
+          break;
+        case "wilayas":
+          setWilayas(validated as WilayaStatus[]);
+          break;
+        case "sos": {
+          const list = validated as TrappedSOS[];
+          freshSos = list;
+          setSosCalls(list);
+          break;
+        }
+        case "notifications":
+          setNotifications(validated as Notification[]);
+          break;
+      }
     };
-    const anyOk = DATASET_KEYS.some((k) => okMap[k]);
-    const allOk = DATASET_KEYS.every((k) => okMap[k]);
+
+    const outcomes: Record<DatasetKey, DatasetAttempt> = {
+      reports: await commit("reports", fetch("/api/reports")),
+      satellites: await commit("satellites", fetch("/api/satellite-data")),
+      wilayas: await commit("wilayas", fetch("/api/wilayas")),
+      sos: await commit("sos", fetch("/api/sos")),
+      notifications: await commit("notifications", fetch(`/api/notifications/${deviceId}`)),
+    };
+
+    DATASET_KEYS.forEach((key) => {
+      const attempt = outcomes[key];
+      if (attempt.ok && attempt.data) applyDataset(key, attempt.data);
+    });
+
+    const anyOk = DATASET_KEYS.some((k) => outcomes[k].ok);
+    const allOk = DATASET_KEYS.every((k) => outcomes[k].ok);
     const now = Date.now();
 
     setDatasetHealth((prev) => {
       const next: Record<DatasetKey, DatasetHealth> = { ...prev };
       for (const key of DATASET_KEYS) {
         next[key] = {
-          lastSuccess: okMap[key] ? now : prev[key].lastSuccess,
-          lastAttemptOk: okMap[key],
+          lastSuccess: outcomes[key].ok ? now : prev[key].lastSuccess,
+          lastAttemptOk: outcomes[key].ok,
+          lastFailureReason: outcomes[key].ok ? undefined : outcomes[key].reason,
         };
       }
       return next;

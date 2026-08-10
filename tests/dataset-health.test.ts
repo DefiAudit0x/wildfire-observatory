@@ -63,6 +63,35 @@ describe("computeSyncState", () => {
     expect(sync).toBe("stale");
   });
 
+  it("treats exactly the freshness window as still fresh (boundary: >, not >=)", () => {
+    const atBoundary = NOW - 180_000;
+    const justPast = NOW - 180_001;
+    const { states: at } = computeSyncState(health({
+      reports: { lastSuccess: atBoundary, lastAttemptOk: true },
+      satellites: { lastSuccess: atBoundary, lastAttemptOk: true },
+      wilayas: { lastSuccess: atBoundary, lastAttemptOk: true },
+      sos: { lastSuccess: atBoundary, lastAttemptOk: true },
+      notifications: { lastSuccess: atBoundary, lastAttemptOk: true },
+    }), NOW);
+    const { states: past } = computeSyncState(health({
+      reports: { lastSuccess: justPast, lastAttemptOk: true },
+      satellites: { lastSuccess: justPast, lastAttemptOk: true },
+      wilayas: { lastSuccess: justPast, lastAttemptOk: true },
+      sos: { lastSuccess: justPast, lastAttemptOk: true },
+      notifications: { lastSuccess: justPast, lastAttemptOk: true },
+    }), NOW);
+    expect(at.reports).toBe("live");
+    expect(past.reports).toBe("stale");
+  });
+
+  it("reports the failure reason alongside a failed dataset", () => {
+    const { states } = computeSyncState(
+      health({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false } }),
+      NOW
+    );
+    expect(states.satellites).toBe("degraded");
+  });
+
   it("is Offline only when every dataset failed its last attempt", () => {
     const { sync } = computeSyncState(
       health({

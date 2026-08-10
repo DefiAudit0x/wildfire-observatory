@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import { Flame, Clock, RefreshCw, Bell, X, CheckCircle, AlertTriangle, AlertCircle, Info, Wifi, WifiOff, Phone, Globe } from "lucide-react";
 import { EMERGENCY_CONTACTS } from "../../utils/emergency";
 import { Language, Notification } from "../../types";
-import { DATASET_KEYS, DatasetHealth, DatasetKey, computeSyncState, DatasetState, SyncState, STALE_AFTER_MS, NOW_TICK_MS } from "../../utils/datasetHealth";
+import { DATASET_KEYS, DatasetHealth, DatasetKey, computeSyncState, DatasetState, SyncState, STALE_AFTER_MS, NOW_TICK_MS, FailureReason } from "../../utils/datasetHealth";
 
 interface HeaderBarProps {
   isArabic: boolean;
@@ -17,6 +17,13 @@ interface HeaderBarProps {
   onRefresh: () => void;
   onMarkRead: (id: string) => void;
 }
+
+const REASON_WORDS: Record<FailureReason, { ar: string; fr: string }> = {
+  transport: { ar: "فشل الشبكة", fr: "échec réseau" },
+  http: { ar: "استجابة خادم خاطئة", fr: "réponse serveur" },
+  parse: { ar: "JSON غير صالح", fr: "JSON invalide" },
+  schema: { ar: "شكل بيانات غير صالح", fr: "données malformées" },
+};
 
 const DS_NAMES: Record<DatasetKey, { ar: string; fr: string }> = {
   reports: { ar: "البلاغات", fr: "Signalements" },
@@ -154,7 +161,11 @@ function HeaderBar({
           : st === "stale"
             ? isArabic ? "قديم" : "ancien"
             : isArabic ? "لم يُزامن" : "jamais sync";
-    return `${isArabic ? label.ar : label.fr}: ${word}${when ? ` (${when})` : ""}`;
+    const reason = datasetHealth[key].lastFailureReason;
+    const reasonSuffix = reason && st !== "live"
+      ? ` (${isArabic ? REASON_WORDS[reason].ar : REASON_WORDS[reason].fr})`
+      : "";
+    return `${isArabic ? label.ar : label.fr}: ${word}${reasonSuffix}${when ? ` (${when})` : ""}`;
   }).join(" · ");
 
   const badgeTitle = `${isArabic ? badgeMeta[sync].titleAr : badgeMeta[sync].titleFr}\n${sourceBreakdown}`;

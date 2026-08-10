@@ -18,20 +18,43 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   // Two independent alert channels (proximity siren vs operator tone) each own
-  // their AudioContext, so one route's 2s close timer can never close the
-  // context the other route just opened.
+  // their AudioContext, so one route's close timer can never close the context
+  // the other route just opened. Each route ALSO owns ONE close timer that is
+  // re-armed on reuse — a stale timer can no longer close a context that a
+  // newer alert (same route) is still ringing.
   const proximityAudioCtxRef = useRef<AudioContext | null>(null);
   const operatorAudioCtxRef = useRef<AudioContext | null>(null);
+  const proximityCloseTimerRef = useRef<number | null>(null);
+  const operatorCloseTimerRef = useRef<number | null>(null);
   const lastAlertedReportIdsRef = useRef<Set<string>>(new Set());
 
-  const closeAudioCtxAfter = (ref: { current: AudioContext | null }, ms: number) => {
-    setTimeout(() => {
+  const closeAudioCtxAfter = (
+    timerRef: { current: number | null },
+    ref: { current: AudioContext | null },
+    ms: number
+  ) => {
+    if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null;
       if (ref.current && ref.current.state !== "closed") {
         ref.current.close().catch(() => {});
         ref.current = null;
       }
     }, ms);
   };
+
+  // Lifecycle cleanup: cancel pending close timers and release any context
+  // still open when the consumer unmounts.
+  useEffect(() => {
+    return () => {
+      if (proximityCloseTimerRef.current !== null) window.clearTimeout(proximityCloseTimerRef.current);
+      if (operatorCloseTimerRef.current !== null) window.clearTimeout(operatorCloseTimerRef.current);
+      proximityAudioCtxRef.current?.close().catch(() => {});
+      operatorAudioCtxRef.current?.close().catch(() => {});
+      proximityAudioCtxRef.current = null;
+      operatorAudioCtxRef.current = null;
+    };
+  }, []);
 
   const getProximityDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number =>
     haversineKm(lat1, lng1, lat2, lng2);
@@ -40,6 +63,9 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
   useEffect(() => {
     if (!userLocation || reports.length === 0) {
       setActiveAlerts([]);
+      // GPS lost or the report list emptied: forget the boarded set too, so a
+      // report that reappears (GPS back, list repopulated) is treated as new.
+      lastAlertedReportIdsRef.current = new Set();
       return;
     }
 
@@ -100,7 +126,10 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
 
           osc1.stop(audioCtx.currentTime + 1.0);
           osc2.stop(audioCtx.currentTime + 1.0);
-          closeAudioCtxAfter(proximityAudioCtxRef, 2000);
+          // Autoplay policies may leave the context suspended: resume before
+          // the scheduled starts so the siren actually rings.
+          if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+          closeAudioCtxAfter(proximityCloseTimerRef, proximityAudioCtxRef, 2000);
         } catch (err) {
           console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
         }
@@ -125,8 +154,12 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
     );
     const seen = lastCriticalIdsRef.current;
     const newOnes = critical.filter((r) => !seen.has(r.id));
+    if (newOnes.length === 0) return;
+    // While muted the report is NOT recorded as "already announced": unmuting
+    // then announces it, instead of silently dropping the alert it arrived
+    // during.
+    if (isMuted) return;
     for (const r of newOnes) seen.add(r.id);
-    if (newOnes.length === 0 || isMuted) return;
     const now = Date.now();
     if (now - lastBeepAtRef.current < 20000) return;
     lastBeepAtRef.current = now;
@@ -135,6 +168,7 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
         operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       const audioCtx = operatorAudioCtxRef.current;
+      if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
       const t0 = audioCtx.currentTime;
       const hasCritical = newOnes.some((x) => x.severity === "critical");
       for (let i = 0; i < 3; i++) {
@@ -149,7 +183,7 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
         osc.start(t0 + i * 0.35);
         osc.stop(t0 + i * 0.35 + 0.3);
       }
-      closeAudioCtxAfter(operatorAudioCtxRef, 2000);
+      closeAudioCtxAfter(operatorCloseTimerRef, operatorAudioCtxRef, 2000);
     } catch (err) {
       console.warn("Critical alert tone blocked:", err);
     }
