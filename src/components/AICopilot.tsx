@@ -19,6 +19,7 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   const lastRequestRef = useRef(0);
   const latestRequestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const retryTimeoutRef = useRef<number | null>(null);
 
   const getCacheKey = () => {
     // No silent default coordinates: without a map click the key says "unknown
@@ -50,7 +51,10 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
     }
 
     const now = Date.now();
-    if (now - lastRequestRef.current < MIN_REQUEST_INTERVAL_MS && attempt === 0) {
+    // Manual refresh (force) bypasses the anti-spam interval — the button
+    // literally says "refresh" and must always fire. Auto-loads (effect) and
+    // cache-miss loads respect the interval.
+    if (!force && now - lastRequestRef.current < MIN_REQUEST_INTERVAL_MS) {
       return;
     }
     lastRequestRef.current = now;
@@ -93,7 +97,14 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
       console.error(err);
       if ((controller.signal.aborted || (err instanceof Error && err.name === "AbortError"))) return;
       if (attempt < 2 && status === 0) {
-        setTimeout(() => void fetchGuidance(true, attempt + 1), 2000);
+        // Schedule a retry, but only while this request is still the latest:
+        // if the user changed location/language meanwhile, the effect cleanup
+        // clears this timer, and this guard kills any retry that survived.
+        retryTimeoutRef.current = window.setTimeout(() => {
+          retryTimeoutRef.current = null;
+          if (requestId !== latestRequestRef.current) return;
+          void fetchGuidance(true, attempt + 1);
+        }, 2000);
         return;
       }
       const code = String(status || (err && typeof err === "object" && "message" in err ? (err as Error).message : ""));
@@ -122,6 +133,12 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
     void fetchGuidance();
     return () => {
       abortRef.current?.abort();
+      // Cancel any pending retry of a superseded request (stale retries must
+      // never abort a newer request).
+      if (retryTimeoutRef.current !== null) {
+        window.clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
     };
   }, [lang, mapClickedCoords, activeWilaya]);
 

@@ -23,14 +23,17 @@ export const EMERGENCY_CONTACTS: EmergencyContact[] = [
   { countryAr: "الجزائر", countryFr: "Algérie", labelAr: "الرقم الأخضر للغابات", labelFr: "Garde Forestière", phone: "1070", noteAr: "لحوادث وزحف النيران", noteFr: "Feux de végétation", sourceAr: "الحماية المدنية الجزائرية", sourceFr: "Protection Civile algérienne", verifiedAt: "2024" },
   { countryAr: "المغرب", countryFr: "Maroc", labelAr: "الحماية المدنية", labelFr: "Protection Civile", phone: "150", noteAr: "للطوارئ والحرائق", noteFr: "Urgences et incendies", sourceAr: "الحماية المدنية المغربية", sourceFr: "Protection Civile marocaine", verifiedAt: "2024" },
   { countryAr: "تونس", countryFr: "Tunisie", labelAr: "الحماية المدنية", labelFr: "Protection Civile", phone: "198", noteAr: "للطوارئ والحرائق", noteFr: "Urgences et incendies", sourceAr: "الحماية المدنية التونسية", sourceFr: "Protection Civile tunisienne", verifiedAt: "2024" },
-  { countryAr: "ليبيا", countryFr: "Libye", labelAr: "الدفاع المدني", labelFr: "Défense Civile", phone: "141", noteAr: "للطوارئ والحرائق", noteFr: "Urgences et incendies", sourceAr: "الدفاع المدني الليبي", sourceFr: "Défense Civile libyenne", verifiedAt: "2024" },
+  { countryAr: "ليبيا", countryFr: "Libye", labelAr: "الطوارئ الموحدة (الدفاع المدني)", labelFr: "Urgences unifiées (Défense Civile)", phone: "1415", noteAr: "الرقم الموحد — يوجّه الإسعاف والشرطة والمطافئ", noteFr: "Numéro unifié — ambulance, police, pompiers", sourceAr: "وزارة الداخلية الليبية / مركز الاتصال المحلي 1415", sourceFr: "Ministère de l'Intérieur libyen / centre d'appel 1415", verifiedAt: "2025" },
   { countryAr: "موريتانيا", countryFr: "Mauritanie", labelAr: "الدفاع المدني", labelFr: "Défense Civile", phone: "101", noteAr: "للطوارئ والحرائق", noteFr: "Urgences et incendies", sourceAr: "الدفاع المدني الموريتاني", sourceFr: "Défense Civile mauritanienne", verifiedAt: "2024" },
 ];
 
-// Keeps "0 km" claims out of the UI: any sub-kilometre distance reads "< 1".
+// Keeps "0 km" claims out of the UI, and keeps emergency-scale precision:
+// sub-kilometre reads "< 1 km", under 10 km keeps one decimal (3.4 km),
+// larger distances round to the nearest km.
 export function formatDistanceKm(km: number | null | undefined, isArabic: boolean): string {
   const unit = isArabic ? "كم" : "km";
   if (km === null || km === undefined || !Number.isFinite(km) || km < 0) return `— ${unit}`;
   if (km < 1) return `< 1 ${unit}`;
+  if (km < 10) return `${km.toFixed(1)} ${unit}`;
   return `${Math.round(km)} ${unit}`;
 }

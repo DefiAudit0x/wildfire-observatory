@@ -26,7 +26,7 @@ export default function App() {
   const { session: staffSession } = useStaffSession();
   const rosterVisible = staffSession.authenticated;
 
-  const { userLocation } = useGeolocation(isArabic);
+  const { userLocation, refetch: requestLocation } = useGeolocation(isArabic);
   const {
     reports,
     satellites,
@@ -118,6 +118,7 @@ export default function App() {
           userLocation={userLocation}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted((prev) => !prev)}
+          onRequestLocation={requestLocation}
           onShowThreat={handleShowThreatOnMap}
         />
       )}

@@ -412,8 +412,8 @@ function HeaderBar({
                 </div>
                 <div className="px-4 py-2 bg-black/40 border-t border-white/5 text-[9px] text-gray-500">
                   {isArabic
-                    ? `المصدر: النشر الرسمي لهيئات الحماية المدنية الوطنية — آخر تحقق: ${EMERGENCY_CONTACTS[0].verifiedAt}`
-                    : `Source : publications officielles des protections civiles nationales — vérifié le ${EMERGENCY_CONTACTS[0].verifiedAt}`}
+                    ? "المصدر: النشر الرسمي لهيئات الحماية المدنية والطوارئ الوطنية — ليبيا محدثة 2025. يُعاد التحقق قبل أي عرض رسمي."
+                    : "Source : publications officielles des protections civiles nationales — Libye mise à jour 2025. À revérifier avant usage officiel."}
                 </div>
               </div>
             )}

@@ -17,8 +17,21 @@ const PROXIMITY_THRESHOLDS: Record<string, number> = {
 export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | null) {
   const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
   const [isMuted, setIsMuted] = useState(false);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  // Two independent alert channels (proximity siren vs operator tone) each own
+  // their AudioContext, so one route's 2s close timer can never close the
+  // context the other route just opened.
+  const proximityAudioCtxRef = useRef<AudioContext | null>(null);
+  const operatorAudioCtxRef = useRef<AudioContext | null>(null);
   const lastAlertedReportIdsRef = useRef<Set<string>>(new Set());
+
+  const closeAudioCtxAfter = (ref: { current: AudioContext | null }, ms: number) => {
+    setTimeout(() => {
+      if (ref.current && ref.current.state !== "closed") {
+        ref.current.close().catch(() => {});
+        ref.current = null;
+      }
+    }, ms);
+  };
 
   const getProximityDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number =>
     haversineKm(lat1, lng1, lat2, lng2);
@@ -43,51 +56,54 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
 
       setActiveAlerts(nearReports);
 
-      // Web Audio sound alerts — only when a NEW report enters the proximity zone
-      if (nearReports.length > 0 && !isMuted) {
-        const nearIds = new Set(nearReports.map((r) => r.id));
-        const newlyEntered = Array.from(nearIds).some((id) => !lastAlertedReportIdsRef.current.has(id));
-        if (newlyEntered) {
-          lastAlertedReportIdsRef.current = new Set(Array.from(nearIds));
-          try {
-            if (!audioCtxRef.current) {
-              audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-            }
-            const audioCtx = audioCtxRef.current;
-            const osc1 = audioCtx.createOscillator();
-            const osc2 = audioCtx.createOscillator();
-            const gainNode = audioCtx.createGain();
-
-            osc1.type = "sine";
-            osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
-            
-            osc2.type = "sawtooth";
-            osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
-
-            gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
-            gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
-
-            osc1.connect(gainNode);
-            osc2.connect(gainNode);
-            gainNode.connect(audioCtx.destination);
-
-            osc1.start();
-            osc2.start();
-            
-            osc1.stop(audioCtx.currentTime + 1.0);
-            osc2.stop(audioCtx.currentTime + 1.0);
-            setTimeout(() => {
-              if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-                audioCtxRef.current.close().catch(() => {});
-                audioCtxRef.current = null;
-              }
-            }, 2000);
-          } catch (err) {
-            console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
-          }
-        }
-      } else {
+      if (nearReports.length === 0) {
+        // Zone empty: forget the boarded set so the next arrival alerts.
         lastAlertedReportIdsRef.current = new Set();
+        return;
+      }
+
+      const nearIds = new Set(nearReports.map((r) => r.id));
+
+      // While muted we only RECORD the current set (without touching the
+      // already-recorded one): unmuting must never replay the whole existing
+      // list — only reports that entered the zone during the mute window.
+      if (isMuted) return;
+
+      // Web Audio sound alerts — only when a NEW report enters the proximity zone
+      const newlyEntered = Array.from(nearIds).some((id) => !lastAlertedReportIdsRef.current.has(id));
+      if (newlyEntered) {
+        lastAlertedReportIdsRef.current = new Set(Array.from(nearIds));
+        try {
+          if (!proximityAudioCtxRef.current) {
+            proximityAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          }
+          const audioCtx = proximityAudioCtxRef.current;
+          const osc1 = audioCtx.createOscillator();
+          const osc2 = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
+
+          osc1.type = "sine";
+          osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
+
+          osc2.type = "sawtooth";
+          osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
+
+          gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
+          gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
+
+          osc1.connect(gainNode);
+          osc2.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
+
+          osc1.start();
+          osc2.start();
+
+          osc1.stop(audioCtx.currentTime + 1.0);
+          osc2.stop(audioCtx.currentTime + 1.0);
+          closeAudioCtxAfter(proximityAudioCtxRef, 2000);
+        } catch (err) {
+          console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
+        }
       }
     };
 
@@ -115,10 +131,10 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
     if (now - lastBeepAtRef.current < 20000) return;
     lastBeepAtRef.current = now;
     try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (!operatorAudioCtxRef.current) {
+        operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
-      const audioCtx = audioCtxRef.current;
+      const audioCtx = operatorAudioCtxRef.current;
       const t0 = audioCtx.currentTime;
       const hasCritical = newOnes.some((x) => x.severity === "critical");
       for (let i = 0; i < 3; i++) {
@@ -133,12 +149,7 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
         osc.start(t0 + i * 0.35);
         osc.stop(t0 + i * 0.35 + 0.3);
       }
-      setTimeout(() => {
-        if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-          audioCtxRef.current.close().catch(() => {});
-          audioCtxRef.current = null;
-        }
-      }, 2000);
+      closeAudioCtxAfter(operatorAudioCtxRef, 2000);
     } catch (err) {
       console.warn("Critical alert tone blocked:", err);
     }

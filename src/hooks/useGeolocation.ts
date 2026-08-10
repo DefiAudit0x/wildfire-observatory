@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchWithRetry } from "../utils/api";
 import { getDeviceId } from "../utils/device";
 
@@ -27,6 +27,26 @@ export function useGeolocation(isArabic: boolean) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isArabic]);
 
+  // Explicit one-shot location request (the GPS button's real action): asks
+  // the browser for a FRESH fix now (maximumAge 0), unlike the passive watch.
+  const refetch = useCallback(() => {
+    if (!navigator.geolocation) {
+      setGeoError(isArabic ? "المتصفح لا يدعم تحديد الموقع." : "Le navigateur ne supporte pas la géolocalisation.");
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        setGeoError(null);
+      },
+      (err) => {
+        console.warn("Geolocation refresh error:", err);
+        setGeoError(isArabic ? "تعذّر تحديد موقعك. فعّل GPS للتبليغ الدقيق." : "Localisation GPS indisponible. Activez le GPS pour un signalement précis.");
+      },
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+    );
+  }, [isArabic]);
+
   // Heartbeat: send user location to server for Central Command tracking
   useEffect(() => {
     if (!userLocation) return;
@@ -53,5 +73,5 @@ export function useGeolocation(isArabic: boolean) {
     return () => clearInterval(interval);
   }, [userLocation, deviceId]);
 
-  return { userLocation, geoError };
+  return { userLocation, geoError, refetch };
 }

@@ -7,10 +7,13 @@ interface ProximityAlertBarProps {
   userLocation: GeoPoint | null;
   isMuted: boolean;
   onToggleMute: () => void;
+  /** Fires a one-shot FRESH geolocation request (the GPS button's real action). */
+  onRequestLocation: () => void;
+  /** Highlights the nearest active alert on the map. */
   onShowThreat: () => void;
 }
 
-function ProximityAlertBar({ isArabic, activeAlerts, userLocation, isMuted, onToggleMute, onShowThreat }: ProximityAlertBarProps) {
+function ProximityAlertBar({ isArabic, activeAlerts, userLocation, isMuted, onToggleMute, onRequestLocation, onShowThreat }: ProximityAlertBarProps) {
   return (
     <div className="bg-gradient-to-r from-red-950 via-amber-950/80 to-red-950 border-b border-red-500/30 text-white px-4 py-3 md:px-8 z-[1001]">
       <div className="max-w-7xl mx-auto flex flex-col lg:flex-row items-center justify-between gap-4 font-mono">
@@ -36,15 +39,17 @@ function ProximityAlertBar({ isArabic, activeAlerts, userLocation, isMuted, onTo
 
         {/* Real GPS status and controls */}
         <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold">
-          {/* GPS status indicator */}
+          {/* GPS status indicator: clicking re-requests a FRESH location fix
+              (getCurrentPosition with maximumAge 0) — it does not navigate. */}
           <button
-            onClick={onShowThreat}
+            onClick={onRequestLocation}
             className={`px-2.5 py-1 rounded border transition-all cursor-pointer ${
               userLocation
                 ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
                 : "bg-amber-500/20 text-amber-400 border-amber-500/30"
             }`}
-            title={isArabic ? "حالة تحديد الموقع الحقيقية" : "État de la localisation GPS"}
+            title={isArabic ? "حالة تحديد الموقع — اضغط لإعادة تحديد الموقع الآن" : "État de la localisation — cliquer pour réacquérir la position"}
+            aria-label={isArabic ? "إعادة تحديد الموقع الحالي" : "Réacquérir la position actuelle"}
           >
             {userLocation
               ? (isArabic ? "🌐 GPS حقيقي: " : "🌐 GPS Réel : ") + `${userLocation.lat.toFixed(3)}, ${userLocation.lng.toFixed(3)}`

@@ -213,8 +213,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع؛ يصل فوراً إلى غرفة عمليات المرصد ويظهر على الخريطة الميدانية للمساعدة."
-                : "Envoyez un rapport avec photo et coordonnées GPS ; il est transmis au centre de coordination de l'observatoire et affiché sur la carte."}
+                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع؛ يُحفظ في خادم المرصد ويظهر فوراً على الخريطة الميدانية للمساعدة."
+                : "Envoyez un rapport avec photo et coordonnées GPS ; il est enregistré sur le serveur de l'observatoire et affiché sur la carte."}
             </p>
           </div>
           <div className="pt-2 flex items-center justify-between text-xs font-bold text-orange-400 border-t border-orange-500/20">
