@@ -7,6 +7,11 @@ export interface GeoPoint {
   lng: number;
 }
 
+export interface ProximityAlert extends Report {
+  distance: number;
+  isNear: boolean;
+}
+
 const PROXIMITY_THRESHOLDS: Record<string, number> = {
   critical: 10, // km
   high: 7,
@@ -15,7 +20,7 @@ const PROXIMITY_THRESHOLDS: Record<string, number> = {
 };
 
 export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | null) {
-  const [activeAlerts, setActiveAlerts] = useState<any[]>([]);
+  const [activeAlerts, setActiveAlerts] = useState<ProximityAlert[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   // Two independent alert channels (proximity siren vs operator tone) each own
   // their AudioContext, so one route's close timer can never close the context

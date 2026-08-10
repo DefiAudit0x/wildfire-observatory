@@ -10,12 +10,16 @@ export function useGeolocation(isArabic: boolean) {
   // write location/error state — a slow earlier response can never overwrite
   // a newer one (rapid GPS button presses).
   const refetchSeqRef = useRef(0);
+  // Latest fix, decoupled from render state: the heartbeat reads this so GPS
+  // chatter only refreshes the value — it never tears down the interval.
+  const locationRef = useRef<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
     if (navigator.geolocation) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
-          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setUserLocation(locationRef.current);
           setGeoError(null);
         },
         (err) => {
@@ -45,7 +49,8 @@ export function useGeolocation(isArabic: boolean) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         if (seq !== refetchSeqRef.current) return;
-        setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+        locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(locationRef.current);
         setGeoError(null);
       },
       (err) => {
@@ -59,10 +64,13 @@ export function useGeolocation(isArabic: boolean) {
 
   // Location heartbeat: shares the user's fix with the observatory backend
   // (used by coordination features once the device actually has a position).
+  // ONE interval lives for the whole session (deps = [deviceId] only): GPS
+  // updates refresh locationRef instead of recreating the effect, so the
+  // beat is every 30 s regardless of how chatty the position receiver is.
   useEffect(() => {
-    if (!userLocation) return;
-
     const sendHeartbeat = () => {
+      const loc = locationRef.current;
+      if (!loc) return;
       const storedBadge = localStorage.getItem("reporterBadgeCode") || "";
       const storedName = localStorage.getItem("userName") || "مستخدم مباشر";
 
@@ -71,8 +79,8 @@ export function useGeolocation(isArabic: boolean) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deviceId,
-          lat: userLocation.lat,
-          lng: userLocation.lng,
+          lat: loc.lat,
+          lng: loc.lng,
           name: storedName,
           badgeCode: storedBadge,
         }),
@@ -82,7 +90,7 @@ export function useGeolocation(isArabic: boolean) {
     sendHeartbeat();
     const interval = setInterval(sendHeartbeat, 30000);
     return () => clearInterval(interval);
-  }, [userLocation, deviceId]);
+  }, [deviceId]);
 
   return { userLocation, geoError, refetch };
 }
