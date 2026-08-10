@@ -35,6 +35,7 @@ export default function App() {
     notifications,
     loading,
     lastRefreshed,
+    lastFetchFailed,
     meshStatus,
     meshNodeCount,
     fetchData,
@@ -49,18 +50,23 @@ export default function App() {
 
   const handleMapClick = useCallback((lat: number, lng: number) => {
     setMapClickedCoords({ lat, lng });
+    setSelectedReportId(null);
     // Switch to report tab on mobile so they can see the form filled immediately
     setActiveTab("report");
   }, []);
 
   const handleSelectReport = useCallback((id: string) => {
     setSelectedReportId(id);
+    setMapClickedCoords(null);
     setActiveTab("map");
   }, []);
 
-  const handleLocate = useCallback(() => {
+  // "View the nearest threat on the map": highlights the closest active fire
+  // cluster for the user instead of claiming any GPS relocation.
+  const handleShowThreatOnMap = useCallback(() => {
     if (activeAlerts.length > 0 && userLocation) {
       setSelectedReportId(activeAlerts[0].id);
+      setMapClickedCoords(null);
       setActiveTab("map");
     }
   }, [activeAlerts, userLocation]);
@@ -90,6 +96,7 @@ export default function App() {
         lang={lang}
         notifications={notifications}
         lastRefreshed={lastRefreshed}
+        lastFetchFailed={lastFetchFailed}
         loading={loading}
         meshStatus={meshStatus}
         meshNodeCount={meshNodeCount}
@@ -106,7 +113,7 @@ export default function App() {
           userLocation={userLocation}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted((prev) => !prev)}
-          onLocate={handleLocate}
+          onShowThreat={handleShowThreatOnMap}
         />
       )}
 

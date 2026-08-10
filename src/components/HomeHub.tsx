@@ -17,8 +17,8 @@ import {
   Shield
 } from "lucide-react";
 import { Language, Report, SatelliteHotspot } from "../types";
-import { haversineKm } from "../utils/geo";
 import { getNearestActiveThreat } from "../utils/threats";
+import { EMERGENCY_CONTACTS, formatDistanceKm } from "../utils/emergency";
 
 interface HomeHubProps {
   onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
@@ -30,10 +30,6 @@ interface HomeHubProps {
   satellites?: SatelliteHotspot[];
   userLocation?: { lat: number; lng: number } | null;
   showAdminEntries?: boolean;
-}
-
-function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
-  return haversineKm(lat1, lng1, lat2, lng2);
 }
 
 export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], satellites = [], userLocation, showAdminEntries = false }: HomeHubProps) {
@@ -57,10 +53,10 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
     ? reports.find((r) => r.id === nearbyAnalysis!.nearest!.reportId) || null
     : null;
   const nearestReportKm = nearbyAnalysis?.nearest?.kind === "report"
-    ? Math.round(nearbyAnalysis.nearest.distanceKm)
+    ? nearbyAnalysis.nearest.distanceKm
     : null;
   const nearestSatelliteKm = nearbyAnalysis?.nearest?.kind === "satellite"
-    ? Math.round(nearbyAnalysis.nearest.distanceKm)
+    ? nearbyAnalysis.nearest.distanceKm
     : null;
 
   const secondaryServices = [
@@ -138,8 +134,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
                 </h3>
                 <p className="text-xs text-red-200 leading-relaxed">
                   {isArabic
-                    ? `${nearbyAnalysis!.nearbyIncidents} بؤرة حريق نشطة على بعد أقل من 10 كم من موقعك${nearestReport ? ` — أقربها: ${nearestReport.locationName} (${nearestReportKm} كم)` : ""}${nearestSatelliteKm !== null ? ` — تأكيد حراري فضائي قريب (${nearestSatelliteKm} كم)` : ""}. اخلَ فوراً ولا تنتظر انتشار النيران.`
-                    : `${nearbyAnalysis!.nearbyIncidents} foyers actifs à moins de 10 km${nearestReport ? ` — le plus proche : ${nearestReport.locationName} (${nearestReportKm} km)` : ""}${nearestSatelliteKm !== null ? ` — confirmation thermique satellite proche (${nearestSatelliteKm} km)` : ""}. Évacuez immédiatement.`}
+                    ? `${nearbyAnalysis!.nearbyIncidents} بؤرة حريق ضمن محيط 10 كم من موقعك${nearestReport ? ` — أقربها: ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, true)})` : ""}${nearestSatelliteKm !== null ? ` — كشف حراري فضائي قريب (${formatDistanceKm(nearestSatelliteKm, true)})` : ""}. تابع الخريطة الحية والتزم بتعليمات السلطات المحلية، وأبلغ فوراً عن أي تغيّر في الوضع.`
+                    : `${nearbyAnalysis!.nearbyIncidents} foyer(s) dans un rayon de 10 km${nearestReport ? ` — le plus proche : ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, false)})` : ""}${nearestSatelliteKm !== null ? ` — détection thermique satellite proche (${formatDistanceKm(nearestSatelliteKm, false)})` : ""}. Suivez la carte en direct et les consignes des autorités; signalez tout changement immédiatement.`}
                 </p>
               </div>
             </div>
@@ -189,7 +185,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
           </div>
           <div className="bg-orange-500/10 border border-orange-500/20 px-3 py-1 rounded-full flex items-center gap-2 text-xs text-orange-400 font-bold">
             <span>🔥</span>
-            <span>{isArabic ? `${reportsCount} بلاغ ميداني` : `${reportsCount} Signalements`}</span>
+            <span>{isArabic ? `${reportsCount} بلاغ مسجّل` : `${reportsCount} Signalements enregistrés`}</span>
           </div>
         </div>
       </div>
@@ -217,8 +213,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع مباشرة لغرفة العمليات والحماية المدنية."
-                : "Envoyez un rapport d'incendie avec photo et coordonnées GPS au centre de secours."}
+                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع؛ يصل فوراً إلى غرفة عمليات المرصد ويظهر على الخريطة الميدانية للمساعدة."
+                : "Envoyez un rapport avec photo et coordonnées GPS ; il est transmis au centre de coordination de l'observatoire et affiché sur la carte."}
             </p>
           </div>
           <div className="pt-2 flex items-center justify-between text-xs font-bold text-orange-400 border-t border-orange-500/20">
@@ -327,36 +323,27 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       <div className="bg-zinc-900/80 border border-white/5 rounded-2xl p-4 md:p-5 shadow-lg">
         <h4 className="font-extrabold text-xs md:text-sm text-slate-200 text-center mb-3 flex items-center justify-center gap-2">
           <Phone className="h-4 w-4 text-red-500 animate-pulse" />
-          <span>{isArabic ? "الاتصال المباشر والمجاني بأرقام النجدة الرسمية" : "Numéros D'Urgence Directs & Gratuits"}</span>
+          <span>{isArabic ? "الاتصال المباشر بأرقام النجدة الرسمية لكل دولة" : "Numéros d'urgence officiels par pays"}</span>
         </h4>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-2xl mx-auto">
-          <a
-            href="tel:1021"
-            className="flex items-center justify-between p-3 bg-black/50 hover:bg-zinc-950 transition-all rounded-xl border border-red-500/30 text-red-400"
-          >
-            <div className="flex items-center gap-2.5">
-              <span className="text-xl">🚒</span>
-              <div className="text-start">
-                <p className="text-xs font-bold text-slate-100">{isArabic ? "الحماية المدنية الجزائرية" : "Protection Civile"}</p>
-                <p className="text-[10px] text-gray-400">{isArabic ? "للطوارئ والحرائق الحادة" : "Urgences et incendies"}</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-w-3xl mx-auto">
+          {EMERGENCY_CONTACTS.map((c, idx) => (
+            <a
+              key={`${c.countryFr}-${c.phone}`}
+              href={`tel:${c.phone}`}
+              className={`flex items-center justify-between p-3 bg-black/50 hover:bg-zinc-950 transition-all rounded-xl border ${idx === 0 ? "border-red-500/30 text-red-400" : "border-white/10 text-red-400"}`}
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="text-xl">🚒</span>
+                <div className="text-start">
+                  <p className="text-xs font-bold text-slate-100">
+                    {isArabic ? c.labelAr : c.labelFr} — {isArabic ? c.countryAr : c.countryFr}
+                  </p>
+                  <p className="text-[10px] text-gray-400">{isArabic ? c.noteAr : c.noteFr}</p>
+                </div>
               </div>
-            </div>
-            <span className="text-base font-black font-mono px-3 py-1 bg-red-500/20 rounded-lg border border-red-500/30">1021</span>
-          </a>
-
-          <a
-            href="tel:1070"
-            className="flex items-center justify-between p-3 bg-black/50 hover:bg-zinc-950 transition-all rounded-xl border border-amber-500/30 text-amber-500"
-          >
-            <div className="flex items-center gap-2.5">
-              <span className="text-xl">🌲</span>
-              <div className="text-start">
-                <p className="text-xs font-bold text-slate-100">{isArabic ? "الرقم الأخضر للغابات" : "Garde Forestière"}</p>
-                <p className="text-[10px] text-gray-400">{isArabic ? "لحوادث وزحف النيران" : "Feux de végétation"}</p>
-              </div>
-            </div>
-            <span className="text-base font-black font-mono px-3 py-1 bg-amber-500/20 rounded-lg border border-amber-500/30">1070</span>
-          </a>
+              <span className="text-base font-black font-mono px-3 py-1 bg-red-500/20 rounded-lg border border-red-500/30">{c.phone}</span>
+            </a>
+          ))}
         </div>
       </div>
 

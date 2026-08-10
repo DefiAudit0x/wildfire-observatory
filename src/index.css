@@ -117,3 +117,22 @@ body {
   background-color: rgb(245, 158, 11);
   border-radius: 50%;
 }
+
+/* Keyboard operability: visible focus ring for every interactive element */
+:focus-visible {
+  outline: 2px solid rgb(248, 113, 113);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Vestibular safety: kill decorative motion for users who ask for it */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -11,15 +11,16 @@ import EvacuationRadar from "../EvacuationRadar";
 import VolunteerRegistration from "../VolunteerRegistration";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
+import { EMERGENCY_CONTACTS } from "../../utils/emergency";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
 const InteractiveMap = lazy(() => import("../InteractiveMap"));
 const AdminPanel = lazy(() => import("../AdminPanel"));
 const RosterBoard = lazy(() => import("../RosterBoard"));
 
-const PanelFallback = () => (
+const PanelFallback = ({ isArabic }: { isArabic: boolean }) => (
   <div className="col-span-12 py-24 flex items-center justify-center text-sm text-gray-500 font-bold animate-pulse">
-    ⏳ {document.documentElement.lang === "ar" ? "جارٍ تحميل لوحة القيادة..." : "Chargement du tableau de bord..."}
+    ⏳ {isArabic ? "جارٍ تحميل لوحة القيادة..." : "Chargement du tableau de bord..."}
   </div>
 );
 
@@ -95,7 +96,7 @@ export default function MainContent({
       {/* Admin Moderation Panel View */}
       {activeTab === "admin" && (
         <div className="col-span-12">
-          <Suspense fallback={<PanelFallback />}>
+          <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
             <AdminPanel reports={reports} onRefresh={onRefresh} lang={lang} />
           </Suspense>
         </div>
@@ -110,7 +111,7 @@ export default function MainContent({
 
       {/* Central Command - full-screen command dashboard */}
       {activeTab === "command" && (
-        <Suspense fallback={<PanelFallback />}>
+        <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
           <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={onRefresh} />
         </Suspense>
       )}
@@ -118,7 +119,7 @@ export default function MainContent({
       {/* Staff duty roster */}
       {activeTab === "roster" && (
         <div className="col-span-12 animate-fadeIn">
-          <Suspense fallback={<PanelFallback />}>
+          <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
             <RosterBoard lang={lang} />
           </Suspense>
         </div>
@@ -165,7 +166,7 @@ export default function MainContent({
                   )}
                 </div>
 
-                <Suspense fallback={<PanelFallback />}>
+                <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
                   <InteractiveMap
                     reports={reports}
                     satellites={satellites}
@@ -202,7 +203,7 @@ export default function MainContent({
                       >
                         <div className="flex gap-3 items-start">
                           {rep.image && (rep.image.startsWith("data:image/") || rep.image.startsWith("https://")) ? (
-                            <img src={rep.image} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt="Report image" referrerPolicy="no-referrer" />
+                            <img src={rep.image} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt={isArabic ? `صورة بلاغ: ${rep.locationName}` : `Photo du signalement : ${rep.locationName}`} referrerPolicy="no-referrer" />
                           ) : (
                             <div className="w-16 h-12 bg-black/40 rounded border border-white/5 flex items-center justify-center text-xs text-slate-500">
                               🔥
@@ -235,11 +236,11 @@ export default function MainContent({
                           )}
                           {rep.aiVerification && (
                             <span className="bg-emerald-950 text-emerald-400 border border-emerald-500/20 text-[9px] px-2 py-0.5 rounded-full font-bold">
-                              🤖 {isArabic ? "موثق ذكياً" : "Certifié par IA"}
+                              🤖 {isArabic ? "فحص ذكاء اصطناعي" : "Analyse IA"}
                             </span>
                           )}
                           <span className="bg-black/50 text-gray-400 border border-white/5 text-[10px] px-2 py-0.5 rounded font-mono font-semibold">
-                            {isArabic ? `تأكيد: ${rep.consensusCount}` : `Voisins: ${rep.consensusCount}`}
+                            {isArabic ? `تأكيدات: ${rep.consensusCount}` : `Confirmations: ${rep.consensusCount}`}
                           </span>
                         </div>
                       </div>
@@ -269,34 +270,35 @@ export default function MainContent({
               />
             </div>
 
-            {/* Wilayas Statuses List */}
-            <div className={`${activeTab === "map" ? "block" : "hidden md:block"}`}>
+            {/* Wilayas Statuses List: desktop sidebar only — keeps the mobile
+                map tab focused on the map instead of piling up four layers */}
+            <div className="hidden md:block">
               <WilayaList wilayas={wilayas} lang={lang} />
             </div>
 
             {/* AI Copilot Responder tab on mobile / Sidebar on desktop */}
             <div className={`${activeTab === "copilot" ? "block" : "hidden md:block"}`}>
-              <AICopilot userLocation={mapClickedCoords} lang={lang} />
+              <AICopilot mapClickedCoords={mapClickedCoords} lang={lang} />
             </div>
 
             {/* Printable Emergency Call Card */}
             <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 shadow-[0_4px_25px_rgba(0,0,0,0.5)] text-center space-y-3 relative overflow-hidden">
               <div className="absolute top-0 right-0 h-16 w-16 bg-red-500/5 rounded-full blur-xl"></div>
               <h4 className="font-extrabold text-sm text-slate-200">
-                {isArabic ? "📞 أرقام النجدة والإخلاء الوطنية" : "Numéros de Secours Nationaux"}
+                {isArabic ? "📞 أرقام النجدة الرسمية — شمال إفريقيا" : "Numéros de Secours — Afrique du Nord"}
               </h4>
               <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <a href="tel:1021" className="p-2 bg-black/40 hover:bg-zinc-800 rounded border border-white/5 text-red-400 font-bold flex flex-col items-center">
-                  <span className="text-[10px] text-gray-400 font-sans">{isArabic ? "الحماية المدنية" : "Prot. Civile"}</span>
-                  <span className="text-sm mt-0.5">1021</span>
-                </a>
-                <a href="tel:1070" className="p-2 bg-black/40 hover:bg-zinc-800 rounded border border-white/5 text-amber-500 font-bold flex flex-col items-center">
-                  <span className="text-[10px] text-gray-400 font-sans">{isArabic ? "الرقم الأخضر للغابات" : "Garde forestière"}</span>
-                  <span className="text-sm mt-0.5">1070</span>
-                </a>
+                {EMERGENCY_CONTACTS.map((c) => (
+                  <a key={`${c.countryFr}-${c.phone}`} href={`tel:${c.phone}`} className="p-2 bg-black/40 hover:bg-zinc-800 rounded border border-white/5 text-red-400 font-bold flex flex-col items-center">
+                    <span className="text-[10px] text-gray-400 font-sans">
+                      {isArabic ? c.labelAr : c.labelFr} — {isArabic ? c.countryAr : c.countryFr}
+                    </span>
+                    <span className="text-sm mt-0.5">{c.phone}</span>
+                  </a>
+                ))}
               </div>
               <p className="text-[9px] text-gray-500 italic">
-                {isArabic ? "اضغط على الأرقام أعلاه للاتصال السريع والمجاني مباشرة." : "Cliquez sur les numéros pour passer un appel direct."}
+                {isArabic ? "أرقام رسمية لكل دولة — اضغط للاتصال المباشر." : "Numéros officiels par pays — cliquez pour appeler."}
               </p>
             </div>
           </section>

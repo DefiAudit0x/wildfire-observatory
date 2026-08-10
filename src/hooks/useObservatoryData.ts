@@ -14,7 +14,8 @@ export function useObservatoryData() {
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [lastRefreshed, setLastRefreshed] = useState<string>("");
+  const [lastRefreshed, setLastRefreshed] = useState<number>(0);
+  const [lastFetchFailed, setLastFetchFailed] = useState(false);
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
   const [meshNodeCount, setMeshNodeCount] = useState(0);
 
@@ -45,8 +46,23 @@ export function useObservatoryData() {
       if (notifsRes.status === "fulfilled" && notifsRes.value.ok) {
         setNotifications(await notifsRes.value.json());
       }
-      setLastRefreshed(new Date().toLocaleTimeString());
+      const anyEndpointOk = [
+        reportsRes,
+        satellitesRes,
+        wilayasRes,
+        sosRes,
+        notifsRes,
+      ].some((r) => r.status === "fulfilled" && r.value.ok);
+      if (anyEndpointOk) {
+        // At least one endpoint answered: the backend is reachable, so the
+        // connection is alive even if a single dataset failed mid-poll.
+        setLastFetchFailed(false);
+        setLastRefreshed(Date.now());
+      } else {
+        setLastFetchFailed(true);
+      }
     } catch (err) {
+      setLastFetchFailed(true);
       console.error("Failed to fetch fire data:", err);
     } finally {
       setLoading(false);
@@ -247,6 +263,7 @@ export function useObservatoryData() {
     notifications,
     loading,
     lastRefreshed,
+    lastFetchFailed,
     meshStatus,
     meshNodeCount,
     deviceId,

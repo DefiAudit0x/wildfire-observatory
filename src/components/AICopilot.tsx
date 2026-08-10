@@ -3,11 +3,11 @@ import ReactMarkdown from "react-markdown";
 import { Sparkles, Loader2, RefreshCw, Send, Shield, PhoneCall } from "lucide-react";
 
 interface AICopilotProps {
-  userLocation: { lat: number; lng: number } | null;
+  mapClickedCoords: { lat: number; lng: number } | null;
   lang: "ar" | "fr";
 }
 
-export default function AICopilot({ userLocation, lang }: AICopilotProps) {
+export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   const [guidance, setGuidance] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
   const [activeWilaya, setActiveWilaya] = useState<string>("");
@@ -20,8 +20,8 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
   const abortRef = useRef<AbortController | null>(null);
 
   const getCacheKey = () => {
-    const lat = userLocation?.lat?.toFixed(4) || "36.8";
-    const lng = userLocation?.lng?.toFixed(4) || "7.5";
+    const lat = mapClickedCoords?.lat?.toFixed(4) || "36.8";
+    const lng = mapClickedCoords?.lng?.toFixed(4) || "7.5";
     const hourBucket = Math.floor(Date.now() / CACHE_TTL_MS);
     return `ai_guidance_${lang}_${lat}_${lng}_${activeWilaya}_${hourBucket}`;
   };
@@ -62,8 +62,8 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          lat: userLocation?.lat || 36.8,
-          lng: userLocation?.lng || 7.5,
+          lat: mapClickedCoords?.lat || 36.8,
+          lng: mapClickedCoords?.lng || 7.5,
           wilaya: activeWilaya || (isArabic ? "الشرق الجزائري" : "Est de l'Algérie"),
           lang: lang,
         }),
@@ -116,7 +116,7 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
     return () => {
       abortRef.current?.abort();
     };
-  }, [lang, userLocation, activeWilaya]);
+  }, [lang, mapClickedCoords, activeWilaya]);
 
   return (
     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)] flex flex-col h-full" dir={isArabic ? "rtl" : "ltr"}>
@@ -225,9 +225,12 @@ export default function AICopilot({ userLocation, lang }: AICopilotProps) {
         <a
           href="tel:1021"
           className="px-3 py-1.5 bg-red-600 hover:bg-red-750 text-white font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shadow-[0_10px_20px_rgba(220,38,38,0.2)] shrink-0"
+          title={isArabic
+            ? "رقم الحماية المدنية الجزائرية — أرقام باقي الدول في قائمة أرقام الطوارئ أعلى الصفحة"
+            : "Protection Civile algérienne — les numéros des autres pays sont dans la liste « Urgences » en haut de page"}
         >
           <PhoneCall className="h-3.5 w-3.5" />
-          <span>{isArabic ? "اتصل بالحماية المدنية (1021)" : "Protection Civile (1021)"}</span>
+          <span>{isArabic ? "الحماية المدنية الجزائرية (1021)" : "Protection Civile Algérie (1021)"}</span>
         </a>
       </div>
     </div>

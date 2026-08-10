@@ -32,6 +32,7 @@ export function useProximityAlerts(reports: Report[], userLocation: GeoPoint | n
 
     const scanProximity = () => {
       const nearReports = reports
+        .filter((rep) => rep.status !== "resolved" && rep.status !== "rejected")
         .map((rep) => {
           const dist = getProximityDistance(userLocation.lat, userLocation.lng, rep.lat, rep.lng);
           const threshold = PROXIMITY_THRESHOLDS[rep.severity] ?? 5;
