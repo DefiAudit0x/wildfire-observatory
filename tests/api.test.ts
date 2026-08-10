@@ -81,4 +81,48 @@ describe("POST /api/reports", () => {
     expect(res.body).toHaveProperty("id");
     expect(res.body.image ?? null).toBeNull();
   });
+
+  it("is idempotent: retrying the same clientGeneratedId returns the stored report, not a duplicate or a 409", async () => {
+    const app = createTestApp();
+    const payload = {
+      lat: 36.86,
+      lng: 7.63,
+      locationName: "Idempotent Location",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغ للتأكد من اللامتضاربية عند إعادة الإرسال",
+      severity: "medium",
+      clientGeneratedId: "cg-e2e-idempotency-0001",
+    };
+    const first = await supertest(app).post("/api/reports").send(payload);
+    expect(first.status).toBe(200);
+    const second = await supertest(app).post("/api/reports").send(payload);
+    expect(second.status).toBe(200);
+    expect(second.body.id).toBe(first.body.id);
+    expect(second.body).toEqual(first.body);
+  });
+
+  it("does not deduplicate distinct clientGeneratedIds at the same location too eagerly past the retry rule", async () => {
+    const app = createTestApp();
+    const base = {
+      locationName: "Two distinct submissions",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغان مختلفان لنفس المنطقة القريبة",
+      severity: "low",
+    };
+    const first = await supertest(app).post("/api/reports").send({
+      ...base,
+      lat: 36.83,
+      lng: 7.62,
+      clientGeneratedId: "cg-e2e-distinct-0001",
+    });
+    const second = await supertest(app).post("/api/reports").send({
+      ...base,
+      lat: 36.84,
+      lng: 7.68,
+      clientGeneratedId: "cg-e2e-distinct-0002",
+    });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.id).not.toBe(first.body.id);
+  });
 });

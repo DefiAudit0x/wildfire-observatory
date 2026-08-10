@@ -34,7 +34,7 @@ function TabBar({ isArabic, activeTab, privilegedTabVisible, rosterVisible, onSe
   ];
 
   return (
-    <div className="px-4 py-2 flex gap-1.5 bg-black/80 border-b border-white/5 overflow-x-auto sticky top-[65px] z-[1000] justify-start md:justify-center" dir={isArabic ? "rtl" : "ltr"}>
+    <div className="px-4 py-2 flex gap-1.5 bg-black/80 border-b border-white/5 overflow-x-auto sticky z-[1000] justify-start md:justify-center" style={{ top: "var(--header-height, 65px)" }} dir={isArabic ? "rtl" : "ltr"}>
       {tabs.map((tab) => (
         <button
           key={tab.id}

@@ -28,6 +28,44 @@ function HeaderBar({
 }: HeaderBarProps) {
   const [showNotifications, setShowNotifications] = useState(false);
   const notificationsRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLElement | null>(null);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+
+  // Publish the actual header height as a CSS variable so sticky siblings
+  // (TabBar) can offset themselves below it on every screen size.
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => {
+      document.documentElement.style.setProperty("--header-height", `${Math.ceil(el.getBoundingClientRect().height)}px`);
+    };
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+
+  // Re-evaluate freshness every 30s without re-rendering the whole header on
+  // a timer — only the badge/last-updated label depends on `nowTick`.
+  useEffect(() => {
+    const timer = setInterval(() => setNowTick(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // `lastRefreshed` is a local time-of-day string; treat it as fresh only if
+  // it happened recently (last 3 minutes) and not in the future.
+  const STALE_AFTER_MS = 3 * 60_000;
+  let refreshAgeMs: number | null = null;
+  if (lastRefreshed) {
+    const m = lastRefreshed.match(/^(\d{1,2}):(\d{2}):(\d{2})$/);
+    if (m) {
+      const d = new Date();
+      d.setHours(Number(m[1]), Number(m[2]), Number(m[3]), 0);
+      refreshAgeMs = nowTick - d.getTime();
+    }
+  }
+  const isStale = !loading && refreshAgeMs !== null
+    ? refreshAgeMs < -60_000 || refreshAgeMs > STALE_AFTER_MS
+    : !lastRefreshed && !loading;
 
   useEffect(() => {
     if (!showNotifications) return;
@@ -41,7 +79,7 @@ function HeaderBar({
   }, [showNotifications]);
 
   return (
-    <header className="bg-black/60 backdrop-blur-md border-b border-white/5 sticky top-0 z-[1100] px-4 py-3 md:px-8">
+    <header ref={headerRef} className="bg-black/60 backdrop-blur-md border-b border-white/5 sticky top-0 z-[1100] px-4 py-3 md:px-8">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
         {/* Platform Title */}
         <div className="flex items-center gap-3">
@@ -51,8 +89,17 @@ function HeaderBar({
           <div>
             <h1 className="font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-none flex items-center gap-2">
               <span>{isArabic ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث" : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes"}</span>
-              <span className="bg-red-600 text-white text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider animate-pulse">
-                {isArabic ? "مباشر" : "Live"}
+              <span
+                title={isStale
+                  ? (isArabic ? "آخر تحديث قديم — اكتمل الاتصال بالخادم" : "Dernière actualisation trop ancienne")
+                  : (isArabic ? "متصلة ومحدثة بخادم المرصد" : "Connecté et à jour avec le serveur")}
+                className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                  isStale
+                    ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                    : "bg-red-600 text-white animate-pulse"
+                }`}
+              >
+                {isStale ? (isArabic ? "غير متزامن" : "Déconnecté") : (isArabic ? "مباشر" : "Live")}
               </span>
             </h1>
             <p className="text-[10px] text-gray-400 mt-1">
@@ -66,7 +113,7 @@ function HeaderBar({
         {/* Quick info and Bilingual selector */}
         <div className="flex items-center gap-4 flex-wrap justify-center">
           {/* Last refreshed status */}
-          <div className="hidden md:flex items-center gap-1.5 text-xs text-gray-400 font-mono">
+          <div className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
             <Clock className="h-3.5 w-3.5 text-gray-500" />
             <span>{isArabic ? "آخر تحديث:" : "Tendance :"} {lastRefreshed || "--:--:--"}</span>
             <button
@@ -144,7 +191,9 @@ function HeaderBar({
           {/* Mesh network status badge */}
           <button
             onClick={onRefresh}
-            title={isArabic ? "شبكة المرصد المترابطة (Mesh) — اضغط للتحديث" : "Réseau Mesh de l'observatoire — cliquer pour actualiser"}
+            title={isArabic
+              ? "شبكة المرصد المترابطة (Mesh) — عقد خادم الوكيل عبر WebSocket، اضغط للتحديث"
+              : "Réseau Mesh de l'observatoire — nœuds du serveur de relais via WebSocket, cliquer pour actualiser"}
             className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-bold transition-colors cursor-pointer ${
               meshStatus === "online"
                 ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
@@ -159,7 +208,7 @@ function HeaderBar({
               <WifiOff className="h-3.5 w-3.5" />
             )}
             <span>
-              {isArabic ? "شبكة Mesh" : "Réseau Mesh"}
+              {isArabic ? "Mesh: الخادم" : "Mesh serveur"}
               {meshStatus === "online" && meshNodeCount > 0 ? `: ${meshNodeCount}` : ""}
             </span>
           </button>

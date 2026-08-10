@@ -12,6 +12,7 @@ export interface Report {
   reporterPhone?: string;
   reporterType?: 'citizen' | 'volunteer' | 'official';
   reporterBadgeCode?: string;
+  clientGeneratedId?: string;
   timestamp: string;
   aiVerification?: {
     isVerified: boolean;

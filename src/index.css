@@ -6,6 +6,15 @@
 }
 
 /* Base style resets */
+:root {
+  --header-height: 65px;
+}
+
+html {
+  /* Keep elements scrolled into view clear of the sticky app header */
+  scroll-padding-top: var(--header-height, 65px);
+}
+
 body {
   font-family: var(--font-sans);
 }
@@ -68,6 +77,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: none;
 }
 
 .satellite-pulse::before {
@@ -98,6 +108,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  pointer-events: none;
 }
 
 .citizen-pulse-dot {

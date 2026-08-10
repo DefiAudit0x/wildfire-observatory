@@ -78,6 +78,7 @@ export default function MainContent({
             reportsCount={reports.length}
             sosCount={sosCalls.filter((s) => s.status === "active").length}
             reports={reports}
+            satellites={satellites}
             userLocation={userLocation}
             showAdminEntries={privilegedTabVisible}
           />

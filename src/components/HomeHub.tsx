@@ -16,8 +16,9 @@ import {
   Layers,
   Shield
 } from "lucide-react";
-import { Language, Report } from "../types";
+import { Language, Report, SatelliteHotspot } from "../types";
 import { haversineKm } from "../utils/geo";
+import { getNearestActiveThreat } from "../utils/threats";
 
 interface HomeHubProps {
   onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
@@ -26,6 +27,7 @@ interface HomeHubProps {
   reportsCount: number;
   sosCount: number;
   reports?: Report[];
+  satellites?: SatelliteHotspot[];
   userLocation?: { lat: number; lng: number } | null;
   showAdminEntries?: boolean;
 }
@@ -34,23 +36,31 @@ function getDistanceKm(lat1: number, lng1: number, lat2: number, lng2: number): 
   return haversineKm(lat1, lng1, lat2, lng2);
 }
 
-export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], userLocation, showAdminEntries = false }: HomeHubProps) {
+export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], satellites = [], userLocation, showAdminEntries = false }: HomeHubProps) {
   const isArabic = lang === "ar";
   const [showAllServices, setShowAllServices] = useState(false);
 
-  const nearbyActiveFires = userLocation
-    ? reports.filter(
-        (r) =>
-          (r.status === "pending" || r.status === "verified") &&
-          getDistanceKm(userLocation.lat, userLocation.lng, r.lat, r.lng) <= 10
-      )
-    : [];
-  const emergencyMode = nearbyActiveFires.length >= 3;
-  const nearestFire = nearbyActiveFires.length > 0
-    ? nearbyActiveFires.reduce((a, b) =>
-        getDistanceKm(userLocation!.lat, userLocation!.lng, a.lat, a.lng) <=
-        getDistanceKm(userLocation!.lat, userLocation!.lng, b.lat, b.lng) ? a : b
-      )
+  // One shared definition of "nearby danger": clustered citizen reports
+  // (pending/verified) + satellite hotspots >= 70%, deduped by fire cluster.
+  const nearbyAnalysis = userLocation
+    ? getNearestActiveThreat({
+        lat: userLocation.lat,
+        lng: userLocation.lng,
+        reports,
+        satellites,
+      })
+    : null;
+  // Emergency mode means *multiple distinct fires* (clusters), not multiple
+  // reports of the same fire.
+  const emergencyMode = !!nearbyAnalysis && nearbyAnalysis.nearbyIncidents >= 2;
+  const nearestReport = nearbyAnalysis?.nearest?.kind === "report"
+    ? reports.find((r) => r.id === nearbyAnalysis!.nearest!.reportId) || null
+    : null;
+  const nearestReportKm = nearbyAnalysis?.nearest?.kind === "report"
+    ? Math.round(nearbyAnalysis.nearest.distanceKm)
+    : null;
+  const nearestSatelliteKm = nearbyAnalysis?.nearest?.kind === "satellite"
+    ? Math.round(nearbyAnalysis.nearest.distanceKm)
     : null;
 
   const secondaryServices = [
@@ -116,7 +126,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
   return (
     <div className="w-full space-y-6 animate-fadeIn max-w-4xl mx-auto px-2" dir={isArabic ? "rtl" : "ltr"}>
 
-      {/* Emergency Mode Banner: 3+ active fires within 10km */}
+      {/* Emergency Mode Banner: 2+ distinct fire clusters within 10km */}
       {emergencyMode && userLocation && (
         <div className="relative overflow-hidden bg-red-950/90 border-2 border-red-500 rounded-2xl p-4 md:p-5 shadow-[0_0_40px_rgba(239,68,68,0.35)] animate-pulse">
           <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
@@ -128,8 +138,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
                 </h3>
                 <p className="text-xs text-red-200 leading-relaxed">
                   {isArabic
-                    ? `${nearbyActiveFires.length} حرائق نشطة على بعد أقل من 10 كم من موقعك${nearestFire ? ` — أقربها: ${nearestFire.locationName} (${Math.round(getDistanceKm(userLocation.lat, userLocation.lng, nearestFire.lat, nearestFire.lng))} كم)` : ""}. اخلَ فوراً ولا تنتظر انتشار النيران.`
-                    : `${nearbyActiveFires.length} foyers actifs à moins de 10 km${nearestFire ? ` — le plus proche : ${nearestFire.locationName} (${Math.round(getDistanceKm(userLocation.lat, userLocation.lng, nearestFire.lat, nearestFire.lng))} km)` : ""}. Évacuez immédiatement.`}
+                    ? `${nearbyAnalysis!.nearbyIncidents} بؤرة حريق نشطة على بعد أقل من 10 كم من موقعك${nearestReport ? ` — أقربها: ${nearestReport.locationName} (${nearestReportKm} كم)` : ""}${nearestSatelliteKm !== null ? ` — تأكيد حراري فضائي قريب (${nearestSatelliteKm} كم)` : ""}. اخلَ فوراً ولا تنتظر انتشار النيران.`
+                    : `${nearbyAnalysis!.nearbyIncidents} foyers actifs à moins de 10 km${nearestReport ? ` — le plus proche : ${nearestReport.locationName} (${nearestReportKm} km)` : ""}${nearestSatelliteKm !== null ? ` — confirmation thermique satellite proche (${nearestSatelliteKm} km)` : ""}. Évacuez immédiatement.`}
                 </p>
               </div>
             </div>

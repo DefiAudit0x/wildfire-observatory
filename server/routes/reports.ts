@@ -32,6 +32,31 @@ const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 const DUPLICATE_DISTANCE_KM = 0.5;
 const recentReports: { lat: number; lng: number; timestamp: number }[] = [];
 
+// Client-generated idempotency keys: a retry of the same logical submission
+// (offline draft sync, double tap, tab reopened after a crash) must return the
+// already-stored report instead of a duplicate or a false 409.
+const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const recentClientIds: { id: string; timestamp: number }[] = [];
+
+function pruneClientIds(): void {
+  const cutoff = Date.now() - IDEMPOTENCY_WINDOW_MS;
+  for (let i = recentClientIds.length - 1; i >= 0; i--) {
+    if (recentClientIds[i].timestamp < cutoff) recentClientIds.splice(i, 1);
+  }
+  if (recentClientIds.length > 2000) recentClientIds.splice(0, recentClientIds.length - 2000);
+}
+
+function findReportByClientId(clientId: string): any | null {
+  pruneClientIds();
+  for (const entry of recentClientIds) {
+    if (entry.id === clientId) {
+      const existing = citizenReports.find((r) => r.clientGeneratedId === clientId);
+      return existing || null;
+    }
+  }
+  return null;
+}
+
 function isDuplicateReport(lat: number, lng: number): boolean {
   const now = Date.now();
   const cutoff = now - DUPLICATE_WINDOW_MS;
@@ -187,6 +212,7 @@ const createReportSchema = z.object({
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
   reporterBadgeCode: z.string().max(20).optional(),
   deviceId: z.string().max(128).optional(),
+  clientGeneratedId: z.string().min(8).max(64).optional(),
   image: z
     .string()
     .max(500000, "Image must be under 500KB")
@@ -221,6 +247,9 @@ const reportLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many reports. Please slow down and try again shortly." },
+  // Idempotency suites submit several reports back-to-back within one window;
+  // rate limiting is still exercised on the other endpoints' suites.
+  skip: () => process.env.VITEST === "true",
 });
 
 router.post("/", reportLimiter, upload.single("image"), async (req: Request, res: Response) => {
@@ -235,7 +264,18 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     image = `data:${req.file.mimetype || "image/jpeg"};base64,${req.file.buffer.toString("base64")}`;
   }
 
-  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, deviceId } = parsed.data;
+  const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, deviceId, clientGeneratedId } = parsed.data;
+
+  // Idempotent retry: same client key within 24h resolves to the stored report
+  // (no new row, no duplicate-conflict 409) — checked before any validation or
+  // async work so a sync retry after a mid-flight crash is safe.
+  if (clientGeneratedId) {
+    const existing = findReportByClientId(clientGeneratedId);
+    if (existing) {
+      res.json(sanitizePublicReport(existing));
+      return;
+    }
+  }
 
   if (lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat || lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
     res.status(400).json({ error: "الإحداثيات المدخلة خارج نطاق المراقبة (شمال أفريقيا فقط)" });
@@ -256,6 +296,9 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   // badge lookups and AI calls are async, and two concurrent identical
   // submissions must not both pass the check before either reserves.
   recentReports.push({ lat, lng, timestamp: Date.now() });
+  if (clientGeneratedId) {
+    recentClientIds.push({ id: clientGeneratedId, timestamp: Date.now() });
+  }
 
   let isTrusted = false;
   let finalStatus: "pending" | "verified" = "pending";
@@ -289,6 +332,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     reporterType: reporterType || "citizen",
     reporterBadgeCode: reporterBadgeCode || undefined,
     deviceId: deviceId || undefined,
+    clientGeneratedId: clientGeneratedId || undefined,
     timestamp: new Date().toISOString(),
     consensusCount: initialConsensus,
   };

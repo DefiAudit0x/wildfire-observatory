@@ -12,6 +12,7 @@ import SosFab from "./components/layout/SosFab";
 import AppFooter from "./components/layout/AppFooter";
 import MainContent from "./components/layout/MainContent";
 import TrappedSOSModal from "./components/TrappedSOSModal";
+import { getNearestActiveThreat } from "./utils/threats";
 
 export default function App() {
   const [lang, setLang] = useState<Language>("ar");
@@ -42,7 +43,7 @@ export default function App() {
     handleMarkNotificationRead,
   } = useObservatoryData();
 
-  const { activeAlerts, isMuted, setIsMuted, getProximityDistance } = useProximityAlerts(reports, userLocation);
+  const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation);
 
   const handleToggleLang = useCallback(() => setLang((prev) => (prev === "ar" ? "fr" : "ar")), []);
 
@@ -66,27 +67,21 @@ export default function App() {
 
   const handleNavigate = useCallback((tab: TabId) => setActiveTab(tab), []);
 
-  // Nearest active danger to the user, combining citizen reports (non-resolved)
-  // and high-confidence satellite hotspots (>=70%).
+  // Nearest active danger to the user, combining clustered citizen reports
+  // (non-resolved) and high-confidence satellite hotspots (>=70%) through the
+  // single shared threat helper (same definition as the home emergency banner).
   const distanceToFire = useMemo(() => {
     if (!userLocation) return null;
 
-    const fireSources: { lat: number; lng: number }[] = [
-      ...reports
-        .filter((r) => r.status !== "resolved" && r.status !== "rejected")
-        .map((r) => ({ lat: r.lat, lng: r.lng })),
-      ...satellites
-        .filter((s) => s.confidence >= 70)
-        .map((s) => ({ lat: s.lat, lng: s.lng })),
-    ];
+    const { nearest } = getNearestActiveThreat({
+      lat: userLocation.lat,
+      lng: userLocation.lng,
+      reports,
+      satellites,
+    });
 
-    if (fireSources.length === 0) return null;
-
-    return fireSources.reduce((nearest, fire) => {
-      const dist = getProximityDistance(userLocation.lat, userLocation.lng, fire.lat, fire.lng);
-      return Math.min(nearest, Math.round(dist * 1000));
-    }, Infinity);
-  }, [userLocation, reports, satellites, getProximityDistance]);
+    return nearest ? Math.round(nearest.distanceKm * 1000) : null;
+  }, [userLocation, reports, satellites]);
 
   return (
     <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>

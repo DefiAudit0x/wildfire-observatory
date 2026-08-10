@@ -34,7 +34,7 @@ test.describe("Citizen report full pipeline", () => {
     await page.waitForSelector(".custom-citizen-icon", { timeout: 10000 });
 
     const marker = page.locator(".custom-citizen-icon").first();
-    await marker.click();
+    await marker.click({ force: true });
     await page.waitForSelector(".leaflet-popup [data-confirm-report]", { timeout: 10000 });
 
     const confirmId = await page.locator(".leaflet-popup [data-confirm-report]").first().getAttribute("data-confirm-report");

@@ -207,6 +207,8 @@ export default function InteractiveMap({
     if (markerSig === markersSigRef.current) return;
     markersSigRef.current = markerSig;
 
+    markerGroup.clearLayers();
+
     // 1. Plot NASA satellite thermal spots (MODIS/VIIRS)
     satellites.forEach((sat) => {
       // Custom pulsing red div icon
@@ -245,8 +247,6 @@ export default function InteractiveMap({
         .addTo(markerGroup);
     });
 
-    markerGroup.clearLayers();
-
     visibleReports.forEach((rep) => {
       const color = getSeverityColor(rep.severity);
 
@@ -254,8 +254,8 @@ export default function InteractiveMap({
       const citizenIcon = L.divIcon({
         className: "custom-citizen-icon",
         html: `
-          <div class="relative flex items-center justify-center" style="width: 24px; height: 24px;">
-            <div class="absolute rounded-full opacity-40 animate-ping" style="width: 24px; height: 24px; background-color: ${color};"></div>
+          <div class="relative flex items-center justify-center pointer-events-none" style="width: 24px; height: 24px;">
+            <div class="absolute rounded-full opacity-40 animate-ping pointer-events-none" style="width: 24px; height: 24px; background-color: ${color};"></div>
             <div class="rounded-full shadow-lg border-2 border-white flex items-center justify-center text-white" style="width: 14px; height: 14px; background-color: ${color}; font-size: 8px;">
               ${safeNumber(rep.consensusCount)}
             </div>
@@ -393,7 +393,7 @@ export default function InteractiveMap({
       <div id="map-target" ref={mapContainerRef} className="absolute inset-0" />
       
       {/* Absolute overlay indicator */}
-      <div className="absolute top-3 right-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur text-xs py-1.5 px-3 rounded-lg shadow-lg flex items-center gap-3">
+      <div className="absolute top-3 right-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur text-xs py-1.5 px-3 rounded-lg shadow-lg flex items-center gap-3 pointer-events-none">
         <div className="flex items-center gap-1.5">
           <span className="flex h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>
           <span className="text-slate-300 font-medium">
@@ -409,7 +409,7 @@ export default function InteractiveMap({
         </div>
       </div>
 
-      <div className="absolute bottom-3 left-3 z-[1000] bg-slate-950/90 text-[10px] text-slate-400 px-2 py-1 rounded border border-slate-800">
+      <div className="absolute bottom-3 left-3 z-[1000] bg-slate-950/90 text-[10px] text-slate-400 px-2 py-1 rounded border border-slate-800 pointer-events-none">
         {isArabic
           ? "💡 انقر على أي مكان بالخريطة لتحديد موقع وإبلاغ عن حريق"
           : "💡 Cliquez sur la carte pour épingler un feu"}

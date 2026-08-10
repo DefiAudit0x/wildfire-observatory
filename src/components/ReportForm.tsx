@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
-import { haversineKm } from "../utils/geo";
+import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/geo";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -159,17 +159,19 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const [successReport, setSuccessReport] = useState<any | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Compass & Camera Triangulation states
+  // Compass & Camera states
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [heading, setHeading] = useState(120); // 0-360 degrees (compass bearing)
-  const [pitch, setPitch] = useState(15); // -90 to 90 degrees (elevation angle)
+  // Sensor values are null until a real sensor delivers them — the form never
+  // fabricates a heading/pitch (no fake compass numbers stamped on photos).
+  const [heading, setHeading] = useState<number | null>(null); // 0-360 degrees (compass bearing)
+  const [pitch, setPitch] = useState<number | null>(null); // -90 to 90 degrees (elevation angle)
+  const [headingSource, setHeadingSource] = useState<"sensor" | "manual" | "none">("none");
   const [matchedReport, setMatchedReport] = useState<any | null>(null);
   const [alignmentAccuracy, setAlignmentAccuracy] = useState<number | null>(null);
+  const [showCalibrationGuide, setShowCalibrationGuide] = useState(false);
 
   // --- NEW ENHANCED STATES FOR SYSTEM ROBUSTNESS ---
-  const [isCalibrated, setIsCalibrated] = useState(false);
-  const [isCalibrating, setIsCalibrating] = useState(false);
   const [gpsMode, setGpsMode] = useState<"adaptive" | "continuous">("adaptive");
   const [isOffline, setIsOffline] = useState(false); // Can be toggled manually or via browser status
   const [offlineDrafts, setOfflineDrafts] = useState<any[]>([]);
@@ -182,12 +184,19 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
   const [includeTelemetry, setIncludeTelemetry] = useState(true);
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
+  const [wilayaNote, setWilayaNote] = useState<{
+    kind: "suggest" | "mismatch" | "outside";
+    option?: string;
+    textAr: string;
+    textFr: string;
+  } | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const syncingDrafts = useRef(false);
   const isArabic = lang === "ar";
 
-  // Load offline drafts on mount
+  // Load offline drafts on mount (download of connectivity is handled below)
   useEffect(() => {
     try {
       const stored = localStorage.getItem("offline_drafts");
@@ -198,15 +207,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       console.error("Failed to load drafts", e);
     }
 
-    const handleOnlineStatus = () => setIsOffline(false);
-    const handleOfflineStatus = () => setIsOffline(true);
     const handleMeshOnline = () => setIsOffline(false);
-    window.addEventListener("online", handleOnlineStatus);
-    window.addEventListener("offline", handleOfflineStatus);
     window.addEventListener("mesh:online", handleMeshOnline);
     return () => {
-      window.removeEventListener("online", handleOnlineStatus);
-      window.removeEventListener("offline", handleOfflineStatus);
       window.removeEventListener("mesh:online", handleMeshOnline);
     };
   }, []);
@@ -219,8 +222,56 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
   }, [mapClickedCoords]);
 
+  // Bind the selected region to the coordinates (mirror of the server's
+  // geofence): suggest the wilaya on GPS fix, warn on country mismatch so the
+  // submission is not silently rejected by the server after the fact.
+  useEffect(() => {
+    const parsedLat = parseFloat(lat);
+    const parsedLng = parseFloat(lng);
+    if (isNaN(parsedLat) || isNaN(parsedLng)) {
+      setWilayaNote(null);
+      return;
+    }
+    const resolved = determineWilayaByCoords(parsedLat, parsedLng);
+    if (resolved === OUT_OF_COVERAGE) {
+      if (wilaya) {
+        setWilayaNote({
+          kind: "outside",
+          textAr: "⚠️ الإحداثيات خارج تغطية المنصة — سيرفض الخادم البلاغ.",
+          textFr: "⚠️ Coordonnées hors couverture — le serveur rejettera le rapport.",
+        });
+      } else {
+        setWilayaNote(null);
+      }
+      return;
+    }
+    const resolvedOption = WILAYAS.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
+    if (!wilaya && resolvedOption) {
+      setWilayaNote({
+        kind: "suggest",
+        option: `${resolvedOption.nameAr} (${resolvedOption.nameFr})`,
+        textAr: `حدّدنا المكان من إحداثياتك: ${resolvedOption.nameAr}`,
+        textFr: `Wilaya déduite de vos coordonnées : ${resolvedOption.nameFr}`,
+      });
+      return;
+    }
+    if (wilaya) {
+      const selectedCountry = wilaya.split(" - ")[0];
+      if (selectedCountry && selectedCountry !== resolved.split(" - ")[0]) {
+        setWilayaNote({
+          kind: "mismatch",
+          textAr: `⚠️ إحداثياتك تقع في «${resolved.split(" (")[0]}» بينما اخترت ولاية مختلفة — سيرفض الخادم البلاغ ما لم تصحّح الاختيار.`,
+          textFr: `⚠️ Vos coordonnées sont dans «${resolved.split(" (")[0]}» mais vous avez choisi une autre wilaya — le serveur rejettera le rapport.`,
+        });
+        return;
+      }
+    }
+    setWilayaNote(null);
+  }, [lat, lng, wilaya]);
+
   const syncOfflineDrafts = async () => {
-    if (offlineDrafts.length === 0) return;
+    if (offlineDrafts.length === 0 || syncingDrafts.current) return;
+    syncingDrafts.current = true;
     setIsSubmitting(true);
     setSyncStatusMsg(isArabic ? "جاري مزامنة وبث المسودات..." : "Synchronisation des brouillons en cours...");
     
@@ -228,20 +279,24 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     const remainingDrafts = [...offlineDrafts];
     
     for (const draft of offlineDrafts) {
+      // clientGeneratedId lets the server answer idempotently — a draft that
+      // was already pushed (e.g. the tab closed mid-sync) is returned as-is
+      // instead of being duplicated.
+      const payload = {
+        lat: draft.lat,
+        lng: draft.lng,
+        locationName: draft.locationName,
+        wilaya: draft.wilaya,
+        severity: draft.severity,
+        description: draft.description,
+        reporterName: draft.reporterName,
+        reporterPhone: draft.reporterPhone,
+        reporterType: draft.reporterType,
+        reporterBadgeCode: draft.reporterBadgeCode,
+        image: draft.image,
+        clientGeneratedId: draft.id,
+      };
       try {
-        const payload = {
-          lat: draft.lat,
-          lng: draft.lng,
-          locationName: draft.locationName,
-          wilaya: draft.wilaya,
-          severity: draft.severity,
-          description: draft.description,
-          reporterName: draft.reporterName,
-          reporterPhone: draft.reporterPhone,
-          reporterType: draft.reporterType,
-          reporterBadgeCode: draft.reporterBadgeCode,
-          image: draft.image,
-        };
         await onSubmit(payload);
         successCount++;
         remainingDrafts.shift(); // remove the synchronized draft
@@ -258,6 +313,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       console.error(e);
     }
     
+    syncingDrafts.current = false;
     setIsSubmitting(false);
     if (successCount > 0) {
       setSyncStatusMsg(
@@ -274,6 +330,25 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       );
     }
   };
+
+  // Automatic sync: the moment connectivity returns, stored drafts are pushed
+  // without any manual action (previously only the UI flag flipped — the
+  // promised auto-sync never happened).
+  useEffect(() => {
+    const handleOnlineStatus = () => {
+      setIsOffline(false);
+      if (offlineDrafts.length > 0 && !syncingDrafts.current) {
+        void syncOfflineDrafts();
+      }
+    };
+    const handleOfflineStatus = () => setIsOffline(true);
+    window.addEventListener("online", handleOnlineStatus);
+    window.addEventListener("offline", handleOfflineStatus);
+    return () => {
+      window.removeEventListener("online", handleOnlineStatus);
+      window.removeEventListener("offline", handleOfflineStatus);
+    };
+  }, [offlineDrafts.length]);
 
   // Client-side distance calculation (Haversine formula in km)
   const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number =>
@@ -310,11 +385,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       if ("webkitCompassHeading" in e) {
         currentHeading = (e as any).webkitCompassHeading;
       } else if (e.alpha !== null) {
+        // 360 - alpha is only an approximation of the compass bearing (device
+        // orientation vs. geographic north); it is treated as an estimate.
         currentHeading = 360 - e.alpha;
       }
       
       if (currentHeading !== null) {
         setHeading(Math.round(currentHeading));
+        setHeadingSource("sensor");
       }
 
       if (e.beta !== null) {
@@ -328,9 +406,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     };
   }, []);
 
-  // Triangulation matching effect: Matches GPS + compass heading with current reports
+  // Correlation effect: matches GPS + compass heading with current reports
+  // (an alignment estimate only — no bearing, no matching).
   useEffect(() => {
-    if (!lat || !lng || !reports || reports.length === 0) {
+    if (!lat || !lng || heading === null || !reports || reports.length === 0) {
       setMatchedReport(null);
       setAlignmentAccuracy(null);
       return;
@@ -345,7 +424,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
     reports.forEach((rep) => {
       const dist = getDistance(uLat, uLng, rep.lat, rep.lng);
-      // Triangulate reports within 15km
+      // Correlate reports within 15km
       if (dist > 15) return;
 
       const bearing = calculateBearing(uLat, uLng, rep.lat, rep.lng);
@@ -381,6 +460,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
   }, [lat, lng, heading, reports]);
 
+  // Attach the media stream to the <video> the moment it exists — no arbitrary
+  // delay that races the element mount.
+  useEffect(() => {
+    if (stream && videoRef.current) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+
   // Camera stream activation
   const startCamera = async () => {
     try {
@@ -392,11 +479,21 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       };
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       setStream(mediaStream);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = mediaStream;
+      // iOS (Safari 13+) gates motion sensors behind an explicit permission
+      // prompt; request it within the camera gesture.
+      try {
+        const DOE = (window as any).DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === "function") {
+          const permission = await DOE.requestPermission();
+          if (permission !== "granted") {
+            setHeading(null);
+            setPitch(null);
+            setHeadingSource(permission === "denied" ? "none" : headingSource);
+          }
         }
-      }, 300);
+      } catch (err) {
+        console.warn("DeviceOrientation permission request failed", err);
+      }
     } catch (err: any) {
       console.warn("Camera hardware failed or was blocked by sandboxed environment. Using dynamic digital telemetry simulation instead.", err);
     }
@@ -452,50 +549,46 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     ctx.moveTo(620, 440); ctx.lineTo(600, 440); ctx.moveTo(620, 440); ctx.lineTo(620, 420);
     ctx.stroke();
 
-    // Branded telemetry watermark labels
+    // Branded telemetry watermark labels — factual only: GPS, UTC time, and
+    // sensor values (marked N/A when absent). No "secure proof" claims: the
+    // stamp is an evidentiary aid, not a cryptographic proof.
     ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
     ctx.font = "bold 13px monospace";
     ctx.fillText("MAGHREB WILDFIRE OBSERVATORY - TELEMETRY CAPTURE", 30, 70);
     
     ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
     ctx.font = "10px monospace";
-    ctx.fillText("SYSTEM: TRIANGULATION AUTO-CALIBRATION SECURE PROOF", 30, 90);
+    ctx.fillText("FIELD VISUAL ASSIST - ALIGNMENT ESTIMATE (NOT PROOF)", 30, 90);
     
     ctx.fillStyle = "rgba(241, 245, 249, 0.8)";
     ctx.font = "9px monospace";
     ctx.fillText(`GPS LAT: ${lat || "N/A"}`, 30, 115);
     ctx.fillText(`GPS LNG: ${lng || "N/A"}`, 30, 130);
-    ctx.fillText(`BEARING (COMPASS): ${heading}° ${getBearingDirection(heading)}`, 30, 145);
-    ctx.fillText(`PITCH (ELEVATION): ${pitch}°`, 30, 160);
+    if (includeTelemetry) {
+      ctx.fillText(`BEARING: ${heading !== null ? `${heading}° ${getBearingDirection(heading)}` : "N/A"} (${headingSource.toUpperCase()})`, 30, 145);
+      ctx.fillText(`PITCH: ${pitch !== null ? `${pitch}°` : "N/A"}`, 30, 160);
+    } else {
+      ctx.fillText("SENSOR STAMP: OFF", 30, 145);
+    }
+    ctx.fillText(`UTC CAPTURE: ${new Date().toISOString().slice(0, 19)}Z`, 30, 175);
 
     if (matchedReport) {
       ctx.fillStyle = "rgba(34, 197, 94, 0.9)";
-      ctx.fillText(`LOCK TARGET MATCH: ${alignmentAccuracy}% CORRELATED`, 30, 185);
-      ctx.fillText(`LOCATION: ${matchedReport.locationName.substring(0, 35).toUpperCase()}`, 30, 200);
+      ctx.fillText(`ALIGNMENT WITH EXISTING REPORT: ${alignmentAccuracy}% (ESTIMATE)`, 30, 200);
+      ctx.fillText(`LOCATION: ${matchedReport.locationName.substring(0, 35).toUpperCase()}`, 30, 215);
     } else {
       ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
-      ctx.fillText("LOCK TARGET MATCH: NEW UNRESOLVED SECTOR OUTBREAK", 30, 185);
+      ctx.fillText("NO EXISTING REPORT WITHIN BEARING/RANGE", 30, 200);
     }
 
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     setImage(dataUrl);
-    // Live capture is watermark-proven (GPS/heading/timestamp burned into the
-    // frame) so no reliability warning is needed here.
+    // Live capture carries the GPS/UTC stamp in the frame; a file upload does
+    // not (warning surfaced to the reporter below).
     setUploadWarning(null);
     // Note: telemetry overlay avoids raw image degradation while keeping a
     // high-fidelity snapshot for the Gemini vision verification.
     runEdgeAiPreScan(dataUrl);
-
-    // Auto-update report form text details to include coordinates and compass
-    // bearing info — only when the user opted in via the telemetry checkbox.
-    const directionStr = getBearingDirection(heading);
-    const calibrationDetails = isArabic 
-      ? `\n\n[معايرة الاستشعار والبوصلة الذكية: اتجاه ${heading}° ${directionStr} | زاوية الارتفاع ${pitch}° | مطابقة البيانات: ${alignmentAccuracy ? `${alignmentAccuracy}%` : "بؤرة حريق جديدة بالكامل"}]`
-      : `\n\n[Calibrage boussole: Direction ${heading}° ${directionStr} | Pitch ${pitch}° | Corrélation: ${alignmentAccuracy ? `${alignmentAccuracy}%` : "Nouveau foyer isolé"}]`;
-    
-    if (includeTelemetry && !description.includes("[Calibrage") && !description.includes("[معايرة")) {
-      setDescription((prev) => prev + calibrationDetails);
-    }
 
     stopCamera();
   };
@@ -572,15 +665,15 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         setEdgeAiStatus({
           success: true,
           confidence: Math.max(50, confidence),
-          messageAr: `🔎 تحذير أولي (فحص محلي تقديري): ألوان متوافقة مع ظلال نارية/دخانية (${Math.max(50, confidence)}%). التحقق النهائي يتم بالذكاء الاصطناعي في الخادم. تم ضغط الصورة بنسبة ${compressionPercent ?? 0}%.`,
-          messageFr: `🔎 Aperçu local (heuristique couleur) : teintes compatibles feu/fumée (${Math.max(50, confidence)}%). La vérification finale est faite par l'IA serveur. Image compressée à ${compressionPercent ?? 0}%.`
+          messageAr: `🔎 فحص لوني بصري أولي (تقديري فقط — لا يُثبت وجود حريق؛ التحقق النهائي يتم بالذكاء الاصطناعي في الخادم عند وصول البلاغ): ألوان متوافقة مع ظلال نارية/دخانية (${Math.max(50, confidence)}%). تم ضغط الصورة بنسبة ${compressionPercent ?? 0}%.`,
+          messageFr: `🔎 Pré-scan visuel local (heuristique couleur uniquement — ne constitue pas une preuve ; la vérification finale est faite par l'IA serveur) : teintes compatibles feu/fumée (${Math.max(50, confidence)}%). Image compressée à ${compressionPercent ?? 0}%.`
         });
       } else {
         setEdgeAiStatus({
           success: false,
           confidence,
-          messageAr: `⚠️ تنبيه أولي (فحص محلي تقديري): لم تُرصد تدرجات نارية/دخانية واضحة (${confidence}%). الالتقاط المقرّب والصريح يساعد التحقق الخادمي.`,
-          messageFr: `⚠️ Aperçu local : contraste feu/fumée faible (≈${confidence}%). Cadrez clairement le foyer pour faciliter la vérification serveur.`
+          messageAr: `⚠️ فحص لوني بصري أولي (تقديري فقط — لا يُثبت عدم وجود حريق): لم تُرصد تدرجات نارية/دخانية واضحة (${confidence}%). الالتقاط المقرّب والصريح يساعد التحقق الخادمي.`,
+          messageFr: `⚠️ Pré-scan visuel local : contraste feu/fumée faible (≈${confidence}%). Cadrez clairement pour faciliter la vérification serveur.`
         });
       }
     };
@@ -681,6 +774,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     setIsSubmitting(true);
     setErrorMsg(null);
 
+    // Idempotency key: retries of the same submission (offline sync, double
+    // taps, tab reopen after a crash) resolve to the already-stored report
+    // instead of creating duplicates.
+    const clientGeneratedId = typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `cg-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+
     const payload: any = {
       lat: parsedLat,
       lng: parsedLng,
@@ -693,14 +793,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       reporterType,
       reporterBadgeCode: reporterBadgeCode || undefined,
       image,
+      clientGeneratedId,
     };
 
     // --- INTERCEPT FOR OFFLINE DRAFT MODE ---
     if (isOffline) {
-      const draftId = `draft-${Date.now()}`;
       const draftReport = {
         ...payload,
-        id: draftId,
+        id: clientGeneratedId,
         timestamp: new Date().toISOString(),
         isOfflineDraft: true,
         consensusCount: 1,
@@ -717,15 +817,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
       setSuccessReport({
         ...draftReport,
-        aiVerification: {
-          isVerified: true,
-          confidence: edgeAiStatus?.confidence || 85,
-          detectedSigns: [isArabic ? "مسودة مخزنة دون اتصال" : "Brouillon enregistré hors-ligne", "Edge AI Pass"],
-          aiComments: isArabic
-            ? `تم حفظ البلاغ بنجاح كمسودة مخزنة في الذاكرة المحلية للجهاز (${compressedSize || "0 KB"}). سيقوم النظام بمزامنته وبثه فور استرجاع الاتصال بالإنترنت لتفادي فقدان البيانات في مناطق الغابات النائية.`
-            : `Le signalement a été enregistré localement comme brouillon (${compressedSize || "0 KB"}). Le système le synchronisera automatiquement dès le retour du réseau dans les zones blanches.`,
-          suggestedSeverity: severity.toUpperCase(),
-        }
+        // No AI verification is fabricated on-device: Gemini runs on the
+        // server once the draft is pushed — and only then.
+        aiVerification: null,
+        aiComments: isArabic
+          ? `تم حفظ البلاغ كمسودة في ذاكرة الجهاز (${compressedSize || "0 KB"}). سيبثه النظام تلقائياً فور عودة الاتصال — التحقق بالذكاء الاصطناعي يتم بعد وصوله للخادم.`
+          : `Signalement enregistré localement (${compressedSize || "0 KB"}). Transmission automatique dès le retour du réseau ; la vérification IA se fait côté serveur.`,
       });
 
       // Clear fields on success
@@ -840,9 +937,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             {isArabic ? "تم استلام بلاغك بنجاح!" : "Signalement envoyé avec succès !"}
           </h4>
           <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
-            {isArabic
-              ? "شكراً لك على حسّك الوطني والمسؤول. بلاغك متوفر الآن لجميع مستخدمي المنصة وفرق الحماية المدنية وسيساعد في إنقاذ الأرواح والسيطرة على الكارثة."
-              : "Merci pour votre esprit citoyen. Votre signalement est désormais visible par tous et aide à guider la Protection Civile."}
+            {successReport.isOfflineDraft
+              ? (isArabic
+                  ? "حُفظ البلاغ كمسودة على جهازك وسيُبث تلقائياً بمجرد عودة الاتصال. التحقق بالذكاء الاصطناعي واعتماده يتم بعد وصوله إلى الخادم."
+                  : "Signalement enregistré sur votre appareil ; il sera transmis automatiquement dès le retour du réseau. La vérification IA se fait ensuite côté serveur.")
+              : (isArabic
+                  ? "شكراً لك على حسّك الوطني والمسؤول. بلاغك متوفر الآن لجميع مستخدمي المنصة وفرق الحماية المدنية وسيساعد في إنقاذ الأرواح والسيطرة على الكارثة."
+                  : "Merci pour votre esprit citoyen. Votre signalement est désormais visible par tous et aide à guider la Protection Civile.")}
           </p>
 
           {/* AI Feedback presentation */}
@@ -961,10 +1062,33 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   </option>
                 ))}
               </select>
+              {wilayaNote && (
+                <div className={`mt-1.5 p-2 rounded-lg border text-[10px] leading-relaxed ${
+                  wilayaNote.kind === "suggest"
+                    ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
+                    : "bg-amber-950/25 border-amber-500/30 text-amber-300"
+                }`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <span>{isArabic ? wilayaNote.textAr : wilayaNote.textFr}</span>
+                    {wilayaNote.kind === "suggest" && wilayaNote.option && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWilaya(wilayaNote.option!);
+                          setWilayaNote(null);
+                        }}
+                        className="shrink-0 px-2 py-1 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded text-[9px] font-black cursor-pointer hover:bg-emerald-500/30"
+                      >
+                        {isArabic ? "استخدام" : "Utiliser"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
-                {isArabic ? "اسم التجمع السكني أو الغابة" : "Nom du lieu / Forêt"}
+                {isArabic ? "اسم التجمع السكني أو الغابة (اختياري)" : "Nom du lieu / Forêt (optionnel)"}
               </label>
               <input
                 type="text"
@@ -972,7 +1096,6 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 onChange={(e) => setLocationName(e.target.value)}
                 placeholder={isArabic ? "مثال: غابة جبل الوحش، بالقرب من السد" : "Ex: Forêt de Seraïdi, près du réservoir"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
-                required
               />
             </div>
           </div>
@@ -1063,7 +1186,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 className="py-2.5 px-4 bg-red-950/40 hover:bg-red-950/60 border border-red-500/20 text-red-400 hover:text-white rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer"
               >
                 <Camera className="h-4 w-4" />
-                <span>{isArabic ? "كاميرا التثليث والبوصلة" : "Caméra & Boussole"}</span>
+                <span>{isArabic ? "كاميرا ميدانية وبوصلة" : "Caméra & Boussole"}</span>
               </button>
 
               <label className="flex items-center gap-1.5 text-[10px] text-slate-400 cursor-pointer select-none">
@@ -1073,7 +1196,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   onChange={(e) => setIncludeTelemetry(e.target.checked)}
                   className="accent-red-500 h-3.5 w-3.5"
                 />
-                <span>{isArabic ? "إضافة بيانات المعايرة التقنية للوصف" : "Ajouter les données de calibrage"}</span>
+                <span>{isArabic ? "إضافة ختم الاتجاه والارتفاع على الصورة" : "Imprimer cap & inclinaison sur la photo"}</span>
               </label>
 
               {image && (
@@ -1101,11 +1224,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                       <span className="text-base leading-none">🤖</span>
                       <div className="flex-1">
                         <div className="flex items-center justify-between font-extrabold mb-0.5">
-                          <span>{isArabic ? "تحليل Edge AI المحلي (مدمج في المتصفح):" : "Analyse Edge AI locale (embarquée) :"}</span>
+                          <span>{isArabic ? "فحص بصري أولي (محلي في المتصفح):" : "Pré-scan visuel local :"}</span>
                           <span className={`px-1 rounded text-[9px] font-black ${
                             edgeAiStatus.success ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300"
                           }`}>
-                            {edgeAiStatus.confidence}% {isArabic ? "تطابق" : "confiance"}
+                            {edgeAiStatus.confidence}% {isArabic ? "مؤشر لوني" : "score visuel"}
                           </span>
                         </div>
                         <p>{isArabic ? edgeAiStatus.messageAr : edgeAiStatus.messageFr}</p>
@@ -1117,12 +1240,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             </div>
             <p className="text-[9px] text-gray-500 mt-1 italic">
               {isArabic
-                ? "🔒 يُطبق نظام ضغط الصور وعلامة مائية رقمية لمطابقة دقة وبوصلة البلاغ لسرعة النشر تحت شبكات الجبال الضعيفة."
-                : "🔒 Algorithme exclusif de compression locale et filigrane de boussole pour la soumission rapide et calibrée en montagne."}
+                ? "🔒 تُضغط الصور محلياً ويُطبع ختم الإحداثيات والتوقيت عليها لتوثيق اللقطة. المطابقة مع البلاغات المجاورة تقديرية ولا تُثبت الحريق."
+                : "🔒 Photos compressées localement, coordonnées et heure imprimées sur l'image. L'alignement avec les signalements voisins reste une estimation."}
             </p>
           </div>
 
-      {/* 4. HIGH-TECH SENSOR-TRIANGULATION CAMERA VIEWPORT OVERLAY */}
+      {/* 4. CAMERA VIEWPORT OVERLAY */}
       {isCameraOpen && (
         <div className="fixed inset-0 bg-slate-950/98 z-[9999] flex flex-col justify-between p-4 md:p-6 select-none font-mono text-slate-100">
           
@@ -1132,11 +1255,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               <div className="flex items-center gap-2">
                 <span className="flex h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse"></span>
                 <span className="text-sm font-black tracking-widest text-red-500">
-                  {isArabic ? "نظام رصد وتثليث الحرائق التكتيكي" : "MAGHREB TACTICAL TRIANGULATION SYSTEM"}
+                  {isArabic ? "نظام المساعدة البصرية الميداني" : "FIELD VISUAL ASSIST SYSTEM"}
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 mt-1">
-                {isArabic ? "معايرة متطورة بالبوصلة لمطابقة ومقاطعة البلاغات مع البيانات النشطة" : "Active telemetry alignment tracking via magnetic sensors & GPS"}
+                {isArabic ? "توجيه الكاميرا وتقدير المواجهة مع البلاغات القريبة — تقديري ولا يثبت الحريق" : "Camera guidance & bearing estimate against nearby reports — an estimate, not a fire proof"}
               </p>
             </div>
             
@@ -1209,49 +1332,49 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <div className="absolute top-4 left-4 right-4 bg-slate-950/90 border border-slate-800 backdrop-blur rounded-lg p-3 flex flex-col items-center">
               <div className="flex justify-between items-center w-full mb-1">
                 <span className="text-xs font-black text-amber-500 tracking-wider flex items-center gap-1.5">
-                  🧭 {isArabic ? `زاوية اتجاه البوصلة (البيرنغ): ${heading}° ${getBearingDirection(heading)}` : `COMPASS BEARING: ${heading}° ${getBearingDirection(heading)}`}
+                  🧭 {heading !== null
+                    ? (isArabic ? `زاوية اتجاه البوصلة: ${heading}° ${getBearingDirection(heading)}` : `COMPASS BEARING: ${heading}° ${getBearingDirection(heading)}`)
+                    : (isArabic ? "البوصلة: لا توجد بيانات من المستشعر" : "BEARING: NO SENSOR DATA")}
+                  {headingSource === "sensor" && (
+                    <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[8px] font-black normal-case">
+                      {isArabic ? "مستشعر" : "SENSOR"}
+                    </span>
+                  )}
+                  {headingSource === "manual" && (
+                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded text-[8px] font-black normal-case">
+                      {isArabic ? "ضبط يدوي" : "MANUAL"}
+                    </span>
+                  )}
                 </span>
                 
-                {/* Calibration badge */}
+                {/* Compass guide toggle (there is no fake calibration progress:
+                    calibration is a user gesture, not a timer) */}
                 <button
                   type="button"
-                  onClick={() => {
-                    setIsCalibrating(true);
-                    let pct = 0;
-                    const interval = setInterval(() => {
-                      pct += 20;
-                      if (pct >= 100) {
-                        clearInterval(interval);
-                        setIsCalibrating(false);
-                        setIsCalibrated(true);
-                      }
-                    }, 250);
-                  }}
-                  disabled={isCalibrating}
+                  onClick={() => setShowCalibrationGuide((v) => !v)}
                   className={`px-2 py-0.5 rounded text-[9px] font-black tracking-widest uppercase transition-all cursor-pointer ${
-                    isCalibrated 
-                      ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
-                      : "bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse hover:bg-amber-500/30"
+                    showCalibrationGuide
+                      ? "bg-sky-500/20 text-sky-300 border border-sky-500/30"
+                      : "bg-slate-800 text-slate-300 border border-white/10 hover:bg-slate-700"
                   }`}
                 >
-                  {isCalibrating 
-                    ? (isArabic ? "جاري المعايرة..." : "CALIBRATING...")
-                    : isCalibrated 
-                      ? (isArabic ? "✓ بوصلة معايرة (Sensor Fusion)" : "✓ CALIBRATED (Sensor Fusion)")
-                      : (isArabic ? "⚠️ اضغط للمعايرة (Figure-8)" : "⚠️ CALIBRATE SENSOR (Figure-8)")
-                  }
+                  {showCalibrationGuide
+                    ? (isArabic ? "إخفاء الدليل" : "MASQUER LE GUIDE")
+                    : (isArabic ? "دليل البوصلة" : "GUIDE BOUSSOLE")}
                 </button>
               </div>
 
-              {/* Calibration Guide overlay when calibrating */}
-              {isCalibrating && (
-                <div className="w-full bg-slate-900 border border-amber-500/20 rounded p-2 text-center text-[10px] space-y-1 my-1.5 animate-pulse">
-                  <p className="text-amber-400 font-bold">
-                    🔄 {isArabic ? "يرجى تحريك الهاتف في مسار يشبه الرقم 8 اللانهائي لمعايرة المغناطيسية ومستشعر الدوران" : "Please rotate your phone in a Figure-8 loop to fuse Magnetometer + Gyroscope accuracy."}
+              {/* Compass guide — static honest instructions */}
+              {showCalibrationGuide && (
+                <div className="w-full bg-slate-900 border border-slate-700 rounded p-2 text-center text-[10px] space-y-1 my-1.5">
+                  <p className="text-sky-300 font-bold">
+                    {isArabic ? "كيف تعمل البوصلة؟" : "Comment ça marche ?"}
                   </p>
-                  <div className="w-full h-1 bg-slate-950 rounded-full overflow-hidden">
-                    <div className="bg-amber-500 h-full animate-pulse" style={{ width: "100%", animationDuration: "1.5s" }}></div>
-                  </div>
+                  <p className="text-slate-300 leading-normal">
+                    {isArabic
+                      ? "تُقرأ الزاوية من مستشعر الاتجاه في جهازك عند توفره. أمسك الهاتف أفقياً وأدر نفسك ببطء لالتقاط الاتجاه الحقيقي. على iOS/Safari قد يُطلب منك إذن الحركة والاتجاه أولاً. إذا لم تظهر بيانات، اسحب المنزلق للضبط اليدوي — وسيُعلَّم ذلك على الصورة."
+                      : "La direction provient du capteur d'orientation de l'appareil (s'il existe). Tenez le téléphone à plat et pivotez lentement. Sur iOS/Safari, une permission mouvement/orientation peut être requise. Sans capteur, utilisez le curseur manuel — l'image sera marquée MANUAL."}
+                  </p>
                 </div>
               )}
 
@@ -1260,10 +1383,18 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 type="range" 
                 min="0" 
                 max="359" 
-                value={heading}
-                onChange={(e) => setHeading(parseInt(e.target.value, 10))}
+                value={heading ?? 0}
+                onChange={(e) => {
+                  setHeading(parseInt(e.target.value, 10));
+                  setHeadingSource("manual");
+                }}
                 className="w-full mt-2 accent-red-500 cursor-pointer h-1 bg-slate-800 rounded-lg appearance-none"
               />
+              {headingSource === "none" && (
+                <p className="text-[9px] text-slate-500 mt-1 w-full text-center">
+                  {isArabic ? "لا مستشعر متاح — اسحب المنزلق للضبط اليدوي (سيُعلَّم ذلك على الصورة)." : "Aucun capteur disponible — glissez pour un réglage manuel (marqué sur la photo)."}
+                </p>
+              )}
               <div className="flex justify-between w-full text-[9px] text-slate-500 mt-1 font-mono">
                 <span>0° N</span>
                 <span>45° NE</span>
@@ -1286,53 +1417,52 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   type="range" 
                   min="-60" 
                   max="60" 
-                  value={pitch}
+                  value={pitch ?? 0}
                   onChange={(e) => setPitch(parseInt(e.target.value, 10))}
                   className="h-28 accent-amber-500 cursor-row-resize appearance-none bg-slate-800 rounded w-1"
                   style={{ WebkitAppearance: "slider-vertical" as any }}
                 />
-                <span className="text-[10px] font-bold text-amber-400 mt-1">{pitch > 0 ? `+${pitch}` : pitch}°</span>
+                <span className="text-[10px] font-bold text-amber-400 mt-1">{pitch !== null ? (pitch > 0 ? `+${pitch}` : pitch) : "—"}°</span>
               </div>
             </div>
 
-            {/* RIGHT TRIANGULATION HUD PANEL (Matched reports status) */}
+            {/* RIGHT VISUAL ALIGNMENT HUD PANEL (Matched reports status) */}
             <div className="absolute right-4 top-1/4 max-w-[200px] bg-slate-950/95 border border-slate-800 backdrop-blur rounded-lg p-3 space-y-2 text-[10px]">
               <div className="flex items-center gap-1.5 border-b border-white/5 pb-1.5">
                 <span className="flex h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
                 <span className="font-extrabold text-slate-200 uppercase tracking-widest text-[9px]">
-                  {isArabic ? "معالج التثليث" : "TRIANGULATION ENGINE"}
+                  {isArabic ? "محاذاة بصرية تقديرية" : "VISUAL ALIGNMENT (EST.)"}
                 </span>
               </div>
 
               {matchedReport ? (
                 <div className="space-y-1">
                   <p className="text-emerald-400 font-bold flex items-center gap-1">
-                    🎯 {isArabic ? "تم قفل المطابقة" : "TARGET ALIGNED"}
+                    🎯 {isArabic ? "بلاغ قريب في هذا الاتجاه" : "REPORT ON THIS BEARING"}
                   </p>
                   <p className="text-slate-200 font-semibold line-clamp-1">{matchedReport.locationName}</p>
                   <div className="w-full h-1 bg-slate-900 rounded-full overflow-hidden mt-1">
                     <div className="bg-emerald-500 h-full" style={{ width: `${alignmentAccuracy}%` }}></div>
                   </div>
                   <div className="flex justify-between text-[8px] text-slate-500 mt-1">
-                    <span>{isArabic ? "دقة التطابق:" : "Match rating:"}</span>
+                    <span>{isArabic ? "تقدير المطابقة:" : "Match estimate:"}</span>
                     <span className="font-bold text-emerald-400">{alignmentAccuracy}%</span>
                   </div>
                   <p className="text-slate-400 text-[8px] mt-1 leading-normal italic">
                     {isArabic 
-                      ? `بؤرة مسجلة متطابقة بالاتجاه والمدى (${matchedReport.distance.toFixed(1)} كلم زاوية ${matchedReport.bearing?.toFixed(0)}°)`
-                      : `Foyer existant corrélé avec l'orientation (${matchedReport.distance.toFixed(1)} km, bearing ${matchedReport.bearing?.toFixed(0)}°)`
-                    }
+                      ? `بلاغ قائم يتوافق مع الاتجاه والمدى (${matchedReport.distance.toFixed(1)} كلم، زاوية ${matchedReport.bearing?.toFixed(0)}°) — مطابقة تقديرية للموقع لا إثبات للمصدر.`
+                      : `Signalement existant corrélé en orientation/distance (${matchedReport.distance.toFixed(1)} km, bearing ${matchedReport.bearing?.toFixed(0)}°) — correspondance estimée.`}
                   </p>
                 </div>
               ) : (
                 <div className="space-y-1">
                   <p className="text-red-400 font-bold">
-                    ⚠️ {isArabic ? "بؤرة معزولة / جديدة" : "ISOLATED OUTBREAK"}
+                    ⚠️ {isArabic ? "لا بلاغات قريبة" : "NO NEARBY REPORT"}
                   </p>
                   <p className="text-slate-400 leading-normal text-[8px]">
                     {isArabic 
-                      ? "لا توجد بلاغات مسجلة في هذا الاتجاه والمدى. سيتم تعيين إحداثيات جديدة تماماً بناءً على زاوية وموقع الكاميرا."
-                      : "Aucun signalement existant dans cet angle. Votre angle permettra de géolocaliser une nouvelle boussole d'incendie."}
+                      ? "لا توجد بلاغات مسجلة ضمن هذا الاتجاه والمدى من موقعك. حدّث نقطة الإرسال من الخريطة أو الـ GPS مباشرة."
+                      : "Aucun signalement enregistré dans cet angle et cette portée. Renseignez la position via la carte ou le GPS."}
                   </p>
                   {(!lat || !lng) && (
                     <p className="text-amber-400 font-bold text-[8px] border-t border-white/5 pt-1 mt-1">
@@ -1346,9 +1476,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             {/* Bottom Status bar overlay */}
             <div className="absolute bottom-3 left-4 right-4 bg-black/80 backdrop-blur rounded px-3 py-1.5 text-[9px] text-slate-400 flex flex-wrap gap-2 justify-between border border-white/5">
               <span>GPS: <strong className="text-slate-200">{lat ? `${lat}, ${lng}` : (isArabic ? "لم يحدد" : "NOT SET")}</strong></span>
-              <span>BEARING: <strong className="text-slate-200">{heading}° ({getBearingDirection(heading)})</strong></span>
-              <span>ELEVATION: <strong className="text-slate-200">{pitch}°</strong></span>
-              <span>WATERMARK: <strong className="text-red-500">ACTIVE</strong></span>
+              <span>BEARING: <strong className="text-slate-200">{heading !== null ? `${heading}° (${headingSource})` : "N/A"}</strong></span>
+              <span>ELEVATION: <strong className="text-slate-200">{pitch !== null ? `${pitch}°` : "N/A"}</strong></span>
+              <span>STAMP: <strong className="text-red-500">{includeTelemetry ? "ACTIVE" : "OFF"}</strong></span>
             </div>
 
           </div>
@@ -1359,12 +1489,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               type="button"
               onClick={captureSnapshot}
               className="h-14 w-14 rounded-full bg-red-600 hover:bg-red-500 border-4 border-slate-900 shadow-[0_0_20px_rgba(220,38,38,0.6)] hover:scale-105 transition-all flex items-center justify-center cursor-pointer active:scale-95 animate-pulse"
-              title={isArabic ? "صوّر وعاير البيانات" : "Prendre la photo et calibrer"}
+              title={isArabic ? "التقط صورة ميدانية بختم الإحداثيات والوقت" : "Capturer la photo estampillée"}
             >
               <Camera className="h-6 w-6 text-white" />
             </button>
             <span className="text-[10px] text-slate-300 font-extrabold tracking-widest text-center">
-              {isArabic ? "انقر لالتقاط صورة الحريق ومعايرة زاوية البوصلة تلقائياً" : "CLICK SHUTTER TO CAPTURE WATERMARKED TELEMETRY"}
+              {isArabic ? "انقر لالتقاط صورة ميدانية بختم الإحداثيات والوقت" : "CLICK SHUTTER TO CAPTURE STAMPED PHOTO"}
             </span>
           </div>
 
