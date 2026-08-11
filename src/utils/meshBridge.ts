@@ -25,9 +25,12 @@ export interface PeerInfo {
   hopCount: number;
 }
 
-// Anti-replay cache
-const seenNonces = new Set<number>();
-const seenMessageHashes = new Set<string>();
+// Anti-replay cache with a REAL time-to-live: entries are purged by age
+// (5 minutes, matching the native service), never "when the set got big" —
+// a burst of traffic must not wipe the whole replay window at once.
+const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
+const seenNonces = new Map<number, number>();
+const seenMessageHashes = new Map<string, number>();
 
 // Ephemeral key pair for E2EE (browser fallback)
 let browserKeyPair: CryptoKeyPair | null = null;
@@ -78,7 +81,16 @@ function getAndroidBridge(): AndroidBridge | null {
 }
 
 export function isMeshSupported(): boolean {
-  return getAndroidBridge() !== null;
+  const bridge = getAndroidBridge();
+  if (!bridge) return false;
+  // The truth source is the bridge itself: presence of the interface is not
+  // the capability (an app shell could expose the object yet lack the radio).
+  try {
+    return bridge.isMeshSupported() !== false;
+  } catch {
+    // Legacy bridges without the method: interface presence implies support.
+    return true;
+  }
 }
 
 interface AndroidBridge {
@@ -350,6 +362,11 @@ export function getPeerReputation(endpointId: string): number {
 // EVENT SUBSCRIPTION
 // ========================
 
+// A SINGLE shared poller serves every onPeersUpdate subscriber (one interval
+// per hook instance would fire N polls per tick and drift them apart).
+const PEER_POLL_MS = 5000;
+let peerPollInterval: number | null = null;
+
 export function onMeshMessage(handler: MeshMessageHandler): () => void {
   messageListeners.add(handler);
 
@@ -376,15 +393,27 @@ export function onMeshMessage(handler: MeshMessageHandler): () => void {
 export function onPeersUpdate(handler: PeerUpdateHandler): () => void {
   peerListeners.add(handler);
 
-  // Poll for peer updates every 5 seconds
-  const interval = setInterval(() => {
-    const peers = getConnectedPeers();
-    if (peers.length > 0) handler(peers);
-  }, 5000);
+  if (peerPollInterval === null && typeof window !== "undefined") {
+    peerPollInterval = window.setInterval(() => {
+      const peers = getConnectedPeers();
+      // Always notify — including the empty list: a node counter that keeps
+      // its last value when the room empties is a stale counter.
+      peerListeners.forEach((h) => {
+        try {
+          h(peers);
+        } catch {
+          // a failing subscriber must not silence the others
+        }
+      });
+    }, PEER_POLL_MS);
+  }
 
   return () => {
     peerListeners.delete(handler);
-    clearInterval(interval);
+    if (peerListeners.size === 0 && peerPollInterval !== null) {
+      window.clearInterval(peerPollInterval);
+      peerPollInterval = null;
+    }
   };
 }
 
@@ -485,16 +514,29 @@ function generateId(): string {
 // ========================
 
 export function checkAndRecordNonce(nonce: number): boolean {
-  if (seenNonces.has(nonce)) return false; // Already seen
-  seenNonces.add(nonce);
-  // Auto-clean old nonces (older than 5 min)
-  if (seenNonces.size > 10000) seenNonces.clear();
+  const now = Date.now();
+  if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - ANTI_REPLAY_TTL_MS) {
+    return false; // Already seen inside the replay window
+  }
+  seenNonces.set(nonce, now);
+  if (seenNonces.size > 5000) {
+    for (const [k, ts] of seenNonces) {
+      if (ts <= now - ANTI_REPLAY_TTL_MS) seenNonces.delete(k);
+    }
+  }
   return true;
 }
 
 export function checkAndRecordMessageHash(hash: string): boolean {
-  if (seenMessageHashes.has(hash)) return false;
-  seenMessageHashes.add(hash);
-  if (seenMessageHashes.size > 5000) seenMessageHashes.clear();
+  const now = Date.now();
+  if (seenMessageHashes.has(hash) && seenMessageHashes.get(hash)! > now - ANTI_REPLAY_TTL_MS) {
+    return false;
+  }
+  seenMessageHashes.set(hash, now);
+  if (seenMessageHashes.size > 5000) {
+    for (const [k, ts] of seenMessageHashes) {
+      if (ts <= now - ANTI_REPLAY_TTL_MS) seenMessageHashes.delete(k);
+    }
+  }
   return true;
 }

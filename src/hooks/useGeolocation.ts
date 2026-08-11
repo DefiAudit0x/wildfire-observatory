@@ -10,19 +10,33 @@ export function useGeolocation(isArabic: boolean) {
   // write location/error state — a slow earlier response can never overwrite
   // a newer one (rapid GPS button presses).
   const refetchSeqRef = useRef(0);
+  // Freshness key shared by BOTH writers (watch callbacks and one-shot
+  // refetches): positions carry a device timestamp, and only the newest one
+  // wins — an old watch fix can never clobber a fresh refetch and vice versa.
+  const lastFixTsRef = useRef(0);
   // Latest fix, decoupled from render state: the heartbeat reads this so GPS
   // chatter only refreshes the value — it never tears down the interval.
   const locationRef = useRef<{ lat: number; lng: number } | null>(null);
+
+  const acceptFix = useCallback((pos: GeolocationPosition) => {
+    if (pos.timestamp < lastFixTsRef.current) return; // stale fix — newer one already owns the position
+    lastFixTsRef.current = pos.timestamp;
+    locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    setUserLocation(locationRef.current);
+    setGeoError(null);
+  }, []);
 
   useEffect(() => {
     if (navigator.geolocation) {
       const watchId = navigator.geolocation.watchPosition(
         (pos) => {
-          locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-          setUserLocation(locationRef.current);
-          setGeoError(null);
+          acceptFix(pos);
         },
         (err) => {
+          // GPS-loss decision (documented): a lost fix does NOT wipe the last
+          // known position — a transient blip would silently remove a correct
+          // location from an in-flight report. The error is surfaced instead
+          // and the form can still submit the last fix, visibly flagged.
           console.warn("Geolocation error:", err);
           setGeoError(isArabic ? "تعذّر تحديد موقعك. فعّل GPS للتبليغ الدقيق." : "Localisation GPS indisponible. Activez le GPS pour un signalement précis.");
         },
@@ -49,9 +63,7 @@ export function useGeolocation(isArabic: boolean) {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         if (seq !== refetchSeqRef.current) return;
-        locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-        setUserLocation(locationRef.current);
-        setGeoError(null);
+        acceptFix(pos);
       },
       (err) => {
         if (seq !== refetchSeqRef.current) return;
@@ -60,7 +72,7 @@ export function useGeolocation(isArabic: boolean) {
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
     );
-  }, [isArabic]);
+  }, [isArabic, acceptFix]);
 
   // Location heartbeat: shares the user's fix with the observatory backend
   // (used by coordination features once the device actually has a position).

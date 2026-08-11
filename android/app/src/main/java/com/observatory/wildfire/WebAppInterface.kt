@@ -18,17 +18,43 @@ import org.json.JSONObject
  */
 class WebAppInterface(
     private val meshProvider: () -> MeshService?,
-    private val urlProvider: () -> String = { "" }
+    private val urlProvider: () -> String = { "" },
+    private val deviceIdProvider: () -> String = { "" }
 ) {
 
     private val meshService: MeshService?
         get() = meshProvider()
 
+    // The device identifier is a STABLE identity, so it is resolved once and
+    // cached: "deviceId" must not rotate with the ephemeral mesh key (that is
+    // the whole point of a device ID — server-side deduplication depends on it).
+    @Volatile
+    private var cachedDeviceId: String? = null
+
+    /**
+     * Origin gate. The check is done on the parsed HOSTNAME — an exact match
+     * against a trusted allow-list — never a substring test: a
+     * "https://evil-localhost.example.com" URL must not pass because it
+     * merely CONTAINS "localhost".
+     */
     private fun isTrustedOrigin(): Boolean {
-        val url = urlProvider().lowercase().trim()
-        return url.startsWith("https://wildfire-observatory-production.up.railway.app") ||
-            url.startsWith("https://") && (url.contains("localhost") || url.contains("10.0.2.2")) ||
-            url.startsWith("http://localhost") || url.startsWith("http://10.0.2.2")
+        val url = urlProvider().trim()
+        if (url.isBlank()) return false
+        val scheme = url.substringBefore("://").lowercase()
+        if (scheme != "https" && scheme != "http") return false
+        val host = try {
+            android.net.Uri.parse(url).host?.lowercase()
+        } catch (e: Exception) {
+            null
+        } ?: return false
+
+        val productionHost = "wildfire-observatory-production.up.railway.app"
+        if (host == productionHost) {
+            // Production PWA is served over HTTPS only.
+            return scheme == "https"
+        }
+        // Local development hosts (emulator loopback): http/https both fine.
+        return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
     }
 
     // ========================
@@ -39,7 +65,14 @@ class WebAppInterface(
     fun isMeshSupported(): Boolean = true
 
     @JavascriptInterface
-    fun getDeviceId(): String = if (isTrustedOrigin()) meshService?.getEphemeralId() ?: "" else ""
+    fun getDeviceId(): String {
+        if (!isTrustedOrigin()) return ""
+        val existing = cachedDeviceId
+        if (existing != null) return existing
+        val generated = deviceIdProvider()
+        cachedDeviceId = generated
+        return generated
+    }
 
     @JavascriptInterface
     fun getPublicKey(): String = if (isTrustedOrigin()) CryptoEngine.getPublicKeyBase64() else ""

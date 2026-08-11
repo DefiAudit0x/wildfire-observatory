@@ -47,6 +47,12 @@ const isRecord = (v: unknown): v is Record<string, unknown> =>
 
 const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v.length > 0;
 
+// A timestamp must actually PARSE as a date — "متفرغ", "now" or "0000-00-00"
+// are not timestamps. The mesh relay contract and the server both emit ISO
+// 8601; anything Date.parse cannot read fails the source.
+const isIsoTimestamp = (v: unknown): v is string =>
+  isNonEmptyString(v) && !Number.isNaN(Date.parse(v));
+
 // Geo-critical invariants: finite AND inside the physical bounds. 999,-999 is
 // a finite number but not a point on Earth; these datasets feed proximity,
 // distance, map and evacuation logic, so impossible geometry fails the source.
@@ -56,6 +62,10 @@ const isLongitude = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v) && v >= -180 && v <= 180;
 const isNonNegativeNumber = (v: unknown): v is number =>
   typeof v === "number" && Number.isFinite(v) && v >= 0;
+// Counts must be whole numbers: consensusCount/activeFires are counters, and
+// the mesh confirm contract (Number.isInteger) must not contradict the poll.
+const isIntegerCount = (v: unknown): v is number =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0;
 
 const isOneOf = <T extends string>(allowed: readonly T[]) => (v: unknown): v is T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v);
@@ -82,8 +92,8 @@ export const isValidReport = (v: unknown): v is Report =>
   isNonEmptyString(v.description) &&
   isReportSeverity(v.severity) &&
   isReportStatus(v.status) &&
-  isNonEmptyString(v.timestamp) &&
-  isNonNegativeNumber(v.consensusCount);
+  isIsoTimestamp(v.timestamp) &&
+  isIntegerCount(v.consensusCount);
 
 /**
  * Satellite hotspot contract: the identity/location fields are not enough —
@@ -100,6 +110,7 @@ export const isValidSatelliteItem = (v: unknown): v is SatelliteHotspot =>
   v.confidence >= 0 &&
   v.confidence <= 100 &&
   isNonEmptyString(v.scanTime) &&
+  isIsoTimestamp(v.scanTime) &&
   isSatelliteType(v.satellite) &&
   isNonEmptyString(v.wilaya);
 
@@ -110,14 +121,14 @@ export const isValidSosItem = (v: unknown): v is TrappedSOS =>
   isLatitude(v.lat) &&
   isLongitude(v.lng) &&
   isSosStatus(v.status) &&
-  isNonEmptyString(v.timestamp);
+  isIsoTimestamp(v.timestamp);
 
 export const isValidWilayaItem = (v: unknown): v is WilayaStatus =>
   isRecord(v) &&
   isNonEmptyString(v.nameAr) &&
   isNonEmptyString(v.nameFr) &&
-  isNonNegativeNumber(v.activeFires) &&
-  isNonNegativeNumber(v.satelliteHotspots) &&
+  isIntegerCount(v.activeFires) &&
+  isIntegerCount(v.satelliteHotspots) &&
   isWilayaSeverity(v.severity) &&
   typeof v.evacuationRecommended === "boolean" &&
   isNonEmptyString(v.emergencyPhone);
@@ -131,7 +142,7 @@ export const isValidNotificationItem = (v: unknown): v is Notification =>
   isNonEmptyString(v.bodyAr) &&
   isNonEmptyString(v.bodyFr) &&
   isNotificationType(v.type) &&
-  isNonEmptyString(v.timestamp) &&
+  isIsoTimestamp(v.timestamp) &&
   typeof v.read === "boolean";
 
 function assertList(data: unknown, key: DatasetKey, isItem: (item: unknown) => boolean): unknown[] {

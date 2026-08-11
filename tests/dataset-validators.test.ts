@@ -190,6 +190,38 @@ describe("validateDataset", () => {
       DatasetValidationError
     );
   });
+
+  it("rejects timestamps that do not parse as real dates (round-8 tightening)", () => {
+    expect(() => validateDataset("reports", [{ ...validReport, timestamp: "now" }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("reports", [{ ...validReport, timestamp: "متفرغ" }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("satellites", [{ ...validSatellite, scanTime: "recent" }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("notifications", [{ ...validNotification, timestamp: "yesterday" }])).toThrow(
+      DatasetValidationError
+    );
+    expect(validateDataset("reports", [{ ...validReport, timestamp: "2026-08-10T09:30:00.000Z" }])).toHaveLength(1);
+  });
+
+  it("rejects fractional counts (counters must be whole numbers, matching the mesh contract)", () => {
+    expect(() => validateDataset("reports", [{ ...validReport, consensusCount: 2.5 }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("reports", [{ ...validReport, consensusCount: -1 }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("wilayas", [{ ...validWilaya, activeFires: 1.5 }])).toThrow(
+      DatasetValidationError
+    );
+    expect(() => validateDataset("wilayas", [{ ...validWilaya, satelliteHotspots: 0.25 }])).toThrow(
+      DatasetValidationError
+    );
+    expect(validateDataset("reports", [{ ...validReport, consensusCount: 0 }])).toHaveLength(1);
+  });
 });
 
 describe("isValidReport (single-item gate for non-poll writers)", () => {

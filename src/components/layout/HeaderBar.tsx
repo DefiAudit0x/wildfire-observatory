@@ -9,6 +9,7 @@ interface HeaderBarProps {
   lang: Language;
   notifications: Notification[];
   lastRefreshed: number;
+  lastBackendContact: number;
   datasetHealth: Record<DatasetKey, DatasetHealth>;
   loading: boolean;
   meshStatus: "connecting" | "online" | "offline";
@@ -44,6 +45,7 @@ function HeaderBar({
   lang,
   notifications,
   lastRefreshed,
+  lastBackendContact,
   datasetHealth,
   loading,
   meshStatus,
@@ -86,9 +88,10 @@ function HeaderBar({
 
   const { states, sync } = computeSyncState(datasetHealth, nowTick);
 
-  // Honest "last update" wording: the timestamp is the most recent moment ANY
-  // dataset succeeded — phrased per state so a partial sync never reads as a
-  // full one, and an old sync never looks like a fresh one.
+  // Honest "last update" wording: the primary clock is the moment of the last
+  // FULL refresh, phrased per state so a partial sync never reads as a full
+  // one. When the sync is partial the lastBackendContact badge (shown next to
+  // it) carries the moment the server was last reached by ANY dataset.
   const lastUpdatedWording = isArabic
     ? sync === "live"
       ? "آخر تحديث:"
@@ -236,6 +239,19 @@ function HeaderBar({
             <span title={sourceBreakdown}>
               {lastUpdatedWording} {lastRefreshed > 0 ? new Date(lastRefreshed).toLocaleTimeString(isArabic ? "ar-DZ" : "fr-DZ") : "--:--:--"}
             </span>
+            {/* When the sync is partial/degraded the full-refresh clock is not the
+                truth about backend reachability: lastBackendContact is where the
+                server was LAST reached by any dataset. */}
+            {sync !== "live" && lastBackendContact > 0 && (
+              <span
+                title={isArabic
+                  ? "آخر لحظة تم فيها الاتصال بالخادم بنجاح (مصدر واحد على الأقل)"
+                  : "Dernier contact réussi avec le serveur (au moins une source)"}
+                className="text-[10px] text-gray-500"
+              >
+                · {isArabic ? "اتصال:" : "contact:"} {new Date(lastBackendContact).toLocaleTimeString(isArabic ? "ar-DZ" : "fr-DZ")}
+              </span>
+            )}
             <button
               onClick={onRefresh}
               disabled={loading}

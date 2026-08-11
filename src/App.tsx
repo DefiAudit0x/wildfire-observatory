@@ -35,6 +35,7 @@ export default function App() {
     notifications,
     loading,
     lastRefreshed,
+    lastBackendContact,
     datasetHealth,
     meshStatus,
     meshNodeCount,
@@ -101,6 +102,7 @@ export default function App() {
         lang={lang}
         notifications={notifications}
         lastRefreshed={lastRefreshed}
+        lastBackendContact={lastBackendContact}
         datasetHealth={datasetHealth}
         loading={loading}
         meshStatus={meshStatus}

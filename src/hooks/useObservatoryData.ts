@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Report, SatelliteHotspot, WilayaStatus, TrappedSOS, Notification } from "../types";
 import { fetchWithRetry } from "../utils/api";
 import { meshClient } from "../lib/mesh";
-import { broadcastMessage, isMeshSupported } from "../utils/meshBridge";
+import { broadcastMessage, isMeshSupported, checkAndRecordMessageHash } from "../utils/meshBridge";
 import { useLiveEvents } from "../utils/live";
 import { getDeviceId } from "../utils/device";
 import { DATASET_KEYS, DatasetHealth, DatasetKey, FailureReason } from "../utils/datasetHealth";
@@ -41,8 +41,96 @@ export interface FetchOutcome {
 
 const EMPTY_OUTCOME: FetchOutcome = { hasActiveActivity: false, allOk: false, anyOk: false };
 
+/**
+ * Fields ReportForm sends for a citizen report. The image may be a data URL
+ * (multipart path) or absent; coordinates may arrive as strings from the form.
+ */
+export interface CitizenReportPayload {
+  lat: number | string;
+  lng: number | string;
+  locationName: string;
+  wilaya: string;
+  description: string;
+  severity?: string;
+  reporterName?: string;
+  reporterPhone?: string;
+  reporterType?: string;
+  reporterBadgeCode?: string;
+  clientGeneratedId?: string;
+  image?: string;
+}
+
 const isReportStatus = (v: unknown): boolean =>
   typeof v === "string" && (REPORT_STATUSES as readonly string[]).includes(v);
+
+/**
+ * Mesh fan-out for a report that reached the server: the SERVER's normalized
+ * copy is broadcast (the receivers' isValidReport gate admits it), with PII
+ * stripped. Coordinates that are not finite points inside physical bounds are
+ * NEVER forwarded silently — a silent (0,0) mesh report would poison the map
+ * on every peer.
+ */
+function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): void {
+  if (!isMeshSupported()) return;
+  try {
+    const lat = Number(reportLike.lat);
+    const lng = Number(reportLike.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      console.warn("Mesh broadcast skipped: invalid coordinates", reportLike.lat, reportLike.lng);
+      return;
+    }
+    const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = reportLike as Record<string, unknown>;
+    broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
+  } catch (err) {
+    console.error("Mesh broadcast failed:", err);
+  }
+}
+
+/**
+ * Mesh fan-out for a report the server REJECTED or was unreachable: the
+ * content is broadcast so an online gateway device can submit it to
+ * /api/reports (meshRelay). The payload is shaped like a pending report — the
+ * same contract receivers' gates enforce — and never carries PII.
+ */
+function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
+  if (!isMeshSupported()) return;
+  try {
+    const lat = Number(payload.lat);
+    const lng = Number(payload.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      console.warn("Mesh broadcast skipped: invalid coordinates", payload.lat, payload.lng);
+      return;
+    }
+    const pending = buildLocalPendingReport(payload);
+    const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = pending as unknown as Record<string, unknown>;
+    broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
+  } catch (err) {
+    console.error("Mesh broadcast failed:", err);
+  }
+}
+
+/**
+ * Display-safe local copy of a report the server accepted but whose response
+ * was unreadable. Same fabrication the offline-draft path already uses: the
+ * report IS committed server-side, the pending marker just reflects that this
+ * device has not yet re-synced it.
+ */
+function buildLocalPendingReport(payload: CitizenReportPayload): Report {
+  const lat = Number(payload.lat);
+  const lng = Number(payload.lng);
+  return {
+    id: payload.clientGeneratedId || `rep-local-${Date.now()}`,
+    lat: Number.isFinite(lat) ? lat : 0,
+    lng: Number.isFinite(lng) ? lng : 0,
+    locationName: payload.locationName,
+    wilaya: payload.wilaya,
+    description: payload.description,
+    severity: (payload.severity ?? "medium") as Report["severity"],
+    status: "pending" as const,
+    timestamp: new Date().toISOString(),
+    consensusCount: 1,
+  };
+}
 
 export function useObservatoryData() {
   const deviceId = getDeviceId();
@@ -178,10 +266,12 @@ export function useObservatoryData() {
 
     if (allOk) {
       // "Data refreshed" means the whole observatory answered: the UI's
-      // "آخر تحديث بيانات" clock only advances on a FULL refresh. A single
-      // lucky dataset (e.g. notifications) bumps lastBackendContact instead.
+      // "آخر تحديث بيانات" clock only advances on a FULL refresh.
       setLastRefreshed(now);
-    } else if (anyOk) {
+    }
+    if (anyOk) {
+      // A full refresh is the strongest backend contact; any single healthy
+      // dataset proves reachability. lastBackendContact tracks both.
       setLastBackendContact(now);
     }
 
@@ -258,6 +348,16 @@ export function useObservatoryData() {
 
     const offMessage = meshClient.onMessage((message) => {
       if (message.type === "report:new") {
+        // Anti-replay: the same gossip must not be admitted twice, even when
+        // two transports (WS mesh + refresh poll) deliver it back-to-back.
+        const gossipId = JSON.stringify([
+          message.type,
+          message.id,
+          message.ts,
+          message.lat,
+          message.lng,
+        ]);
+        if (!checkAndRecordMessageHash(gossipId)) return;
         const report = message.report as unknown;
         // Mesh messages are not cast through, they are verified through: a
         // message that does not satisfy the same report contract the GET poll
@@ -304,7 +404,7 @@ export function useObservatoryData() {
 
   // Post citizen report handler
   const handleCreateReport = useCallback(
-    async (payload: any) => {
+    async (payload: CitizenReportPayload) => {
       let res: Response;
 
       if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
@@ -349,6 +449,9 @@ export function useObservatoryData() {
         } catch {
           // non-JSON error body
         }
+        // The report is NOT on the server: fan its content out to the mesh so
+        // an online gateway device can carry it to /api/reports (meshRelay).
+        broadcastFailedReportToMesh(payload);
         const err: any = new Error(serverMsg || "Report failed");
         err.data = { error: serverMsg };
         throw err;
@@ -366,28 +469,21 @@ export function useObservatoryData() {
           reportsRef.current = next;
           return next;
         });
+        // On success the SERVER's normalized copy goes onto the mesh (the
+        // receivers' isValidReport gate accepts it), never the raw client
+        // payload. The mesh copy never carries PII.
+        broadcastReportToMesh(newReport);
       } else {
         console.warn("Server returned a malformed report payload; keeping the current list");
       }
 
-      // When the local mesh transport is supported (native bridge, PWA peer
-      // layer, ...), fan the report out to offline peers: they relay it
-      // hop-to-hop until an online device can submit it (meshRelay.ts). The
-      // mesh copy never carries PII.
-      if (isMeshSupported()) {
-        try {
-          const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = payload;
-          const lat = Number(meshPayload.lat) || 0;
-          const lng = Number(meshPayload.lng) || 0;
-          broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
-        } catch (err) {
-          console.error("Mesh broadcast failed:", err);
-        }
-      }
-
       // Refresh stats and statuses
       fetchData();
-      return newReport;
+      // Return contract: the caller (ReportForm) renders this value in the
+      // success modal, so the malformed server response must NEVER reach it —
+      // a display-safe local copy is built instead (same pattern the offline
+      // draft path uses).
+      return isValidReport(newReport) ? newReport : buildLocalPendingReport(payload);
     },
     [deviceId, fetchData]
   );

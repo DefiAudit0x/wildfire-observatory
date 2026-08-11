@@ -20,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
+import java.util.UUID
 
 class MainActivity : AppCompatActivity() {
 
@@ -47,6 +48,19 @@ class MainActivity : AppCompatActivity() {
 
     private var meshService: MeshService? = null
     private var meshBound = false
+
+    /**
+     * STABLE device identity (SharedPreferences-backed): survives app restarts
+     * and is distinct from the rotating ephemeral mesh key. "Device ID" means
+     * identity — server-side dedup (clientGeneratedId, heartbeat) depends on it.
+     */
+    private fun stableDeviceId(): String {
+        val prefs = getSharedPreferences("observatory_identity", Context.MODE_PRIVATE)
+        return prefs.getString("device_id", null)?.takeIf { it.isNotBlank() }
+            ?: UUID.randomUUID().toString().also {
+                prefs.edit().putString("device_id", it).apply()
+            }
+    }
 
     private val meshConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
@@ -133,7 +147,8 @@ class MainActivity : AppCompatActivity() {
         webView.addJavascriptInterface(
             WebAppInterface(
                 meshProvider = { meshService },
-                urlProvider = { webView.url ?: "" }
+                urlProvider = { webView.url ?: "" },
+                deviceIdProvider = { stableDeviceId() }
             ),
             "AndroidBridge"
         )
@@ -156,7 +171,7 @@ class MainActivity : AppCompatActivity() {
         (function() {
             // Signal to web layer that mesh is available
             window.dispatchEvent(new CustomEvent('meshReady', { 
-                detail: { deviceId: '${meshService?.getEphemeralId() ?: ""}' } 
+                detail: { deviceId: '${stableDeviceId()}' } 
             }));
             
             // Listen for incoming messages from MeshService

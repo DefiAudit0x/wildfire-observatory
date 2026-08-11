@@ -19,20 +19,45 @@ export async function fetchWithRetry(
       // Explicit retry policy: every non-4xx failure (5xx being the obvious
       // case) is retried AFTER the escalating delay — not immediately. The
       // catch below covers transport errors; this line makes the delay apply
-      // to HTTP failures too.
+      // to HTTP failures too. 4xx responses are returned immediately, by
+      // contract: retrying a client error cannot change its verdict.
       if (i < retries - 1) {
-        await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+        await sleep(delayMs * (i + 1), options.signal);
       }
     } catch (e: any) {
+      // The caller aborted (options.signal): the retry schedule is cancelled
+      // too, never a zombie timer waking up after the user gave up.
+      if (options.signal?.aborted) throw e;
       if (i === retries - 1) {
         throw e;
       }
-      await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+      await sleep(delayMs * (i + 1), options.signal);
     } finally {
       clearTimeout(timeoutId);
     }
   }
   throw new Error(`Failed after ${retries} retries`);
+}
+
+function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let timer: number | undefined;
+    const abort = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    if (signal) {
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    }
+    timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+  });
 }
 
 export function cacheGet<T>(key: string, ttlMs = 300000): T | null {
