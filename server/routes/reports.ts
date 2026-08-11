@@ -17,6 +17,7 @@ import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
 import { docGet, incrementDocField } from "../fs.js";
+import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 
 const router = Router();
 const MAX_IN_MEMORY_REPORTS = 500;
@@ -275,6 +276,23 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
       res.json(sanitizePublicReport(existing));
       return;
     }
+  }
+
+  // Image content gate: the MIME claim is metadata, not proof. Both upload
+  // paths (multipart file, JSON data URL) must show real image magic bytes
+  // (JPEG/PNG/WebP/GIF) before the payload is accepted — a corrupt or
+  // disguised file is refused instead of stored or sent to Gemini.
+  if (req.file && !validateImageFile(req.file)) {
+    res.status(400).json({
+      error: "ملف الصورة تالف أو بصيغة غير مدعومة (JPEG/PNG/WebP/GIF مطلوبة)",
+    });
+    return;
+  }
+  if (!req.file && image && !validateImageDataUrl(image)) {
+    res.status(400).json({
+      error: "ملف الصورة تالف أو بصيغة غير مدعومة (JPEG/PNG/WebP/GIF مطلوبة)",
+    });
+    return;
   }
 
   if (lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat || lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {

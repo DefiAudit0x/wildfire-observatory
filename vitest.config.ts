@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: "jsdom",
-    include: ["tests/**/*.test.tsx"],
+    include: ["tests/**/*.test.{ts,tsx}"],
     setupFiles: ["./tests/setup.ts"],
     env: {
       SKIP_FIREBASE: "true",

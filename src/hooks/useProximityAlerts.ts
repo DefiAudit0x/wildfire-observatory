@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Report } from "../types";
 import { haversineKm } from "../utils/geo";
 
@@ -25,12 +25,58 @@ export const SEVERITY_RANK: Record<string, number> = {
 /**
  * Alert escalation rule shared by every alert channel (proximity siren and
  * operator tone): a report re-alerts when its severity RISES (high→critical),
- * not when it stays put. Unknown/new severities are treated as an alert.
+ * not when it stays put. The comparison is against the last ANNOUNCED
+ * severity — a downgrade (critical→high) never rewrites the memory, so
+ * returning to a previously announced level does NOT re-alert. Unknown/new
+ * severities are treated as an alert on first sighting.
  */
 export function isEscalation(previous?: string, next?: string): boolean {
   if (!next) return false;
   if (!previous) return true; // first sighting
   return (SEVERITY_RANK[previous] ?? -1) < (SEVERITY_RANK[next] ?? -1);
+}
+
+export interface SeverityAware {
+  id: string;
+  severity: string;
+}
+
+/**
+ * The set of reports that currently warrant an announcement: every report
+ * whose severity ESCALATES beyond what the channel already announced (or
+ * whose first sighting has no history at all). Reports that stayed the same,
+ * dropped, or returned to a previously announced level are excluded.
+ */
+export function computeNewAlerts(
+  announced: ReadonlyMap<string, string>,
+  current: SeverityAware[]
+): SeverityAware[] {
+  return current.filter((r) => isEscalation(announced.get(r.id), r.severity));
+}
+
+/**
+ * The observatory's ONE alert-eligibility policy (audit): every alert channel
+ * answers "may this report ring?" from a single named authority instead of
+ * scattered status filters — the previous per-channel filters silently
+ * admitted PENDING reports to the citizen siren, contradicting the UI's
+ * "بلاغات المواطنين الموثقة فقط" (verified reports only) copy.
+ *   - proximity-siren (citizen channel): VERIFIED reports only. Pending
+ *     reports may be crowd noise; the citizen-facing siren only rings on
+ *     reports that reached the validation step.
+ *   - operator-tone (staff/volunteer channel): verified + pending with
+ *     high/critical severity (severity gated by the operator effect itself).
+ *     Staff acts on the EARLIEST signal — a single critical sighting already
+ *     warrants dispatch, so pending is admissible there by policy, not by
+ *     omission.
+ */
+export type AlertChannel = "proximity-siren" | "operator-tone";
+
+export function isReportEligibleForAlert(
+  r: Pick<Report, "status">,
+  channel: AlertChannel
+): boolean {
+  if (channel === "proximity-siren") return r.status === "verified";
+  return r.status === "verified" || r.status === "pending";
 }
 
 const PROXIMITY_THRESHOLDS: Record<string, number> = {
@@ -39,6 +85,9 @@ const PROXIMITY_THRESHOLDS: Record<string, number> = {
   medium: 5,
   low: 3,
 };
+
+/** Inter-announcement floor for the operator channel (command-center tone). */
+const OPERATOR_BEEP_THROTTLE_MS = 20000;
 
 export const MUTE_STORAGE_KEY = "observatory_proximity_muted";
 
@@ -69,6 +118,7 @@ export function useProximityAlerts(
       // storage unavailable — mute holds for this session only
     }
   }, [isMuted]);
+
   // Two independent alert channels (proximity siren vs operator tone) each own
   // their AudioContext, so one route's close timer can never close the context
   // the other route just opened. Each route ALSO owns ONE close timer that is
@@ -78,11 +128,19 @@ export function useProximityAlerts(
   const operatorAudioCtxRef = useRef<AudioContext | null>(null);
   const proximityCloseTimerRef = useRef<number | null>(null);
   const operatorCloseTimerRef = useRef<number | null>(null);
-  // Alert memory: report id → last ANNOUNCED severity. Kept for the whole
-  // session — a transiently empty zone (one bad poll, GPS blip) never resets
-  // it, so the same report re-entering its zone is not announced twice, while
-  // a severity ESCALATION (high→critical) is always announced.
+  // Alert memory: report id → last ANNOUNCED severity (never the last
+  // observed one — see computeNewAlerts). Kept for the whole session: a
+  // transiently empty zone never resets it, so the same report re-entering
+  // its zone is not announced twice, while a severity ESCALATION
+  // (high→critical) always is. A downgrade never rewrites the memory, so
+  // returning to an announced level is NOT a fresh alert.
   const lastAlertedReportIdsRef = useRef<Map<string, string>>(new Map());
+  // Operator channel: alerts DETECTED but not yet ANNOUNCED (throttle or
+  // timer pending). Separation of detected vs announced is what makes the
+  // 20 s floor a postponement, never a swallowed alert.
+  const operatorPendingRef = useRef<Map<string, string>>(new Map());
+  const operatorFlushTimerRef = useRef<number | null>(null);
+  const lastOperatorBeepAtRef = useRef(0);
 
   const closeAudioCtxAfter = (
     timerRef: { current: number | null },
@@ -99,12 +157,71 @@ export function useProximityAlerts(
     }, ms);
   };
 
-  // Lifecycle cleanup: cancel pending close timers and release any context
-  // still open when the consumer unmounts.
+  const beepOperatorTone = useCallback((hasCritical: boolean) => {
+    try {
+      if (!operatorAudioCtxRef.current) {
+        operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const audioCtx = operatorAudioCtxRef.current;
+      if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+      const t0 = audioCtx.currentTime;
+      for (let i = 0; i < 3; i++) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = "square";
+        osc.frequency.setValueAtTime(hasCritical ? 1200 : 900, t0 + i * 0.35);
+        gain.gain.setValueAtTime(0.05, t0 + i * 0.35);
+        gain.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.35 + 0.3);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(t0 + i * 0.35);
+        osc.stop(t0 + i * 0.35 + 0.3);
+      }
+      closeAudioCtxAfter(operatorCloseTimerRef, operatorAudioCtxRef, 2000);
+    } catch (err) {
+      console.warn("Critical alert tone blocked:", err);
+    }
+  }, []);
+
+  // Flush the operator pending queue: announce what was DETECTED but held
+  // back by the throttle. If the 20 s floor has not elapsed, the flush is
+  // POSTPONED via a timer (never swallowed); severities that dropped below
+  // high/critical meanwhile are dropped from the queue by the main effect.
+  const flushOperatorPending = useCallback(() => {
+    const pending = operatorPendingRef.current;
+    if (pending.size === 0) return;
+    const now = Date.now();
+    const remaining = lastOperatorBeepAtRef.current + OPERATOR_BEEP_THROTTLE_MS - now;
+    if (remaining > 0) {
+      if (operatorFlushTimerRef.current === null) {
+        operatorFlushTimerRef.current = window.setTimeout(() => {
+          operatorFlushTimerRef.current = null;
+          flushOperatorPending();
+        }, remaining + 50);
+      }
+      return;
+    }
+    // Announcement happens NOW: pending moves to announced memory, then beeps.
+    const announced = lastCriticalIdsRef.current;
+    const nextMemory = new Map<string, string>(announced);
+    let hasCritical = false;
+    for (const [id, sev] of pending) {
+      nextMemory.set(id, sev);
+      if (sev === "critical") hasCritical = true;
+    }
+    lastCriticalIdsRef.current = nextMemory;
+    pending.clear();
+    beepOperatorTone(hasCritical);
+    lastOperatorBeepAtRef.current = Date.now();
+  }, [beepOperatorTone]);
+
+  // Lifecycle cleanup: cancel pending close timers, release any context still
+  // open, and drop a scheduled operator flush when the consumer unmounts.
   useEffect(() => {
     return () => {
       if (proximityCloseTimerRef.current !== null) window.clearTimeout(proximityCloseTimerRef.current);
       if (operatorCloseTimerRef.current !== null) window.clearTimeout(operatorCloseTimerRef.current);
+      if (operatorFlushTimerRef.current !== null) window.clearTimeout(operatorFlushTimerRef.current);
       proximityAudioCtxRef.current?.close().catch(() => {});
       operatorAudioCtxRef.current?.close().catch(() => {});
       proximityAudioCtxRef.current = null;
@@ -126,8 +243,16 @@ export function useProximityAlerts(
     }
 
     const scanProximity = () => {
+      // Non-finite coordinates (NaN markers from unresolved server responses)
+      // are never measured: NaN distance comparisons are always false, but
+      // the invariant is enforced here so no downstream consumer sees one.
       const nearReports = reports
-        .filter((rep) => rep.status !== "resolved" && rep.status !== "rejected")
+        .filter(
+          (rep) =>
+            isReportEligibleForAlert(rep, "proximity-siren") &&
+            Number.isFinite(rep.lat) &&
+            Number.isFinite(rep.lng)
+        )
         .map((rep) => {
           const dist = getProximityDistance(userLocation.lat, userLocation.lng, rep.lat, rep.lng);
           const threshold = PROXIMITY_THRESHOLDS[rep.severity] ?? 5;
@@ -140,55 +265,58 @@ export function useProximityAlerts(
 
       if (nearReports.length === 0) return; // keep the alert memory intact
 
-      // While muted we only RECORD the current set (without touching the
-      // already-recorded one): unmuting must never replay the whole existing
-      // list — only reports that entered the zone during the mute window.
+      // While muted we keep the memory UNTOUCHED (it only advances at the
+      // moment a report actually announces, below). Unmuting therefore
+      // announces only reports with no announcement history — those first
+      // detected during the mute window — never the whole existing list.
       if (isMuted) return;
 
       // Web Audio sound alerts — only when a NEW report enters the proximity
       // zone OR an already-announced one ESCALATES to a higher severity.
       const announced = lastAlertedReportIdsRef.current;
-      const newlyEntered = nearReports.some((rep) =>
-        isEscalation(announced.get(rep.id), rep.severity)
-      );
-      if (newlyEntered) {
-        const nextMemory = new Map<string, string>(announced);
-        for (const rep of nearReports) nextMemory.set(rep.id, rep.severity);
-        lastAlertedReportIdsRef.current = nextMemory;
-        try {
-          if (!proximityAudioCtxRef.current) {
-            proximityAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-          }
-          const audioCtx = proximityAudioCtxRef.current;
-          const osc1 = audioCtx.createOscillator();
-          const osc2 = audioCtx.createOscillator();
-          const gainNode = audioCtx.createGain();
+      const newly = computeNewAlerts(announced, nearReports);
+      if (newly.length === 0) return; // nothing new: memory stays untouched
 
-          osc1.type = "sine";
-          osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
+      // Memory update is scoped to the ANNOUNCED reports only: writing every
+      // nearby report's current severity here would record OBSERVED (not
+      // announced) values, letting a later return-to-level re-alert falsely.
+      const nextMemory = new Map<string, string>(announced);
+      for (const a of newly) nextMemory.set(a.id, a.severity);
+      lastAlertedReportIdsRef.current = nextMemory;
 
-          osc2.type = "sawtooth";
-          osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
-
-          gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
-          gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
-
-          osc1.connect(gainNode);
-          osc2.connect(gainNode);
-          gainNode.connect(audioCtx.destination);
-
-          osc1.start();
-          osc2.start();
-
-          osc1.stop(audioCtx.currentTime + 1.0);
-          osc2.stop(audioCtx.currentTime + 1.0);
-          // Autoplay policies may leave the context suspended: resume before
-          // the scheduled starts so the siren actually rings.
-          if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
-          closeAudioCtxAfter(proximityCloseTimerRef, proximityAudioCtxRef, 2000);
-        } catch (err) {
-          console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
+      try {
+        if (!proximityAudioCtxRef.current) {
+          proximityAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
         }
+        const audioCtx = proximityAudioCtxRef.current;
+        const osc1 = audioCtx.createOscillator();
+        const osc2 = audioCtx.createOscillator();
+        const gainNode = audioCtx.createGain();
+
+        osc1.type = "sine";
+        osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
+
+        osc2.type = "sawtooth";
+        osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
+
+        gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
+
+        osc1.connect(gainNode);
+        osc2.connect(gainNode);
+        gainNode.connect(audioCtx.destination);
+
+        osc1.start();
+        osc2.start();
+
+        osc1.stop(audioCtx.currentTime + 1.0);
+        osc2.stop(audioCtx.currentTime + 1.0);
+        // Autoplay policies may leave the context suspended: resume before
+        // the scheduled starts so the siren actually rings.
+        if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+        closeAudioCtxAfter(proximityCloseTimerRef, proximityAudioCtxRef, 2000);
+      } catch (err) {
+        console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
       }
     };
 
@@ -204,54 +332,36 @@ export function useProximityAlerts(
   // every citizen phone would wear out the alert. Citizens are served by the
   // proximity siren above, which is location-bound.
   const lastCriticalIdsRef = useRef<Map<string, string>>(new Map());
-  const lastBeepAtRef = useRef(0);
   useEffect(() => {
     if (!isTrustedReporter) return;
     const critical = reports.filter(
       (r) =>
         (r.severity === "critical" || r.severity === "high") &&
-        r.status !== "resolved" &&
-        r.status !== "rejected"
+        isReportEligibleForAlert(r, "operator-tone")
     );
-    const seen = lastCriticalIdsRef.current;
-    // A report re-announces when its severity RISES (high→critical) too.
-    const newOnes = critical.filter((r) => isEscalation(seen.get(r.id), r.severity));
-    if (newOnes.length === 0) return;
-    // While muted the report is NOT recorded as "already announced": unmuting
-    // then announces it, instead of silently dropping the alert it arrived
-    // during.
-    if (isMuted) return;
-    const nextMemory = new Map<string, string>(seen);
-    for (const r of newOnes) nextMemory.set(r.id, r.severity);
-    lastCriticalIdsRef.current = nextMemory;
-    const now = Date.now();
-    if (now - lastBeepAtRef.current < 20000) return;
-    lastBeepAtRef.current = now;
-    try {
-      if (!operatorAudioCtxRef.current) {
-        operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-      }
-      const audioCtx = operatorAudioCtxRef.current;
-      if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
-      const t0 = audioCtx.currentTime;
-      const hasCritical = newOnes.some((x) => x.severity === "critical");
-      for (let i = 0; i < 3; i++) {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.type = "square";
-        osc.frequency.setValueAtTime(hasCritical ? 1200 : 900, t0 + i * 0.35);
-        gain.gain.setValueAtTime(0.05, t0 + i * 0.35);
-        gain.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.35 + 0.3);
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.start(t0 + i * 0.35);
-        osc.stop(t0 + i * 0.35 + 0.3);
-      }
-      closeAudioCtxAfter(operatorCloseTimerRef, operatorAudioCtxRef, 2000);
-    } catch (err) {
-      console.warn("Critical alert tone blocked:", err);
+    const announced = lastCriticalIdsRef.current;
+    const pending = operatorPendingRef.current;
+
+    // Detected now = escalation against BOTH announced memory and whatever is
+    // already pending (a severity rising while pending re-queues the newer
+    // value; dropping below high/critical removes it from the queue).
+    for (const id of [...pending.keys()]) {
+      if (!critical.some((r) => r.id === id)) pending.delete(id);
     }
-  }, [reports, isMuted, isTrustedReporter]);
+    const newOnes = computeNewAlerts(announced, critical).filter((a) =>
+      isEscalation(pending.get(a.id), a.severity)
+    );
+    if (newOnes.length === 0) return;
+
+    // While muted the alert is NOT recorded anywhere — neither announced nor
+    // pending: unmuting re-runs this effect (isMuted is a dep) and announces
+    // it then, instead of silently dropping the alert that arrived during
+    // the mute.
+    if (isMuted) return;
+
+    for (const a of newOnes) pending.set(a.id, a.severity);
+    flushOperatorPending();
+  }, [reports, isMuted, isTrustedReporter, flushOperatorPending]);
 
   return { activeAlerts, isMuted, setIsMuted, getProximityDistance };
 }

@@ -107,6 +107,24 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    /**
+     * Allow-list for WebView navigation (audit): mirrors WebAppInterface's
+     * trusted-origin set. HTTPS required for the production host; the emulator
+     * loopback hosts are allowed for local testing. Host matching is exact —
+     * never a substring test.
+     */
+    private fun isAllowedAppUrl(url: String): Boolean {
+        val scheme = url.substringBefore("://").lowercase()
+        if (scheme != "https" && scheme != "http") return false
+        val host = try {
+            android.net.Uri.parse(url).host?.lowercase()
+        } catch (e: Exception) {
+            null
+        } ?: return false
+        if (host == "wildfire-observatory-production.up.railway.app") return scheme == "https"
+        return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
+    }
+
     private fun setupWebView() {
         webView = WebView(this)
         setContentView(webView)
@@ -127,9 +145,35 @@ class MainActivity : AppCompatActivity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            // Navigation policy (audit): keep the WebView on allow-listed
+            // hosts ONLY. The PWA is a single-page app — every real "page
+            // move" happens in-app via the history API, so external loads
+            // (links, redirects, injected iframes escaping) are never needed.
+            // This is the compensating control for the bridge's URL-at-call-
+            // time origin check (see WebAppInterface header): with navigation
+            // locked to our hosts, the URL the gate reads is always one we
+            // chose.
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val url = request?.url?.toString() ?: return true
+                val allowed = isAllowedAppUrl(url)
+                if (!allowed) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "External navigation blocked (security policy).",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+                return !allowed // true = handled here, WebView does NOT load it
+            }
+
             override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {
-                // Never bypass TLS in production. Only allow self-signed hostname
-                // mismatch on debuggable builds (local emulator testing).
+                // NEVER bypass TLS in production. The bypass is scoped to
+                // debuggable builds AND specifically to hostname-mismatch
+                // errors (local emulator IPs): SSL_IDMISMATCH is NOT a
+                // self-signed/untrusted-certificate case (those surface as
+                // different primaryError values), and no other error type is
+                // ever proceeded. Self-signed certs stay rejected even in
+                // debug builds.
                 val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
                 if (isDebuggable && error?.primaryError == SslError.SSL_IDMISMATCH) {
                     handler?.proceed()

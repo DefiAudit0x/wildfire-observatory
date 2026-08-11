@@ -10,6 +10,7 @@ import {
   validateDataset,
   isValidReport,
   REPORT_STATUSES,
+  REPORT_SEVERITIES,
 } from "../utils/datasetValidators";
 
 export type { DatasetKey, DatasetHealth };
@@ -42,8 +43,23 @@ export interface FetchOutcome {
 const EMPTY_OUTCOME: FetchOutcome = { hasActiveActivity: false, allOk: false, anyOk: false };
 
 /**
+ * Hard ceiling for every poll request (audit): a raw fetch() with no timeout
+ * can stall forever, which would (a) hang the polling loop — scheduleNext
+ * never re-arms — and (b) keep the spinner up indefinitely. An aborted
+ * request settles as a "transport" failure: a settled outcome, never a hang.
+ */
+const FETCH_TIMEOUT_MS = 15000;
+
+function fetchWithTimeout(url: string): Promise<Response> {
+  return fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+}
+
+/**
  * Fields ReportForm sends for a citizen report. The image may be a data URL
  * (multipart path) or absent; coordinates may arrive as strings from the form.
+ * severity/reporterType are REAL unions (not loose strings): the compile-time
+ * type only helps call sites — the runtime guard in buildLocalPendingReport
+ * is what actually protects the schema from values like "nuclear".
  */
 export interface CitizenReportPayload {
   lat: number | string;
@@ -51,10 +67,10 @@ export interface CitizenReportPayload {
   locationName: string;
   wilaya: string;
   description: string;
-  severity?: string;
+  severity?: Report["severity"];
   reporterName?: string;
   reporterPhone?: string;
-  reporterType?: string;
+  reporterType?: "citizen" | "volunteer" | "official";
   reporterBadgeCode?: string;
   clientGeneratedId?: string;
   image?: string;
@@ -62,6 +78,9 @@ export interface CitizenReportPayload {
 
 const isReportStatus = (v: unknown): boolean =>
   typeof v === "string" && (REPORT_STATUSES as readonly string[]).includes(v);
+
+const isReportSeverity = (v: unknown): v is Report["severity"] =>
+  typeof v === "string" && (REPORT_SEVERITIES as readonly string[]).includes(v);
 
 /**
  * Mesh fan-out for a report that reached the server: the SERVER's normalized
@@ -115,9 +134,13 @@ function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
  * atob() loop on large images), with an atob() fallback for old WebViews.
  * If BOTH decoders fail — a corrupt or non-decodable data URL — the report
  * is still submitted, WITHOUT the image: a broken photo must never block a
- * fire report from reaching the server.
+ * fire report from reaching the server. The caller receives imageDropped so
+ * the reporter is TOLD the photo did not travel (never a silent drop).
  */
-async function buildMultipartForm(payload: CitizenReportPayload, deviceId: string): Promise<FormData> {
+async function buildMultipartForm(
+  payload: CitizenReportPayload,
+  deviceId: string
+): Promise<{ fd: FormData; imageDropped: boolean }> {
   const imgData = payload.image as string;
   const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
   let blob: Blob | null = null;
@@ -145,7 +168,7 @@ async function buildMultipartForm(payload: CitizenReportPayload, deviceId: strin
     if (v !== undefined && v !== null && v !== "") fd.append(k, String(v));
   }
   fd.append("deviceId", deviceId);
-  return fd;
+  return { fd, imageDropped: !blob };
 }
 
 /**
@@ -156,7 +179,8 @@ async function buildMultipartForm(payload: CitizenReportPayload, deviceId: strin
  * NaN — never a silent (0,0) that would pin the report to the Gulf of Guinea
  * on the map.
  */
-function buildLocalPendingReport(payload: CitizenReportPayload): Report {
+/** Exported for unit tests (pure coercion logic, no hook side effects). */
+export function buildLocalPendingReport(payload: CitizenReportPayload): Report {
   const lat = Number(payload.lat);
   const lng = Number(payload.lng);
   return {
@@ -166,7 +190,10 @@ function buildLocalPendingReport(payload: CitizenReportPayload): Report {
     locationName: payload.locationName,
     wilaya: payload.wilaya,
     description: payload.description,
-    severity: (payload.severity ?? "medium") as Report["severity"],
+    // Runtime guard (audit): the union type is compile-time only — the payload
+    // arrives as DATA, so an out-of-schema severity is coerced to the schema's
+    // default, never cast through a type assertion.
+    severity: isReportSeverity(payload.severity) ? payload.severity : "medium",
     status: "pending" as const,
     timestamp: new Date().toISOString(),
     consensusCount: 1,
@@ -267,11 +294,11 @@ export function useObservatoryData() {
     // slowest response, not the sum of the five. The schema validation lives
     // per-source inside commit and still gates each commit independently.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
-      commit("reports", fetch("/api/reports")),
-      commit("satellites", fetch("/api/satellite-data")),
-      commit("wilayas", fetch("/api/wilayas")),
-      commit("sos", fetch("/api/sos")),
-      commit("notifications", fetch(`/api/notifications/${deviceId}`)),
+      commit("reports", fetchWithTimeout("/api/reports")),
+      commit("satellites", fetchWithTimeout("/api/satellite-data")),
+      commit("wilayas", fetchWithTimeout("/api/wilayas")),
+      commit("sos", fetchWithTimeout("/api/sos")),
+      commit("notifications", fetchWithTimeout(`/api/notifications/${deviceId}`)),
     ]);
 
     const outcomes: Record<DatasetKey, DatasetAttempt> = {
@@ -287,13 +314,12 @@ export function useObservatoryData() {
     const now = Date.now();
 
     if (cycle !== cycleRef.current) {
-      // Superseded by a newer cycle: it owns state and health. The spinner is
-      // still reset here — EVERY cycle settles (commit never rejects), so the
-      // LAST settled cycle always turns the spinner off even when the cycle
-      // that superseded it hangs; a stuck cycle can never leave loading=true.
-      setLoading(false);
-      // Report the newest completed outcome so this poll schedules the SAME
-      // cadence as the winner instead of a stale fallback.
+      // Superseded by a newer cycle: IT owns state, health AND the spinner.
+      // The spinner follows the CURRENT cycle: the winner clears it when it
+      // settles (commit never rejects — a timeout/HTTP failure is a settled
+      // outcome), so a hung superseded cycle can never leave loading=true,
+      // and a stale cycle can never stop the spinner while the current one
+      // is still in flight.
       return lastOutcomeRef.current;
     }
 
@@ -454,12 +480,17 @@ export function useObservatoryData() {
   const handleCreateReport = useCallback(
     async (payload: CitizenReportPayload) => {
       let res: Response;
+      let imageNotAttached = false;
 
       try {
         if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
           // Multipart upload: avoids sending base64 through the JSON body parser.
-          const fd = await buildMultipartForm(payload, deviceId);
+          const { fd, imageDropped } = await buildMultipartForm(payload, deviceId);
           res = await fetch("/api/reports", { method: "POST", body: fd });
+          // Honest disclosure for the success modal: the report may be accepted
+          // with the photo dropped (undecodable data URL) — the reporter must
+          // see that the evidence image did not travel.
+          imageNotAttached = imageDropped;
         } else {
           res = await fetch("/api/reports", {
             method: "POST",
@@ -523,8 +554,10 @@ export function useObservatoryData() {
       // Return contract: the caller (ReportForm) renders this value in the
       // success modal, so the malformed server response must NEVER reach it —
       // a display-safe local copy is built instead (same pattern the offline
-      // draft path uses).
-      return reportIsValid ? newReport : buildLocalPendingReport(payload);
+      // draft path uses). The imageNotAttached flag rides along so the modal
+      // can disclose the dropped photo.
+      const displayReport = reportIsValid ? newReport : buildLocalPendingReport(payload);
+      return imageNotAttached ? { ...displayReport, imageNotAttached: true } : displayReport;
     },
     [deviceId, fetchData]
   );

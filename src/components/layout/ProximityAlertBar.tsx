@@ -1,34 +1,21 @@
 import { memo } from "react";
-import { GeoPoint, ProximityAlert } from "../../hooks/useProximityAlerts";
+import { ProximityAlert } from "../../hooks/useProximityAlerts";
 
 interface ProximityAlertBarProps {
   isArabic: boolean;
   activeAlerts: ProximityAlert[];
-  userLocation: GeoPoint | null;
-  /** Actionable GPS failure (permission/coverage/timeout) from useGeolocation. */
-  geoError: string | null;
   isMuted: boolean;
   onToggleMute: () => void;
-  /** Fires a one-shot FRESH geolocation request (the GPS button's real action). */
-  onRequestLocation: () => void;
   /** Highlights the nearest active alert on the map. */
   onShowThreat: () => void;
-  /** Location-sharing consent for the heartbeat (PII audit). */
-  locationSharingConsent: boolean;
-  onToggleLocationConsent: (granted: boolean) => void;
 }
 
 function ProximityAlertBar({
   isArabic,
   activeAlerts,
-  userLocation,
-  geoError,
   isMuted,
   onToggleMute,
-  onRequestLocation,
   onShowThreat,
-  locationSharingConsent,
-  onToggleLocationConsent,
 }: ProximityAlertBarProps) {
   return (
     <div className="bg-gradient-to-r from-red-950 via-amber-950/80 to-red-950 border-b border-red-500/30 text-white px-4 py-3 md:px-8 z-[1001]">
@@ -62,52 +49,12 @@ function ProximityAlertBar({
           </div>
         </div>
 
-        {/* Real GPS status and controls */}
+        {/* Controls — the GPS status and location-sharing consent live in the
+            always-visible LocationStatusBar, NOT here: this bar only renders
+            while alerts are active, so it must never be the only home of a
+            control that must stay reachable (consent revocation) or an error
+            that must stay visible (GPS failure). */}
         <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold">
-          {/* GPS status indicator: clicking re-requests a FRESH location fix
-              (getCurrentPosition with maximumAge 0) — it does not navigate.
-              A failed fix surfaces the ACTIONABLE reason (permission blocked,
-              no signal, timeout) instead of a forever-spinning "locating…". */}
-          <button
-            onClick={onRequestLocation}
-            className={`px-2.5 py-1 rounded border transition-all cursor-pointer max-w-[340px] ${
-              userLocation
-                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                : geoError
-                  ? "bg-red-500/20 text-red-300 border-red-500/40"
-                  : "bg-amber-500/20 text-amber-400 border-amber-500/30"
-            }`}
-            title={geoError || (isArabic ? "حالة تحديد الموقع — اضغط لإعادة تحديد الموقع الآن" : "État de la localisation — cliquer pour réacquérir la position")}
-            aria-label={isArabic ? "إعادة تحديد الموقع الحالي" : "Réacquérir la position actuelle"}
-          >
-            {userLocation
-              ? (isArabic ? "🌐 GPS حقيقي: " : "🌐 GPS Réel : ") + `${userLocation.lat.toFixed(3)}, ${userLocation.lng.toFixed(3)}`
-              : geoError
-                ? "⚠️ " + geoError
-                : (isArabic ? "📍 جاري تحديد الموقع..." : "📍 Localisation GPS...")}
-          </button>
-
-          {/* Location-sharing consent (PII audit): the heartbeat NEVER runs
-              without explicit opt-in; this toggle is the visible control. */}
-          <button
-            onClick={() => onToggleLocationConsent(!locationSharingConsent)}
-            className={`px-2.5 py-1 rounded border transition-all cursor-pointer ${
-              locationSharingConsent
-                ? "bg-sky-500/20 text-sky-300 border-sky-500/30"
-                : "bg-black/55 text-slate-300 border-white/10"
-            }`}
-            title={
-              isArabic
-                ? "مشاركة موقعك مع المرصد (نبض الموقع) — موافقة صريحة مطلوبة، ويمكنك إلغاؤها في أي وقت."
-                : "Partage de votre position avec l'observatoire (flux de localisation) — consentement explicite requis, révocable à tout moment."
-            }
-            aria-pressed={locationSharingConsent}
-          >
-            {locationSharingConsent
-              ? (isArabic ? "📡 مشاركة الموقع: مفعّلة" : "📡 Partage de position : activé")
-              : (isArabic ? "📡 مشاركة الموقع: مُعطّلة" : "📡 Partage de position : désactivé")}
-          </button>
-
           <button
             onClick={onToggleMute}
             className="px-2.5 py-1 bg-black/55 hover:bg-black border border-white/10 rounded transition-colors text-slate-300 cursor-pointer"

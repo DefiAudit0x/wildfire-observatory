@@ -9,7 +9,7 @@ const { fakeClient, setGenerateContent } = vi.hoisted(() => {
 
 vi.mock("../server/ai.js", () => ({
   getAiClient: () => fakeClient,
-  getAiModel: () => "gemini-2.0-flash",
+  getAiModel: () => "gemini-3-flash-preview",
 }));
 
 import aiRouter from "../server/routes/ai.js";

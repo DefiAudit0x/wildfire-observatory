@@ -37,9 +37,22 @@ export function getNearestActiveThreat(opts: {
 }): ThreatAnalysis {
   const { lat, lng, reports, satellites = [] } = opts;
 
+  // NaN invariant enforcement at the boundary: non-finite coordinates are
+  // never measured (NaN distances break every comparison downstream — a NaN
+  // "nearest" source would win reduce() and poison the banner), and a NaN
+  // observer position yields an empty analysis, not garbage distances.
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return { nearest: null, nearbyIncidents: 0, nearbySources: [] };
+  }
+
   const sources: ThreatSource[] = [
     ...reports
-      .filter((r) => r.status === "pending" || r.status === "verified")
+      .filter(
+        (r) =>
+          (r.status === "pending" || r.status === "verified") &&
+          Number.isFinite(r.lat) &&
+          Number.isFinite(r.lng)
+      )
       .map((r) => ({
         lat: r.lat,
         lng: r.lng,
@@ -49,7 +62,12 @@ export function getNearestActiveThreat(opts: {
         distanceKm: haversineKm(lat, lng, r.lat, r.lng),
       })),
     ...satellites
-      .filter((s) => s.confidence >= SATELLITE_MIN_CONFIDENCE)
+      .filter(
+        (s) =>
+          s.confidence >= SATELLITE_MIN_CONFIDENCE &&
+          Number.isFinite(s.lat) &&
+          Number.isFinite(s.lng)
+      )
       .map((s) => ({
         lat: s.lat,
         lng: s.lng,

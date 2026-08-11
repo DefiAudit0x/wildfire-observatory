@@ -4,7 +4,7 @@ import supertest from "supertest";
 
 vi.mock("../server/ai.js", () => ({
   getAiClient: () => null,
-  getAiModel: () => "gemini-2.0-flash",
+  getAiModel: () => "gemini-3-flash-preview",
 }));
 
 import { sanitizeForPrompt, distanceKm } from "../server/routes/ai.js";

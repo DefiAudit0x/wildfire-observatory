@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import { vi } from "vitest";
+import { validateImageDataUrl, hasImageMagicBytes } from "../server/imageValidate.js";
 
 const mockDocs = vi.hoisted(() => new Map<string, any>());
 
@@ -169,5 +170,101 @@ describe("POST /api/reports — badge trust hardening", () => {
       .post("/api/reports")
       .send({ ...baseReport(), lat: 36.5, lng: 8.5 });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/reports — image magic-bytes gate", () => {
+  const VALID_JPEG = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="; // FF D8 FF E0 ...
+  const VALID_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const FAKE_TEXT_AS_IMAGE = "data:image/png;base64,PGh0bWw+PC9odG1sPg=="; // "<html></html>"
+  const CORRUPT_JPEG = "data:image/jpeg;base64,AAAA";
+
+  // The badge suite above consumed the shared Annaba jitter counter up to
+  // lng ~8.05 (near the wilaya's 7.95 bound), so these reports use a
+  // DIFFERENT in-bounds base coordinate, stepped 0.03° to stay outside the
+  // 0.5 km duplicate window while remaining inside Annaba (7.4–7.95).
+  let imageCoordsCounter = 0;
+  function imageBaseReport() {
+    imageCoordsCounter += 1;
+    return {
+      ...baseReport(),
+      lat: 36.75,
+      lng: 7.45 + imageCoordsCounter * 0.03,
+    };
+  }
+
+  it("accepts a real JPEG data URL", async () => {
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...imageBaseReport(), image: VALID_JPEG });
+    expect(res.status).toBe(200);
+    expect(res.body.image).toContain("data:image/jpeg");
+  });
+
+  it("accepts a real PNG data URL", async () => {
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...imageBaseReport(), image: VALID_PNG });
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects text masquerading as an image (no magic bytes)", async () => {
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...imageBaseReport(), image: FAKE_TEXT_AS_IMAGE });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("الصورة");
+  });
+
+  it("rejects a corrupt/undecodable data URL", async () => {
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...imageBaseReport(), image: CORRUPT_JPEG });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a JPEG whose magic bytes are missing even with a valid header claim", async () => {
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...imageBaseReport(), image: "data:image/webp;base64,AAAA" });
+    expect(res.status).toBe(400);
+  });
+
+  it("never rejects a report without an image", async () => {
+    const app = createApp();
+    const res = await supertest(app).post("/api/reports").send(imageBaseReport());
+    expect(res.status).toBe(200);
+    expect(res.body.image).toBeUndefined();
+  });
+});
+
+describe("validateImageDataUrl — helper edge cases", () => {
+  it("rejects non-image data URLs and plain strings", () => {
+    expect(validateImageDataUrl("data:text/html;base64,AAAA")).toBe(false);
+    expect(validateImageDataUrl("http://example.com/img.png")).toBe(false);
+    expect(validateImageDataUrl("")).toBe(false);
+  });
+
+  it("rejects a data URL with no comma separator", () => {
+    expect(validateImageDataUrl("data:image/png;base64AAA")).toBe(false);
+  });
+
+  it("rejects base64 garbage larger than the decoded ceiling", () => {
+    const big = "data:image/png;base64," + "A".repeat(1_100_000); // ~825 KB decoded
+    expect(validateImageDataUrl(big)).toBe(false);
+  });
+
+  it("recognizes the four supported magic bytes families", () => {
+    expect(hasImageMagicBytes(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]))).toBe(true); // JPEG
+    expect(hasImageMagicBytes(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]))).toBe(true); // PNG
+    expect(hasImageMagicBytes(Buffer.from("RIFF\x24\x00\x00\x00WEBPVP8 ", "latin1"))).toBe(true); // WebP
+    expect(hasImageMagicBytes(Buffer.from("GIF89a\x01\x00\x01\x00", "latin1"))).toBe(true); // GIF
+    expect(hasImageMagicBytes(Buffer.from("nope-not-an-image", "latin1"))).toBe(false);
+    expect(hasImageMagicBytes(Buffer.alloc(0))).toBe(false);
   });
 });

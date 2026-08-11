@@ -238,7 +238,7 @@ Open http://localhost:3000 in your browser.
 | `LOG_LEVEL` | ❌ | Pino log level: `info`, `debug`, `warn`, `error` |
 | `SENTRY_DSN` | ❌ | Sentry DSN for error monitoring |
 | `CORS_ORIGINS` | ❌ | Comma-separated allowed origins |
-| `GEMINI_MODEL` | ❌ | Gemini model (default: `gemini-2.0-flash`) |
+| `GEMINI_MODEL` | ❌ | Gemini model (default: `gemini-3-flash-preview`) |
 
 ---
 

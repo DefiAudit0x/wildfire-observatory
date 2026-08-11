@@ -1,13 +1,15 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useSyncExternalStore, useState } from "react";
 import { Language, TabId } from "./types";
 import { useSessionProbe } from "./hooks/useSessionProbe";
 import { useStaffSession } from "./hooks/useAuth";
 import { useGeolocation } from "./hooks/useGeolocation";
 import { useObservatoryData } from "./hooks/useObservatoryData";
 import { useProximityAlerts } from "./hooks/useProximityAlerts";
+import { getReporterBadge, subscribeReporterBadge } from "./utils/badgeStore";
 import HeaderBar from "./components/layout/HeaderBar";
 import TabBar from "./components/layout/TabBar";
 import ProximityAlertBar from "./components/layout/ProximityAlertBar";
+import LocationStatusBar from "./components/layout/LocationStatusBar";
 import SosFab from "./components/layout/SosFab";
 import AppFooter from "./components/layout/AppFooter";
 import MainContent from "./components/layout/MainContent";
@@ -27,8 +29,12 @@ export default function App() {
   const rosterVisible = staffSession.authenticated;
   // Trusted reporter = a device holding a staff/volunteer badge code. Only
   // these devices get the operator alert tone; citizens get the proximity
-  // siren (see useProximityAlerts).
-  const [isTrustedReporter] = useState<boolean>(() => Boolean(localStorage.getItem("reporterBadgeCode")));
+  // siren (see useProximityAlerts). Session-reactive via useSyncExternalStore:
+  // a citizen who reports WITH a badge (ReportForm persists it on success)
+  // becomes trusted in the same tab immediately, without a reload — and a
+  // badge entered on another tab wakes this one through the storage event.
+  const badgeCode = useSyncExternalStore(subscribeReporterBadge, getReporterBadge);
+  const isTrustedReporter = Boolean(badgeCode);
 
   const { userLocation, geoError, refetch: requestLocation, locationSharingConsent, setLocationConsent } = useGeolocation(isArabic);
   const {
@@ -121,16 +127,23 @@ export default function App() {
         <ProximityAlertBar
           isArabic={isArabic}
           activeAlerts={activeAlerts}
-          userLocation={userLocation}
-          geoError={geoError}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted((prev) => !prev)}
-          onRequestLocation={requestLocation}
           onShowThreat={handleShowThreatOnMap}
-          locationSharingConsent={locationSharingConsent}
-          onToggleLocationConsent={setLocationConsent}
         />
       )}
+
+      {/* Location surface (audit): ALWAYS visible — consent stays revocable
+          and GPS errors stay surfaced even when the alert zone is empty
+          (ProximityAlertBar only renders while activeAlerts > 0). */}
+      <LocationStatusBar
+        isArabic={isArabic}
+        userLocation={userLocation}
+        geoError={geoError}
+        onRequestLocation={requestLocation}
+        locationSharingConsent={locationSharingConsent}
+        onToggleLocationConsent={setLocationConsent}
+      />
 
       <TabBar
         isArabic={isArabic}

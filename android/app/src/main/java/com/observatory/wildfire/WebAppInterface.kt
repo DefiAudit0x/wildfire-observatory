@@ -15,6 +15,14 @@ import org.json.JSONObject
  * ONLY while the main frame is our own HTTPS PWA origin (or a local dev
  * host). If the WebView ever lands on another origin (redirect/XSS), the
  * native surface goes inert instead of handing out keys and signatures.
+ *
+ * Origin-binding note (audit): the gate authenticates the PAGE's current
+ * URL, not the JS CALLER's origin cryptographically — a page that (shares
+ * the trusted origin) can always call. That is inherent to addJavascriptInterface;
+ * the compensating controls are (a) MainActivity's navigation policy
+ * (shouldOverrideUrlLoading keeps the WebView on allow-listed hosts) and
+ * (b) the WebView's own hard settings (no file/content access, mixed content
+ * never allowed). Do not weaken those while this interface is exposed.
  */
 class WebAppInterface(
     private val meshProvider: () -> MeshService?,
@@ -62,7 +70,7 @@ class WebAppInterface(
     // ========================
 
     @JavascriptInterface
-    fun isMeshSupported(): Boolean = true
+    fun isMeshSupported(): Boolean = isTrustedOrigin()
 
     @JavascriptInterface
     fun getDeviceId(): String {
@@ -146,7 +154,13 @@ class WebAppInterface(
                 timestamp = json.getLong("timestamp"),
                 lat = json.optDouble("lat", 0.0),
                 lng = json.optDouble("lng", 0.0),
-                nonce = json.getInt("nonce")
+                nonce = json.getInt("nonce"),
+                // Signed-metadata fields (audit): absent (sender is an older
+                // web layer) → defaults to empty/0, which is what the sender
+                // signed over; present → verified against them.
+                messageId = json.optString("messageId", ""),
+                type = json.optString("type", ""),
+                hopCount = json.optInt("hopCount", 0)
             )
             val decrypted = CryptoEngine.decryptFromPeer(msg, peerPublicKey)
             if (decrypted != null) String(decrypted, Charsets.UTF_8) else ""
@@ -196,7 +210,8 @@ class WebAppInterface(
     @JavascriptInterface
     fun solvePoW(prefix: String, difficulty: Int): Int {
         if (!isTrustedOrigin()) return -1
-        return CryptoEngine.ProofOfWork.solve(prefix, difficulty)
+        // -1 on budget exhaustion: mesh broadcast handles it without crashing.
+        return MeshWire.ProofOfWork.solve(prefix, difficulty) ?: -1
     }
 
     /**
@@ -205,7 +220,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun verifyPoW(prefix: String, nonce: Int, difficulty: Int): Boolean {
         if (!isTrustedOrigin()) return false
-        return CryptoEngine.ProofOfWork.verify(prefix, nonce, difficulty)
+        return MeshWire.ProofOfWork.verify(prefix, nonce, difficulty)
     }
 
     /**

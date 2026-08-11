@@ -22,8 +22,15 @@ describe("geoErrorMessage — actionable per-code GPS failures", () => {
     expect(geoErrorMessage(0, false)).toContain("GPS");
   });
 
+  it("says the browser itself lacks geolocation support ('unsupported')", () => {
+    expect(geoErrorMessage("unsupported", true)).toContain("لا يدعم");
+    expect(geoErrorMessage("unsupported", false)).toContain("ne supporte pas");
+  });
+
   it("is never empty in either language", () => {
     expect(geoErrorMessage(1, true).length).toBeGreaterThan(5);
     expect(geoErrorMessage(3, false).length).toBeGreaterThan(5);
+    expect(geoErrorMessage("unsupported", true).length).toBeGreaterThan(5);
+    expect(geoErrorMessage("unsupported", false).length).toBeGreaterThan(5);
   });
 });

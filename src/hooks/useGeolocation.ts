@@ -4,14 +4,20 @@ import { getDeviceId } from "../utils/device";
 
 /**
  * Human-readable, per-code GPS failure messages. A single generic message
- * hides the actionable difference between "permission revoked", "no signal"
- * and "timeout" — each has a different fix.
+ * hides the actionable difference between "browser lacks the API",
+ * "permission revoked", "no signal" and "timeout" — each has a different fix.
+ * Pass "unsupported" when navigator.geolocation is absent entirely (the fix
+ * is a browser upgrade, not turning GPS on).
  */
 export function geoErrorMessage(
-  code: number | undefined,
+  code: number | "unsupported" | undefined,
   isArabic: boolean
 ): string {
   switch (code) {
+    case "unsupported":
+      return isArabic
+        ? "متصفحك لا يدعم تحديد الموقع الجغرافي — حدّث المتصفح أو استخدم جهازاً حديثاً."
+        : "Votre navigateur ne supporte pas la géolocalisation — mettez-le à jour ou utilisez un appareil récent.";
     case 1: // PERMISSION_DENIED
       return isArabic
         ? "إذن الموقع محظور — فعّل إذن الموقع من إعدادات المتصفح."
@@ -56,6 +62,10 @@ export function useGeolocation(isArabic: boolean) {
   // refetches): positions carry a device timestamp, and only the newest one
   // wins — an old watch fix can never clobber a fresh refetch and vice versa.
   const lastFixTsRef = useRef(0);
+  // Tolerated skew between the device clock and our arrival clock: a device
+  // clock far ahead of ours would stamp every fix with a future timestamp and
+  // (without clamping) poison lastFixTsRef, blocking all later fixes.
+  const MAX_CLOCK_SKEW_MS = 60_000;
   // Latest fix, decoupled from render state: the heartbeat reads this so GPS
   // chatter only refreshes the value — it never tears down the interval.
   const locationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -66,8 +76,28 @@ export function useGeolocation(isArabic: boolean) {
   isArabicRef.current = isArabic;
 
   const acceptFix = useCallback((pos: GeolocationPosition) => {
-    if (pos.timestamp < lastFixTsRef.current) return; // stale fix — newer one already owns the position
-    lastFixTsRef.current = pos.timestamp;
+    // A broken provider may emit NaN coordinates (audit): non-finite fixes
+    // are discarded BEFORE touching locationRef, so no consumer (proximity
+    // scan, heartbeat, report form) can ever see one.
+    if (
+      !Number.isFinite(pos.coords.latitude) ||
+      !Number.isFinite(pos.coords.longitude)
+    ) {
+      console.warn("Discarding non-finite geolocation fix");
+      return;
+    }
+    // Ordering key: the device timestamp is used for the stale-vs-fresh
+    // comparison, but it lives in the DEVICE's clock domain — an absurd
+    // future stamp (clock skew) is clamped to arrival time so a skewed clock
+    // can never reject every subsequent fix. Arrival order remains the
+    // tiebreaker for fixes the device reports as simultaneous.
+    const arrivedAt = Date.now();
+    const ts =
+      Number.isFinite(pos.timestamp) && pos.timestamp <= arrivedAt + MAX_CLOCK_SKEW_MS
+        ? pos.timestamp
+        : arrivedAt;
+    if (ts < lastFixTsRef.current) return; // stale fix — newer one already owns the position
+    lastFixTsRef.current = ts;
     locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     setUserLocation(locationRef.current);
     setGeoError(null);
@@ -90,13 +120,16 @@ export function useGeolocation(isArabic: boolean) {
           console.warn("Geolocation error:", err);
           setGeoError(geoErrorMessage(err?.code, isArabicRef.current));
         },
-        // maximumAge is aligned with the proximity scan cadence (15 s): the
-        // position consumed by alerts is never older than one scan interval.
+        // maximumAge bounds the age of a fix the browser may REPLAY from its
+        // cache at acquisition time — it is NOT a guarantee that the alert
+        // pipeline always consumes fresh positions: while the receiver has no
+        // new fix, the last known position stays the (documented, intended)
+        // value consumed by proximity/beacon. The comment must not overclaim.
         { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 }
       );
       return () => navigator.geolocation.clearWatch(watchId);
     } else {
-      setGeoError(geoErrorMessage(undefined, isArabicRef.current));
+      setGeoError(geoErrorMessage("unsupported", isArabicRef.current));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [acceptFix]);
@@ -109,7 +142,7 @@ export function useGeolocation(isArabic: boolean) {
     const seq = ++refetchSeqRef.current;
     setGeoError(null);
     if (!navigator.geolocation) {
-      setGeoError(geoErrorMessage(undefined, isArabic));
+      setGeoError(geoErrorMessage("unsupported", isArabic));
       return;
     }
     navigator.geolocation.getCurrentPosition(

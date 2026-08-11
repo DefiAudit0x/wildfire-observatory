@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
 import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/geo";
 import { geoErrorMessage } from "../hooks/useGeolocation";
+import { setReporterBadge } from "../utils/badgeStore";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -275,6 +276,20 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
     setWilayaNote(null);
   }, [lat, lng, wilaya, wilayaOptions]);
+
+  // Wilaya reconciliation (audit): while the fallback list is live the user
+  // may pick a fallback option that does not exist in the server's
+  // authoritative list. When the real list arrives (wilayaOptions identity
+  // swap), a stale selection is cleared WITH its derived note — the form can
+  // never submit a value the server cannot geofence; the user picks again
+  // from the authoritative options.
+  useEffect(() => {
+    if (!wilayas || wilayas.length === 0 || !wilaya) return;
+    if (!wilayaOptions.some((w) => `${w.nameAr} (${w.nameFr})` === wilaya)) {
+      setWilaya("");
+      setWilayaNote(null);
+    }
+  }, [wilayas, wilaya, wilayaOptions]);
 
   const syncOfflineDrafts = async () => {
     if (offlineDrafts.length === 0 || syncingDrafts.current) return;
@@ -830,6 +845,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           : `Signalement enregistré localement (${compressedSize || "0 KB"}). Transmission automatique dès le retour du réseau ; la vérification IA se fait côté serveur.`,
       });
 
+      // The badge codes THIS DEVICE as a trusted reporter for the session
+      // (persisted + badge-changed event): subsequent reports, the operator
+      // tone gate and the location heartbeat all pick it up without re-entry.
+      // Persisting on SUCCESS only keeps failed attempts from claiming the
+      // identity.
+      if (reporterBadgeCode) setReporterBadge(reporterBadgeCode.trim());
+
       // Clear fields on success
       setLocationName("");
       setDescription("");
@@ -846,6 +868,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     try {
       const result = await onSubmit(payload);
       setSuccessReport(result);
+
+      // The badge codes THIS DEVICE as a trusted reporter for the session
+      // (persisted + badge-changed event): the operator tone gate and the
+      // location heartbeat pick it up without re-entry. Persisting on SUCCESS
+      // only keeps failed attempts from claiming the identity.
+      if (reporterBadgeCode) setReporterBadge(reporterBadgeCode.trim());
       
       // Reset form on success
       setLocationName("");
@@ -950,6 +978,23 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   ? "شكراً لك على حسّك الوطني والمسؤول. بلاغك متوفر الآن لجميع مستخدمي المنصة وفرق الحماية المدنية وسيساعد في إنقاذ الأرواح والسيطرة على الكارثة."
                   : "Merci pour votre esprit citoyen. Votre signalement est désormais visible par tous et aide à guider la Protection Civile.")}
           </p>
+
+          {/* Honest disclosure when the photo could not be transmitted (bad
+              data URL, decoder failure): the report WAS accepted, but without
+              the evidence photo — a silent drop would mislead the reporter
+              into believing the image reached the coordination team. */}
+          {successReport.imageNotAttached && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-left" dir={isArabic ? "rtl" : "ltr"}>
+              <p className="text-[11px] text-amber-300 font-bold mb-1">
+                ⚠️ {isArabic ? "أُرسل البلاغ بدون الصورة" : "Signalement envoyé SANS photo"}
+              </p>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                {isArabic
+                  ? "تعذّر إرسال الصورة (ملف تالف أو غير قابل للقراءة). البلاغ وصل، لكن الصورة لن تصل إلى فريق التنسيق — حاول إعادة الإرسال بصورة أخرى."
+                  : "La photo n'a pas pu être transmise (fichier illisible). Le signalement est bien arrivé, mais l'équipe ne recevra pas l'image — réessayez avec une autre photo."}
+              </p>
+            </div>
+          )}
 
           {/* AI Feedback presentation */}
           {successReport.aiVerification && (
