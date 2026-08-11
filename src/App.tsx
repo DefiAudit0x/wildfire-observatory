@@ -25,8 +25,12 @@ export default function App() {
   const privilegedTabVisible = useSessionProbe();
   const { session: staffSession } = useStaffSession();
   const rosterVisible = staffSession.authenticated;
+  // Trusted reporter = a device holding a staff/volunteer badge code. Only
+  // these devices get the operator alert tone; citizens get the proximity
+  // siren (see useProximityAlerts).
+  const [isTrustedReporter] = useState<boolean>(() => Boolean(localStorage.getItem("reporterBadgeCode")));
 
-  const { userLocation, refetch: requestLocation } = useGeolocation(isArabic);
+  const { userLocation, geoError, refetch: requestLocation, locationSharingConsent, setLocationConsent } = useGeolocation(isArabic);
   const {
     reports,
     satellites,
@@ -45,7 +49,7 @@ export default function App() {
     handleMarkNotificationRead,
   } = useObservatoryData();
 
-  const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation);
+  const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation, isTrustedReporter);
 
   const handleToggleLang = useCallback(() => setLang((prev) => (prev === "ar" ? "fr" : "ar")), []);
 
@@ -118,10 +122,13 @@ export default function App() {
           isArabic={isArabic}
           activeAlerts={activeAlerts}
           userLocation={userLocation}
+          geoError={geoError}
           isMuted={isMuted}
           onToggleMute={() => setIsMuted((prev) => !prev)}
           onRequestLocation={requestLocation}
           onShowThreat={handleShowThreatOnMap}
+          locationSharingConsent={locationSharingConsent}
+          onToggleLocationConsent={setLocationConsent}
         />
       )}
 

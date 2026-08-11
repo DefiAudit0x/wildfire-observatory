@@ -10,6 +10,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -115,7 +116,6 @@ class MainActivity : AppCompatActivity() {
             domStorageEnabled = true
             databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            setAppCacheEnabled(true)
             loadWithOverviewMode = true
             useWideViewPort = true
             builtInZoomControls = true

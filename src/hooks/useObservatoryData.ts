@@ -110,18 +110,59 @@ function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
 }
 
 /**
+ * Builds the multipart form for an image-bearing report. The data URL is
+ * decoded via fetch() into a Blob (the browser-native decoder beats a JS
+ * atob() loop on large images), with an atob() fallback for old WebViews.
+ * If BOTH decoders fail — a corrupt or non-decodable data URL — the report
+ * is still submitted, WITHOUT the image: a broken photo must never block a
+ * fire report from reaching the server.
+ */
+async function buildMultipartForm(payload: CitizenReportPayload, deviceId: string): Promise<FormData> {
+  const imgData = payload.image as string;
+  const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
+  let blob: Blob | null = null;
+  try {
+    blob = await (await fetch(imgData)).blob();
+  } catch {
+    // Older WebViews may refuse to fetch data URLs: fall back to atob.
+    try {
+      const base64 = imgData.split(",")[1] || "";
+      const bin = atob(base64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      blob = new Blob([bytes], { type: mime });
+    } catch {
+      console.warn("Image data URL is not decodable; submitting the report without the image");
+    }
+  }
+  const fd = new FormData();
+  if (blob) {
+    const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
+    fd.append("image", blob, `report-${Date.now()}.${ext}`);
+  }
+  for (const [k, v] of Object.entries(payload)) {
+    if (k === "image") continue;
+    if (v !== undefined && v !== null && v !== "") fd.append(k, String(v));
+  }
+  fd.append("deviceId", deviceId);
+  return fd;
+}
+
+/**
  * Display-safe local copy of a report the server accepted but whose response
  * was unreadable. Same fabrication the offline-draft path already uses: the
  * report IS committed server-side, the pending marker just reflects that this
- * device has not yet re-synced it.
+ * device has not yet re-synced it. Coordinates that are not finite points are
+ * NaN — never a silent (0,0) that would pin the report to the Gulf of Guinea
+ * on the map.
  */
 function buildLocalPendingReport(payload: CitizenReportPayload): Report {
   const lat = Number(payload.lat);
   const lng = Number(payload.lng);
   return {
     id: payload.clientGeneratedId || `rep-local-${Date.now()}`,
-    lat: Number.isFinite(lat) ? lat : 0,
-    lng: Number.isFinite(lng) ? lng : 0,
+    lat: Number.isFinite(lat) ? lat : NaN,
+    lng: Number.isFinite(lng) ? lng : NaN,
     locationName: payload.locationName,
     wilaya: payload.wilaya,
     description: payload.description,
@@ -246,7 +287,11 @@ export function useObservatoryData() {
     const now = Date.now();
 
     if (cycle !== cycleRef.current) {
-      // Superseded by a newer cycle: it owns state, health and the spinner.
+      // Superseded by a newer cycle: it owns state and health. The spinner is
+      // still reset here — EVERY cycle settles (commit never rejects), so the
+      // LAST settled cycle always turns the spinner off even when the cycle
+      // that superseded it hangs; a stuck cycle can never leave loading=true.
+      setLoading(false);
       // Report the newest completed outcome so this poll schedules the SAME
       // cadence as the winner instead of a stale fallback.
       return lastOutcomeRef.current;
@@ -350,15 +395,18 @@ export function useObservatoryData() {
       if (message.type === "report:new") {
         // Anti-replay: the same gossip must not be admitted twice, even when
         // two transports (WS mesh + refresh poll) deliver it back-to-back.
+        // The identity is the report's OWN id when the message carries one
+        // (the stable, relay-unchanged key) — never a random UUID that would
+        // re-admit the same report on every hop.
+        const report = message.report as unknown;
         const gossipId = JSON.stringify([
           message.type,
-          message.id,
+          (report as { id?: unknown } | null)?.id ?? message.id,
           message.ts,
           message.lat,
           message.lng,
         ]);
         if (!checkAndRecordMessageHash(gossipId)) return;
-        const report = message.report as unknown;
         // Mesh messages are not cast through, they are verified through: a
         // message that does not satisfy the same report contract the GET poll
         // enforces never reaches state.
@@ -407,38 +455,28 @@ export function useObservatoryData() {
     async (payload: CitizenReportPayload) => {
       let res: Response;
 
-      if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
-        // Multipart upload: avoids sending base64 through the JSON body parser.
-        // The data URL is decoded via fetch() into a Blob — the browser-native
-        // decoder beats a JS atob() loop on large images (low-bandwidth tool).
-        const imgData = payload.image;
-        const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
-        let blob: Blob;
-        try {
-          blob = await (await fetch(imgData)).blob();
-        } catch {
-          // Older WebViews may refuse to fetch data URLs: fall back to atob.
-          const base64 = imgData.split(",")[1] || "";
-          const bin = atob(base64);
-          const bytes = new Uint8Array(bin.length);
-          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          blob = new Blob([bytes], { type: mime });
+      try {
+        if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
+          // Multipart upload: avoids sending base64 through the JSON body parser.
+          const fd = await buildMultipartForm(payload, deviceId);
+          res = await fetch("/api/reports", { method: "POST", body: fd });
+        } else {
+          res = await fetch("/api/reports", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, deviceId }),
+          });
         }
-        const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
-        const fd = new FormData();
-        fd.append("image", blob, `report-${Date.now()}.${ext}`);
-        for (const [k, v] of Object.entries(payload)) {
-          if (k === "image") continue;
-          if (v !== undefined && v !== null && v !== "") fd.append(k, String(v));
-        }
-        fd.append("deviceId", deviceId);
-        res = await fetch("/api/reports", { method: "POST", body: fd });
-      } else {
-        res = await fetch("/api/reports", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ...payload, deviceId }),
-        });
+      } catch (err) {
+        // TRANSPORT failure (server unreachable, request aborted): the report
+        // never reached the server, so its content fans out to the mesh for an
+        // online gateway device to relay (meshRelay). A server REJECTION (4xx,
+        // handled below) is NOT a transport failure — the server read the
+        // report and refused it, and relaying it would only re-submit the same
+        // refusal; the client keeps the visible error instead.
+        console.warn("Report transport failed; fanning out to mesh:", err);
+        broadcastFailedReportToMesh(payload);
+        throw err;
       }
 
       if (!res.ok) {
@@ -449,9 +487,11 @@ export function useObservatoryData() {
         } catch {
           // non-JSON error body
         }
-        // The report is NOT on the server: fan its content out to the mesh so
-        // an online gateway device can carry it to /api/reports (meshRelay).
-        broadcastFailedReportToMesh(payload);
+        if (res.status >= 500) {
+          // Server-side failure (5xx): the server is alive but could not
+          // commit the report — an online peer may have better luck.
+          broadcastFailedReportToMesh(payload);
+        }
         const err: any = new Error(serverMsg || "Report failed");
         err.data = { error: serverMsg };
         throw err;
@@ -463,7 +503,8 @@ export function useObservatoryData() {
       // report contract as the GET poll. A malformed payload is kept out of
       // state — the fetchData refresh right after re-syncs from the validated
       // GET list anyway.
-      if (isValidReport(newReport)) {
+      const reportIsValid = isValidReport(newReport);
+      if (reportIsValid) {
         setReports((prev) => {
           const next = [newReport, ...prev];
           reportsRef.current = next;
@@ -483,7 +524,7 @@ export function useObservatoryData() {
       // success modal, so the malformed server response must NEVER reach it —
       // a display-safe local copy is built instead (same pattern the offline
       // draft path uses).
-      return isValidReport(newReport) ? newReport : buildLocalPendingReport(payload);
+      return reportIsValid ? newReport : buildLocalPendingReport(payload);
     },
     [deviceId, fetchData]
   );

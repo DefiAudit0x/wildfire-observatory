@@ -59,10 +59,30 @@ class MeshService : Service() {
         const val ACTIVE_SCAN_INTERVAL = 2000L     // scan every 2s when active
 
         // Store-and-forward hygiene: a queued message lives at most 10 minutes
-        // and the queue is capped so an idle mesh can never grow unbounded.
+        // since its LAST delivery attempt — never since it was queued, so a
+        // message that waited for peers is not penalized for time it could not
+        // act — and the queue is capped so an idle mesh can never grow
+        // unbounded.
         const val MESSAGE_TTL_MS = 10 * 60 * 1000L
         const val MAX_PENDING_MESSAGES = 200
         const val PEER_STALE_MS = 10 * 60 * 1000L
+
+        // Per-message delivery budget: how many trickle windows a message may
+        // survive while its delivery keeps failing (see MeshMessage.ttl).
+        const val MESSAGE_TTL_WINDOWS = 3L
+
+        // Network-wide proof-of-work requirement: the receiver does NOT trust
+        // the sender's declared difficulty. A frame carrying anything other
+        // than the network requirement is rejected before any hashing — this
+        // bounds the verification cost an untrusted neighbor can impose (a
+        // "difficulty 999999" frame is dropped, not computed).
+        const val PO_W_DIFFICULTY = 8
+
+        // Explicit wire framing: compressed frames are prefixed with this
+        // magic so the receiver never guesses between "inflate" and "legacy
+        // plain UTF-8". A corrupted frame carrying the magic is REJECTED, not
+        // silently reinterpreted.
+        private val COMPRESS_MAGIC = byteArrayOf(0x4D, 0x43) // "MC"
     }
 
     // Binder for activity communication
@@ -79,7 +99,9 @@ class MeshService : Service() {
     private var currentEphemeralId: String = ""
     private var lastEphemeralRotation: Long = 0L
     private val seenMessageHashes = ConcurrentHashMap<String, Long>()  // anti-broadcast storm
-    private val seenNonces = ConcurrentHashMap<Int, Long>()  // anti-replay
+    // Anti-replay lives in seenMessageHashes (messageId + nonce) — see
+    // handleIncomingMessage. A nonce-only set would reject legitimately
+    // distinct messages from a fast sender.
 
     // Reputation: endpointId -> score
     private val reputation = ConcurrentHashMap<String, Int>()
@@ -97,8 +119,7 @@ class MeshService : Service() {
     // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
     // so intermediate nodes never see plaintext. The wire identity of a message
     // (nonce, coordinates, sender timestamp/signature) travels unchanged across
-    // every hop; only hopCount is incremented. Entries that could not be
-    // delivered (no peer / no public key) stay queued until MESSAGE_TTL_MS.
+    // every hop; only hopCount is incremented.
     private data class MeshMessage(
         val messageId: String,
         val type: String,
@@ -114,10 +135,22 @@ class MeshService : Service() {
         val lng: Double,
         val powNonce: Int,
         val powDifficulty: Int,
-        val queuedAt: Long = System.currentTimeMillis(),
-        // Locally generated messages are queued as plaintext and encrypted for
-        // the best peer key at send time — if no peer key exists yet the
-        // message waits, it is never dropped.
+        // Delivery bookkeeping. TTL semantics: an entry dies when its attempt
+        // budget (ttl, one decrement per trickle window) is exhausted or when
+        // MESSAGE_TTL_MS elapses after the LAST delivery attempt — never from
+        // birth time, so a message that waited for peers is not penalized for
+        // time in which it could not act. lastAttemptAt anchors that clock;
+        // 0 means "never attempted".
+        var lastAttemptAt: Long = 0L,
+        var ttl: Long = MESSAGE_TTL_WINDOWS,
+        // In-flight guard: set while the send loop issues frames for this
+        // message, cleared in a finally block. Sends are synchronous today,
+        // so a concurrent trickle tick cannot interleave — the flag is
+        // defense in depth against a future async send path.
+        var inFlight: Boolean = false,
+        // Locally generated messages are queued as plaintext and encrypted
+        // SEPARATELY FOR EACH target peer at send time — the ciphertext is
+        // never shared between recipients.
         val needsEncryption: Boolean = false,
         val plaintext: String = ""
     )
@@ -176,7 +209,7 @@ class MeshService : Service() {
 
     private fun initCrypto() {
         try {
-            java.security.Security.insertProviderAt(org.spongycastle.jce.provider.BouncyCastleProvider(), 1)
+            java.security.Security.insertProviderAt(org.bouncycastle.jce.provider.BouncyCastleProvider(), 1)
         } catch (e: Exception) {
             // Security provider already installed
         }
@@ -236,7 +269,7 @@ class MeshService : Service() {
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             Log.d(TAG, "Connection initiated: $endpointId")
-            connectionsClient.acceptConnection(endpointId)
+            connectionsClient.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -334,31 +367,40 @@ class MeshService : Service() {
 
     private fun handleIncomingMessage(endpointId: String, bytes: ByteArray) {
         try {
-            // Both wire formats are accepted: deflate-compressed frames produced
-            // by this build, and legacy uncompressed frames from older builds.
-            val json = decompress(bytes) ?: String(bytes, Charsets.UTF_8)
+            // Wire format: only deflate-compressed frames carrying our magic
+            // marker are accepted. Decoding a raw frame as JSON would defeat
+            // the format gate and risk parsing attacker-chosen bytes as JSON.
+            val json = decompress(bytes) ?: run {
+                Log.w(TAG, "Incoming frame missing compression magic")
+                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                return
+            }
             val payload = parseJsonToPayload(json) ?: return
 
-            // Anti-replay: reject duplicate nonces (nonce is a stable part of
-            // the message identity — it is relayed verbatim, never re-randomized).
-            if (seenNonces.containsKey(payload.nonce)) return
-            seenNonces[payload.nonce] = System.currentTimeMillis()
-
-            // Anti-broadcast storm: deduplicate by messageId
+            // Anti-replay / anti-broadcast-storm: (messageId + nonce) identifies
+            // the message unambiguously. messageId is origin-generated and the
+            // nonce travels verbatim with the payload, so the combined hash is
+            // stable across hops. Nonce alone would collide across legitimately
+            // distinct messages from a fast sender (Random.nextInt() space).
             val msgHash = sha256(payload.messageId + payload.nonce)
             if (seenMessageHashes.containsKey(msgHash)) return
             seenMessageHashes[msgHash] = System.currentTimeMillis()
 
             // Proof-of-Work verification: the nonce is carried in the payload
             // and checked at every hop — solving without transmitting/verifying
-            // would be a no-op.
-            if (payload.powDifficulty > 0) {
-                val powPrefix = "${payload.messageId}${payload.origEphemeralId}"
-                if (!CryptoEngine.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
-                    Log.w(TAG, "Invalid proof-of-work on wire message")
-                    updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
-                    return
-                }
+            // would be a no-op. Difficulty is clamped to a sane band: solving
+            // more than our constant is a marker of a modified (non-stock)
+            // client and is rejected, keeping the network uniform.
+            if (payload.powDifficulty <= 0 || payload.powDifficulty > PO_W_DIFFICULTY) {
+                Log.w(TAG, "Out-of-band proof-of-work difficulty")
+                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                return
+            }
+            val powPrefix = "${payload.messageId}${payload.origEphemeralId}"
+            if (!CryptoEngine.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
+                Log.w(TAG, "Invalid proof-of-work on wire message")
+                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                return
             }
 
             // Verify the ECDSA signature over (ciphertext + iv) — public-key integrity
@@ -381,12 +423,15 @@ class MeshService : Service() {
                 return
             }
 
-            // Learn the peer's public key from a signed message: without this
-            // the peers map never holds real keys and broadcast E2EE falls
-            // back to self-encryption (getBestPeerPublicKey returns "").
-            peers[endpointId]?.let { info ->
-                if (info.publicKey.isBlank() && payload.origPublicKey.isNotBlank()) {
-                    peers[endpointId] = info.copy(publicKey = payload.origPublicKey)
+            // Learn the peer's public key ONLY from the origin's signed message
+            // (hopCount == 0). A relayed message bears the origin's key but the
+            // sender is a relay — binding that key to the relay's endpoint would
+            // poison the peers map and break E2EE targeting.
+            if (payload.hopCount == 0 && payload.origPublicKey.isNotBlank()) {
+                peers[endpointId]?.let { info ->
+                    if (info.publicKey != payload.origPublicKey) {
+                        peers[endpointId] = info.copy(publicKey = payload.origPublicKey)
+                    }
                 }
             }
 
@@ -443,6 +488,7 @@ class MeshService : Service() {
      * peer key or empty peer list never drops the report, it simply waits.
      * Web layer calls this via JS bridge.
      */
+    @Synchronized
     fun broadcastMessage(plaintext: String, reportType: String, lat: Double, lng: Double) {
         val messageId = UUID.randomUUID().toString()
         val nonce = Random.nextInt()
@@ -450,11 +496,26 @@ class MeshService : Service() {
         // Lightweight Proof-of-Work (anti-spam) — solved here, transmitted in
         // the payload, verified at every receiving hop.
         val powPrefix = "$messageId${CryptoEngine.getEphemeralId()}"
-        val powNonce = CryptoEngine.ProofOfWork.solve(powPrefix, 8)
+        val powNonce = CryptoEngine.ProofOfWork.solve(powPrefix, PO_W_DIFFICULTY)
 
-        // Cap the queue: drop the oldest entries, never unbounded growth.
-        while (pendingMessages.size >= MAX_PENDING_MESSAGES) {
-            pendingMessages.removeAt(0)
+        // Eviction policy: entries that have never been attempted to send
+        // (no reachable peers yet) are shielded from eviction — they carry the
+        // newest reports and would otherwise be the first to die under load.
+        // Expired (TTL 0) or already-tried entries go first.
+        if (pendingMessages.size >= MAX_PENDING_MESSAGES) {
+            val evictable = pendingMessages
+                .withIndex()
+                .filter { it.value.lastAttemptAt > 0 || it.value.ttl <= 0 }
+                .minByOrNull { it.value.lastAttemptAt }
+            if (evictable != null) {
+                pendingMessages.removeAt(evictable.index)
+            } else {
+                // Everything is un-attempted and alive: drop the oldest
+                // non-zero TTL entry to keep the queue bounded.
+                pendingMessages.indexOfFirst { it.ttl > 0 }
+                    .takeIf { it >= 0 }
+                    ?.let(pendingMessages::removeAt)
+            }
         }
 
         pendingMessages.add(MeshMessage(
@@ -471,7 +532,7 @@ class MeshService : Service() {
             lat = lat,
             lng = lng,
             powNonce = powNonce,
-            powDifficulty = 8,
+            powDifficulty = PO_W_DIFFICULTY,
             needsEncryption = true,
             plaintext = plaintext
         ))
@@ -495,11 +556,13 @@ class MeshService : Service() {
     private fun trickleTick() {
         val now = System.currentTimeMillis()
 
-        // Store-and-forward hygiene: drop entries older than the TTL. Nothing is
-        // ever dropped for merely having "no peer right now" — those entries
-        // stay queued and waiting for the next tick.
+        // Store-and-forward hygiene: a message dies when its attempt budget
+        // (ttl) is exhausted, or when it has been attempted for MESSAGE_TTL_MS
+        // without delivering. The clock starts at the LAST ATTEMPT — never at
+        // birth: a message that sat queued while no peer was in range is not
+        // penalized for time in which it could not act.
         val cutoff = now - MESSAGE_TTL_MS
-        pendingMessages.removeAll { it.queuedAt < cutoff }
+        pendingMessages.removeAll { it.ttl <= 0 || (it.lastAttemptAt > 0 && it.lastAttemptAt < cutoff) }
 
         if (pendingMessages.isEmpty()) {
             // Double interval up to max
@@ -514,93 +577,63 @@ class MeshService : Service() {
 
         if (recentForwarded < TRICKLE_K) {
             val batch = pendingMessages.take(TRICKLE_K)
-            val delivered = mutableListOf<MeshMessage>()
 
             batch.forEach { msg ->
-                // in-flight messages are excluded; a message stays queued until
-                // a send was actually issued for it (delivered list below).
-                val trackId = if (msg.needsEncryption) "plain:${msg.messageId}" else msg.messageId
-                if (forwardedMessages.containsKey(trackId)) return@forEach
+                // In-flight guard: the send loop below is synchronous, so no
+                // concurrent trickle tick can interleave — the flag is defense
+                // in depth against a future async send path (an async
+                // completion would clear it in a finally block).
+                msg.inFlight = true
+                try {
+                    // Every message is attempted once per window: the attempt
+                    // stamps lastAttemptAt (the TTL anchor) even when no peer
+                    // is in range — store-and-forward keeps waiting.
+                    msg.lastAttemptAt = now
+                    msg.ttl = (msg.ttl - 1).coerceAtLeast(0)
 
-                // Locally generated messages are still plaintext: encrypt for the
-                // best peer key NOW. An empty/stale key list keeps the message
-                // queued — it is never dropped and never self-encrypted.
-                if (msg.needsEncryption) {
-                    val bestKey = getBestPeerPublicKey()
-                    if (bestKey.isBlank()) return@forEach
+                    val targetPeers = peers.filter { (id, info) ->
+                        reputation.getOrDefault(id, REPUTATION_INITIAL) > REPUTATION_MIN / 2 &&
+                            info.publicKey.isNotBlank() &&
+                            now - info.lastSeen < PEER_STALE_MS &&
+                            !forwardedMessages.containsKey("$id:${msg.messageId}")
+                    }
+                    if (targetPeers.isEmpty()) return@forEach // store-and-forward: wait
 
-                    val encrypted = CryptoEngine.encryptForPeer(
-                        peerPublicKeyBase64 = bestKey,
-                        payload = msg.plaintext.toByteArray(Charsets.UTF_8),
-                        lat = msg.lat,
-                        lng = msg.lng
-                    )
-                    // encryption failure surface: stay queued
-                    if (encrypted.ciphertext.isBlank()) return@forEach
-                    pendingMessages[pendingMessages.indexOf(msg)] = msg.copy(
-                        needsEncryption = false,
-                        plaintext = "",
-                        payloadB64 = encrypted.ciphertext,
-                        iv = encrypted.iv,
-                        origEphemeralId = encrypted.ephemeralId,
-                        origPublicKey = encrypted.senderPublicKey,
-                        timestamp = encrypted.timestamp,
-                        signature = encrypted.signature
-                    )
+                    targetPeers.forEach peerLoop@ { (endpointId, info) ->
+                        // Per-target E2EE: each receiver gets a ciphertext
+                        // encrypted for its own public key. A shared ciphertext
+                        // sent to every peer would let any single key holder
+                        // decrypt the whole broadcast. Already-encrypted frames
+                        // (relays) travel verbatim — only the intended key
+                        // holder decrypts, everyone else forwards.
+                        val encrypted = if (msg.needsEncryption) {
+                            CryptoEngine.encryptForPeer(
+                                peerPublicKeyBase64 = info.publicKey,
+                                payload = msg.plaintext.toByteArray(Charsets.UTF_8),
+                                lat = msg.lat,
+                                lng = msg.lng
+                            ).takeIf { it.ciphertext.isNotBlank() }
+                                ?: return@peerLoop // encryption failure: retry next window
+                        } else null
+
+                        sendToTarget(endpointId, msg, encrypted)
+                        // Per-target dedup: the same frame is never sent to the
+                        // same peer twice within a window.
+                        forwardedMessages["$endpointId:${msg.messageId}"] = now
+                    }
+                } finally {
+                    msg.inFlight = false
                 }
-
-                val ready = pendingMessages.firstOrNull { it.messageId == msg.messageId && !it.needsEncryption } ?: return@forEach
-
-                val targetPeers = peers.filter { (id, _) ->
-                    reputation.getOrDefault(id, REPUTATION_INITIAL) > REPUTATION_MIN / 2
-                }
-                if (targetPeers.isEmpty()) return@forEach // store-and-forward: wait
-
-                // Ciphertext + IV + full identity metadata relayed verbatim —
-                // nonce, coordinates, sender timestamp and signature never
-                // change between hops: anti-replay and storm dedup hold
-                // chain-wide, not per-hop.
-                val relayPayload = MeshPayload(
-                    messageId = ready.messageId,
-                    type = ready.type,
-                    payloadB64 = ready.payloadB64,
-                    iv = ready.iv,
-                    hopCount = ready.hopCount,
-                    origEphemeralId = ready.origEphemeralId,
-                    origPublicKey = ready.origPublicKey,
-                    timestamp = ready.timestamp,
-                    signature = ready.signature,
-                    nonce = ready.nonce,
-                    lat = ready.lat,
-                    lng = ready.lng,
-                    powNonce = ready.powNonce,
-                    powDifficulty = ready.powDifficulty
-                )
-
-                val json = payloadToJson(relayPayload)
-                val compressed = compress(json.toByteArray(Charsets.UTF_8))
-
-                targetPeers.keys.forEach { endpointId ->
-                    connectionsClient.sendPayload(endpointId, Payload.fromBytes(compressed))
-                }
-
-                // Removed from the queue ONLY after a send was actually issued.
-                forwardedMessages[trackId] = now
-                delivered.add(ready)
             }
-
-            pendingMessages.removeAll(delivered)
         }
 
         // Reset interval
         trickleInterval = TRICKLE_I_MIN
 
         // Cleanup old seen hashes + forwarded markers
-        val cutoff = now - 300_000L
-        seenMessageHashes.entries.removeAll { it.value < cutoff }
-        forwardedMessages.entries.removeAll { it.value < cutoff }
-        seenNonces.entries.removeAll { it.value < cutoff }
-        forwardedMessages.entries.removeAll { it.value < cutoff }
+        val cutoff2 = now - 300_000L
+        seenMessageHashes.entries.removeAll { it.value < cutoff2 }
+        forwardedMessages.entries.removeAll { it.value < cutoff2 }
     }
 
     // ========================
@@ -682,21 +715,50 @@ class MeshService : Service() {
     // UTILITY
     // ========================
 
-    private fun getBestPeerPublicKey(): String {
-        val now = System.currentTimeMillis()
-        // Best key = highest-reputation peer whose key we actually hold and
-        // who was seen recently. Blank or stale keys are skipped outright.
-        // There is deliberately NO self-encrypt fallback: encrypting for
-        // ourselves would produce a ciphertext no peer can read and silently
-        // fake the broadcast — the queue keeps the message instead.
-        return peers.entries
-            .asSequence()
-            .filter { reputation.getOrDefault(it.key, 0) > 0 }
-            .filter { it.value.publicKey.isNotBlank() }
-            .filter { now - it.value.lastSeen < PEER_STALE_MS }
-            .maxByOrNull { reputation.getOrDefault(it.key, 0) }
-            ?.value?.publicKey
-            .orEmpty()
+    /**
+     * Serialize, compress and send one frame to one endpoint. A null encrypted
+     * block relays the stored ciphertext verbatim (store-and-forward); a
+     * non-null one carries a fresh per-target E2EE encryption.
+     */
+    private fun sendToTarget(endpointId: String, msg: MeshMessage, encrypted: CryptoEngine.SecureMessage?) {
+        val frame = if (encrypted != null) {
+            MeshPayload(
+                messageId = msg.messageId,
+                type = msg.type,
+                payloadB64 = encrypted.ciphertext,
+                iv = encrypted.iv,
+                hopCount = msg.hopCount,
+                origEphemeralId = encrypted.ephemeralId,
+                origPublicKey = encrypted.senderPublicKey,
+                timestamp = encrypted.timestamp,
+                signature = encrypted.signature,
+                nonce = msg.nonce,
+                lat = msg.lat,
+                lng = msg.lng,
+                powNonce = msg.powNonce,
+                powDifficulty = msg.powDifficulty
+            )
+        } else {
+            MeshPayload(
+                messageId = msg.messageId,
+                type = msg.type,
+                payloadB64 = msg.payloadB64,
+                iv = msg.iv,
+                hopCount = msg.hopCount,
+                origEphemeralId = msg.origEphemeralId,
+                origPublicKey = msg.origPublicKey,
+                timestamp = msg.timestamp,
+                signature = msg.signature,
+                nonce = msg.nonce,
+                lat = msg.lat,
+                lng = msg.lng,
+                powNonce = msg.powNonce,
+                powDifficulty = msg.powDifficulty
+            )
+        }
+        val json = payloadToJson(frame)
+        val compressed = compress(json.toByteArray(Charsets.UTF_8))
+        connectionsClient.sendPayload(endpointId, Payload.fromBytes(compressed))
     }
 
     private fun notifyListeners(message: String) {
@@ -720,25 +782,35 @@ class MeshService : Service() {
                 off += len
             }
             deflater.end()
-            buf.copyOf(off)
+            // Magic-framed: the marker makes the wire format self-describing and
+            // lets receivers reject raw-UTF8 frames outright.
+            COMPRESS_MAGIC + buf.copyOf(off)
         } catch (e: Exception) {
-            data
+            // Compression failure (defensive — Deflater is memory-safe): the
+            // frame is still magic-framed so the receiver decodes it, just
+            // without compression.
+            COMPRESS_MAGIC + data
         }
     }
 
     /**
-     * Inflate a deflate stream, or null when the bytes are not deflate (the
-     * legacy uncompressed wire format falls back to raw UTF-8 decoding).
+     * Inflate a magic-framed deflate stream, or null when the frame lacks the
+     * marker (anything without the marker is not a wire message — callers
+     * reject it rather than falling back to raw UTF-8).
      */
     private fun decompress(data: ByteArray): String? {
+        if (data.size < COMPRESS_MAGIC.size) return null
+        for (i in COMPRESS_MAGIC.indices) {
+            if (data[i] != COMPRESS_MAGIC[i]) return null
+        }
         return try {
             val inflater = java.util.zip.Inflater()
-            inflater.setInput(data)
+            inflater.setInput(data, COMPRESS_MAGIC.size, data.size - COMPRESS_MAGIC.size)
             val out = java.io.ByteArrayOutputStream(data.size * 2)
             val buf = ByteArray(8192)
             while (!inflater.finished()) {
                 val len = inflater.inflate(buf)
-                if (len == 0) return null // not a deflate stream (or corrupt)
+                if (len == 0) return null // corrupt deflate stream
                 out.write(buf, 0, len)
             }
             inflater.end()
@@ -754,17 +826,17 @@ class MeshService : Service() {
     }
 
     /**
-     * Wire schema: a pipe-joined frame with 14 fields
+     * Wire schema: a pipe-joined frame with exactly 14 fields
      *   messageId|type|payloadB64|iv|hopCount|origEphemeralId|origPublicKey|timestamp|signature|nonce|lat|lng|powNonce|powDifficulty
      * The final two fields carry the sender's proof-of-work so every hop can
-     * verify it. Legacy 12-field frames (pre-PoW builds) are still accepted —
-     * they carry powDifficulty = 0, which skips the PoW check.
+     * verify it. Frames with any other field count are rejected outright —
+     * there is no legacy format: handleIncomingMessage requires a valid PoW
+     * difficulty anyway, so pre-PoW frames could never pass the gate.
      */
     private fun parseJsonToPayload(json: String): MeshPayload? {
         return try {
             val parts = json.split("|")
-            val legacy = parts.size == 12
-            if (!legacy && parts.size != 14) return null
+            if (parts.size != 14) return null
             val messageId = parts[0]
             val type = parts[1]
             val payloadB64 = parts[2]
@@ -777,6 +849,8 @@ class MeshService : Service() {
             val nonce = parts[9].toInt()
             val lat = parts[10].toDouble()
             val lng = parts[11].toDouble()
+            val powNonce = parts[12].toInt()
+            val powDifficulty = parts[13].toInt()
 
             // Physical/identity sanity: a frame claiming 999 hops, garbage
             // coordinates or missing key material is not a wire message.
@@ -802,8 +876,8 @@ class MeshService : Service() {
                 nonce = nonce,
                 lat = lat,
                 lng = lng,
-                powNonce = if (legacy) 0 else parts[12].toInt(),
-                powDifficulty = if (legacy) 0 else parts[13].toInt()
+                powNonce = powNonce,
+                powDifficulty = powDifficulty
             )
         } catch (e: Exception) {
             null

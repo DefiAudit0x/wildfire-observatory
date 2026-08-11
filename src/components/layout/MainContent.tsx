@@ -267,6 +267,7 @@ export default function MainContent({
                 onSubmit={onCreateReport}
                 lang={lang}
                 reports={reports}
+                wilayas={wilayas}
               />
             </div>
 

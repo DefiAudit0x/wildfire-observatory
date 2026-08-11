@@ -17,3 +17,11 @@ android/local.properties
 *.jks
 
 start-server.ps1
+
+# Android build outputs
+android/.gradle/
+android/build/
+android/app/build/
+android/.idea/
+android/captures/
+android/.kotlin/

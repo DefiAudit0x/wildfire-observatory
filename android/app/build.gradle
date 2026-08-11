@@ -53,10 +53,9 @@ dependencies {
     // Google Nearby Connections for Bluetooth mesh
     implementation 'com.google.android.gms:play-services-nearby:19.0.0'
 
-    // Spongy Castle for Bouncy Castle crypto on Android
-    implementation 'com.madgag.spongycastle:core:1.58.0.0'
-    implementation 'com.madgag.spongycastle:prov:1.58.0.0'
-    implementation 'com.madgag.spongycastle:pkix:1.58.0.0'
+    // Bouncy Castle for crypto on Android (SpongyCastle artifacts were
+    // removed from Maven Central and are unbuildable on JitPack)
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
 
     // Kotlin coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

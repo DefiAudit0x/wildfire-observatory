@@ -91,6 +91,18 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
       : "citizen",
   };
 
+  // The origin's client-generated id travels VERBATIM through the relay: the
+  // server deduplicates on it, so a report that an online origin already
+  // posted (or posts later) is never double-committed. Dropping it here would
+  // break that idempotency contract.
+  if (
+    typeof payload.clientGeneratedId === "string" &&
+    payload.clientGeneratedId.length >= 8 &&
+    payload.clientGeneratedId.length <= 64
+  ) {
+    report.clientGeneratedId = payload.clientGeneratedId;
+  }
+
   // Same minimums as the server schema (locationName ≥3, wilaya ≥3, description ≥10).
   if (
     typeof report.locationName !== "string" ||

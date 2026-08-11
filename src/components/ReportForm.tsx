@@ -1,15 +1,19 @@
 import { useState, useRef, useEffect } from "react";
 import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
 import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/geo";
+import { geoErrorMessage } from "../hooks/useGeolocation";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
   onSubmit: (data: any) => Promise<any>;
   lang: "ar" | "fr";
   reports?: any[];
+  /** Live wilaya list from the observatory API (single source of truth).
+      Falls back to the static list below until the API responds. */
+  wilayas?: { nameAr: string; nameFr: string }[];
 }
 
-const WILAYAS = [
+const FALLBACK_WILAYAS = [
   // الجزائر (58 ولاية)
   { nameAr: "الجزائر - أدرار", nameFr: "Algérie - Adrar" },
   { nameAr: "الجزائر - الشلف", nameFr: "Algérie - Chlef" },
@@ -135,7 +139,10 @@ const WILAYAS = [
   { nameAr: "ليبيا - المرقب", nameFr: "Libye - Al Murgub" }
 ];
 
-export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [] }: ReportFormProps) {
+export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas }: ReportFormProps) {
+  // The server owns the wilaya geofence; the static copy only covers the
+  // first-load/offline window before the API list arrives.
+  const wilayaOptions = wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS;
   const [lat, setLat] = useState("");
   const [lng, setLng] = useState("");
   const [locationName, setLocationName] = useState("");
@@ -245,7 +252,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       }
       return;
     }
-    const resolvedOption = WILAYAS.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
+    const resolvedOption = wilayaOptions.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
     if (!wilaya && resolvedOption) {
       setWilayaNote({
         kind: "suggest",
@@ -267,7 +274,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       }
     }
     setWilayaNote(null);
-  }, [lat, lng, wilaya]);
+  }, [lat, lng, wilaya, wilayaOptions]);
 
   const syncOfflineDrafts = async () => {
     if (offlineDrafts.length === 0 || syncingDrafts.current) return;
@@ -596,7 +603,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   // Automated browser-side GPS acquisition
   const handleGetLocation = () => {
     if (!navigator.geolocation) {
-      setErrorMsg(isArabic ? "تحديد الموقع الجغرافي غير مدعوم في متصفحك." : "La géolocalisation n'est pas supportée.");
+      setErrorMsg(geoErrorMessage(undefined, isArabic));
       return;
     }
 
@@ -609,13 +616,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         setLng(position.coords.longitude.toFixed(6));
         setIsLocating(false);
       },
+      // Same actionable per-code wording as the rest of the app (permission
+      // blocked vs no signal vs timeout — each has a different fix).
       (error) => {
         setIsLocating(false);
-        setErrorMsg(
-          isArabic
-            ? "تعذر الحصول على موقعك. يرجى تفعيل الـ GPS أو النقر على الخريطة لتحديده يدوياً."
-            : "Impossible d'obtenir la position. Activez le GPS ou cliquez sur la carte."
-        );
+        setErrorMsg(geoErrorMessage(error?.code, isArabic));
       },
       { enableHighAccuracy: true, timeout: 10000 }
     );
@@ -1056,7 +1061,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 required
               >
                 <option value="">{isArabic ? "-- اختر الولاية --" : "-- Choisir Wilaya --"}</option>
-                {WILAYAS.map((w, idx) => (
+                {wilayaOptions.map((w, idx) => (
                   <option key={idx} value={`${w.nameAr} (${w.nameFr})`}>
                     {isArabic ? w.nameAr : w.nameFr}
                   </option>
