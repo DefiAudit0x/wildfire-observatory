@@ -94,7 +94,7 @@ class WebAppInterface(
     /**
      * Encrypt and broadcast a message to the mesh network.
      * @param plaintext The message content
-     * @param type Message type (report, echo, reputation)
+     * @param type Message type (report, echo)
      * @param lat Latitude of the sender
      * @param lng Longitude of the sender
      */
@@ -104,7 +104,11 @@ class WebAppInterface(
         // Type whitelist (audit round 11): the type travels pipe-joined on the
         // wire; arbitrary strings could corrupt framing (defense-in-depth —
         // parseFrame now rejects pipes too) and would muddy relay routing.
-        if (type !in setOf(MeshService.MESSAGE_TYPE_REPORT, MeshService.MESSAGE_TYPE_ECHO, MeshService.MESSAGE_TYPE_REPUTATION)) return
+        // (Audit round 12: MESSAGE_TYPE_REPUTATION removed from the surface —
+        // the protocol has no reputation-message handling, so advertising the
+        // type was a dead branch. Reputation is scored from report/echo
+        // traffic only.)
+        if (type !in setOf(MeshService.MESSAGE_TYPE_REPORT, MeshService.MESSAGE_TYPE_ECHO)) return
         meshService?.broadcastMessage(plaintext, type, lat, lng)
     }
 
@@ -177,7 +181,10 @@ class WebAppInterface(
 
     /**
      * Get all currently connected peers with reputation scores.
-     * @return JSON array: [{ endpointId, ephemeralId, lastSeen, reputation, hopCount }]
+     * @return JSON array: [{ endpointId, publicKey, lastSeen, reputation }]
+     * (audit round 12: the old ephemeralId/hopCount peer fields were never
+     * populated from a real source and are gone; the public key is the peer
+     * identity.)
      */
     @JavascriptInterface
     fun getConnectedPeers(): String {

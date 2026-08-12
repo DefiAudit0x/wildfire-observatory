@@ -98,7 +98,15 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
   let currentReports: any[] = [];
   try {
     const { getReportsFromFirestore } = await import("../db.js");
-    const reports = await getReportsFromFirestore();
+    // Audit round 12: the Firestore fetch (best-effort context data only)
+    // had NO timeout — a slow/hung DB held the guidance response hostage
+    // past even the AI provider's own 15s abort, degrading every guidance
+    // request in a degraded-network moment. Context is optional by design
+    // (see the catch below), so cap it hard and move on.
+    const reports = await Promise.race([
+      getReportsFromFirestore(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]);
     if (reports) currentReports = reports;
   } catch { /* ignore */ }
 

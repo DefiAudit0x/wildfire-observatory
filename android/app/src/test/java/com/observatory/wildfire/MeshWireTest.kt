@@ -364,6 +364,61 @@ class MeshWireTest {
         assertFalse(Arrays.equals(a, b))
     }
 
+    // ---------- canonical coordinate serialization (audit round 12) ----------
+
+    @Test
+    fun canonicalLatLngIsMicroDegrees() {
+        // The browser fallback signs with the SAME canonical form (see
+        // meshBridge.canonicalLatLng): micro-degrees, Math.round(lat * 1e6).
+        assertEquals("0", MeshWire.canonicalLatLng(0.0))
+        assertEquals("36750000", MeshWire.canonicalLatLng(36.75))
+        assertEquals("-1234568", MeshWire.canonicalLatLng(-1.2345678))
+        // Float accumulation noise is absorbed by micro-degree rounding:
+        // 0.1 + 0.2 == 0.30000000000000004 must NOT leak into the signed
+        // bytes (the old Double.toString would emit different digits on
+        // different runtimes anyway).
+        assertEquals("300000", MeshWire.canonicalLatLng(0.1 + 0.2))
+    }
+
+    @Test
+    fun canonicalSignedDataVectorsArePinnedForTheBrowserMirror() {
+        // Byte-identical cross-runtime contract (audit round 12): the SAME
+        // input must produce the SAME bytes in Kotlin (this test) and in the
+        // browser fallback (tests/mesh-relay.test.ts pins this exact hex).
+        // The old Double.toString serialization was runtime-unstable —
+        // String(0)="0" in JS vs 0.0.toString()="0.0" in Kotlin — so a
+        // browser-signed message could never verify against the native
+        // verifier. Micro-degrees fix the bytes on both runtimes.
+        val bytes = MeshWire.buildSignedData(
+            ciphertext = byteArrayOf(),
+            iv = byteArrayOf(),
+            messageId = "m",
+            type = "t",
+            hopCount = 0,
+            origEphemeralId = "e",
+            origPublicKey = "k",
+            timestamp = 123456789L,
+            nonce = 42,
+            lat = 0.1 + 0.2,
+            lng = -1.2345678
+        )
+        val hex = bytes.joinToString("") { "%02X".format(it) }
+        val expected = (
+            "00000000" + // ciphertext (empty)
+                "00000000" + // iv (empty)
+                "000000016D" + // "m"
+                "0000000174" + // "t"
+                "0000000130" + // "0"
+                "0000000165" + // "e"
+                "000000016B" + // "k"
+                "00000009313233343536373839" + // "123456789"
+                "000000023432" + // "42"
+                "00000006333030303030" + // "300000"  <- micro-degrees of 0.30000000000000004
+                "000000082D31323334353638" // "-1234568" <- micro-degrees of -1.2345678
+            )
+        assertEquals(expected, hex)
+    }
+
     // ---------- anti-replay hash framing ----------
 
     @Test

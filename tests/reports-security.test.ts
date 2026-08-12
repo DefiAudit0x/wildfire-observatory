@@ -16,6 +16,13 @@ vi.mock("../server/fs.js", () => ({
   incrementDocField: async () => true,
 }));
 
+// Never hit the real Gemini Vision API from tests: the image magic-bytes
+// gate is route-local logic and must be deterministic (no network, no cost).
+vi.mock("../server/ai.js", () => ({
+  getAiClient: () => null,
+  getAiModel: () => "gemini-3-flash-preview",
+}));
+
 const { default: reportsRouter } = await import("../server/routes/reports.js");
 
 function createApp() {

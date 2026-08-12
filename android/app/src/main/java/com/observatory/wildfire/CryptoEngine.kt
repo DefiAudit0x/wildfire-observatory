@@ -45,11 +45,30 @@ object CryptoEngine {
     private const val IDENTITY_PUB_KEY = "identity_pub_b64"
     private const val IDENTITY_PRIV_KEY = "identity_priv_b64"
 
-    // Ephemeral identity — rotated periodically
+    // Ephemeral identity — rotated ONLY on explicit request (audit round 12):
+    // the previous implementation auto-rotated inside every key getter, which
+    // created TWO independent rotation clocks (CryptoEngine's getter timing
+    // vs MeshService's advertising lifecycle) — a getter-triggered rotation
+    // changed the signing/encryption key WITHOUT restarting Nearby, so the
+    // device advertised key A while signing with key B. Rotation is now a
+    // service-level decision (MeshService.trickleTick owns the single clock
+    // and restarts Nearby presence on each rotation); CryptoEngine rotates
+    // only when asked (rotateEphemeralKey / initialize).
     private var ephemeralKeyPair: KeyPair? = null
     private var ephemeralId: String = ""
-    private var lastEphemeralRotation: Long = 0L
-    private const val EPHEMERAL_ROTATION_MS = 60 * 60 * 1000L // 1 hour
+
+    // Retired ephemeral keys (audit round 12): a message encrypted to our
+    // CURRENT advertised key while we rotate in the middle of its transit
+    // window must still be decryptable. decryptFromPeer therefore tries the
+    // current key first, then each retired key in order. Bound: rotation
+    // period (1h, service-owned) dwarfs MESSAGE_TTL_MS (10 min), so at most
+    // one retired generation can host live in-transit ciphertext; 2 retained
+    // keys cover the worst case with margin. (Wire-protocol alternative —
+    // carrying a recipient-key id in the frame — was deferred: retention
+    // deterministically covers the TTL window without a format change and
+    // without leaking which key a recipient uses.)
+    private val retiredEphemeralKeyPairs = ArrayDeque<KeyPair>()
+    private const val MAX_RETIRED_EPHEMERAL_KEYS = 2
 
     /**
      * An atomic snapshot of the CURRENT ephemeral keys (audit round 11): the
@@ -60,6 +79,13 @@ object CryptoEngine {
      * material, making peers reject it. Everything that must be consistent
      * — PoW prefix, origEphemeralId, origPublicKey, ECDH key, signature —
      * is now taken from ONE [EphemeralSnapshot] captured atomically.
+     *
+     * The instance is IMMUTABLE and SHARED: every queued message of one key
+     * generation references the SAME snapshot object (audit round 12 — no
+     * per-message key material copies; memory burden of a queued message is
+     * three references to the generation handle, and the bounded queue ≤
+     * MAX_PENDING_MESSAGES can hold at most two generations at once because
+     * the 1h rotation period dwarfs the 10-minute message TTL).
      */
     data class EphemeralSnapshot(
         val keyPair: KeyPair,
@@ -107,12 +133,42 @@ object CryptoEngine {
     }
 
     private fun loadOrCreateIdentityKeyPair(context: Context): KeyPair {
-        // Primary path: Android Keystore (API 26+, minSdk 26). The key is
-        // generated inside the keystore; getKeyPair() hands back the PUBLIC
-        // key and a non-exportable PrivateKey handle. The private key never
-        // leaves the keystore (audit round 11: the previous implementation
-        // stored the raw PKCS#8 private key in SharedPreferences — plaintext
-        // key material in app data).
+        // Identity CONTINUITY across the keystore migration (audit round 12):
+        // installs that predate the AndroidKeyStore path stored the identity
+        // in SharedPreferences. That legacy key is read FIRST — flipping the
+        // primary storage to the keystore without a migration would mint a
+        // BRAND-NEW identity on every upgrade (the keystore alias is absent
+        // on the first post-upgrade launch), silently breaking any server-
+        // side trust/history keyed on the old identity. Legacy keys are
+        // immutable-once-stored (the app never rotates them), so the old
+        // storage remains a stable identity source; the keystore is the
+        // storage of choice for NEW installs (below).
+        val prefs = context.getSharedPreferences(IDENTITY_PREFS, Context.MODE_PRIVATE)
+        val legacyPrivB64 = prefs.getString(IDENTITY_PRIV_KEY, null)
+        val legacyPubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
+        if (legacyPrivB64 != null && legacyPubB64 != null) {
+            try {
+                val pubKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
+                    .generatePublic(X509EncodedKeySpec(Base64.decode(legacyPubB64, Base64.NO_WRAP)))
+                val privKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
+                    .generatePrivate(PKCS8EncodedKeySpec(Base64.decode(legacyPrivB64, Base64.NO_WRAP)))
+                android.util.Log.i(
+                    "CryptoEngine",
+                    "Reusing pre-keystore identity from SharedPreferences (upgrade continuity)"
+                )
+                return KeyPair(pubKey, privKey)
+            } catch (e: Exception) {
+                // Corrupt/partial stored identity: fall through to keystore.
+                android.util.Log.w("CryptoEngine", "Legacy stored identity unusable", e)
+            }
+        }
+
+        // Primary path for NEW installs: Android Keystore (API 26+, minSdk
+        // 26). The key is generated inside the keystore; getKeyPair() hands
+        // back the PUBLIC key and a non-exportable PrivateKey handle. The
+        // private key never leaves the keystore (audit round 11: the legacy
+        // path stored the raw PKCS#8 private key in SharedPreferences —
+        // plaintext key material in app data).
         try {
             val ks = KeyStore.getInstance("AndroidKeyStore")
             ks.load(null)
@@ -143,21 +199,8 @@ object CryptoEngine {
         // Fallback path (keystore-less emulators/devices): SharedPreferences
         // with a loud warning — plaintext key material should never be the
         // production default (audit round 11: the keystore is primary now).
-        val prefs = context.getSharedPreferences(IDENTITY_PREFS, Context.MODE_PRIVATE)
-        val pubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
-        val privB64 = prefs.getString(IDENTITY_PRIV_KEY, null)
-        if (pubB64 != null && privB64 != null) {
-            try {
-                val pubKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
-                    .generatePublic(X509EncodedKeySpec(Base64.decode(pubB64, Base64.NO_WRAP)))
-                val privKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
-                    .generatePrivate(PKCS8EncodedKeySpec(Base64.decode(privB64, Base64.NO_WRAP)))
-                return KeyPair(pubKey, privKey)
-            } catch (e: Exception) {
-                // Corrupt/partial stored identity: regenerate below.
-                android.util.Log.w("CryptoEngine", "Stored identity unusable, regenerating", e)
-            }
-        }
+        // (Legacy keys were already consumed above; only a missing-clean
+        // install reaches this point, so a fresh pair is generated.)
         val fresh = generateECKeyPair()
         // commit() instead of apply() (audit): a process death between the
         // async apply() flush and the write would silently drop a freshly
@@ -172,16 +215,11 @@ object CryptoEngine {
     }
 
     @Synchronized
-    fun getEphemeralId(): String {
-        rotateIfNeeded()
-        return ephemeralId
-    }
+    fun getEphemeralId(): String = ephemeralId
 
     @Synchronized
-    fun getPublicKeyBase64(): String {
-        rotateIfNeeded()
-        return Base64.encodeToString(ephemeralKeyPair!!.public.encoded, Base64.NO_WRAP)
-    }
+    fun getPublicKeyBase64(): String =
+        Base64.encodeToString(ephemeralKeyPair!!.public.encoded, Base64.NO_WRAP)
 
     /**
      * Atomically capture the CURRENT ephemeral (id + public key + keypair) in
@@ -190,10 +228,15 @@ object CryptoEngine {
      * calling getEphemeralId()/getPublicKeyBase64() separately — rotation
      * between those calls was producing frames whose fields referenced
      * different key material.
+     *
+     * Audit round 12: this getter NEVER rotates. Rotation is exclusively
+     * driven by [rotateEphemeralKey] (invoked by MeshService's single
+     * rotation clock — see MeshService.rotateEphemeralId). The old getter
+     * auto-rotation created a second, independent rotation clock that could
+     * change the signing key without restarting Nearby advertising.
      */
     @Synchronized
     fun getEphemeralSnapshot(): EphemeralSnapshot {
-        rotateIfNeeded()
         val pair = ephemeralKeyPair ?: run {
             rotateEphemeralKey()
             ephemeralKeyPair!!
@@ -210,16 +253,45 @@ object CryptoEngine {
         return Base64.encodeToString(identityKeyPair!!.public.encoded, Base64.NO_WRAP)
     }
 
+    /**
+     * Rotate the ephemeral key pair AND return the new snapshot. This is the
+     * ONLY rotation entry point (audit round 12 — single rotation authority):
+     * MeshService calls it from its own clock and restarts Nearby advertising
+     * with the new public key name immediately; nothing inside this engine
+     * rotates on its own. The retired key is retained for in-transit
+     * decryption (see [retiredEphemeralKeyPairs] and [decryptFromPeer]).
+     */
     @Synchronized
-    fun rotateEphemeralKey() {
+    fun rotateEphemeralKey(): EphemeralSnapshot {
+        ephemeralKeyPair?.let { old ->
+            retiredEphemeralKeyPairs.addLast(old)
+            while (retiredEphemeralKeyPairs.size > MAX_RETIRED_EPHEMERAL_KEYS) {
+                retiredEphemeralKeyPairs.removeFirst()
+            }
+        }
         ephemeralKeyPair = generateECKeyPair()
         ephemeralId = generateRandomId()
-        lastEphemeralRotation = System.currentTimeMillis()
+        return EphemeralSnapshot(
+            keyPair = ephemeralKeyPair!!,
+            ephemeralId = ephemeralId,
+            publicKeyB64 = Base64.encodeToString(ephemeralKeyPair!!.public.encoded, Base64.NO_WRAP)
+        )
     }
 
-    private fun rotateIfNeeded() {
-        if (System.currentTimeMillis() - lastEphemeralRotation > EPHEMERAL_ROTATION_MS) {
-            rotateEphemeralKey()
+    /**
+     * Full cryptographic key check (audit round 12): unlike the cheap shape
+     * gate (MeshService.isLikelyPublicKey), this actually decodes the SPKI.
+     * Used at peer ADMISSION (onEndpointFound / onConnectionInitiated) so a
+     * malformed-but-shape-valid key is rejected BEFORE it can reach
+     * encryptForPeer — a decode failure there would otherwise escape the
+     * trickle Timer task and kill the whole mesh schedule.
+     */
+    fun isValidPublicKey(base64: String): Boolean {
+        return try {
+            decodePublicKey(base64)
+            true
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -282,6 +354,14 @@ object CryptoEngine {
         type: String = "",
         hopCount: Int = 0
     ): SecureMessage {
+        // Wire-contract enforcement at the API boundary (audit round 12):
+        // MeshWire.parseFrame rejects blank messageId/type and any non-zero
+        // hopCount (hopCount is signed and must stay 0 — see MeshWire). A
+        // crypto API that happily emits an un-deliverable SecureMessage is a
+        // trap for future callers; fail loudly instead.
+        require(messageId.isNotBlank()) { "messageId must be non-blank — MeshWire.parseFrame rejects blank ids" }
+        require(type.isNotBlank()) { "type must be non-blank — MeshWire.parseFrame rejects blank types" }
+        require(hopCount == 0) { "hopCount must be 0 — it is signed and wire-immutable (see MeshWire)" }
         val peerPublicKey = decodePublicKey(peerPublicKeyBase64)
         val sharedSecret = ecdhKeyAgreement(snapshot.keyPair.private, peerPublicKey)
         val aesKey = deriveAESKey(sharedSecret)
@@ -338,49 +418,62 @@ object CryptoEngine {
      * 2. ECDH key agreement → shared secret
      * 3. Derive AES-256 key
      * 4. Decrypt AES-256-GCM
+     *
+     * Audit round 12 (recipient-side key rotation): the decryption half tries
+     * the CURRENT ephemeral key first, then each RETIRED key (in retirement
+     * order). A message encrypted to our previously-advertised key — in
+     * transit across the moment we rotated — stays decryptable instead of
+     * dying silently. The bound on retained keys (MAX_RETIRED_EPHEMERAL_KEYS)
+     * covers the full message TTL window (see retiredEphemeralKeyPairs).
      */
     @Synchronized
     fun decryptFromPeer(
         message: SecureMessage,
         peerPublicKeyBase64: String? = null
     ): ByteArray? {
-        return try {
-            val pubKeyB64 = peerPublicKeyBase64 ?: message.senderPublicKey
-            val peerPublicKey = decodePublicKey(pubKeyB64)
+        val pubKeyB64 = peerPublicKeyBase64 ?: message.senderPublicKey
+        val peerPublicKey = decodePublicKey(pubKeyB64)
 
-            // Verify signature over the canonical metadata (same bytes both sides)
-            val ciphertext = Base64.decode(message.ciphertext, Base64.NO_WRAP)
-            val iv = Base64.decode(message.iv, Base64.NO_WRAP)
-            val signature = Base64.decode(message.signature, Base64.NO_WRAP)
-            val signData = MeshWire.buildSignedData(
-                ciphertext = ciphertext,
-                iv = iv,
-                messageId = message.messageId,
-                type = message.type,
-                hopCount = message.hopCount,
-                origEphemeralId = message.ephemeralId,
-                origPublicKey = message.senderPublicKey,
-                timestamp = message.timestamp,
-                nonce = message.nonce,
-                lat = message.lat,
-                lng = message.lng
-            )
-
-            if (!verifySignature(signData, signature, peerPublicKey)) {
-                throw SecurityException("ECDSA signature verification failed — message or metadata may be tampered")
-            }
-
-            // Decrypt
-            val sharedSecret = ecdhKeyAgreement(ephemeralKeyPair!!.private, peerPublicKey)
-            val aesKey = deriveAESKey(sharedSecret)
-
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
-            cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
-            cipher.doFinal(ciphertext)
-        } catch (e: Exception) {
-            android.util.Log.e("CryptoEngine", "Decryption failed", e)
-            null
+        // Signature covers canonical metadata (same bytes both sides).
+        val ciphertext = Base64.decode(message.ciphertext, Base64.NO_WRAP)
+        val iv = Base64.decode(message.iv, Base64.NO_WRAP)
+        val signature = Base64.decode(message.signature, Base64.NO_WRAP)
+        val signData = MeshWire.buildSignedData(
+            ciphertext = ciphertext,
+            iv = iv,
+            messageId = message.messageId,
+            type = message.type,
+            hopCount = message.hopCount,
+            origEphemeralId = message.ephemeralId,
+            origPublicKey = message.senderPublicKey,
+            timestamp = message.timestamp,
+            nonce = message.nonce,
+            lat = message.lat,
+            lng = message.lng
+        )
+        if (!verifySignature(signData, signature, peerPublicKey)) {
+            return null
         }
+
+        // Decrypt with current key, then each retired key. Each attempt is
+        // isolated: a wrong key fails ECDH/decrypt, never short-circuits the
+        // next candidate (audit round 12).
+        val candidates = ArrayList<KeyPair>(1 + retiredEphemeralKeyPairs.size)
+        ephemeralKeyPair?.let { candidates.add(it) }
+        candidates.addAll(retiredEphemeralKeyPairs)
+        for (candidate in candidates) {
+            try {
+                val sharedSecret = ecdhKeyAgreement(candidate.private, peerPublicKey)
+                val aesKey = deriveAESKey(sharedSecret)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
+                cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
+                return cipher.doFinal(ciphertext)
+            } catch (e: Exception) {
+                android.util.Log.d("CryptoEngine", "Decrypt attempt with one key candidate failed", e)
+            }
+        }
+        android.util.Log.e("CryptoEngine", "Decryption failed with all key candidates")
+        return null
     }
 
     /**

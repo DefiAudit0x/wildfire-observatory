@@ -19,10 +19,9 @@ type PeerUpdateHandler = (peers: PeerInfo[]) => void;
 
 export interface PeerInfo {
   endpointId: string;
-  ephemeralId: string;
+  publicKey: string;
   lastSeen: number;
   reputation: number;
-  hopCount: number;
 }
 
 // Anti-replay cache with a REAL time-to-live: entries are purged by age
@@ -32,10 +31,27 @@ const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
 const seenNonces = new Map<number, number>();
 const seenMessageHashes = new Map<string, number>();
 
-// Ephemeral key pair for E2EE (browser fallback)
+// Ephemeral key pairs for E2EE (browser fallback). WebCrypto forbids
+// mixing ECDH and ECDSA usages on one key, so the fallback mirrors the
+// native design with TWO pairs: an ECDH pair (key agreement + AES-GCM) and
+// an ECDSA pair (canonical-metadata signatures). The ECDH public key rides
+// in senderPublicKey (a native wire frame would carry it the same way); the
+// ECDSA public key rides in signatureKey so verification is self-consistent.
+// NOTE: browser-fallback signatures verify ONLY against signatureKey — a
+// native verifier checks senderPublicKey, so fallback messages are
+// dev/test-only by design (the WebView path always uses the native bridge).
 let browserKeyPair: CryptoKeyPair | null = null;
+let browserSignKey: CryptoKeyPair | null = null;
 let browserEphemeralId = "";
 let browserPublicKeyBase64 = "";
+
+// Retired private keys (audit round 12 — recipient-side rotation): a message
+// encrypted to our previously-advertised key while we rotate stays
+// decryptable; browserDecrypt tries the current private key first, then each
+// retired one in retirement order. Rotation (re-initMesh) retires the old
+// pair. Bound: 2 retained keys cover the whole message TTL window (10 min)
+// against the 1h rotation period — see CryptoEngine.retiredEphemeralKeyPairs.
+const retiredPrivateKeys: CryptoKey[] = [];
 
 // Reputation cache
 const reputationCache = new Map<string, number>();
@@ -57,13 +73,24 @@ export async function initMesh(): Promise<{ supported: boolean; deviceId: string
     return { supported: true, deviceId };
   }
 
-  // Browser fallback: generate ephemeral key pair
+  // Browser fallback: generate ephemeral key pairs
   try {
+    const previous = browserKeyPair;
     browserKeyPair = await crypto.subtle.generateKey(
       { name: "ECDH", namedCurve: "P-256" },
       true,
       ["deriveKey", "deriveBits"]
     );
+    browserSignKey = await crypto.subtle.generateKey(
+      { name: "ECDSA", namedCurve: "P-256" },
+      true,
+      ["sign", "verify"]
+    );
+    // Retire the previous pair for in-transit decryption (audit round 12).
+    if (previous) {
+      retiredPrivateKeys.unshift(previous.privateKey);
+      while (retiredPrivateKeys.length > 2) retiredPrivateKeys.pop();
+    }
 
     const exported = await crypto.subtle.exportKey("spki", browserKeyPair.publicKey);
     browserPublicKeyBase64 = arrayBufferToBase64(exported);
@@ -91,6 +118,17 @@ export function isMeshSupported(): boolean {
     // Legacy bridges without the method: interface presence implies support.
     return true;
   }
+}
+
+/**
+ * Our own current ephemeral public key (SPKI base64). Mirror of the native
+ * bridge's getPublicKey(); useful for test vectors and for addressing
+ * ourselves where the bootstrap has not completed. Empty before initMesh.
+ */
+export function getLocalPublicKeyBase64(): string {
+  const bridge = getAndroidBridge();
+  if (bridge) return bridge.getPublicKey();
+  return browserPublicKeyBase64;
 }
 
 interface AndroidBridge {
@@ -196,6 +234,8 @@ interface EncryptedMessage {
   messageId?: string;
   type?: string;
   hopCount?: number;
+  /** ECDSA public key (SPKI) — browser fallback only; see the keypairs note. */
+  signatureKey?: string;
 }
 
 // ========================
@@ -207,7 +247,7 @@ async function browserEncrypt(
   plaintext: string
 ): Promise<EncryptedMessage | null> {
   try {
-    if (!browserKeyPair) return null;
+    if (!browserKeyPair || !browserSignKey) return null;
 
     // Import peer's public key
     const peerPubKey = await crypto.subtle.importKey(
@@ -249,6 +289,7 @@ async function browserEncrypt(
     // previously signed only "ciphertext + iv", a scheme mismatch that
     // produced signatures no native verifier would accept and vice versa.
     const exportedPub = await crypto.subtle.exportKey("spki", browserKeyPair.publicKey);
+    const exportedSignPub = await crypto.subtle.exportKey("spki", browserSignKey.publicKey);
     const messageId = generateId();
     const timestamp = Date.now();
     const nonce = Math.floor(Math.random() * 2 ** 31);
@@ -267,7 +308,7 @@ async function browserEncrypt(
     );
     const signature = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
-      browserKeyPair.privateKey,
+      browserSignKey.privateKey,
       canonical
     );
 
@@ -284,6 +325,7 @@ async function browserEncrypt(
       messageId,
       type: "report",
       hopCount: 0,
+      signatureKey: arrayBufferToBase64(exportedSignPub),
     };
   } catch (err) {
     console.error("[MeshBridge] Browser encrypt failed:", err);
@@ -298,15 +340,18 @@ async function browserDecrypt(
   try {
     if (!browserKeyPair) return null;
 
-    const pubKeyB64 = peerPublicKeyBase64 || encrypted.senderPublicKey;
+    // Signature verification uses the SENDER's ECDSA key — the fallback's
+    // self-consistent contract (see the keypairs note); native messages
+    // verify against senderPublicKey (same field they carry).
+    const verifyPubKeyB64 = encrypted.signatureKey || encrypted.senderPublicKey;
 
     // Import sender's public key
     const peerPubKey = await crypto.subtle.importKey(
       "spki",
-      base64ToArrayBuffer(pubKeyB64),
-      { name: "ECDH", namedCurve: "P-256" },
+      base64ToArrayBuffer(verifyPubKeyB64),
+      { name: "ECDSA", namedCurve: "P-256" },
       false,
-      []
+      ["verify"]
     );
 
     // Verify signature
@@ -344,29 +389,51 @@ async function browserDecrypt(
       return null;
     }
 
-    // Derive shared secret
-    const sharedBits = await crypto.subtle.deriveBits(
-      { name: "ECDH", public: peerPubKey },
-      browserKeyPair.privateKey,
-      256
-    );
-
-    const aesKey = await crypto.subtle.importKey(
-      "raw",
-      sharedBits,
-      { name: "AES-GCM" },
+    // Key agreement uses the sender's ECDH public key (senderPublicKey).
+    const senderEcdhPub = await crypto.subtle.importKey(
+      "spki",
+      base64ToArrayBuffer(encrypted.senderPublicKey),
+      { name: "ECDH", namedCurve: "P-256" },
       false,
-      ["decrypt"]
+      []
     );
 
-    // Decrypt
-    const decrypted = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: new Uint8Array(iv) },
-      aesKey,
-      ciphertext
-    );
+    // Decrypt with the CURRENT private key first, then each RETIRED one
+    // (audit round 12 — recipient-side rotation): a message encrypted to our
+    // previously-advertised key — in transit across the moment we rotated —
+    // stays decryptable. Wrong keys just fail ECDH/decrypt per attempt.
+    const candidates: CryptoKey[] = browserKeyPair
+      ? [browserKeyPair.privateKey, ...retiredPrivateKeys]
+      : [];
+    for (const candidate of candidates) {
+      try {
+        const sharedBits = await crypto.subtle.deriveBits(
+          { name: "ECDH", public: senderEcdhPub },
+          candidate,
+          256
+        );
 
-    return new TextDecoder().decode(decrypted);
+        const aesKey = await crypto.subtle.importKey(
+          "raw",
+          sharedBits,
+          { name: "AES-GCM" },
+          false,
+          ["decrypt"]
+        );
+
+        const decrypted = await crypto.subtle.decrypt(
+          { name: "AES-GCM", iv: new Uint8Array(iv) },
+          aesKey,
+          ciphertext
+        );
+
+        return new TextDecoder().decode(decrypted);
+      } catch {
+        // wrong key candidate — try the next one
+      }
+    }
+    console.warn("[MeshBridge] Decryption failed with all key candidates");
+    return null;
   } catch (err) {
     console.error("[MeshBridge] Browser decrypt failed:", err);
     return null;
@@ -556,13 +623,31 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
+function randomNonce(): number {
+  return Math.floor(Math.random() * 2 ** 31);
+}
+
+/**
+ * Canonical coordinate serialization — MUST be byte-identical to
+ * MeshWire.canonicalLatLng (audit round 12): micro-degrees, i.e.
+ * Math.round(value * 1e6), as a decimal string. Double.toString is NOT
+ * runtime-stable (JS String(0) = "0" vs native 0.0.toString() = "0.0"), so a
+ * browser-signed message would never verify on the native end. Math.round
+ * behaves identically on both runtimes, and micro-degree rounding also
+ * absorbs float accumulation noise (0.1+0.2 → 300000 on both).
+ */
+export function canonicalLatLng(value: number): string {
+  return String(Math.round(value * 1_000_000));
+}
+
 /**
  * Canonical signed metadata — byte-identical to MeshWire.buildSignedData
  * (audit round 11): each field is emitted as a 4-byte big-endian length
  * prefix followed by the UTF-8 bytes. Order MUST stay in sync with the
- * Kotlin implementation.
+ * Kotlin implementation. Exported for the cross-runtime verification tests
+ * (tests that pin the exact byte vectors on BOTH sides).
  */
-function buildSignedData(
+export function buildSignedData(
   ciphertext: Uint8Array,
   iv: Uint8Array,
   messageId: string,
@@ -586,8 +671,8 @@ function buildSignedData(
     encoder.encode(origPublicKey),
     encoder.encode(String(timestamp)),
     encoder.encode(String(nonce)),
-    encoder.encode(String(lat)),
-    encoder.encode(String(lng)),
+    encoder.encode(canonicalLatLng(lat)),
+    encoder.encode(canonicalLatLng(lng)),
   ];
   const out: number[] = [];
   for (const part of parts) {

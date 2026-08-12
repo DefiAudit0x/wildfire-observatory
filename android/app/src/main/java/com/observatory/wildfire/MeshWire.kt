@@ -146,17 +146,25 @@ object MeshWire {
                 String(body, Charsets.UTF_8)
             } else {
                 val inflater = Inflater()
-                inflater.setInput(body)
-                val out = ByteArrayOutputStream()
-                val buf = ByteArray(8192)
-                while (!inflater.finished()) {
-                    val len = inflater.inflate(buf)
-                    if (len == 0) return null // corrupt deflate stream
-                    out.write(buf, 0, len)
-                    if (out.size() > MAX_DECOMPRESSED_BODY_BYTES) return null // bomb guard
+                try {
+                    inflater.setInput(body)
+                    val out = ByteArrayOutputStream()
+                    val buf = ByteArray(8192)
+                    while (!inflater.finished()) {
+                        val len = inflater.inflate(buf)
+                        if (len == 0) return null // corrupt deflate stream
+                        out.write(buf, 0, len)
+                        if (out.size() > MAX_DECOMPRESSED_BODY_BYTES) return null // bomb guard
+                    }
+                    out.toString("UTF-8")
+                } finally {
+                    // Audit round 12: every early return above used to leak the
+                    // Inflater's native allocations (end() runs only after the
+                    // loop) — a peer feeding malformed/bomb frames could drive
+                    // unbounded inflater handles. The finally releases the
+                    // inflater on EVERY path, including return null.
+                    inflater.end()
                 }
-                inflater.end()
-                out.toString("UTF-8")
             }
         } catch (e: Exception) {
             null
@@ -180,10 +188,23 @@ object MeshWire {
         sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
 
     /**
+     * Canonical coordinate serialization (audit round 12): micro-degrees,
+     * i.e. round(value * 1e6) as a decimal string. This is the ONLY form the
+     * native runtime (Kotlin Math.round) and the browser fallback (JS
+     * Math.round) emit byte-identically for every Double. The previous
+     * Double.toString serialization was runtime-dependent — JS String(0) is
+     * "0" while Kotlin 0.0.toString() is "0.0", so a browser-signed message
+     * with zeroed coordinates could never verify against the native
+     * verifier. Micro-degrees also round away float accumulation noise
+     * (0.1+0.2 → 300000 on both runtimes).
+     */
+    fun canonicalLatLng(value: Double): String = Math.round(value * 1_000_000.0).toString()
+
+    /**
      * Canonical bytes signed by the origin: length-prefixed UTF-8 encoding of
      * every relay-invariant field, concatenated. Deterministic on both ends:
-     * Java's Double.toString is the shortest round-trip form, so a lat/lng
-     * parsed from the pipe frame and re-serialized yields the SAME bytes.
+     * coordinates use [canonicalLatLng] (micro-degrees — see above), strings
+     * are UTF-8, integers are decimal — no runtime-pinned formatting.
      * hopsLeft and the PoW fields are deliberately NOT signed (depth control
      * and spam work respectively — each has its own verification).
      */
@@ -210,8 +231,8 @@ object MeshWire {
         out.writeLengthPrefixed(origPublicKey.toByteArray(Charsets.UTF_8))
         out.writeLengthPrefixed(timestamp.toString().toByteArray(Charsets.UTF_8))
         out.writeLengthPrefixed(nonce.toString().toByteArray(Charsets.UTF_8))
-        out.writeLengthPrefixed(lat.toString().toByteArray(Charsets.UTF_8))
-        out.writeLengthPrefixed(lng.toString().toByteArray(Charsets.UTF_8))
+        out.writeLengthPrefixed(canonicalLatLng(lat).toByteArray(Charsets.UTF_8))
+        out.writeLengthPrefixed(canonicalLatLng(lng).toByteArray(Charsets.UTF_8))
         return out.toByteArray()
     }
 

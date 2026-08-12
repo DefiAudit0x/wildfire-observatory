@@ -6,8 +6,22 @@ if (!(globalThis as any).crypto?.subtle) {
   (globalThis as any).crypto = webcrypto;
 }
 
-const { solvePoW, verifyPoW } = await import("../src/utils/meshBridge.js");
+const {
+  solvePoW,
+  verifyPoW,
+  canonicalLatLng,
+  buildSignedData,
+  initMesh,
+  getLocalPublicKeyBase64,
+  encryptForPeer,
+  decryptFromPeer,
+} = await import("../src/utils/meshBridge.js");
 const { buildRelayedPayload } = await import("../src/lib/meshRelay.js");
+
+const bytesToHex = (b: Uint8Array): string =>
+  Array.from(b)
+    .map((x) => x.toString(16).padStart(2, "0").toUpperCase())
+    .join("");
 
 describe("mesh PoW (browser fallback) — 32-bit window semantics", () => {
   it("solvePoW(…, 8) verifies with the same difficulty", async () => {
@@ -29,6 +43,73 @@ describe("mesh PoW (browser fallback) — 32-bit window semantics", () => {
     await expect(solvePoW("pow-test-prefix-4", 0)).resolves.toBe(-1);
     await expect(solvePoW("pow-test-prefix-4", 32)).resolves.toBe(-1);
     await expect(verifyPoW("pow-test-prefix-4", 123, 0)).resolves.toBe(false);
+  });
+});
+
+describe("canonical signed metadata — cross-runtime byte contract (audit round 12)", () => {
+  it("canonicalLatLng emits micro-degrees identical to Kotlin", () => {
+    expect(canonicalLatLng(0)).toBe("0");
+    expect(canonicalLatLng(36.75)).toBe("36750000");
+    expect(canonicalLatLng(-1.2345678)).toBe("-1234568");
+    // The KILLER vector: 0.1+0.2 in JS. String(0.30000000000000004) would
+    // produce different digits than native Double.toString — micro-degree
+    // rounding makes both sides emit "300000".
+    expect(canonicalLatLng(0.1 + 0.2)).toBe("300000");
+  });
+
+  it("buildSignedData matches the pinned Kotlin byte vector", () => {
+    const bytes = buildSignedData(
+      new Uint8Array(0),
+      new Uint8Array(0),
+      "m",
+      "t",
+      0,
+      "e",
+      "k",
+      123456789,
+      42,
+      0.1 + 0.2,
+      -1.2345678
+    );
+    const expected = (
+      "00000000" + // ciphertext (empty)
+      "00000000" + // iv (empty)
+      "000000016D" + // "m"
+      "0000000174" + // "t"
+      "0000000130" + // "0"
+      "0000000165" + // "e"
+      "000000016B" + // "k"
+      "00000009313233343536373839" + // "123456789"
+      "000000023432" + // "42"
+      "00000006333030303030" + // "300000"
+      "000000082D31323334353638" // "-1234568"
+    );
+    expect(bytesToHex(bytes)).toBe(expected);
+    // Same expectation is pinned in MeshWireTest.canonicalSignedDataVectorsArePinnedForTheBrowserMirror
+  });
+});
+
+describe("recipient-side key rotation (audit round 12)", () => {
+  it("decrypts a message encrypted BEFORE our ephemeral key rotated", async () => {
+    // A encrypts for B(K1); B rotates to K2; B must still decrypt the old
+    // message (retained retired keys) — the decrypt-or-deterministic-requeue
+    // contract the audit demanded.
+    await initMesh();
+    const plaintext = "حريق في غابة الاختبار قبل التدوير";
+    // Browser-fallback "peer" is our own current key (mirrors the native
+    // bridge: encrypt to the advertised key of the peer we address).
+    const myKey = getLocalPublicKeyBase64();
+    expect(myKey.length).toBeGreaterThan(0);
+    const encrypted = await encryptForPeer(myKey, plaintext, 36.55, 8.05);
+    expect(encrypted).not.toBeNull();
+
+    // Rotate: a second initMesh() retires the old key pair.
+    await initMesh();
+
+    // The message encrypted under the OLD generation must still decrypt:
+    // decryptFromPeer tries the current key first, then each retired key.
+    const decrypted = await decryptFromPeer(encrypted!);
+    expect(decrypted).toBe(plaintext);
   });
 });
 
