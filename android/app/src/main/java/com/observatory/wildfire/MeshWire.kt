@@ -41,8 +41,27 @@ object MeshWire {
     private const val FLAG_DEFLATE: Byte = 0
     private const val FLAG_RAW: Byte = 1
 
-    /** Sanity ceiling for a single decoded frame (defense against absurd memory use). */
-    private const val MAX_FRAME_BYTES = 128 * 1024
+    /** Sanity ceiling for the COMPRESSED body of a single frame (defense
+     *  against absurd memory use BEFORE inflation). Audit: the old
+     *  MAX_FRAME_BYTES name implied it capped the DECODED frame, but it only
+     *  bounded the compressed input — a tiny deflate bomb could inflate to
+     *  unbounded output. The DECOMPRESSED side is capped by
+     *  MAX_DECOMPRESSED_BODY_BYTES enforced DURING inflation (not after —
+     *  allocation happens inside the loop). */
+    private const val MAX_COMPRESSED_BODY_BYTES = 128 * 1024
+    private const val MAX_DECOMPRESSED_BODY_BYTES = 256 * 1024
+
+    // Individual field ceilings (audit): besides the whole-frame caps, every
+    // variable-length field is bounded so a hostile frame cannot carry a
+    // multi-megabyte string in a field the rest of the pipeline treats as a
+    // small identifier. Generators in this codebase stay far below these.
+    private const val MAX_MESSAGE_ID_LEN = 64
+    private const val MAX_TYPE_LEN = 32
+    private const val MAX_EPHEMERAL_ID_LEN = 64
+    private const val MAX_PUBLIC_KEY_LEN = 512
+    private const val MAX_IV_LEN = 64
+    private const val MAX_SIGNATURE_LEN = 512
+    private const val MAX_PAYLOAD_B64_LEN = MAX_DECOMPRESSED_BODY_BYTES * 4 / 3 + 16
 
     /**
      * The canonical 16-field mesh frame. hopCount is 0 for EVERY valid frame
@@ -85,7 +104,15 @@ object MeshWire {
             while (!deflater.finished()) {
                 if (off == buf.size) buf = buf.copyOf(buf.size * 2)
                 val len = deflater.deflate(buf, off, buf.size - off)
-                if (len == 0) break // defensive: prevent an infinite loop
+                if (len == 0) {
+                    // Audit: a stalled deflater used to break out of the loop,
+                    // emitting a TRUNCATED deflate stream that the receiver
+                    // can never inflate — and the RAW fallback never ran,
+                    // because nothing threw. Treat it as a compression failure
+                    // so the payload goes out under FLAG_RAW instead.
+                    deflater.end()
+                    throw IllegalStateException("Deflater stalled with output pending")
+                }
                 off += len
             }
             deflater.end()
@@ -99,6 +126,10 @@ object MeshWire {
      * Decode a wire frame: requires the magic marker and the flag byte; a
      * deflate body that fails to inflate is NOT silently re-read as raw.
      * Returns null for anything that is not a well-formed frame.
+     *
+     * Decompression bomb defense (audit): the inflater output is capped
+     * DURING the loop — output is bounded by MAX_DECOMPRESSED_BODY_BYTES no
+     * matter how small the compressed input was.
      */
     fun decompress(data: ByteArray): String? {
         if (data.size < COMPRESS_MAGIC.size + 1) return null
@@ -108,19 +139,21 @@ object MeshWire {
         val raw = data[COMPRESS_MAGIC.size] == FLAG_RAW
         if (data[COMPRESS_MAGIC.size] != FLAG_DEFLATE && !raw) return null
         val body = data.copyOfRange(COMPRESS_MAGIC.size + 1, data.size)
-        if (body.size > MAX_FRAME_BYTES) return null
+        if (body.size > MAX_COMPRESSED_BODY_BYTES) return null
         return try {
             if (raw) {
+                if (body.size > MAX_DECOMPRESSED_BODY_BYTES) return null
                 String(body, Charsets.UTF_8)
             } else {
                 val inflater = Inflater()
                 inflater.setInput(body)
-                val out = ByteArrayOutputStream(body.size * 2)
+                val out = ByteArrayOutputStream()
                 val buf = ByteArray(8192)
                 while (!inflater.finished()) {
                     val len = inflater.inflate(buf)
                     if (len == 0) return null // corrupt deflate stream
                     out.write(buf, 0, len)
+                    if (out.size() > MAX_DECOMPRESSED_BODY_BYTES) return null // bomb guard
                 }
                 inflater.end()
                 out.toString("UTF-8")
@@ -215,6 +248,23 @@ object MeshWire {
                 iv.isBlank() || origEphemeralId.isBlank() || origPublicKey.isBlank() ||
                 signature.isBlank()
             ) return null
+            // Per-field ceilings (audit): see the MAX_*_LEN constants above.
+            if (messageId.length > MAX_MESSAGE_ID_LEN ||
+                type.length > MAX_TYPE_LEN ||
+                origEphemeralId.length > MAX_EPHEMERAL_ID_LEN ||
+                origPublicKey.length > MAX_PUBLIC_KEY_LEN ||
+                iv.length > MAX_IV_LEN ||
+                signature.length > MAX_SIGNATURE_LEN ||
+                payloadB64.length > MAX_PAYLOAD_B64_LEN
+            ) return null
+            // Pipe-injection guard (audit): the wire format is pipe-joined
+            // and field values MUST NOT carry the delimiter themselves — a
+            // field containing '|' would shift every following field and
+            // change the frame's meaning. Such a frame is rejected outright.
+            if (messageId.contains('|') || type.contains('|') ||
+                origEphemeralId.contains('|') || origPublicKey.contains('|') ||
+                payloadB64.contains('|') || iv.contains('|') || signature.contains('|')
+            ) return null
             if (hopCount != 0) return null
             if (hopsLeft < 0 || hopsLeft > MAX_HOPS) return null
             if (!lat.isFinite() || !lng.isFinite() ||
@@ -244,9 +294,18 @@ object MeshWire {
         }
     }
 
-    /** Serialize a frame back to its pipe-joined string form. */
+    /**
+     * Serialize a frame back to its pipe-joined string form. Audit: the
+     * serializer does not try to escape pipes inside fields — it REJECTS
+     * them (an escaped encoding would silently change a frame's meaning to
+     * parsers without the same rule; the parse side likewise rejects pipe-
+     * carrying fields, see parseFrame). Our own generators never produce
+     * pipes (UUIDs, whitelisted types, base64), so this is a guard against
+     * a future internally-generated field carrying the delimiter — the
+     * caller must catch it and drop the frame rather than emit a corrupt one.
+     */
     fun frameToJson(frame: Frame): String {
-        return listOf(
+        val fields = listOf(
             frame.protocolVersion.toString(),
             frame.messageId,
             frame.type,
@@ -263,7 +322,11 @@ object MeshWire {
             frame.powNonce.toString(),
             frame.powDifficulty.toString(),
             frame.hopsLeft.toString()
-        ).joinToString("|")
+        )
+        if (fields.any { it.contains('|') }) {
+            throw IllegalArgumentException("frame field contains the pipe delimiter")
+        }
+        return fields.joinToString("|")
     }
 
     /**
@@ -278,19 +341,40 @@ object MeshWire {
         private const val MAX_DIFFICULTY = 31
         const val MAX_ITERATIONS = 5_000_000
 
+        /**
+         * Canonical wire challenge string (audit): the old concatenation
+         * "$messageId$origEphemeralId" was ambiguous across field boundaries
+         * ("ab"+"12" and "ab1"+"2" collide as "ab12"), so an attacker could
+         * reuse one solved nonce for a different (messageId, origin) pair
+         * that concatenates identically. Length-prefixing removes the
+         * ambiguity; every hop constructs the challenge with this helper so
+         * solver and verifier always agree.
+         */
+        fun wirePrefix(messageId: String, ephemeralId: String): String =
+            "${messageId.length}:$messageId:${ephemeralId.length}:$ephemeralId"
+
         fun target(difficulty: Int): Long {
-            val d = difficulty.coerceIn(1, MAX_DIFFICULTY)
-            return 1L shl (32 - d)
+            // Audit: previously coerced silently via coerceIn — a caller
+            // asking for difficulty 0 or 64 got an unexpected band. Fail
+            // loudly on out-of-band input instead.
+            require(difficulty in 1..MAX_DIFFICULTY) { "difficulty out of band: $difficulty" }
+            return 1L shl (32 - difficulty)
         }
 
         /**
-         * Returns the nonce, or NULL when the iteration budget is exhausted.
+         * Returns the nonce, or NULL when the iteration budget is exhausted
+         * OR the difficulty is out of band (an out-of-band challenge is
+         * unsolvable by definition — the network rejects those frames).
          * The budget is a hard cap against pathological inputs — a null
          * return lets the caller handle the failure explicitly instead of
          * catching a thrown SecurityException mid-broadcast.
          */
         fun solve(prefix: String, difficulty: Int = 8): Int? {
-            val t = target(difficulty)
+            val t = try {
+                target(difficulty)
+            } catch (e: IllegalArgumentException) {
+                return null
+            }
             var nonce = 0
             while (nonce < MAX_ITERATIONS) {
                 val value = prefixValue(prefix, nonce)
@@ -301,11 +385,22 @@ object MeshWire {
         }
 
         fun verify(prefix: String, nonce: Int, difficulty: Int = 8): Boolean {
-            return prefixValue(prefix, nonce) < target(difficulty)
+            val t = try {
+                target(difficulty)
+            } catch (e: IllegalArgumentException) {
+                return false
+            }
+            return prefixValue(prefix, nonce) < t
         }
 
         private fun prefixValue(prefix: String, nonce: Int): Long {
-            val hash = sha256Hex("$prefix$nonce")
+            // Nonce framing (audit): "$prefix$nonce" was ambiguous across the
+            // prefix/nonce boundary — ("a", 12) and ("a1", 2) hash identically.
+            // Length-prefixing the prefix makes each (prefix, nonce) pair hash
+            // apart, so a nonce solved for one prefix cannot be replayed
+            // against a colliding one.
+            val framed = "${prefix.length}:$prefix:$nonce"
+            val hash = sha256Hex(framed)
             return hash.take(8).fold(0L) { acc, c -> (acc shl 4) + c.digitToInt(16) }
         }
     }

@@ -72,6 +72,96 @@ class MeshWireTest {
         assertNull(MeshWire.decompress(badFlag))
     }
 
+    // ---------- decompression bomb defense (audit round 11) ----------
+
+    @Test
+    fun deflateBombCannotBlowPastDecompressedCap() {
+        // A tiny deflate stream that inflates to ~300KB must be rejected: the
+        // old code capped the COMPRESSED body only, letting a compressed bomb
+        // allocate unbounded output. Build a real ~300KB air-payload and
+        // compress it manually (MeshWire.compress is fine too, but the bomb
+        // shape — small on the wire, huge after inflate — needs the manual
+        // deflate).
+        val air = ByteArray(300 * 1024) // zeros compress extremely well
+        val deflater = java.util.zip.Deflater(java.util.zip.Deflater.BEST_COMPRESSION)
+        deflater.setInput(air)
+        deflater.finish()
+        val outBuf = ByteArray(air.size + 1024)
+        val n = deflater.deflate(outBuf)
+        deflater.end()
+        val bomb = byteArrayOf(0x4D, 0x43, 0x00) + outBuf.copyOf(n)
+        // Compressed size is tiny — the old MAX_COMPRESSED_BODY_BYTES gate
+        // would pass it; the decompressed cap must reject it.
+        assertTrue(bomb.size < 2 * 1024)
+        assertNull(MeshWire.decompress(bomb))
+    }
+
+    @Test
+    fun oversizeRawBodyIsRejected() {
+        // 300KB of raw (non-deflate) payload is over the decompressed cap.
+        val body = ByteArray(300 * 1024) { 0x61 }
+        val frame = byteArrayOf(0x4D, 0x43, 0x01) + body
+        assertNull(MeshWire.decompress(frame))
+    }
+
+    // ---------- per-field length ceilings (audit round 11) ----------
+
+    @Test
+    fun oversizedFieldsAreRejected() {
+        // 65-char messageId (limit 64)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(messageId = "m".repeat(65)))))
+        // 33-char type (limit 32)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(type = "t".repeat(33)))))
+        // 65-char ephemeral id (limit 64)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(origEphemeralId = "e".repeat(65)))))
+        // 513-char public key (limit 512)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(origPublicKey = "k".repeat(513)))))
+        // 513-char signature (limit 512)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(signature = "s".repeat(513)))))
+        // 65-char iv (limit 64)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(iv = "i".repeat(65)))))
+        // 128KB+ payload b64 — allowed ceiling is MAX_DECOMPRESSED_BODY_BYTES*4/3
+        val bigPayload = "A".repeat(256 * 1024 * 4 / 3 + 17)
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(payloadB64 = bigPayload))))
+        // Right at the boundary must be accepted (frame-level, not JSON-level)
+        val atBoundary = "A".repeat(256 * 1024 * 4 / 3)
+        assertNotNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(payloadB64 = atBoundary))))
+    }
+
+    // ---------- pipe-delimiter integrity (audit round 11) ----------
+
+    @Test
+    fun pipeCarryingFieldsAreRejectedOnParse() {
+        // A '|' in any field shifts every following field: the frame must be
+        // rejected, never silently re-interpreted. The hostile frame is built
+        // by hand — a remote peer never goes through frameToJson, it sends
+        // the raw wire string.
+        fun hostile(index: Int, value: String): String {
+            val parts = MeshWire.frameToJson(sampleFrame()).split("|").toMutableList()
+            parts[index] = value
+            return parts.joinToString("|")
+        }
+        // messageId=1, type=2, payloadB64=3, iv=4, origEphemeralId=6,
+        // origPublicKey=7, signature=9
+        assertNull(MeshWire.parseFrame(hostile(1, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(2, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(3, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(4, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(6, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(7, "a|b")))
+        assertNull(MeshWire.parseFrame(hostile(9, "a|b")))
+    }
+
+    @Test
+    fun frameToJsonThrowsOnPipeInAnyField() {
+        try {
+            MeshWire.frameToJson(sampleFrame().copy(messageId = "a|b"))
+            fail("frameToJson must reject pipe-carrying fields")
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+
     // ---------- frame schema gates ----------
 
     @Test
@@ -134,9 +224,9 @@ class MeshWireTest {
         // BITS of the 32-bit prefix are zero (≈1/256), NOT "8 hex characters"
         // (a much weaker requirement the old comment described). A value in
         // [0x01000000, 0x0FFFFFFF] — which WOULD satisfy "value < 16^8" —
-        // must fail.
-        val prefix = MeshWire.sha256Hex("x")
-        val first8Hex = prefix.take(8)
+        // must fail. The challenge uses the canonical framed form
+        // "len:prefix:nonce" (audit round 11).
+        val first8Hex = MeshWire.sha256Hex("1:x:0").take(8)
         val value = first8Hex.fold(0L) { acc, c -> (acc shl 4) + c.digitToInt(16) }
         assertEquals(1L shl 24, MeshWire.ProofOfWork.target(8).toLong())
         assertEquals(value < MeshWire.ProofOfWork.target(8), MeshWire.ProofOfWork.verify("x", 0, 8))
@@ -144,13 +234,59 @@ class MeshWireTest {
 
     @Test
     fun outOfBandDifficultyIsRejectedByCallersTargetBand() {
-        // The verify() target clamps, but the NETWORK band check lives in the
-        // service (PO_W_DIFFICULTY ceiling) — here we assert the target math
-        // is sane at the band edges.
+        // target() is strict now (audit round 11): out-of-band difficulty
+        // throws, and solve/verify translate that into null/false instead of
+        // silently clamping to a different band.
         assertTrue(MeshWire.ProofOfWork.target(1) > MeshWire.ProofOfWork.target(8))
         // 1 shl (32 - 31) = 2: at d=31 the value must stay under 2 (top 31
         // bits zero) — the strongest band the 32-bit prefix allows.
         assertEquals(2L, MeshWire.ProofOfWork.target(31).toLong())
+        try {
+            MeshWire.ProofOfWork.target(0)
+            fail("target(0) must throw")
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+        try {
+            MeshWire.ProofOfWork.target(32)
+            fail("target(32) must throw")
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+        assertNull(MeshWire.ProofOfWork.solve("x", 0))
+        assertFalse(MeshWire.ProofOfWork.verify("x", 0, 0))
+        assertFalse(MeshWire.ProofOfWork.verify("x", 0, 32))
+    }
+
+    // ---------- canonical PoW challenge framing (audit round 11) ----------
+
+    @Test
+    fun wirePrefixIsCanonicalAcrossFieldBoundaries() {
+        // "ab"+"12" and "ab1"+"2" concatenate identically ("ab12") — the
+        // length-prefixed form keeps them apart, so a nonce solved for one
+        // (messageId, origin) pair cannot be replayed against a colliding one.
+        assertNotEquals(
+            MeshWire.ProofOfWork.wirePrefix("ab", "12"),
+            MeshWire.ProofOfWork.wirePrefix("ab1", "2")
+        )
+        assertEquals(
+            MeshWire.ProofOfWork.wirePrefix("ab", "12"),
+            MeshWire.ProofOfWork.wirePrefix("ab", "12")
+        )
+    }
+
+    @Test
+    fun solvedNonceDoesNotVerifyAgainstCollidingPrefix() {
+        // Solve for ("ab", "12") and assert the nonce does NOT satisfy the
+        // colliding ("ab1", "2") challenge. Framing makes these hash apart;
+        // with the old naive concatenation both prefixes were "ab12" and the
+        // nonce verified for both.
+        val prefixA = MeshWire.ProofOfWork.wirePrefix("ab", "12")
+        val prefixB = MeshWire.ProofOfWork.wirePrefix("ab1", "2")
+        val nonce = MeshWire.ProofOfWork.solve(prefixA, 8)
+        assertNotNull(nonce)
+        assertTrue(MeshWire.ProofOfWork.verify(prefixA, nonce!!, 8))
+        assertFalse(MeshWire.ProofOfWork.verify(prefixB, nonce, 8))
     }
 
     // ---------- canonical signed metadata ----------

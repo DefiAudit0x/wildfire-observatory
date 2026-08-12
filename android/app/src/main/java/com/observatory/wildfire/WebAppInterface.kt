@@ -1,6 +1,5 @@
 package com.observatory.wildfire
 
-import android.util.Base64
 import android.webkit.JavascriptInterface
 import org.json.JSONArray
 import org.json.JSONObject
@@ -101,9 +100,12 @@ class WebAppInterface(
      */
     @JavascriptInterface
     fun broadcastMessage(plaintext: String, type: String, lat: Double, lng: Double) {
-        if (isTrustedOrigin()) {
-            meshService?.broadcastMessage(plaintext, type, lat, lng)
-        }
+        if (!isTrustedOrigin()) return
+        // Type whitelist (audit round 11): the type travels pipe-joined on the
+        // wire; arbitrary strings could corrupt framing (defense-in-depth —
+        // parseFrame now rejects pipes too) and would muddy relay routing.
+        if (type !in setOf(MeshService.MESSAGE_TYPE_REPORT, MeshService.MESSAGE_TYPE_ECHO, MeshService.MESSAGE_TYPE_REPUTATION)) return
+        meshService?.broadcastMessage(plaintext, type, lat, lng)
     }
 
     /**
@@ -221,17 +223,5 @@ class WebAppInterface(
     fun verifyPoW(prefix: String, nonce: Int, difficulty: Int): Boolean {
         if (!isTrustedOrigin()) return false
         return MeshWire.ProofOfWork.verify(prefix, nonce, difficulty)
-    }
-
-    /**
-     * Sign arbitrary data with the current ephemeral key (ECDSA P-256).
-     * @param dataBase64 Data to sign (base64 encoded)
-     * @return Base64-encoded signature, or empty string when not on a trusted origin
-     */
-    @JavascriptInterface
-    fun signData(dataBase64: String): String {
-        if (!isTrustedOrigin()) return ""
-        val data = Base64.decode(dataBase64, Base64.NO_WRAP)
-        return Base64.encodeToString(CryptoEngine.signWithEphemeralKey(data), Base64.NO_WRAP)
     }
 }

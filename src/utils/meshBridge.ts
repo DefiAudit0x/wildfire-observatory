@@ -105,7 +105,6 @@ interface AndroidBridge {
   getPeerReputation(endpointId: string): number;
   solvePoW(prefix: string, difficulty: number): number;
   verifyPoW(prefix: string, nonce: number, difficulty: number): boolean;
-  signData(dataBase64: string): string;
 }
 
 // ========================
@@ -194,6 +193,9 @@ interface EncryptedMessage {
   lat: number;
   lng: number;
   nonce: number;
+  messageId?: string;
+  type?: string;
+  hopCount?: number;
 }
 
 // ========================
@@ -241,13 +243,32 @@ async function browserEncrypt(
       encoded
     );
 
-    // Sign with ephemeral key
+    // Sign the CANONICAL signed metadata (audit round 11): the native
+    // contract (MeshWire.buildSignedData) covers the length-prefixed
+    // ciphertext, iv AND every relay-invariant field — the browser fallback
+    // previously signed only "ciphertext + iv", a scheme mismatch that
+    // produced signatures no native verifier would accept and vice versa.
     const exportedPub = await crypto.subtle.exportKey("spki", browserKeyPair.publicKey);
-    const signData = new Uint8Array([...new Uint8Array(ciphertext), ...iv]);
+    const messageId = generateId();
+    const timestamp = Date.now();
+    const nonce = Math.floor(Math.random() * 2 ** 31);
+    const canonical = buildSignedData(
+      new Uint8Array(ciphertext),
+      new Uint8Array(iv),
+      messageId,
+      "report",
+      0,
+      browserEphemeralId,
+      arrayBufferToBase64(exportedPub),
+      timestamp,
+      nonce,
+      0,
+      0
+    );
     const signature = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
       browserKeyPair.privateKey,
-      signData
+      canonical
     );
 
     return {
@@ -256,10 +277,13 @@ async function browserEncrypt(
       signature: arrayBufferToBase64(signature),
       ephemeralId: browserEphemeralId,
       senderPublicKey: arrayBufferToBase64(exportedPub),
-      timestamp: Date.now(),
+      timestamp,
       lat: 0,
       lng: 0,
-      nonce: Math.floor(Math.random() * 2 ** 31),
+      nonce,
+      messageId,
+      type: "report",
+      hopCount: 0,
     };
   } catch (err) {
     console.error("[MeshBridge] Browser encrypt failed:", err);
@@ -290,13 +314,29 @@ async function browserDecrypt(
     const iv = base64ToArrayBuffer(encrypted.iv);
     const signature = base64ToArrayBuffer(encrypted.signature);
 
-    const signData = new Uint8Array([...new Uint8Array(ciphertext), ...new Uint8Array(iv)]);
+    // Verify signature over the CANONICAL metadata (audit round 11): mirrors
+    // the native MeshWire.buildSignedData — ciphertext + iv + every
+    // relay-invariant field, length-prefixed. The old ciphertext+iv-only
+    // verification would reject signatures produced by native peers.
+    const canonical = buildSignedData(
+      new Uint8Array(ciphertext),
+      new Uint8Array(iv),
+      encrypted.messageId || "",
+      encrypted.type || "",
+      0,
+      encrypted.ephemeralId,
+      encrypted.senderPublicKey,
+      encrypted.timestamp,
+      encrypted.nonce || 0,
+      encrypted.lat || 0,
+      encrypted.lng || 0
+    );
 
     const valid = await crypto.subtle.verify(
       { name: "ECDSA", hash: "SHA-256" },
       peerPubKey,
       signature,
-      signData
+      canonical
     );
 
     if (!valid) {
@@ -441,26 +481,30 @@ export async function solvePoW(prefix: string, difficulty: number = 8): Promise<
   const bridge = getAndroidBridge();
   if (bridge) return bridge.solvePoW(prefix, difficulty);
 
-  // Browser fallback — MUST match CryptoEngine.kt semantics exactly:
-  // compare the first 8 hex chars (32 bits) against 2^(32-difficulty).
-  // (Comparing 64 bits against a 256-bit target would pass ~always.)
-  const d = Math.min(Math.max(Math.floor(difficulty), 1), 31);
-  const target = BigInt(1) << BigInt(32 - d);
+  // Browser fallback — MUST match CryptoEngine.kt / MeshWire.ProofOfWork
+  // semantics exactly: length-prefixed challenge framing (the naive
+  // "${prefix}${nonce}" concatenation was ambiguous across the prefix/nonce
+  // boundary) and the top 8 hex chars (32 bits) compared against
+  // 2^(32-difficulty). (Comparing 64 bits against a 256-bit target would
+  // pass ~always.)
   const encoder = new TextEncoder();
   const MAX_ITERATIONS = 5_000_000;
 
+  const solveTarget = difficultyTarget(difficulty);
+  if (solveTarget === null) return -1; // out-of-band difficulty: unsolvable
+
   let nonce = 0;
   while (nonce < MAX_ITERATIONS) {
-    const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`${prefix}${nonce}`));
+    const hash = await crypto.subtle.digest("SHA-256", encoder.encode(powChallenge(prefix, nonce)));
     const hashHex = Array.from(new Uint8Array(hash))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     const value = BigInt("0x" + hashHex.substring(0, 8));
 
-    if (value < target) return nonce;
+    if (value < solveTarget) return nonce;
     nonce++;
   }
-  throw new Error("Proof-of-work exceeded iteration budget");
+  return -1;
 }
 
 export async function verifyPoW(
@@ -471,15 +515,32 @@ export async function verifyPoW(
   const bridge = getAndroidBridge();
   if (bridge) return bridge.verifyPoW(prefix, nonce, difficulty);
 
-  const d = Math.min(Math.max(Math.floor(difficulty), 1), 31);
+  const target = difficultyTarget(difficulty);
+  if (target === null) return false;
   const encoder = new TextEncoder();
-  const hash = await crypto.subtle.digest("SHA-256", encoder.encode(`${prefix}${nonce}`));
+  const hash = await crypto.subtle.digest("SHA-256", encoder.encode(powChallenge(prefix, nonce)));
   const hashHex = Array.from(new Uint8Array(hash))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
   const value = BigInt("0x" + hashHex.substring(0, 8));
-  const target = BigInt(1) << BigInt(32 - d);
   return value < target;
+}
+
+/**
+ * Canonical PoW challenge framing (audit round 11): matches
+ * MeshWire.ProofOfWork.prefixValue — the naive "$prefix$nonce" let colliding
+ * (prefix, nonce) pairs ("a", 12) vs ("a1", 2) hash identically; the
+ * length-prefix makes each pair hash apart.
+ */
+function powChallenge(prefix: string, nonce: number): string {
+  return `${prefix.length}:${prefix}:${nonce}`;
+}
+
+/** Difficulty target, or null when out of band (audit: no silent clamping). */
+function difficultyTarget(difficulty: number): bigint | null {
+  const d = Math.floor(difficulty);
+  if (d < 1 || d > 31) return null;
+  return BigInt(1) << BigInt(32 - d);
 }
 
 // ========================
@@ -493,6 +554,52 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
+}
+
+/**
+ * Canonical signed metadata — byte-identical to MeshWire.buildSignedData
+ * (audit round 11): each field is emitted as a 4-byte big-endian length
+ * prefix followed by the UTF-8 bytes. Order MUST stay in sync with the
+ * Kotlin implementation.
+ */
+function buildSignedData(
+  ciphertext: Uint8Array,
+  iv: Uint8Array,
+  messageId: string,
+  type: string,
+  hopCount: number,
+  origEphemeralId: string,
+  origPublicKey: string,
+  timestamp: number,
+  nonce: number,
+  lat: number,
+  lng: number
+): Uint8Array {
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [
+    ciphertext,
+    iv,
+    encoder.encode(messageId),
+    encoder.encode(type),
+    encoder.encode(String(hopCount)),
+    encoder.encode(origEphemeralId),
+    encoder.encode(origPublicKey),
+    encoder.encode(String(timestamp)),
+    encoder.encode(String(nonce)),
+    encoder.encode(String(lat)),
+    encoder.encode(String(lng)),
+  ];
+  const out: number[] = [];
+  for (const part of parts) {
+    out.push(
+      (part.length >>> 24) & 0xff,
+      (part.length >>> 16) & 0xff,
+      (part.length >>> 8) & 0xff,
+      part.length & 0xff
+    );
+    for (let i = 0; i < part.length; i++) out.push(part[i]);
+  }
+  return new Uint8Array(out);
 }
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {

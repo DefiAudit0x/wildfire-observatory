@@ -25,10 +25,10 @@ describe("mesh PoW (browser fallback) — 32-bit window semantics", () => {
     expect(await verifyPoW("pow-test-prefix-3", nonce, 8)).toBe(true);
   });
 
-  it("clamps difficulty into 1..31 (never a no-op)", async () => {
-    const nonce = await solvePoW("pow-test-prefix-4", 0);
-    expect(nonce).toBeGreaterThanOrEqual(0);
-    expect(await verifyPoW("pow-test-prefix-4", nonce, 1)).toBe(true);
+  it("rejects out-of-band difficulty (never a silent clamp)", async () => {
+    await expect(solvePoW("pow-test-prefix-4", 0)).resolves.toBe(-1);
+    await expect(solvePoW("pow-test-prefix-4", 32)).resolves.toBe(-1);
+    await expect(verifyPoW("pow-test-prefix-4", 123, 0)).resolves.toBe(false);
   });
 });
 

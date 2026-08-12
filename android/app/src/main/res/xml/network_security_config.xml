@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security policy (audit round 11): the app is HTTPS-only in
+  production (wildfire-observatory-production.up.railway.app — the WebView
+  and bridge enforce that at the URL level too). The blanket
+  usesCleartextTraffic="true" was replaced with this policy: cleartext is
+  permitted ONLY to the local/emulator loopback hosts used for local
+  development, everything else stays HTTPS-only.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

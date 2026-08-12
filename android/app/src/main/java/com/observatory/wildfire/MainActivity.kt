@@ -50,6 +50,20 @@ class MainActivity : AppCompatActivity() {
     private var meshService: MeshService? = null
     private var meshBound = false
 
+    // Audit round 11: the message listener added on bind is KEPT as a field so
+    // onDestroy can remove THAT EXACT instance. The old code called
+    // removeMessageListener { } — a fresh lambda that could never match the
+    // registered one — leaking the listener (and its activity reference) on
+    // every unbind.
+    private var meshMessageListener: ((String) -> Unit)? = null
+
+    // Audit round 11: the connectivity callback is kept as a field and
+    // unregistered in onDestroy — the old code registered a fresh anonymous
+    // callback per activity instance and never unregistered it, stacking a
+    // duplicate network monitor (and duplicate 'online'/'offline' events)
+    // per activity recreation.
+    private var connectivityCallback: ConnectivityManager.NetworkCallback? = null
+
     /**
      * STABLE device identity (SharedPreferences-backed): survives app restarts
      * and is distinct from the rotating ephemeral mesh key. "Device ID" means
@@ -70,7 +84,7 @@ class MainActivity : AppCompatActivity() {
             meshBound = true
 
             // Forward received mesh messages to WebView (sanitized JSON string)
-            meshService?.addMessageListener { message ->
+            val listener: (String) -> Unit = { message ->
                 runOnUiThread {
                     val messageJs = JSONObject.quote(message)
                     webView.evaluateJavascript(
@@ -78,6 +92,8 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
             }
+            meshMessageListener = listener
+            meshService?.addMessageListener(listener)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -101,9 +117,22 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         if (meshBound) {
-            meshService?.removeMessageListener { }
+            meshMessageListener?.let { meshService?.removeMessageListener(it) }
+            meshMessageListener = null
             unbindService(meshConnection)
         }
+        // Audit round 11: unregister the network monitor — the old code left
+        // it registered for the lifetime of the process, stacking duplicates
+        // per activity recreation.
+        connectivityCallback?.let { callback ->
+            try {
+                (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(callback)
+            } catch (e: Exception) {
+                // Already unregistered or never registered
+            }
+        }
+        connectivityCallback = null
         super.onDestroy()
     }
 
@@ -132,7 +161,6 @@ class MainActivity : AppCompatActivity() {
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
-            databaseEnabled = true
             cacheMode = WebSettings.LOAD_DEFAULT
             loadWithOverviewMode = true
             useWideViewPort = true
@@ -283,6 +311,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun registerConnectivityMonitor() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        if (connectivityCallback != null) return // only one monitor per activity
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 runOnUiThread {
@@ -300,7 +329,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-
+        connectivityCallback = callback
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
