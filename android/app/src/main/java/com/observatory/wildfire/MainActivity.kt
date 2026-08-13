@@ -108,11 +108,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
 
         checkPermissions()
-        setupWebView()
-        bindMeshService()
 
         // Monitor connectivity for offline detection
         registerConnectivityMonitor()
+    }
+
+    private fun initializeMesh() {
+        setupWebView()
+        bindMeshService()
     }
 
     override fun onDestroy() {
@@ -220,7 +223,12 @@ class MainActivity : AppCompatActivity() {
             WebAppInterface(
                 meshProvider = { meshService },
                 urlProvider = { webView.url ?: "" },
-                deviceIdProvider = { stableDeviceId() }
+                deviceIdProvider = { stableDeviceId() },
+                capabilityProvider = {
+                    // Audit A6: interface presence is not the capability — the
+                    // mesh radio must actually exist on this device.
+                    packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
+                }
             ),
             "AndroidBridge"
         )
@@ -247,9 +255,11 @@ class MainActivity : AppCompatActivity() {
             }));
             
             // Listen for incoming messages from MeshService
-            var originalOnMessage = window.onMeshMessage;
+            // Read window.onMeshMessage at EVENT TIME, not injection time,
+            // so late subscribers (React useEffect) are not missed.
             window.addEventListener('meshMessage', function(e) {
-                if (originalOnMessage) originalOnMessage(e.detail);
+                const handler = window.onMeshMessage;
+                if (handler) handler(e.detail);
             });
         })();
         """.trimIndent()
@@ -288,6 +298,9 @@ class MainActivity : AppCompatActivity() {
             } else {
                 ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
             }
+        } else {
+            // All permissions already granted — initialize mesh immediately.
+            initializeMesh()
         }
     }
 
@@ -301,6 +314,9 @@ class MainActivity : AppCompatActivity() {
             val denied = permissions.filterIndexed { i, _ -> grantResults[i] != PackageManager.PERMISSION_GRANTED }
             if (denied.isNotEmpty()) {
                 Toast.makeText(this, "Mesh networking disabled: ${denied.size} permission(s) denied", Toast.LENGTH_LONG).show()
+            } else {
+                // All requested permissions granted — initialize mesh now.
+                initializeMesh()
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.observatory.wildfire
 
+import android.util.Log
 import android.webkit.JavascriptInterface
 import org.json.JSONArray
 import org.json.JSONObject
@@ -26,8 +27,13 @@ import org.json.JSONObject
 class WebAppInterface(
     private val meshProvider: () -> MeshService?,
     private val urlProvider: () -> String = { "" },
-    private val deviceIdProvider: () -> String = { "" }
+    private val deviceIdProvider: () -> String = { "" },
+    private val capabilityProvider: () -> Boolean = { true }
 ) {
+
+    companion object {
+        private const val TAG = "WebAppInterface"
+    }
 
     private val meshService: MeshService?
         get() = meshProvider()
@@ -69,7 +75,8 @@ class WebAppInterface(
     // ========================
 
     @JavascriptInterface
-    fun isMeshSupported(): Boolean = isTrustedOrigin()
+    fun isMeshSupported(): Boolean =
+        isTrustedOrigin() && capabilityProvider()
 
     @JavascriptInterface
     fun getDeviceId(): String {
@@ -121,23 +128,28 @@ class WebAppInterface(
     @JavascriptInterface
     fun encryptForPeer(peerPublicKey: String, plaintext: String, lat: Double, lng: Double): String {
         if (!isTrustedOrigin()) return ""
-        val secureMsg = CryptoEngine.encryptForPeer(
-            peerPublicKeyBase64 = peerPublicKey,
-            payload = plaintext.toByteArray(Charsets.UTF_8),
-            lat = lat,
-            lng = lng
-        )
-        return JSONObject().apply {
-            put("ciphertext", secureMsg.ciphertext)
-            put("iv", secureMsg.iv)
-            put("signature", secureMsg.signature)
-            put("ephemeralId", secureMsg.ephemeralId)
-            put("senderPublicKey", secureMsg.senderPublicKey)
-            put("timestamp", secureMsg.timestamp)
-            put("lat", secureMsg.lat)
-            put("lng", secureMsg.lng)
-            put("nonce", secureMsg.nonce)
-        }.toString()
+        return try {
+            val secureMsg = CryptoEngine.encryptForPeer(
+                peerPublicKeyBase64 = peerPublicKey,
+                payload = plaintext.toByteArray(Charsets.UTF_8),
+                lat = lat,
+                lng = lng
+            )
+            JSONObject().apply {
+                put("ciphertext", secureMsg.ciphertext)
+                put("iv", secureMsg.iv)
+                put("signature", secureMsg.signature)
+                put("ephemeralId", secureMsg.ephemeralId)
+                put("senderPublicKey", secureMsg.senderPublicKey)
+                put("timestamp", secureMsg.timestamp)
+                put("lat", secureMsg.lat)
+                put("lng", secureMsg.lng)
+                put("nonce", secureMsg.nonce)
+            }.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "encryptForPeer failed", e)
+            ""
+        }
     }
 
     /**

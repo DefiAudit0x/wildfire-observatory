@@ -51,6 +51,15 @@ class MeshService : Service() {
         const val REPUTATION_GOOD_REPORT = 15
         const val REPUTATION_FALSE_REPORT = -50
         const val REPUTATION_CONFIRM_MATCH = 5
+        // Audit B2: penalties are differentiated by offense severity — garbage
+        // bytes are often environmental noise, a failed PoW is cheap to fake,
+        // a wrong difficulty signals a modified client, and a bad signature is
+        // active tampering. A single flat penalty made every offense worth the
+        // same (de)credit.
+        const val REPUTATION_MALFORMED_FRAME = -10
+        const val REPUTATION_BAD_POW = -20
+        const val REPUTATION_BAD_DIFFICULTY = -30
+        const val REPUTATION_BAD_SIGNATURE = -40
         const val REPUTATION_MIN = -100
         const val REPUTATION_MAX = 100
 
@@ -77,6 +86,8 @@ class MeshService : Service() {
         const val MESSAGE_TTL_MS = 10 * 60 * 1000L
         const val MAX_PENDING_MESSAGES = 200
         const val PEER_STALE_MS = 10 * 60 * 1000L
+        // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
+        const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
 
         // Network-wide proof-of-work requirement: the receiver does NOT trust
         // the sender's declared difficulty. A frame carrying anything other
@@ -166,6 +177,13 @@ class MeshService : Service() {
     )
     private val peers = ConcurrentHashMap<String, EndpointInfo>()
 
+    // Connection state machine (audit A4): Nearby re-fires onEndpointFound
+    // repeatedly while discovery is active. Tracking pending + established
+    // connections here means one requestConnection per endpoint — no duplicate
+    // handshakes, no reconnect storms while a session is already in flight.
+    private val connectingPeers = ConcurrentHashMap.newKeySet<String>()
+    private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
+
     // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
     // so intermediate nodes never see plaintext. The wire identity of a message
     // (nonce, coordinates, sender timestamp/signature) travels unchanged across
@@ -249,7 +267,7 @@ class MeshService : Service() {
     // Trickle state
     private var trickleInterval = TRICKLE_I_MIN
     private var trickleTimer: Timer? = null
-    private var lastActivityTime = System.currentTimeMillis()
+    @Volatile private var lastActivityTime = System.currentTimeMillis()
     private var isSleeping = false
 
     // Power management
@@ -435,6 +453,8 @@ class MeshService : Service() {
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
                 Log.d(TAG, "Connected: $endpointId")
+                connectingPeers.remove(endpointId)
+                connectedPeers.add(endpointId)
                 // Preserve any key already learned from discovery/initiation
                 // instead of wiping it (audit round 11).
                 val known = peers[endpointId]
@@ -449,12 +469,15 @@ class MeshService : Service() {
                 // (handleIncomingMessage).
             } else {
                 Log.d(TAG, "Connection failed: $endpointId")
+                connectingPeers.remove(endpointId)
                 peerCleanup(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
             Log.d(TAG, "Disconnected: $endpointId")
+            connectingPeers.remove(endpointId)
+            connectedPeers.remove(endpointId)
             peerCleanup(endpointId)
         }
     }
@@ -488,16 +511,23 @@ class MeshService : Service() {
                 // endpointId or rotated key) updates the CURRENT key instead
                 // of being ignored by putIfAbsent (audit round 12).
                 registerPeer(endpointId, advertisedKey)
-                connectionsClient.requestConnection(
-                    CryptoEngine.getPublicKeyBase64(),
-                    endpointId,
-                    connectionLifecycleCallback
-                )
+                // Audit A4: dedupe the handshake — onEndpointFound can fire
+                // repeatedly for the same endpoint while discovery runs.
+                if (!connectingPeers.contains(endpointId) && !connectedPeers.contains(endpointId)) {
+                    connectingPeers.add(endpointId)
+                    connectionsClient.requestConnection(
+                        CryptoEngine.getPublicKeyBase64(),
+                        endpointId,
+                        connectionLifecycleCallback
+                    )
+                }
             }
         }
 
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "Lost endpoint: $endpointId")
+            connectingPeers.remove(endpointId)
+            connectedPeers.remove(endpointId)
             peerCleanup(endpointId)
         }
     }
@@ -512,7 +542,9 @@ class MeshService : Service() {
     @Synchronized
     private fun registerPeer(endpointId: String, publicKey: String) {
         val now = System.currentTimeMillis()
-        peers[endpointId] = EndpointInfo(endpointId = endpointId, publicKey = publicKey, lastSeen = now)
+        val existing = peers[endpointId]
+        val lastSeen = if (existing != null) maxOf(existing.lastSeen, now) else now
+        peers[endpointId] = EndpointInfo(endpointId = endpointId, publicKey = publicKey, lastSeen = lastSeen)
     }
 
     /**
@@ -528,6 +560,10 @@ class MeshService : Service() {
     @Synchronized
     private fun peerCleanup(endpointId: String) {
         peers.remove(endpointId)
+        // Audit A4: every teardown path (lost/disconnect/failed/quarantine)
+        // also clears the handshake dedupe flags.
+        connectingPeers.remove(endpointId)
+        connectedPeers.remove(endpointId)
         forwardedMessages.keys.removeAll { it.startsWith("$endpointId:") }
         payloadToMessage.entries.removeAll { (_, binding) -> binding.endpointId == endpointId }
         // A vanished peer can never deliver: drop it from every message's
@@ -671,7 +707,7 @@ class MeshService : Service() {
             // format gate and risk parsing attacker-chosen bytes as JSON.
             val json = MeshWire.decompress(bytes) ?: run {
                 Log.w(TAG, "Incoming frame missing compression magic")
-                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                updateReputation(endpointId, REPUTATION_MALFORMED_FRAME)
                 return false
             }
             val payload = MeshWire.parseFrame(json) ?: return false
@@ -683,7 +719,7 @@ class MeshService : Service() {
             // client and is rejected, keeping the network uniform.
             if (payload.powDifficulty <= 0 || payload.powDifficulty > PO_W_DIFFICULTY) {
                 Log.w(TAG, "Out-of-band proof-of-work difficulty")
-                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                updateReputation(endpointId, REPUTATION_BAD_DIFFICULTY)
                 return false
             }
             // Canonical challenge framing (audit round 11): same
@@ -691,7 +727,7 @@ class MeshService : Service() {
             val powPrefix = MeshWire.ProofOfWork.wirePrefix(payload.messageId, payload.origEphemeralId)
             if (!MeshWire.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
                 Log.w(TAG, "Invalid proof-of-work on wire message")
-                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                updateReputation(endpointId, REPUTATION_BAD_POW)
                 return false
             }
 
@@ -726,7 +762,7 @@ class MeshService : Service() {
 
             if (!CryptoEngine.verifyMessageSignature(secureMsg)) {
                 Log.w(TAG, "Invalid signature on wire message")
-                updateReputation(endpointId, REPUTATION_FALSE_REPORT / 2)
+                updateReputation(endpointId, REPUTATION_BAD_SIGNATURE)
                 return false
             }
 
@@ -774,24 +810,8 @@ class MeshService : Service() {
                 CryptoEngine.decryptFromPeer(secureMsg)
             }
 
-            if (decrypted != null) {
-                // Notify web layer
-                val plaintext = String(decrypted, Charsets.UTF_8)
-                notifyListeners(plaintext)
-
-                // Update reputation
-                updateReputation(endpointId, REPUTATION_CONFIRM_MATCH)
-            } else {
-                // E2EE: the message is targeted at another peer. Not decryptable
-                // ≠ malicious — never punish relays for not holding the key.
-                Log.d(TAG, "Message not addressed to this device (E2EE)")
-            }
-
-            // Store-and-forward relay — for EVERY valid signed message, addressed
-            // to us or not. The ciphertext, IV, signature, nonce, coordinates and
-            // sender timestamp travel unchanged; only the unsigned hopsLeft
-            // decays (hopCount stays 0 — it is signed and immutable). A message
-            // addressed to a deeper peer reaches it hop by hop.
+            // Store-and-forward relay FIRST (audit B1): enqueue relay BEFORE
+            // notifying local listeners so a listener exception cannot stop propagation.
             if (payload.hopsLeft > 0) {
                 pendingMessages.add(MeshMessage(
                     messageId = payload.messageId,
@@ -811,6 +831,19 @@ class MeshService : Service() {
                     powDifficulty = payload.powDifficulty
                 ))
             }
+
+            if (decrypted != null) {
+                // Notify web layer
+                val plaintext = String(decrypted, Charsets.UTF_8)
+                notifyListeners(plaintext)
+
+                // Update reputation
+                updateReputation(endpointId, REPUTATION_CONFIRM_MATCH)
+            } else {
+                // E2EE: the message is targeted at another peer. Not decryptable
+                // ≠ malicious — never punish relays for not holding the key.
+                Log.d(TAG, "Message not addressed to this device (E2EE)")
+            }
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Message handling error", e)
@@ -826,6 +859,11 @@ class MeshService : Service() {
      */
     @Synchronized
     fun broadcastMessage(plaintext: String, reportType: String, lat: Double, lng: Double) {
+        // Audit: reject oversized plaintext before queueing to prevent OOM.
+        if (plaintext.toByteArray(Charsets.UTF_8).size > MAX_PLAINTEXT_BYTES) {
+            Log.w(TAG, "Rejecting oversized plaintext: ${plaintext.length} chars > $MAX_PLAINTEXT_BYTES bytes")
+            return
+        }
         val messageId = UUID.randomUUID().toString()
         val nonce = Random.nextInt()
 
@@ -1262,9 +1300,22 @@ class MeshService : Service() {
                 payloadToMessage.remove(payload.id)
                 msg.attemptedTargets.remove(endpointId)
             }
+        // Update lastSeen for this peer since we successfully handed off a frame to the transport.
+        peers[endpointId]?.let { info ->
+            val now = System.currentTimeMillis()
+            if (now - info.lastSeen > 1000) {
+                peers[endpointId] = info.copy(lastSeen = now)
+            }
+        }
     }
 
     private fun notifyListeners(message: String) {
-        messageListeners.forEach { it(message) }
+        messageListeners.forEach { listener ->
+            try {
+                listener(message)
+            } catch (e: Exception) {
+                Log.e(TAG, "Listener exception during mesh message delivery", e)
+            }
+        }
     }
 }

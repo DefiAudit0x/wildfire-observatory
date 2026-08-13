@@ -162,6 +162,15 @@ export function broadcastMessage(
     const prefix = `${Date.now()}-${bridge.getDeviceId()}`;
     const nonce = bridge.solvePoW(prefix, 8);
 
+    // Audit A9/B6: -1 means the solver gave up (out-of-band difficulty or
+    // iteration budget). Broadcasting anyway would enqueue a frame every
+    // receiver drops (powNonce < 0), i.e. a silent guaranteed-failure send.
+    // Fail locally, visibly, instead of poisoning the mesh queue.
+    if (nonce < 0) {
+      console.warn("[MeshBridge] PoW solve failed; message not broadcast");
+      return;
+    }
+
     // Add PoW metadata to message, plus the type/coordinates needed by any
     // ONLINE device that receives this message to relay it to /api/reports
     // (store-and-forward gateway: A offline → B → C → D online → API).
@@ -204,7 +213,7 @@ export function encryptForPeer(
   }
 
   // Browser fallback: Web Crypto API E2EE
-  return browserEncrypt(peerPublicKey, plaintext);
+  return browserEncrypt(peerPublicKey, plaintext, lat, lng);
 }
 
 export function decryptFromPeer(
@@ -244,7 +253,9 @@ interface EncryptedMessage {
 
 async function browserEncrypt(
   peerPublicKeyBase64: string,
-  plaintext: string
+  plaintext: string,
+  lat: number = 0,
+  lng: number = 0
 ): Promise<EncryptedMessage | null> {
   try {
     if (!browserKeyPair || !browserSignKey) return null;
@@ -303,8 +314,8 @@ async function browserEncrypt(
       arrayBufferToBase64(exportedPub),
       timestamp,
       nonce,
-      0,
-      0
+      lat,
+      lng
     );
     const signature = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
@@ -319,8 +330,8 @@ async function browserEncrypt(
       ephemeralId: browserEphemeralId,
       senderPublicKey: arrayBufferToBase64(exportedPub),
       timestamp,
-      lat: 0,
-      lng: 0,
+      lat,
+      lng,
       nonce,
       messageId,
       type: "report",
@@ -478,33 +489,46 @@ export function onMeshMessage(handler: MeshMessageHandler): () => void {
   messageListeners.add(handler);
 
   const bridge = getAndroidBridge();
-  if (bridge) {
+  if (bridge && messageListeners.size === 1) {
+    // First subscriber: install the single native callback that fans out to all listeners.
     (window as any).onMeshMessage = (message: string) => {
-      try {
-        const parsed = JSON.parse(message);
-        const peerId = parsed.peerId || "unknown";
-        const reputation = bridge.getPeerReputation(peerId);
-        handler(parsed.payload || message, peerId, reputation);
-      } catch {
-        handler(message, "unknown", 0);
-      }
+      messageListeners.forEach((listener) => {
+        try {
+          const parsed = JSON.parse(message);
+          const peerId = parsed.peerId ?? "unknown";
+          // Validate peerId is a string (defense against malformed messages)
+          const validPeerId = typeof peerId === "string" ? peerId : "unknown";
+          const reputation = bridge.getPeerReputation(validPeerId);
+          listener(parsed.payload ?? message, validPeerId, reputation);
+        } catch {
+          listener(message, "unknown", 0);
+        }
+      });
     };
   }
 
   return () => {
     messageListeners.delete(handler);
-    if (bridge) delete (window as any).onMeshMessage;
+    if (bridge && messageListeners.size === 0) {
+      // Last subscriber: remove the native callback.
+      delete (window as any).onMeshMessage;
+    }
   };
 }
 
 export function onPeersUpdate(handler: PeerUpdateHandler): () => void {
   peerListeners.add(handler);
 
+  // Immediate snapshot so UI doesn't wait up to 5s for first poll.
+  try {
+    handler(getConnectedPeers());
+  } catch {
+    // ignore
+  }
+
   if (peerPollInterval === null && typeof window !== "undefined") {
     peerPollInterval = window.setInterval(() => {
       const peers = getConnectedPeers();
-      // Always notify — including the empty list: a node counter that keeps
-      // its last value when the room empties is a stale counter.
       peerListeners.forEach((h) => {
         try {
           h(peers);
@@ -525,7 +549,10 @@ export function onPeersUpdate(handler: PeerUpdateHandler): () => void {
 }
 
 export function onMeshReady(handler: (deviceId: string) => void): () => void {
+  let called = false;
   const handlerFn = (e: CustomEvent) => {
+    if (called) return;
+    called = true;
     handler(e.detail?.deviceId || "");
   };
 
@@ -537,7 +564,9 @@ export function onMeshReady(handler: (deviceId: string) => void): () => void {
     handler(bridge.getDeviceId());
   }
 
-  return () => window.removeEventListener("meshReady", handlerFn as EventListener);
+  return () => {
+    window.removeEventListener("meshReady", handlerFn as EventListener);
+  };
 }
 
 // ========================
@@ -706,14 +735,37 @@ function generateId(): string {
 // ========================
 
 export function checkAndRecordNonce(nonce: number): boolean {
+  // DEPRECATED: use checkAndRecordMessageNonce(messageId, nonce) instead.
+  // Kept for backward compatibility but nonce-only replay protection is
+  // weaker than the native messageId+nonce scheme.
   const now = Date.now();
   if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - ANTI_REPLAY_TTL_MS) {
-    return false; // Already seen inside the replay window
+    return false;
   }
   seenNonces.set(nonce, now);
   if (seenNonces.size > 5000) {
     for (const [k, ts] of seenNonces) {
       if (ts <= now - ANTI_REPLAY_TTL_MS) seenNonces.delete(k);
+    }
+  }
+  return true;
+}
+
+/**
+ * Browser fallback anti-replay using messageId+nonce (mirrors native
+ * MeshWire.seenMessageHash). A message is a replay iff BOTH the messageId
+ * and nonce match a previously seen pair within the TTL window.
+ */
+export function checkAndRecordMessageNonce(messageId: string, nonce: number): boolean {
+  const now = Date.now();
+  const key = `${messageId}:${nonce}`;
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
+    return false;
+  }
+  seenMessageHashes.set(key, now);
+  if (seenMessageHashes.size > 5000) {
+    for (const [k, ts] of seenMessageHashes) {
+      if (ts <= now - ANTI_REPLAY_TTL_MS) seenMessageHashes.delete(k);
     }
   }
   return true;

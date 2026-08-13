@@ -35,6 +35,10 @@ object MeshWire {
     /** Propagation budget: origin sets hopsLeft = MAX_HOPS; each relay decrements and stops at 0. */
     const val MAX_HOPS = 5
 
+    /** Allowed message types on the wire (audit: inbound whitelist). */
+    const val MESSAGE_TYPE_REPORT = "report"
+    const val MESSAGE_TYPE_ECHO = "echo"
+
     private val COMPRESS_MAGIC = byteArrayOf(0x4D, 0x43) // "MC"
 
     /** Compression flag byte right after the magic: 0 = deflate stream, 1 = raw payload. */
@@ -291,6 +295,8 @@ object MeshWire {
             if (!lat.isFinite() || !lng.isFinite() ||
                 lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0
             ) return null
+            // Inbound type whitelist (audit): only known protocol types accepted.
+            if (type !in setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)) return null
 
             Frame(
                 protocolVersion = protocolVersion,

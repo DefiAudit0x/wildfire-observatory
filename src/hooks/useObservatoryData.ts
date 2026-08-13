@@ -98,7 +98,9 @@ function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): vo
       console.warn("Mesh broadcast skipped: invalid coordinates", reportLike.lat, reportLike.lng);
       return;
     }
-    const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = reportLike as Record<string, unknown>;
+    // Audit B13: retain deviceId and clientGeneratedId for gateway attribution.
+    // PII fields (image, reporterPhone) are still stripped.
+    const { image: _img, reporterPhone: _rp, ...meshPayload } = reportLike as Record<string, unknown>;
     broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
@@ -121,7 +123,8 @@ function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
       return;
     }
     const pending = buildLocalPendingReport(payload);
-    const { image: _img, deviceId: _did, reporterPhone: _rp, ...meshPayload } = pending as unknown as Record<string, unknown>;
+    // Audit B13: retain deviceId and clientGeneratedId for gateway attribution.
+    const { image: _img, reporterPhone: _rp, ...meshPayload } = pending as unknown as Record<string, unknown>;
     broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
@@ -425,6 +428,9 @@ export function useObservatoryData() {
         // (the stable, relay-unchanged key) — never a random UUID that would
         // re-admit the same report on every hop.
         const report = message.report as unknown;
+        // Audit B10: validate report BEFORE recording gossip hash to prevent
+        // cache poisoning from malformed reports with colliding IDs.
+        if (!isValidReport(report)) return;
         const gossipId = JSON.stringify([
           message.type,
           (report as { id?: unknown } | null)?.id ?? message.id,
@@ -433,10 +439,6 @@ export function useObservatoryData() {
           message.lng,
         ]);
         if (!checkAndRecordMessageHash(gossipId)) return;
-        // Mesh messages are not cast through, they are verified through: a
-        // message that does not satisfy the same report contract the GET poll
-        // enforces never reaches state.
-        if (!isValidReport(report)) return;
         setReports((prev) => {
           if (prev.some((r) => r.id === report.id)) return prev;
           const next = [report, ...prev];
@@ -483,20 +485,26 @@ export function useObservatoryData() {
       let imageNotAttached = false;
 
       try {
-        if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
-          // Multipart upload: avoids sending base64 through the JSON body parser.
-          const { fd, imageDropped } = await buildMultipartForm(payload, deviceId);
-          res = await fetch("/api/reports", { method: "POST", body: fd });
-          // Honest disclosure for the success modal: the report may be accepted
-          // with the photo dropped (undecodable data URL) — the reporter must
-          // see that the evidence image did not travel.
-          imageNotAttached = imageDropped;
-        } else {
-          res = await fetch("/api/reports", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ ...payload, deviceId }),
-          });
+        // 15s timeout for all write paths (audit B7): same ceiling as polling.
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+        try {
+          if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
+            // Multipart upload: avoids sending base64 through the JSON body parser.
+            const { fd, imageDropped } = await buildMultipartForm(payload, deviceId);
+            res = await fetch("/api/reports", { method: "POST", body: fd, signal: controller.signal });
+            imageNotAttached = imageDropped;
+          } else {
+            res = await fetch("/api/reports", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...payload, deviceId }),
+              signal: controller.signal,
+            });
+          }
+        } finally {
+          clearTimeout(timeoutId);
         }
       } catch (err) {
         // TRANSPORT failure (server unreachable, request aborted): the report
@@ -565,19 +573,32 @@ export function useObservatoryData() {
   // Upvote/Confirm fire (Consensus Engine)
   const handleConfirmReport = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`/api/reports/${id}/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ deviceId }),
-      });
-      if (res.ok) {
+      // 15s timeout for all write paths (audit B7).
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch(`/api/reports/${id}/confirm`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ deviceId }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
         const result: any = await res.json();
         const status = result?.status;
         const consensusCount = Number(result?.consensusCount);
-        // Same contract as the mesh confirm: only a real status paired with a
-        // non-negative integer count is admitted into state.
-        if (isReportStatus(status) && Number.isInteger(consensusCount) && consensusCount >= 0) {
+        // Audit B11: state-machine validation — only allow pending→verified or pending→rejected transitions.
+        const validTransition = (prevStatus: string, newStatus: string) =>
+          (prevStatus === "pending" && (newStatus === "verified" || newStatus === "rejected")) ||
+          (prevStatus === "verified" && newStatus === "rejected");
+        if (
+          isReportStatus(status) &&
+          Number.isInteger(consensusCount) &&
+          consensusCount >= 0
+        ) {
           setReports((prev) => {
+            const existing = prev.find((r) => r.id === id);
+            if (!existing || !validTransition(existing.status, status)) return prev;
             const next = prev.map((r) =>
               r.id === id
                 ? { ...r, consensusCount, status: status as Report["status"] }
@@ -586,16 +607,23 @@ export function useObservatoryData() {
             reportsRef.current = next;
             return next;
           });
+          // Audit B9: read-after-write — the optimistic update is committed
+          // server-side now; re-sync so local state reflects server truth
+          // (same pattern the create path uses after a successful POST).
+          fetchData();
         }
+      } finally {
+        clearTimeout(timeoutId);
       }
     } catch (err) {
       console.error("Failed to confirm report:", err);
     }
-  }, [deviceId]);
+  }, [deviceId, fetchData]);
 
   const handleMarkNotificationRead = useCallback(async (id: string) => {
     try {
-      await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
+      const res = await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
+      if (!res.ok) return;
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     } catch (e) {
       console.error("Failed to mark notification read", e);
