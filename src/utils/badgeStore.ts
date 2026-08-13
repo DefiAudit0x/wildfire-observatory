@@ -15,13 +15,27 @@ export function getReporterBadge(): string | null {
 }
 
 export function setReporterBadge(code: string): void {
+  let sessionStored = false;
   try {
     sessionStorage.setItem(REPORTER_BADGE_KEY, code);
-    // Remove the old durable copy created by previous releases.
-    localStorage.removeItem(REPORTER_BADGE_KEY);
-    window.dispatchEvent(new Event(BADGE_CHANGED_EVENT));
+    sessionStored = true;
   } catch {
-    // Storage unavailable — the badge applies to this session only.
+    // Storage unavailable; do not pretend the session was persisted.
+  }
+  try {
+    // Remove the old durable copy created by previous releases. Cleanup is
+    // independent so a restricted localStorage implementation cannot suppress
+    // the same-tab event for the newly stored session value.
+    localStorage.removeItem(REPORTER_BADGE_KEY);
+  } catch {
+    // Legacy cleanup is best effort.
+  }
+  if (sessionStored && typeof window !== "undefined") {
+    try {
+      window.dispatchEvent(new Event(BADGE_CHANGED_EVENT));
+    } catch {
+      // Event dispatch is best effort; getSnapshot remains authoritative.
+    }
   }
 }
 

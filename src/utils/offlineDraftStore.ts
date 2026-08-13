@@ -8,6 +8,18 @@ const STORE_NAME = "drafts";
 const DB_VERSION = 1;
 const LEGACY_KEY = "offline_drafts";
 
+// IndexedDB transactions are atomic individually, but read/replace calls from
+// React effects and event handlers can still reorder at the application level.
+// Serialize the public operations so an older initial read cannot overwrite a
+// newer queue snapshot in component state.
+let storageQueue: Promise<unknown> = Promise.resolve();
+
+function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+  const run = storageQueue.then(operation, operation);
+  storageQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 function canUseIndexedDb(): boolean {
   return typeof indexedDB !== "undefined";
 }
@@ -30,13 +42,17 @@ async function readLegacyDrafts(): Promise<OfflineDraftRecord[]> {
     const raw = localStorage.getItem(LEGACY_KEY);
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((value): value is OfflineDraftRecord => Boolean(value && typeof value === "object" && typeof (value as { id?: unknown }).id === "string")) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is OfflineDraftRecord => Boolean(
+        value && typeof value === "object" && typeof (value as { id?: unknown }).id === "string"
+      ))
+      : [];
   } catch {
     return [];
   }
 }
 
-export async function loadOfflineDrafts(): Promise<OfflineDraftRecord[]> {
+async function loadOfflineDraftsUnlocked(): Promise<OfflineDraftRecord[]> {
   if (!canUseIndexedDb()) return readLegacyDrafts();
   const db = await openDraftDb();
   try {
@@ -48,7 +64,7 @@ export async function loadOfflineDrafts(): Promise<OfflineDraftRecord[]> {
     if (records.length > 0) return records;
     const legacy = await readLegacyDrafts();
     if (legacy.length > 0) {
-      await replaceOfflineDrafts(legacy);
+      await replaceOfflineDraftsUnlocked(legacy);
       try { localStorage.removeItem(LEGACY_KEY); } catch { /* storage may be unavailable */ }
     }
     return legacy;
@@ -57,7 +73,7 @@ export async function loadOfflineDrafts(): Promise<OfflineDraftRecord[]> {
   }
 }
 
-export async function replaceOfflineDrafts(records: OfflineDraftRecord[]): Promise<void> {
+async function replaceOfflineDraftsUnlocked(records: OfflineDraftRecord[]): Promise<void> {
   if (!canUseIndexedDb()) {
     localStorage.setItem(LEGACY_KEY, JSON.stringify(records));
     return;
@@ -76,4 +92,12 @@ export async function replaceOfflineDrafts(records: OfflineDraftRecord[]): Promi
   } finally {
     db.close();
   }
+}
+
+export function loadOfflineDrafts(): Promise<OfflineDraftRecord[]> {
+  return enqueue(loadOfflineDraftsUnlocked);
+}
+
+export function replaceOfflineDrafts(records: OfflineDraftRecord[]): Promise<void> {
+  return enqueue(() => replaceOfflineDraftsUnlocked(records));
 }

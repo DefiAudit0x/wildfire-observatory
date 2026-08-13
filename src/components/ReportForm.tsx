@@ -6,6 +6,63 @@ import { setReporterBadge } from "../utils/badgeStore";
 import { isFreshThreatTimestamp } from "../utils/threats";
 import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
 
+interface SubmissionResultView {
+  responseValid: boolean;
+  isOfflineDraft?: boolean;
+  imageNotAttached?: boolean;
+  status?: "pending" | "verified";
+  id?: string;
+  error?: string;
+  message?: string;
+  aiVerification?: {
+    confidence?: number;
+    aiComments?: string;
+    detectedSigns?: string[];
+    isVerified?: boolean;
+    suggestedSeverity?: string;
+  };
+}
+
+export function normalizeSubmissionResult(value: unknown): SubmissionResultView {
+  if (!value || typeof value !== "object") {
+    return { responseValid: false, error: "The server returned an invalid response." };
+  }
+  const raw = value as Record<string, unknown>;
+  const status = raw.status === "pending" || raw.status === "verified" ? raw.status : undefined;
+  const id = typeof raw.id === "string" ? raw.id : undefined;
+  const ai = raw.aiVerification && typeof raw.aiVerification === "object"
+    ? raw.aiVerification as Record<string, unknown>
+    : null;
+  const confidence = ai && Number.isFinite(Number(ai.confidence))
+    ? Math.max(0, Math.min(100, Number(ai.confidence)))
+    : undefined;
+  const detectedSigns = ai && Array.isArray(ai.detectedSigns)
+    ? ai.detectedSigns.filter((sign): sign is string => typeof sign === "string").slice(0, 20)
+    : undefined;
+  const aiVerification = ai && (confidence !== undefined || typeof ai.aiComments === "string" || detectedSigns?.length)
+    ? {
+      confidence,
+      aiComments: typeof ai.aiComments === "string" ? ai.aiComments.slice(0, 1000) : undefined,
+      detectedSigns,
+      isVerified: ai.isVerified === true,
+      suggestedSeverity: typeof ai.suggestedSeverity === "string" ? ai.suggestedSeverity : undefined,
+    }
+    : undefined;
+  const responseValid = raw.responseValid === false
+    ? false
+    : raw.responseValid === true || Boolean(status || id || raw.isOfflineDraft === true);
+  return {
+    responseValid,
+    isOfflineDraft: raw.isOfflineDraft === true,
+    imageNotAttached: raw.imageNotAttached === true,
+    status,
+    id,
+    error: typeof raw.error === "string" ? raw.error.slice(0, 500) : undefined,
+    message: typeof raw.message === "string" ? raw.message.slice(0, 500) : undefined,
+    aiVerification,
+  };
+}
+
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
   onSubmit: (data: any) => Promise<any>;
@@ -330,7 +387,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         clientGeneratedId: draft.id,
       };
       try {
-        await onSubmit(payload);
+        const syncResult = normalizeSubmissionResult(await onSubmit(payload));
+        if (!syncResult.responseValid) {
+          throw new Error(syncResult.error || "Server did not confirm the draft");
+        }
         successCount++;
         syncedIds.add(draft.id); // remove only after server acceptance
             } catch (err: unknown) {
@@ -340,19 +400,28 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         break; // stop on first error to prevent losing ordering or flooding
       }
     }
-    const nextDrafts = offlineDrafts
+    const nextDrafts = draftSnapshot
       .filter((draft) => !syncedIds.has(draft.id))
       .map((draft) => draft.id === failedDraftId
         ? { ...draft, retryCount: (Number.isFinite(draft.retryCount) ? draft.retryCount : 0) + 1, lastError: failedMessage, lastAttemptAt: new Date().toISOString() }
         : draft);
-    setOfflineDrafts(nextDrafts);
-    void replaceOfflineDrafts(nextDrafts).catch((error: unknown) => {
+    let persistenceError = false;
+    try {
+      await replaceOfflineDrafts(nextDrafts);
+      setOfflineDrafts(nextDrafts);
+    } catch (error: unknown) {
+      persistenceError = true;
       console.error("Failed to persist the remaining offline drafts", error);
-      setSyncStatusMsg(isArabic ? "تعذر تحديث طابور المسودات محليًا؛ لم تُحذف المسودات غير المؤكدة." : "Impossible de mettre à jour la file locale ; les brouillons non confirmés sont conservés.");
-    });
+      // Do not claim successful synchronization or hide drafts in memory when
+      // the durable queue did not commit. The server idempotency key makes a
+      // later retry safe, while retaining the snapshot prevents local loss.
+      setOfflineDrafts(draftSnapshot);
+      setSyncStatusMsg(isArabic ? "تعذر تحديث طابور المسودات محليًا؛ أُبقيت المسودات للمحاولة لاحقًا." : "Impossible de mettre à jour la file locale ; les brouillons sont conservés pour une nouvelle tentative.");
+    }
     
     syncingDrafts.current = false;
     setIsSubmitting(false);
+    if (persistenceError) return;
     if (successCount > 0) {
       setSyncStatusMsg(
         isArabic 
@@ -943,7 +1012,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       return;
     }
     try {
-            const result = await onSubmit(payload);
+            const result = normalizeSubmissionResult(await onSubmit(payload));
       setSuccessReport(result);
       // Only a server-issued verified result may activate the local operator
       // tone gate. A user-supplied code, pending response, or malformed

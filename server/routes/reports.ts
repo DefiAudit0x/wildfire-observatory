@@ -1,4 +1,5 @@
 import { Request, Response, Router } from "express";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
@@ -20,6 +21,10 @@ import { docGet, incrementDocField } from "../fs.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 
 const router = Router();
+
+function badgeLogId(code: string): string {
+  return createHash("sha256").update(code).digest("hex").slice(0, 12);
+}
 const MAX_IN_MEMORY_REPORTS = 500;
 
 const upload = multer({
@@ -181,7 +186,7 @@ async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: strin
       valid = active && typeOk && notExpired && underUsage && wilayaOk;
     }
   } catch (err) {
-    logger.warn({ err, badgeCode }, "badgeCodes Firestore lookup failed — falling back to env-only");
+    logger.warn({ err, badgeLogId: badgeLogId(badgeCode) }, "badgeCodes Firestore lookup failed — falling back to env-only");
   }
   badgeCache.set(cacheKey, { valid, expiresAt: Date.now() + BADGE_CACHE_TTL_MS });
   return valid;
@@ -196,7 +201,7 @@ function badgeRateLimited(badgeCode: string): boolean {
   }
   entry.count += 1;
   if (entry.count >= MAX_BADGE_ATTEMPTS_PER_WINDOW) {
-    logger.warn({ badgeCode }, "Badge code rate limit hit");
+    logger.warn({ badgeLogId: badgeLogId(badgeCode) }, "Badge code rate limit hit");
   }
   return entry.count > MAX_BADGE_ATTEMPTS_PER_WINDOW;
 }
@@ -324,8 +329,9 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
 
   if (reporterType === "official" || reporterType === "volunteer") {
     const code = reporterBadgeCode?.trim();
-    const envTrusted = !!code && VALID_BADGE_CODES.has(code) && !badgeRateLimited(code);
-    const firestoreTrusted = !!code && (await isBadgeApprovedInFirestore(code, reporterType, wilaya)) && !badgeRateLimited(code);
+    const rateLimited = !!code && badgeRateLimited(code);
+    const envTrusted = !!code && !rateLimited && VALID_BADGE_CODES.has(code);
+    const firestoreTrusted = !!code && !rateLimited && (await isBadgeApprovedInFirestore(code, reporterType, wilaya));
     if (envTrusted || firestoreTrusted) {
       isTrusted = true;
       finalStatus = "verified";
@@ -334,9 +340,9 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
       if (!envTrusted && code) {
         incrementDocField("badgeCodes", code, "usedCount", 1).catch(() => {});
       }
-      logger.info(`Trusted report from ${reporterType}: ${code}`);
+      logger.info({ reporterType, badgeLogId: badgeLogId(code) }, "Trusted report accepted");
     } else {
-      logger.warn(`Invalid badge code attempt: ${reporterBadgeCode}`);
+      logger.warn({ reporterType, badgeLogId: code ? badgeLogId(code) : undefined }, "Invalid badge code attempt");
     }
   }
 
