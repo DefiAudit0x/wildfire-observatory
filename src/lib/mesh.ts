@@ -50,6 +50,7 @@ class MeshClient {
   private meshToken: string | null = null;
   private tokenController: AbortController | null = null;
   private connectionGeneration = 0;
+  private connecting = false;
   private messageHandlers = new Set<MessageHandler>();
   private statusHandlers = new Set<StatusHandler>();
 
@@ -63,8 +64,9 @@ class MeshClient {
   }
 
   connect(): void {
-    if (this.ws || this.reconnectTimer !== null) return;
+    if (this.ws || this.reconnectTimer !== null || this.connecting) return;
     this.manualClosed = false;
+    this.connecting = true;
     this.setStatus("connecting");
     void this.openSocket();
   }
@@ -72,6 +74,7 @@ class MeshClient {
   disconnect(): void {
     this.manualClosed = true;
     this.connectionGeneration++;
+    this.connecting = false;
     this.tokenController?.abort();
     this.tokenController = null;
     if (this.reconnectTimer !== null) {
@@ -116,12 +119,17 @@ class MeshClient {
     if (!this.meshToken) {
       this.meshToken = await this.fetchMeshToken(generation);
     }
-    if (generation !== this.connectionGeneration || this.manualClosed) return;
+    if (generation !== this.connectionGeneration || this.manualClosed) {
+      if (generation === this.connectionGeneration) this.connecting = false;
+      return;
+    }
     if (!this.meshToken) {
+      this.connecting = false;
       this.setStatus("offline");
       this.reconnectTimer = window.setTimeout(() => {
         this.reconnectTimer = null;
         this.meshToken = null;
+        this.connecting = true;
         void this.openSocket();
       }, this.reconnectDelay);
       this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
@@ -129,7 +137,15 @@ class MeshClient {
     }
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+    } catch {
+      this.connecting = false;
+      this.setStatus("offline");
+      return;
+    }
+    this.connecting = false;
     this.ws = ws;
 
     ws.onopen = () => {
@@ -197,6 +213,7 @@ class MeshClient {
         this.setStatus("offline");
         this.reconnectTimer = window.setTimeout(() => {
           this.reconnectTimer = null;
+          this.connecting = true;
           void this.openSocket();
         }, this.reconnectDelay);
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);

@@ -462,7 +462,8 @@ export function useObservatoryData() {
 
   useEffect(() => () => {
     liveRefreshPendingRef.current = false;
-    liveRefreshInFlightRef.current = false;
+    // Keep the in-flight marker truthful until the request's finally block.
+    // mountedRef/fetchData aborts prevent any post-unmount state writes.
     if (liveRefreshTimerRef.current !== null) {
       window.clearTimeout(liveRefreshTimerRef.current);
       liveRefreshTimerRef.current = null;
@@ -543,6 +544,9 @@ export function useObservatoryData() {
   // Post citizen report handler
   const handleCreateReport = useCallback(
     async (payload: CitizenReportPayload) => {
+      const submission = payload.clientGeneratedId
+        ? payload
+        : { ...payload, clientGeneratedId: crypto.randomUUID() };
       let res: Response;
       let imageNotAttached = false;
 
@@ -554,14 +558,14 @@ export function useObservatoryData() {
         try {
           if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
             // Multipart upload: avoids sending base64 through the JSON body parser.
-            const { fd, imageDropped } = await buildMultipartForm(payload, deviceId, controller.signal);
+            const { fd, imageDropped } = await buildMultipartForm(submission, deviceId, controller.signal);
             res = await fetch("/api/reports", { method: "POST", body: fd, signal: controller.signal });
             imageNotAttached = imageDropped;
           } else {
             res = await fetch("/api/reports", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ...payload, deviceId }),
+              body: JSON.stringify({ ...submission, deviceId }),
               signal: controller.signal,
             });
           }
@@ -576,7 +580,7 @@ export function useObservatoryData() {
         // report and refused it, and relaying it would only re-submit the same
         // refusal; the client keeps the visible error instead.
         console.warn("Report transport failed; fanning out to mesh:", err);
-        broadcastFailedReportToMesh(payload);
+        broadcastFailedReportToMesh(submission);
         throw err;
       }
 
@@ -591,7 +595,7 @@ export function useObservatoryData() {
         if (res.status >= 500) {
           // Server-side failure (5xx): the server is alive but could not
           // commit the report — an online peer may have better luck.
-          broadcastFailedReportToMesh(payload);
+          broadcastFailedReportToMesh(submission);
         }
         const err: any = new Error(serverMsg || "Report failed");
         err.data = { error: serverMsg };
@@ -627,7 +631,7 @@ export function useObservatoryData() {
       // a display-safe local copy is built instead (same pattern the offline
       // draft path uses). The imageNotAttached flag rides along so the modal
       // can disclose the dropped photo.
-      const displayReport = reportIsValid ? newReport : buildLocalPendingReport(payload);
+      const displayReport = reportIsValid ? newReport : buildLocalPendingReport(submission);
       return imageNotAttached ? { ...displayReport, imageNotAttached: true } : displayReport;
     },
     [deviceId, fetchData]

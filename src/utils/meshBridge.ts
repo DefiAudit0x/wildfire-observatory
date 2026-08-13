@@ -80,8 +80,14 @@ async function initMeshInternal(): Promise<{ supported: boolean; deviceId: strin
 
   if (bridge) {
     // Android native path
-    const deviceId = bridge.getDeviceId();
-    return { supported: true, deviceId };
+    try {
+      const deviceId = bridge.getDeviceId();
+      return typeof deviceId === "string" && deviceId.length > 0
+        ? { supported: true, deviceId }
+        : { supported: false, deviceId: "native-unavailable" };
+    } catch {
+      return { supported: false, deviceId: "native-unavailable" };
+    }
   }
 
   // Browser fallback: generate ephemeral key pairs
@@ -138,12 +144,16 @@ export interface MeshServiceState {
  * listener. The Android bridge also emits meshServiceState/meshReady events
  * for reactive consumers, but late subscribers can query this value directly.
  */
+const MESH_SERVICE_STATES: readonly MeshServiceState["state"][] = [
+  "unknown", "starting", "connected", "disconnected", "failed", "unavailable",
+];
+
 export function getMeshServiceState(): MeshServiceState {
   if (typeof window === "undefined") return { state: "unknown", ready: false };
   const state = (window as any).__meshServiceState;
-  if (!state || typeof state.state !== "string") return { state: "unknown", ready: false };
+  if (!state || !MESH_SERVICE_STATES.includes(state.state)) return { state: "unknown", ready: false };
   return {
-    state: state.state as MeshServiceState["state"],
+    state: state.state,
     ready: state.ready === true,
   };
 }
@@ -155,7 +165,14 @@ export function getMeshServiceState(): MeshServiceState {
  */
 export function getLocalPublicKeyBase64(): string {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.getPublicKey();
+  if (bridge) {
+    try {
+      const key = bridge.getPublicKey();
+      return typeof key === "string" ? key : "";
+    } catch {
+      return "";
+    }
+  }
   return browserPublicKeyBase64;
 }
 
@@ -182,7 +199,7 @@ export function broadcastMessage(
   type: string = "report",
   lat: number = 0,
   lng: number = 0
-): void {
+): boolean {
   const bridge = getAndroidBridge();
 
   if (bridge) {
@@ -197,7 +214,7 @@ export function broadcastMessage(
     // Fail locally, visibly, instead of poisoning the mesh queue.
     if (nonce < 0) {
       console.warn("[MeshBridge] PoW solve failed; message not broadcast");
-      return;
+      return false;
     }
 
     // Add PoW metadata to message, plus the type/coordinates needed by any
@@ -215,10 +232,11 @@ export function broadcastMessage(
     });
 
       bridge.broadcastMessage(enrichedMsg, type, lat, lng);
+      return true;
     } catch (err) {
       console.error("[MeshBridge] Native broadcast failed:", err);
+      return false;
     }
-    return;
   }
 
   // Browser fallback: no actual mesh, just log
@@ -229,6 +247,7 @@ export function broadcastMessage(
     lng,
     ephemeralId: browserEphemeralId,
   });
+  return false;
 }
 
 export function encryptForPeer(
@@ -785,11 +804,23 @@ function randomNonce(): number {
  * behaves identically on both runtimes, and micro-degree rounding also
  * absorbs float accumulation noise (0.1+0.2 → 300000 on both).
  */
-export function canonicalLatLng(value: number): string {
+export function canonicalLatitude(value: number): string {
   if (!Number.isFinite(value) || value < -90 || value > 90) {
-    throw new RangeError("coordinate out of range");
+    throw new RangeError("latitude out of range");
   }
   return String(Math.round(value * 1_000_000));
+}
+
+export function canonicalLongitude(value: number): string {
+  if (!Number.isFinite(value) || value < -180 || value > 180) {
+    throw new RangeError("longitude out of range");
+  }
+  return String(Math.round(value * 1_000_000));
+}
+
+/** Backward-compatible latitude canonicalizer. */
+export function canonicalLatLng(value: number): string {
+  return canonicalLatitude(value);
 }
 
 /**
@@ -823,8 +854,8 @@ export function buildSignedData(
     encoder.encode(origPublicKey),
     encoder.encode(String(timestamp)),
     encoder.encode(String(nonce)),
-    encoder.encode(canonicalLatLng(lat)),
-    encoder.encode(canonicalLatLng(lng)),
+      encoder.encode(canonicalLatitude(lat)),
+      encoder.encode(canonicalLongitude(lng)),
   ];
   const out: number[] = [];
   for (const part of parts) {
