@@ -1,7 +1,10 @@
 package com.observatory.wildfire
 
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.charset.CodingErrorAction
 import java.security.MessageDigest
+import java.util.Base64
 import java.util.zip.Deflater
 import java.util.zip.Inflater
 
@@ -156,7 +159,7 @@ object MeshWire {
         return try {
             if (raw) {
                 if (body.size > MAX_DECOMPRESSED_BODY_BYTES) return null
-                String(body, Charsets.UTF_8)
+                decodeUtf8Strict(body)
             } else {
                 val inflater = Inflater()
                 try {
@@ -169,7 +172,11 @@ object MeshWire {
                         out.write(buf, 0, len)
                         if (out.size() > MAX_DECOMPRESSED_BODY_BYTES) return null // bomb guard
                     }
-                    out.toString("UTF-8")
+                    // A valid deflate stream followed by arbitrary bytes is
+                    // not a valid frame. Reject unconsumed input instead of
+                    // silently accepting a prefix plus garbage.
+                    if (inflater.remaining != 0) return null
+                    decodeUtf8Strict(out.toByteArray())
                 } finally {
                     // Audit round 12: every early return above used to leak the
                     // Inflater's native allocations (end() runs only after the
@@ -192,8 +199,29 @@ object MeshWire {
         return digest.digest(input.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
     }
 
+    private fun decodeUtf8Strict(bytes: ByteArray): String? {
+        return try {
+            Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
+                .decode(ByteBuffer.wrap(bytes))
+                .toString()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun isCanonicalBase64(value: String): Boolean {
+        return try {
+            val decoded = Base64.getDecoder().decode(value)
+            Base64.getEncoder().encodeToString(decoded) == value
+        } catch (_: IllegalArgumentException) {
+            false
+        }
+    }
+
     /**
-     * Anti-replay hash over (messageId, nonce) with EXPLICIT framing: the
+     * The canonical anti-replay hash over (messageId, nonce) with EXPLICIT framing: the
      * naive concatenation was ambiguous — ("ab", 12) and ("ab1", 2) both
      * produce "ab12". Length-prefixing makes distinct messages hash apart.
      */
@@ -282,6 +310,11 @@ object MeshWire {
                 iv.isBlank() || origEphemeralId.isBlank() || origPublicKey.isBlank() ||
                 signature.isBlank()
             ) return null
+            // Base64 is part of the syntactic wire contract. Reject malformed
+            // or non-canonical encodings before the frame reaches crypto.
+            if (!isCanonicalBase64(payloadB64) || !isCanonicalBase64(iv) ||
+                !isCanonicalBase64(origPublicKey) || !isCanonicalBase64(signature)
+            ) return null
             // Per-field ceilings (audit): see the MAX_*_LEN constants above.
             if (messageId.length > MAX_MESSAGE_ID_LEN ||
                 type.length > MAX_TYPE_LEN ||
@@ -328,6 +361,21 @@ object MeshWire {
         } catch (e: Exception) {
             null
         }
+    }
+
+    /**
+     * Admission freshness helper. It does not alter the wire format; callers
+     * provide the protocol's age and clock-skew policy explicitly.
+     */
+    fun isFreshTimestamp(
+        timestamp: Long,
+        now: Long,
+        maxAgeMs: Long,
+        maxFutureSkewMs: Long
+    ): Boolean {
+        // Compare against bounded thresholds instead of subtracting an
+        // attacker-controlled timestamp, which could overflow Long arithmetic.
+        return timestamp >= now - maxAgeMs && timestamp <= now + maxFutureSkewMs
     }
 
     /**

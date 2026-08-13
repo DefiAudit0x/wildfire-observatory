@@ -84,6 +84,9 @@ class MeshService : Service() {
         // even when every attempt was retryable, making the stated 10-minute
         // TTL a lie. Expiry is now purely time-based.)
         const val MESSAGE_TTL_MS = 10 * 60 * 1000L
+        // Admission freshness policy: the signed origin timestamp must be
+        // within the message lifetime, with a small allowance for clock skew.
+        const val MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000L
         const val MAX_PENDING_MESSAGES = 200
         const val PEER_STALE_MS = 10 * 60 * 1000L
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
@@ -715,6 +718,23 @@ class MeshService : Service() {
                 return false
             }
             val payload = MeshWire.parseFrame(json) ?: return false
+
+            // Signature validity alone does not imply freshness. Reject old
+            // frames and timestamps too far in the future before spending CPU
+            // on PoW or cryptographic verification. The timestamp is signed,
+            // so this gate cannot be bypassed by a relay changing metadata.
+            val now = System.currentTimeMillis()
+            if (!MeshWire.isFreshTimestamp(
+                    payload.timestamp,
+                    now,
+                    MESSAGE_TTL_MS,
+                    MESSAGE_CLOCK_SKEW_MS
+                )
+            ) {
+                Log.w(TAG, "Rejecting stale or future-dated mesh frame")
+                updateReputation(endpointId, REPUTATION_MALFORMED_FRAME)
+                return false
+            }
 
             // Proof-of-Work verification: the nonce is carried in the payload
             // and checked at every hop — solving without transmitting/verifying

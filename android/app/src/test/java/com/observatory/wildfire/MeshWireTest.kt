@@ -21,7 +21,7 @@ class MeshWireTest {
         iv = "aXZWaXZJdg==",
         hopCount = 0,
         origEphemeralId = "eph1",
-        origPublicKey = "MIGBMBAGAoIBAQDA4qz0M43IvBKKbWw==",
+        origPublicKey = "a2V5",
         timestamp = 1_700_000_000_000L,
         signature = "c2lnbmF0dXJl",
         nonce = 7,
@@ -54,6 +54,18 @@ class MeshWireTest {
         // Magic + deflate flag + garbage: must fail, never read as raw.
         val corrupt = byteArrayOf(0x4D, 0x43, 0x00, 0x01, 0x02, 0x03, 0x04)
         assertNull(MeshWire.decompress(corrupt))
+    }
+
+    @Test
+    fun deflateStreamWithTrailingBytesIsRejected() {
+        val encoded = MeshWire.compress("strict-frame".toByteArray())
+        assertNull(MeshWire.decompress(encoded + byteArrayOf(0x55)))
+    }
+
+    @Test
+    fun invalidUtf8RawBodyIsRejected() {
+        val invalidUtf8 = byteArrayOf(0x4D, 0x43, 0x01, 0xC3.toByte(), 0x28)
+        assertNull(MeshWire.decompress(invalidUtf8))
     }
 
     @Test
@@ -123,8 +135,9 @@ class MeshWireTest {
         // 128KB+ payload b64 — allowed ceiling is MAX_DECOMPRESSED_BODY_BYTES*4/3
         val bigPayload = "A".repeat(256 * 1024 * 4 / 3 + 17)
         assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(payloadB64 = bigPayload))))
-        // Right at the boundary must be accepted (frame-level, not JSON-level)
-        val atBoundary = "A".repeat(256 * 1024 * 4 / 3)
+        // A large canonical Base64 payload near the boundary must be accepted
+        // (frame-level, not JSON-level).
+        val atBoundary = "AAAA".repeat(87_392)
         assertNotNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(payloadB64 = atBoundary))))
     }
 
@@ -202,6 +215,26 @@ class MeshWireTest {
     fun missingKeyMaterialIsRejected() {
         assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(origPublicKey = ""))))
         assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(signature = ""))))
+    }
+
+    @Test
+    fun malformedBase64FieldsAreRejectedAtParseBoundary() {
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(payloadB64 = "not-base64!"))))
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(iv = "not-base64!"))))
+        assertNull(MeshWire.parseFrame(MeshWire.frameToJson(sampleFrame().copy(signature = "not-base64!"))))
+    }
+
+    @Test
+    fun timestampFreshnessRejectsStaleAndTooFutureFrames() {
+        val now = 1_000_000L
+        val maxAge = 10 * 60 * 1000L
+        val skew = 2 * 60 * 1000L
+        assertTrue(MeshWire.isFreshTimestamp(now - maxAge, now, maxAge, skew))
+        assertFalse(MeshWire.isFreshTimestamp(now - maxAge - 1, now, maxAge, skew))
+        assertTrue(MeshWire.isFreshTimestamp(now + skew, now, maxAge, skew))
+        assertFalse(MeshWire.isFreshTimestamp(now + skew + 1, now, maxAge, skew))
+        assertFalse(MeshWire.isFreshTimestamp(Long.MIN_VALUE, now, maxAge, skew))
+        assertFalse(MeshWire.isFreshTimestamp(Long.MAX_VALUE, now, maxAge, skew))
     }
 
     // ---------- proof of work ----------
