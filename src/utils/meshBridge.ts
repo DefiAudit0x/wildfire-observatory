@@ -28,6 +28,7 @@ export interface PeerInfo {
 // (5 minutes, matching the native service), never "when the set got big" —
 // a burst of traffic must not wipe the whole replay window at once.
 const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
+const MAX_REPLAY_ENTRIES = 4096;
 const seenNonces = new Map<number, number>();
 const seenMessageHashes = new Map<string, number>();
 
@@ -82,7 +83,9 @@ async function initMeshInternal(): Promise<{ supported: boolean; deviceId: strin
     // Android native path
     try {
       const deviceId = bridge.getDeviceId();
-      return typeof deviceId === "string" && deviceId.length > 0
+      const supported = typeof bridge.isMeshSupported === "function" &&
+        bridge.isMeshSupported() === true;
+      return supported && typeof deviceId === "string" && deviceId.length > 0
         ? { supported: true, deviceId }
         : { supported: false, deviceId: "native-unavailable" };
     } catch {
@@ -92,25 +95,31 @@ async function initMeshInternal(): Promise<{ supported: boolean; deviceId: strin
 
   // Browser fallback: generate ephemeral key pairs
   try {
+    // Generate both pairs locally and commit the new generation only after
+    // every operation succeeds; a partial key rotation must not leave ECDH
+    // and ECDSA state from different generations.
     const previous = browserKeyPair;
-    browserKeyPair = await crypto.subtle.generateKey(
+    const nextKeyPair = await crypto.subtle.generateKey(
       { name: "ECDH", namedCurve: "P-256" },
       true,
       ["deriveKey", "deriveBits"]
     );
-    browserSignKey = await crypto.subtle.generateKey(
+    const nextSignKey = await crypto.subtle.generateKey(
       { name: "ECDSA", namedCurve: "P-256" },
       true,
       ["sign", "verify"]
     );
+    const exported = await crypto.subtle.exportKey("spki", nextKeyPair.publicKey);
+    const nextPublicKeyBase64 = arrayBufferToBase64(exported);
+
+    browserKeyPair = nextKeyPair;
+    browserSignKey = nextSignKey;
     // Retire the previous pair for in-transit decryption (audit round 12).
     if (previous) {
       retiredPrivateKeys.unshift(previous.privateKey);
       while (retiredPrivateKeys.length > 2) retiredPrivateKeys.pop();
     }
-
-    const exported = await crypto.subtle.exportKey("spki", browserKeyPair.publicKey);
-    browserPublicKeyBase64 = arrayBufferToBase64(exported);
+    browserPublicKeyBase64 = nextPublicKeyBase64;
     browserEphemeralId = generateId();
 
     return { supported: false, deviceId: browserEphemeralId };
@@ -779,7 +788,8 @@ function difficultyTarget(difficulty: number): bigint | null {
 function hasRequiredEncryptedMetadata(message: EncryptedMessage): boolean {
   return typeof message.messageId === "string" && message.messageId.length > 0 &&
     typeof message.type === "string" && message.type.length > 0 &&
-    typeof message.nonce === "number" && Number.isInteger(message.nonce) && message.nonce >= 0 &&
+    typeof message.nonce === "number" && Number.isInteger(message.nonce) &&
+    message.nonce >= -2147483648 && message.nonce <= 2147483647 &&
     typeof message.lat === "number" && Number.isFinite(message.lat) && message.lat >= -90 && message.lat <= 90 &&
     typeof message.lng === "number" && Number.isFinite(message.lng) && message.lng >= -180 && message.lng <= 180;
 }
@@ -901,20 +911,40 @@ function generateId(): string {
 // ANTI-REPLAY: track incoming message nonces
 // ========================
 
+function isNativeInt32(value: number): boolean {
+  return Number.isInteger(value) && value >= -2147483648 && value <= 2147483647;
+}
+
+function pruneReplayCache(cache: Map<unknown, number>, now: number): void {
+  const cutoff = now - ANTI_REPLAY_TTL_MS;
+  for (const [key, timestamp] of cache) {
+    if (timestamp <= cutoff) cache.delete(key);
+  }
+  while (cache.size > MAX_REPLAY_ENTRIES) {
+    let oldestKey: unknown;
+    let oldestTimestamp = Infinity;
+    for (const [key, timestamp] of cache) {
+      if (timestamp < oldestTimestamp) {
+        oldestKey = key;
+        oldestTimestamp = timestamp;
+      }
+    }
+    if (oldestKey === undefined) break;
+    cache.delete(oldestKey);
+  }
+}
+
 export function checkAndRecordNonce(nonce: number): boolean {
   // DEPRECATED: use checkAndRecordMessageNonce(messageId, nonce) instead.
   // Kept for backward compatibility but nonce-only replay protection is
   // weaker than the native messageId+nonce scheme.
+  if (!isNativeInt32(nonce)) return false;
   const now = Date.now();
   if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - ANTI_REPLAY_TTL_MS) {
     return false;
   }
   seenNonces.set(nonce, now);
-  if (seenNonces.size > 5000) {
-    for (const [k, ts] of seenNonces) {
-      if (ts <= now - ANTI_REPLAY_TTL_MS) seenNonces.delete(k);
-    }
-  }
+  pruneReplayCache(seenNonces, now);
   return true;
 }
 
@@ -924,31 +954,27 @@ export function checkAndRecordNonce(nonce: number): boolean {
  * and nonce match a previously seen pair within the TTL window.
  */
 export function checkAndRecordMessageNonce(messageId: string, nonce: number): boolean {
-  if (typeof messageId !== "string" || messageId.length === 0 || !Number.isInteger(nonce) || nonce < 0) return false;
+  if (typeof messageId !== "string" || messageId.length === 0 || !isNativeInt32(nonce)) return false;
   const now = Date.now();
-  const key = `${messageId}:${nonce}`;
+  // Match MeshWire.seenMessageHash framing: length-prefix both fields so
+  // distinct (messageId, nonce) pairs cannot collide by concatenation.
+  const key = `nonce:${messageId.length}:${messageId}:${String(nonce).length}:${nonce}`;
   if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
     return false;
   }
   seenMessageHashes.set(key, now);
-  if (seenMessageHashes.size > 5000) {
-    for (const [k, ts] of seenMessageHashes) {
-      if (ts <= now - ANTI_REPLAY_TTL_MS) seenMessageHashes.delete(k);
-    }
-  }
+  pruneReplayCache(seenMessageHashes, now);
   return true;
 }
 
 export function checkAndRecordMessageHash(hash: string): boolean {
+  if (typeof hash !== "string" || hash.length === 0) return false;
   const now = Date.now();
-  if (seenMessageHashes.has(hash) && seenMessageHashes.get(hash)! > now - ANTI_REPLAY_TTL_MS) {
+  const key = `hash:${hash}`;
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
     return false;
   }
-  seenMessageHashes.set(hash, now);
-  if (seenMessageHashes.size > 5000) {
-    for (const [k, ts] of seenMessageHashes) {
-      if (ts <= now - ANTI_REPLAY_TTL_MS) seenMessageHashes.delete(k);
-    }
-  }
+  seenMessageHashes.set(key, now);
+  pruneReplayCache(seenMessageHashes, now);
   return true;
 }

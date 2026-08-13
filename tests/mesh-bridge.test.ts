@@ -51,4 +51,21 @@ describe("meshBridge anti-replay TTL", () => {
     // A different nonce is a different authenticated message instance.
     expect(checkAndRecordMessageNonce("browser-regression-message", 78)).toBe(true);
   });
+
+  it("accepts the signed int32 nonce range used by Native", async () => {
+    const { checkAndRecordMessageNonce } = await import("../src/utils/meshBridge");
+    expect(checkAndRecordMessageNonce("negative-native-nonce", -123456)).toBe(true);
+    expect(checkAndRecordMessageNonce("negative-native-nonce", -123456)).toBe(false);
+  });
+
+  it("bounds the message replay cache by evicting the oldest entries", async () => {
+    const { checkAndRecordMessageNonce } = await import("../src/utils/meshBridge");
+    const first = "cache-bound-first";
+    expect(checkAndRecordMessageNonce(first, 1)).toBe(true);
+    for (let i = 0; i < 5000; i++) {
+      expect(checkAndRecordMessageNonce(`cache-bound-${i}`, i + 2)).toBe(true);
+    }
+    // The cache is bounded at 4096, so the oldest entry is admitted again.
+    expect(checkAndRecordMessageNonce(first, 1)).toBe(true);
+  });
 });
