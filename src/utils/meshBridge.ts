@@ -315,7 +315,8 @@ async function browserEncrypt(
   peerPublicKeyBase64: string,
   plaintext: string,
   lat: number = 0,
-  lng: number = 0
+  lng: number = 0,
+  type: string = "report"
 ): Promise<EncryptedMessage | null> {
   try {
     if (!browserKeyPair || !browserSignKey) return null;
@@ -368,7 +369,7 @@ async function browserEncrypt(
       new Uint8Array(ciphertext),
       new Uint8Array(iv),
       messageId,
-      "report",
+      type,
       0,
       browserEphemeralId,
       arrayBufferToBase64(exportedPub),
@@ -394,7 +395,7 @@ async function browserEncrypt(
       lng,
       nonce,
       messageId,
-      type: "report",
+      type,
       hopCount: 0,
       signatureKey: arrayBufferToBase64(exportedSignPub),
     };
@@ -412,12 +413,13 @@ async function browserDecrypt(
     if (!browserKeyPair) return null;
 
     if (!hasRequiredEncryptedMetadata(encrypted)) return null;
+    if (typeof encrypted.signatureKey !== "string" || encrypted.signatureKey.length === 0) return null;
     if (peerPublicKeyBase64 && encrypted.senderPublicKey !== peerPublicKeyBase64) return null;
 
     // Signature verification uses the sender's ECDSA key carried in the
     // fallback envelope. The expected peer ECDH key, when supplied, is also
     // checked above so the envelope cannot silently decrypt as another peer.
-    const verifyPubKeyB64 = encrypted.signatureKey || encrypted.senderPublicKey;
+    const verifyPubKeyB64 = encrypted.signatureKey;
 
     // Import sender's public key
     const peerPubKey = await crypto.subtle.importKey(
@@ -460,6 +462,13 @@ async function browserDecrypt(
 
     if (!valid) {
       console.warn("[MeshBridge] ECDSA signature verification failed!");
+      return null;
+    }
+
+    // Authenticate before recording replay state; otherwise forged frames
+    // could poison the cache and block a legitimate message.
+    if (!checkAndRecordMessageNonce(encrypted.messageId!, encrypted.nonce!)) {
+      console.warn("[MeshBridge] Replay detected");
       return null;
     }
 
