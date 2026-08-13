@@ -19,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.collections.set
 import kotlin.math.min
-import kotlin.random.Random
+import java.security.SecureRandom
 
 /**
  * Secure Mesh Service with:
@@ -113,7 +113,8 @@ class MeshService : Service() {
         // an authenticated flooding sender can truncate the replay window by
         // outrunning the cap — the cap caps MEMORY, not the replay policy.
         const val MAX_SEEN_HASHES = 4096
-
+        // Secure randomness for protocol nonces and identifiers.
+        private val protocolRandom = SecureRandom()
         // Device records (TOFU identity — audit round 12): reputation and
         // first/last-seen are anchored on the peer's ADVERTISED PUBLIC KEY,
         // not on the transport endpointId, which is a Nearby session id that
@@ -795,8 +796,10 @@ class MeshService : Service() {
             // let a forged invalid frame poison the cache and block the valid
             // one (audit). Only authenticated frames may enter the seen-cache.
             val msgHash = MeshWire.seenMessageHash(payload.messageId, payload.nonce)
-            if (seenMessageHashes.containsKey(msgHash)) return false
-            seenMessageHashes[msgHash] = System.currentTimeMillis()
+            val seenAt = System.currentTimeMillis()
+            // Atomic admission prevents two concurrent Nearby callbacks from
+            // accepting the same authenticated frame at the same time.
+            if (seenMessageHashes.putIfAbsent(msgHash, seenAt) != null) return false
             if (seenMessageHashes.size > MAX_SEEN_HASHES) {
                 // Unbounded cache = untrusted growth window (audit): evict
                 // the OLDEST entry as soon as the cap is exceeded.
@@ -900,7 +903,7 @@ class MeshService : Service() {
             return
         }
         val messageId = UUID.randomUUID().toString()
-        val nonce = Random.nextInt()
+        val nonce = protocolRandom.nextInt()
 
         // ONE snapshot for everything (audit round 11): the PoW challenge,
         // the queued origEphemeralId/origPublicKey and the eventual E2EE
@@ -910,14 +913,12 @@ class MeshService : Service() {
         val snapshot = CryptoEngine.getEphemeralSnapshot()
 
         // Lightweight Proof-of-Work (anti-spam) — solved here, transmitted in
-        // the payload, verified at every receiving hop. Budget exhaustion is
-        // pathological (difficulty 8 averages 256 tries): the message is still
-        // queued with an unsolvable nonce rather than crashing the broadcast
-        // (audit: a thrown SecurityException used to escape this path).
+        // the payload, verified at every receiving hop. Never enqueue a frame
+        // that peers are guaranteed to reject if the local solve budget fails.
         val powPrefix = MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId)
         val powNonce = MeshWire.ProofOfWork.solve(powPrefix, PO_W_DIFFICULTY) ?: run {
-            Log.w(TAG, "Proof-of-work budget exhausted; frame will be rejected by peers")
-            -1
+            Log.w(TAG, "Proof-of-work budget exhausted; dropping frame locally")
+            return
         }
 
         // Eviction policy: entries that have never been sent to anyone

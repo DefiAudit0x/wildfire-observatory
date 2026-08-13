@@ -13,7 +13,6 @@ import javax.crypto.KeyAgreement
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.random.Random
 
 /**
  * Multi-layer encryption engine for mesh messaging (audit round):
@@ -33,6 +32,7 @@ import kotlin.random.Random
 object CryptoEngine {
 
     private const val AES_KEY_SIZE = 256
+    private val protocolRandom = SecureRandom()
     private const val GCM_IV_LENGTH = 12
     private const val GCM_TAG_LENGTH = 128
     private const val EC_ALGORITHM = "EC"
@@ -367,11 +367,11 @@ object CryptoEngine {
         val aesKey = deriveAESKey(sharedSecret)
 
         // Encrypt
-        val iv = ByteArray(GCM_IV_LENGTH).apply { Random.nextBytes(this) }
+        val iv = ByteArray(GCM_IV_LENGTH).apply { protocolRandom.nextBytes(this) }
         val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
         val ciphertext = cipher.doFinal(payload)
-        val nonce = Random.nextInt()
+        val nonce = protocolRandom.nextInt()
 
         // ONE timestamp for both the signature and the message (audit): a
         // second now-call between the two would desync the signed value from
@@ -550,6 +550,6 @@ object CryptoEngine {
 
     private fun generateRandomId(): String {
         val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return (1..16).map { chars[Random.nextInt(chars.length)] }.joinToString("")
+        return (1..16).map { chars[protocolRandom.nextInt(chars.length)] }.joinToString("")
     }
 }

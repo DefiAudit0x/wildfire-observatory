@@ -109,30 +109,27 @@ object MeshWire {
         }
         return try {
             val deflater = Deflater(Deflater.BEST_COMPRESSION)
-            deflater.setInput(data)
-            deflater.finish()
-            var buf = ByteArray(data.size * 2 + 1024)
-            var off = 0
-            while (!deflater.finished()) {
-                if (off == buf.size) buf = buf.copyOf(buf.size * 2)
-                val len = deflater.deflate(buf, off, buf.size - off)
-                if (len == 0) {
-                    // Audit: a stalled deflater used to break out of the loop,
-                    // emitting a TRUNCATED deflate stream that the receiver
-                    // can never inflate — and the RAW fallback never ran,
-                    // because nothing threw. Treat it as a compression failure
-                    // so the payload goes out under FLAG_RAW instead.
-                    deflater.end()
-                    throw IllegalStateException("Deflater stalled with output pending")
+            try {
+                deflater.setInput(data)
+                deflater.finish()
+                val out = ByteArrayOutputStream(minOf(data.size + 1024, MAX_COMPRESSED_BODY_BYTES))
+                val buf = ByteArray(8192)
+                while (!deflater.finished()) {
+                    val len = deflater.deflate(buf)
+                    if (len == 0) {
+                        // A stalled deflater would emit a truncated stream;
+                        // treat it as a compression failure so RAW fallback runs.
+                        throw IllegalStateException("Deflater stalled with output pending")
+                    }
+                    out.write(buf, 0, len)
+                    if (out.size() > MAX_COMPRESSED_BODY_BYTES) {
+                        throw IllegalArgumentException("Compressed frame exceeds wire limit")
+                    }
                 }
-                off += len
-                if (off > MAX_COMPRESSED_BODY_BYTES) {
-                    deflater.end()
-                    throw IllegalArgumentException("Compressed frame exceeds wire limit")
-                }
+                COMPRESS_MAGIC + byteArrayOf(FLAG_DEFLATE) + out.toByteArray()
+            } finally {
+                deflater.end()
             }
-            deflater.end()
-            COMPRESS_MAGIC + byteArrayOf(FLAG_DEFLATE) + buf.copyOf(off)
         } catch (e: Exception) {
             COMPRESS_MAGIC + byteArrayOf(FLAG_RAW) + data
         }
