@@ -137,10 +137,12 @@ class WebAppInterface(
     fun encryptForPeer(peerPublicKey: String, plaintext: String, lat: Double, lng: Double): String {
         if (!isTrustedOrigin()) return ""
         if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) return ""
+        val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
+        if (plaintextBytes.size > MeshService.MAX_PLAINTEXT_BYTES) return ""
         return try {
             val secureMsg = CryptoEngine.encryptForPeer(
                 peerPublicKeyBase64 = peerPublicKey,
-                payload = plaintext.toByteArray(Charsets.UTF_8),
+                payload = plaintextBytes,
                 lat = lat,
                 lng = lng
             )
@@ -172,6 +174,12 @@ class WebAppInterface(
         if (!isTrustedOrigin()) return ""
         return try {
             val json = JSONObject(jsonMessage)
+            if (!json.has("lat") || !json.has("lng") || !json.has("type")) return ""
+            val lat = json.getDouble("lat")
+            val lng = json.getDouble("lng")
+            val type = json.getString("type")
+            if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) return ""
+            if (type !in ALLOWED_MESSAGE_TYPES) return ""
             val msg = CryptoEngine.SecureMessage(
                 ephemeralId = json.getString("ephemeralId"),
                 senderPublicKey = json.getString("senderPublicKey"),
@@ -179,15 +187,12 @@ class WebAppInterface(
                 iv = json.optString("iv", ""),
                 signature = json.getString("signature"),
                 timestamp = json.getLong("timestamp"),
-                lat = json.optDouble("lat", 0.0),
-                lng = json.optDouble("lng", 0.0),
+                lat = lat,
+                lng = lng,
                 nonce = json.getInt("nonce"),
-                // Signed-metadata fields (audit): absent (sender is an older
-                // web layer) → defaults to empty/0, which is what the sender
-                // signed over; present → verified against them.
-                messageId = json.optString("messageId", ""),
-                type = json.optString("type", ""),
-                hopCount = json.optInt("hopCount", 0)
+                messageId = json.getString("messageId"),
+                type = type,
+                hopCount = json.getInt("hopCount")
             )
             val decrypted = CryptoEngine.decryptFromPeer(msg, peerPublicKey)
             if (decrypted != null) String(decrypted, Charsets.UTF_8) else ""

@@ -488,15 +488,27 @@ function installNativeMessageHandler(): void {
   if ((window as any).__meshNativeHandlerInstalled) return;
 
   (window as any).onMeshMessage = (message: string) => {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(message);
+    } catch {
+      messageListeners.forEach((listener) => listener(message, "unknown", 0));
+      return;
+    }
+    const peerId = parsed.peerId ?? "unknown";
+    const validPeerId = typeof peerId === "string" ? peerId : "unknown";
+    let reputation = 0;
+    try {
+      reputation = bridge.getPeerReputation(validPeerId);
+    } catch {
+      // A stale bridge must not prevent delivery to web listeners.
+    }
+    const payload = parsed.payload ?? message;
     messageListeners.forEach((listener) => {
       try {
-        const parsed = JSON.parse(message);
-        const peerId = parsed.peerId ?? "unknown";
-        const validPeerId = typeof peerId === "string" ? peerId : "unknown";
-        const reputation = bridge.getPeerReputation(validPeerId);
-        listener(parsed.payload ?? message, validPeerId, reputation);
+        listener(payload, validPeerId, reputation);
       } catch {
-        listener(message, "unknown", 0);
+        // One listener must not block the remaining subscribers.
       }
     });
   };

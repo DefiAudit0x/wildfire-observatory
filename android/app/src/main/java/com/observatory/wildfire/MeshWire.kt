@@ -66,7 +66,8 @@ object MeshWire {
     private const val MAX_PUBLIC_KEY_LEN = 512
     private const val MAX_IV_LEN = 64
     private const val MAX_SIGNATURE_LEN = 512
-    private const val MAX_PAYLOAD_B64_LEN = MAX_DECOMPRESSED_BODY_BYTES * 4 / 3 + 16
+    private const val GCM_TAG_BYTES = 16
+    private const val MAX_PAYLOAD_B64_LEN = (MAX_DECOMPRESSED_BODY_BYTES + GCM_TAG_BYTES) * 4 / 3 + 24
 
     /**
      * The canonical 16-field mesh frame. hopCount is 0 for EVERY valid frame
@@ -100,6 +101,9 @@ object MeshWire {
      * decoded).
      */
     fun compress(data: ByteArray): ByteArray {
+        require(data.size <= MAX_DECOMPRESSED_BODY_BYTES) {
+            "Frame body exceeds the maximum uncompressed size"
+        }
         return try {
             val deflater = Deflater(Deflater.BEST_COMPRESSION)
             deflater.setInput(data)
@@ -119,6 +123,10 @@ object MeshWire {
                     throw IllegalStateException("Deflater stalled with output pending")
                 }
                 off += len
+                if (off > MAX_COMPRESSED_BODY_BYTES) {
+                    deflater.end()
+                    throw IllegalArgumentException("Compressed frame exceeds wire limit")
+                }
             }
             deflater.end()
             COMPRESS_MAGIC + byteArrayOf(FLAG_DEFLATE) + buf.copyOf(off)
@@ -144,7 +152,7 @@ object MeshWire {
         val raw = data[COMPRESS_MAGIC.size] == FLAG_RAW
         if (data[COMPRESS_MAGIC.size] != FLAG_DEFLATE && !raw) return null
         val body = data.copyOfRange(COMPRESS_MAGIC.size + 1, data.size)
-        if (body.size > MAX_COMPRESSED_BODY_BYTES) return null
+        if (!raw && body.size > MAX_COMPRESSED_BODY_BYTES) return null
         return try {
             if (raw) {
                 if (body.size > MAX_DECOMPRESSED_BODY_BYTES) return null

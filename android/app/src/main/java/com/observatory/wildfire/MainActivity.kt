@@ -14,7 +14,10 @@ import android.net.NetworkRequest
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.util.Log
 import android.webkit.*
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -23,6 +26,7 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 class MainActivity : AppCompatActivity() {
 
@@ -41,6 +45,9 @@ class MainActivity : AppCompatActivity() {
                 add(Manifest.permission.BLUETOOTH_ADVERTISE)
                 add(Manifest.permission.BLUETOOTH_CONNECT)
             }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
         }
 
         // PWA URL — change to your deployment URL
@@ -50,6 +57,10 @@ class MainActivity : AppCompatActivity() {
     private var meshService: MeshService? = null
     private var meshBound = false
     private var meshInitialized = false
+    private var meshBindingInProgress = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val activeNetworks = ConcurrentHashMap.newKeySet<Network>()
+    private var rebindRunnable: Runnable? = null
 
     // Audit round 11: the message listener added on bind is KEPT as a field so
     // onDestroy can remove THAT EXACT instance. The old code called
@@ -80,7 +91,17 @@ class MainActivity : AppCompatActivity() {
 
     private val meshConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            val binder = service as MeshService.LocalBinder
+            val binder = service as? MeshService.LocalBinder
+            if (binder == null) {
+                meshBindingInProgress = false
+                meshInitialized = false
+                dispatchMeshState("failed")
+                scheduleMeshRebind()
+                return
+            }
+            meshBindingInProgress = false
+            rebindRunnable?.let(mainHandler::removeCallbacks)
+            rebindRunnable = null
             // Remove a previous listener before replacing the bound service
             // instance. This prevents listener accumulation across rebinds.
             meshMessageListener?.let { previous ->
@@ -111,7 +132,9 @@ class MainActivity : AppCompatActivity() {
             meshBound = false
             meshService = null
             meshInitialized = false
+            meshBindingInProgress = false
             dispatchMeshState("disconnected")
+            scheduleMeshRebind()
         }
     }
 
@@ -129,10 +152,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun initializeMesh() {
-        if (meshInitialized) return
-        meshInitialized = true
-        bindMeshService()
+        if (meshInitialized || meshBindingInProgress) return
+        meshBindingInProgress = true
         dispatchMeshState("starting")
+        if (!bindMeshService()) {
+            meshBindingInProgress = false
+            meshInitialized = false
+            dispatchMeshState("failed")
+            scheduleMeshRebind()
+        }
+    }
+
+    private fun scheduleMeshRebind() {
+        if (isFinishing || isDestroyed || rebindRunnable != null) return
+        val retry = Runnable {
+            rebindRunnable = null
+            initializeMesh()
+        }
+        rebindRunnable = retry
+        mainHandler.postDelayed(retry, 5_000L)
     }
 
     override fun onDestroy() {
@@ -155,6 +193,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         connectivityCallback = null
+        rebindRunnable?.let(mainHandler::removeCallbacks)
+        rebindRunnable = null
+        mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -248,10 +289,8 @@ class MainActivity : AppCompatActivity() {
             "AndroidBridge"
         )
 
-        // Load PWA
-        webView.loadUrl(APP_URL)
-
-        // Inject mesh config on page load
+        // Install the progress observer before starting navigation so a fast
+        // load cannot finish before the bridge injection callback exists.
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (newProgress == 100) {
@@ -259,19 +298,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+
+        // Load PWA after all WebView callbacks are installed.
+        webView.loadUrl(APP_URL)
     }
 
     private fun injectMeshBridge() {
+        val deviceIdJs = JSONObject.quote(stableDeviceId())
         val js = """
         (function() {
-            // Signal to web layer that mesh is available
-            window.dispatchEvent(new CustomEvent('meshReady', { 
-                detail: { deviceId: '${stableDeviceId()}' } 
+            if (window.__meshBridgeInjected) return;
+            window.__meshBridgeInjected = true;
+            window.dispatchEvent(new CustomEvent('meshReady', {
+                detail: { deviceId: $deviceIdJs }
             }));
-            
-            // Listen for incoming messages from MeshService
-            // Read window.onMeshMessage at EVENT TIME, not injection time,
-            // so late subscribers (React useEffect) are not missed.
             window.addEventListener('meshMessage', function(e) {
                 const handler = window.onMeshMessage;
                 if (handler) handler(e.detail);
@@ -281,13 +321,19 @@ class MainActivity : AppCompatActivity() {
         webView.evaluateJavascript(js, null)
     }
 
-    private fun bindMeshService() {
+    private fun bindMeshService(): Boolean {
         val intent = Intent(this, MeshService::class.java)
-        bindService(intent, meshConnection, Context.BIND_AUTO_CREATE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            startService(intent)
+        return try {
+            val bound = bindService(intent, meshConnection, Context.BIND_AUTO_CREATE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            bound
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Unable to bind MeshService", e)
+            false
         }
     }
 
@@ -328,7 +374,13 @@ class MainActivity : AppCompatActivity() {
             if (needsRationale(needed)) {
                 AlertDialog.Builder(this)
                     .setTitle("Permissions Required")
-                    .setMessage("Bluetooth mesh networking requires Location + Bluetooth permissions for emergency peer-to-peer communication.")
+                    .setMessage(
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            "Bluetooth and nearby-device permissions are required for emergency peer-to-peer communication."
+                        } else {
+                            "Location and Bluetooth permissions are required for emergency peer-to-peer communication."
+                        }
+                    )
                     .setPositiveButton("Grant") { _, _ ->
                         ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
                     }
@@ -370,23 +422,13 @@ class MainActivity : AppCompatActivity() {
         if (connectivityCallback != null) return // only one monitor per activity
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                runOnUiThread {
-                    if (::webView.isInitialized) {
-                        webView.evaluateJavascript(
-                            "window.dispatchEvent(new Event('online'));", null
-                        )
-                    }
-                }
+                activeNetworks.add(network)
+                dispatchConnectivityState(activeNetworks.isNotEmpty())
             }
 
             override fun onLost(network: Network) {
-                runOnUiThread {
-                    if (::webView.isInitialized) {
-                        webView.evaluateJavascript(
-                            "window.dispatchEvent(new Event('offline'));", null
-                        )
-                    }
-                }
+                activeNetworks.remove(network)
+                dispatchConnectivityState(activeNetworks.isNotEmpty())
             }
         }
         connectivityCallback = callback
@@ -394,5 +436,21 @@ class MainActivity : AppCompatActivity() {
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
         cm.registerNetworkCallback(request, callback)
+        cm.activeNetwork?.let { network ->
+            if (cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true) {
+                activeNetworks.add(network)
+            }
+        }
+        dispatchConnectivityState(activeNetworks.isNotEmpty())
+    }
+
+    private fun dispatchConnectivityState(online: Boolean) {
+        if (!::webView.isInitialized) return
+        val event = if (online) "online" else "offline"
+        runOnUiThread {
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript("window.dispatchEvent(new Event('$event'));", null)
+            }
+        }
     }
 }

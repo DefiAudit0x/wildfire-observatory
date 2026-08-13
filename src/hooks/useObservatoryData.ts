@@ -398,6 +398,25 @@ export function useObservatoryData() {
 
   // Server push events (report created/updated/deleted, safezones changed) → refresh
   const liveRefreshTimerRef = useRef<number | null>(null);
+  const liveRefreshInFlightRef = useRef(false);
+  const liveRefreshPendingRef = useRef(false);
+  const refreshFromLiveEvent = useCallback(async () => {
+    if (liveRefreshInFlightRef.current) {
+      liveRefreshPendingRef.current = true;
+      return;
+    }
+    liveRefreshInFlightRef.current = true;
+    try {
+      await fetchData();
+    } finally {
+      liveRefreshInFlightRef.current = false;
+      if (liveRefreshPendingRef.current) {
+        liveRefreshPendingRef.current = false;
+        void refreshFromLiveEvent();
+      }
+    }
+  }, [fetchData]);
+
   useLiveEvents((event) => {
     if (["report:new", "report:update", "report:delete", "safezones:changed"].includes(event.type)) {
       if (liveRefreshTimerRef.current !== null) {
@@ -407,7 +426,7 @@ export function useObservatoryData() {
       // server-side event cannot be skipped by a leading-edge throttle.
       liveRefreshTimerRef.current = window.setTimeout(() => {
         liveRefreshTimerRef.current = null;
-        void fetchData();
+        void refreshFromLiveEvent();
       }, 3000);
     }
   });
@@ -599,10 +618,6 @@ export function useObservatoryData() {
         const result: any = await res.json();
         const status = result?.status;
         const consensusCount = Number(result?.consensusCount);
-        // Audit B11: state-machine validation — only allow pending→verified or pending→rejected transitions.
-        const validTransition = (prevStatus: string, newStatus: string) =>
-          (prevStatus === "pending" && (newStatus === "verified" || newStatus === "rejected")) ||
-          (prevStatus === "verified" && newStatus === "rejected");
         if (
           isReportStatus(status) &&
           Number.isInteger(consensusCount) &&
