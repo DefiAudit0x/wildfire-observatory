@@ -204,14 +204,14 @@ function badgeRateLimited(badgeCode: string): boolean {
 const createReportSchema = z.object({
   lat: z.coerce.number().min(-90).max(90),
   lng: z.coerce.number().min(-180).max(180),
-  locationName: z.string().min(3).max(200),
-  wilaya: z.string().min(3).max(200),
-  description: z.string().min(10).max(2000),
+  locationName: z.string().trim().min(3).max(200),
+  wilaya: z.string().trim().min(3).max(200),
+  description: z.string().trim().min(10).max(2000),
   severity: z.enum(["low", "medium", "high", "critical"]).default("medium"),
-  reporterName: z.string().max(120).optional(),
-  reporterPhone: z.string().max(30).optional(),
+  reporterName: z.string().trim().max(120).optional(),
+  reporterPhone: z.string().trim().max(30).refine((value) => !value || /^\+?[0-9][0-9 ()-]{5,29}$/.test(value), "Invalid phone number").optional(),
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
-  reporterBadgeCode: z.string().max(20).optional(),
+  reporterBadgeCode: z.string().trim().max(20).optional(),
   deviceId: z.string().max(128).optional(),
   clientGeneratedId: z.string().min(8).max(64).optional(),
   image: z
@@ -399,8 +399,10 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
             aiComments: v.aiComments,
             suggestedSeverity: v.suggestedSeverity,
           };
+          // AI is advisory only: it may suggest severity, but it must never
+          // grant operational verification by itself. Verified status comes
+          // from server-side trust/consensus or an explicit operator action.
           if (v.isVerified && v.confidence >= 75) {
-            newReport.status = "verified";
             newReport.severity = v.suggestedSeverity;
           }
         }

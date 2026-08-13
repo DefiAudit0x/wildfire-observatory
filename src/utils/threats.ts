@@ -9,40 +9,64 @@ export interface ThreatSource {
   clusterId?: string;
   satelliteId?: string;
   confidence?: number;
+  status?: Report["status"];
   distanceKm: number;
 }
 
 export interface ThreatAnalysis {
-  /** Closest active threat (citizen report or high-confidence satellite hotspot). */
+  /** Closest fresh threat source (citizen report or high-confidence satellite hotspot). */
   nearest: ThreatSource | null;
-  /** Distinct active fire clusters within 10 km (reports are grouped by clusterId — one fire, not one report). */
+  /** Distinct pending/verified report clusters within 10 km (legacy aggregate). */
   nearbyIncidents: number;
-  /** All active report/satellite sources within 10 km. */
+  /** Distinct verified report clusters within 10 km. */
+  nearbyVerifiedIncidents: number;
+  /** Distinct pending report clusters within 10 km. */
+  nearbyPendingIncidents: number;
+  /** All fresh active report/satellite sources within 10 km. */
   nearbySources: ThreatSource[];
 }
 
+export const THREAT_MAX_AGE_MS = 3 * 60_000;
+export const THREAT_MAX_FUTURE_SKEW_MS = 2 * 60_000;
 const NEARBY_RADIUS_KM = 10;
 const SATELLITE_MIN_CONFIDENCE = 70;
+
+/** A threat timestamp must be parseable, recent, and not materially from the future. */
+export function isFreshThreatTimestamp(value: unknown, now = Date.now()): boolean {
+  if (typeof value !== "string") return false;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return false;
+  const age = now - timestamp;
+  return age >= -THREAT_MAX_FUTURE_SKEW_MS && age <= THREAT_MAX_AGE_MS;
+}
 
 /**
  * Single source of truth for "how close is the danger".
  * Used by the Home emergency banner and the distance-to-fire computations:
- * citizen reports (pending/verified, clustered) + satellite hotspots >= 70%.
+ * fresh citizen reports (pending/verified, clustered) + fresh satellite
+ * hotspots >= 70% confidence.
  */
 export function getNearestActiveThreat(opts: {
   lat: number;
   lng: number;
   reports: Report[];
   satellites?: SatelliteHotspot[];
+  now?: number;
 }): ThreatAnalysis {
-  const { lat, lng, reports, satellites = [] } = opts;
+  const { lat, lng, reports, satellites = [], now = Date.now() } = opts;
 
   // NaN invariant enforcement at the boundary: non-finite coordinates are
   // never measured (NaN distances break every comparison downstream — a NaN
   // "nearest" source would win reduce() and poison the banner), and a NaN
   // observer position yields an empty analysis, not garbage distances.
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-    return { nearest: null, nearbyIncidents: 0, nearbySources: [] };
+    return {
+      nearest: null,
+      nearbyIncidents: 0,
+      nearbyVerifiedIncidents: 0,
+      nearbyPendingIncidents: 0,
+      nearbySources: [],
+    };
   }
 
   const sources: ThreatSource[] = [
@@ -50,6 +74,7 @@ export function getNearestActiveThreat(opts: {
       .filter(
         (r) =>
           (r.status === "pending" || r.status === "verified") &&
+          isFreshThreatTimestamp(r.timestamp, now) &&
           Number.isFinite(r.lat) &&
           Number.isFinite(r.lng)
       )
@@ -59,12 +84,14 @@ export function getNearestActiveThreat(opts: {
         kind: "report" as const,
         reportId: r.id,
         clusterId: r.clusterId,
+        status: r.status,
         distanceKm: haversineKm(lat, lng, r.lat, r.lng),
       })),
     ...satellites
       .filter(
         (s) =>
           s.confidence >= SATELLITE_MIN_CONFIDENCE &&
+          isFreshThreatTimestamp(s.scanTime, now) &&
           Number.isFinite(s.lat) &&
           Number.isFinite(s.lng)
       )
@@ -79,18 +106,40 @@ export function getNearestActiveThreat(opts: {
   ];
 
   if (sources.length === 0) {
-    return { nearest: null, nearbyIncidents: 0, nearbySources: [] };
+    return {
+      nearest: null,
+      nearbyIncidents: 0,
+      nearbyVerifiedIncidents: 0,
+      nearbyPendingIncidents: 0,
+      nearbySources: [],
+    };
   }
 
   const nearbySources = sources.filter((s) => s.distanceKm <= NEARBY_RADIUS_KM);
+  const reportSources = nearbySources.filter((s) => s.kind === "report");
   const incidentKeys = new Set(
-    nearbySources
-      .filter((s) => s.kind === "report")
+    reportSources.map((s) => s.clusterId || s.reportId || "").filter(Boolean)
+  );
+  const verifiedIncidentKeys = new Set(
+    reportSources
+      .filter((s) => s.status === "verified")
+      .map((s) => s.clusterId || s.reportId || "")
+      .filter(Boolean)
+  );
+  const pendingIncidentKeys = new Set(
+    reportSources
+      .filter((s) => s.status === "pending")
       .map((s) => s.clusterId || s.reportId || "")
       .filter(Boolean)
   );
 
   const nearest = sources.reduce((a, b) => (b.distanceKm < a.distanceKm ? b : a));
 
-  return { nearest, nearbyIncidents: incidentKeys.size, nearbySources };
+  return {
+    nearest,
+    nearbyIncidents: incidentKeys.size,
+    nearbyVerifiedIncidents: verifiedIncidentKeys.size,
+    nearbyPendingIncidents: pendingIncidentKeys.size,
+    nearbySources,
+  };
 }

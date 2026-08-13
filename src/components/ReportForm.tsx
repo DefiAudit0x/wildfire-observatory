@@ -3,6 +3,8 @@ import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "luc
 import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/geo";
 import { geoErrorMessage } from "../hooks/useGeolocation";
 import { setReporterBadge } from "../utils/badgeStore";
+import { isFreshThreatTimestamp } from "../utils/threats";
+import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -169,6 +171,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
   // Compass & Camera states
   const [isCameraOpen, setIsCameraOpen] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState<"closed" | "active" | "unavailable">("closed");
   const [stream, setStream] = useState<MediaStream | null>(null);
   // Sensor values are null until a real sensor delivers them — the form never
   // fabricates a heading/pitch (no fake compass numbers stamped on photos).
@@ -181,7 +184,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
   // --- NEW ENHANCED STATES FOR SYSTEM ROBUSTNESS ---
   const [gpsMode, setGpsMode] = useState<"adaptive" | "continuous">("adaptive");
-  const [isOffline, setIsOffline] = useState(false); // Can be toggled manually or via browser status
+  const allowOfflineSimulation = import.meta.env.DEV;
+  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
+  const [isOfflineSimulation, setIsOfflineSimulation] = useState(false);
   const [offlineDrafts, setOfflineDrafts] = useState<any[]>([]);
   const [edgeAiStatus, setEdgeAiStatus] = useState<{
     success: boolean;
@@ -202,19 +207,22 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const syncingDrafts = useRef(false);
+  const submittingRef = useRef(false);
   const isArabic = lang === "ar";
 
   // Load offline drafts on mount (download of connectivity is handled below)
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("offline_drafts");
-      if (stored) {
-        setOfflineDrafts(JSON.parse(stored));
-      }
-    } catch (e) {
-      console.error("Failed to load drafts", e);
-    }
-
+    useEffect(() => {
+    void loadOfflineDrafts()
+      .then((stored) => {
+        setOfflineDrafts(stored.map((draft) => ({
+          ...draft,
+          schemaVersion: draft.schemaVersion ?? 1,
+          createdAt: draft.createdAt ?? draft.timestamp ?? new Date().toISOString(),
+          queuedAt: draft.queuedAt ?? draft.timestamp ?? new Date().toISOString(),
+          retryCount: Number.isFinite(draft.retryCount) ? draft.retryCount : 0,
+        })));
+      })
+      .catch((error: unknown) => console.error("Failed to load drafts", error));
     const handleMeshOnline = () => setIsOffline(false);
     window.addEventListener("mesh:online", handleMeshOnline);
     return () => {
@@ -234,9 +242,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   // geofence): suggest the wilaya on GPS fix, warn on country mismatch so the
   // submission is not silently rejected by the server after the fact.
   useEffect(() => {
-    const parsedLat = parseFloat(lat);
-    const parsedLng = parseFloat(lng);
-    if (isNaN(parsedLat) || isNaN(parsedLng)) {
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
       setWilayaNote(null);
       return;
     }
@@ -295,12 +303,15 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     if (offlineDrafts.length === 0 || syncingDrafts.current) return;
     syncingDrafts.current = true;
     setIsSubmitting(true);
-    setSyncStatusMsg(isArabic ? "جاري مزامنة وبث المسودات..." : "Synchronisation des brouillons en cours...");
+    setSyncStatusMsg(isArabic ? "جاري مزامنة المسودات والتحقق من قبول الخادم..." : "Synchronisation des brouillons et vérification de l'acceptation serveur...");
     
     let successCount = 0;
-    const remainingDrafts = [...offlineDrafts];
+    const draftSnapshot = [...offlineDrafts];
+    const syncedIds = new Set<string>();
+    let failedDraftId: string | null = null;
+    let failedMessage: string | null = null;
     
-    for (const draft of offlineDrafts) {
+    for (const draft of draftSnapshot) {
       // clientGeneratedId lets the server answer idempotently — a draft that
       // was already pushed (e.g. the tab closed mid-sync) is returned as-is
       // instead of being duplicated.
@@ -321,27 +332,32 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       try {
         await onSubmit(payload);
         successCount++;
-        remainingDrafts.shift(); // remove the synchronized draft
-      } catch (err) {
+        syncedIds.add(draft.id); // remove only after server acceptance
+            } catch (err: unknown) {
         console.error("Failed to sync draft", draft.id, err);
+        failedDraftId = draft.id;
+        failedMessage = err instanceof Error ? err.message : "sync failed";
         break; // stop on first error to prevent losing ordering or flooding
       }
     }
-    
-    setOfflineDrafts(remainingDrafts);
-    try {
-      localStorage.setItem("offline_drafts", JSON.stringify(remainingDrafts));
-    } catch (e) {
-      console.error(e);
-    }
+    const nextDrafts = offlineDrafts
+      .filter((draft) => !syncedIds.has(draft.id))
+      .map((draft) => draft.id === failedDraftId
+        ? { ...draft, retryCount: (Number.isFinite(draft.retryCount) ? draft.retryCount : 0) + 1, lastError: failedMessage, lastAttemptAt: new Date().toISOString() }
+        : draft);
+    setOfflineDrafts(nextDrafts);
+    void replaceOfflineDrafts(nextDrafts).catch((error: unknown) => {
+      console.error("Failed to persist the remaining offline drafts", error);
+      setSyncStatusMsg(isArabic ? "تعذر تحديث طابور المسودات محليًا؛ لم تُحذف المسودات غير المؤكدة." : "Impossible de mettre à jour la file locale ; les brouillons non confirmés sont conservés.");
+    });
     
     syncingDrafts.current = false;
     setIsSubmitting(false);
     if (successCount > 0) {
       setSyncStatusMsg(
         isArabic 
-          ? `✓ تم بنجاح مزامنة وبث ${successCount} بلاغ(ات) ميدانية إلى المرصد الرئيسي.`
-          : `✓ ${successCount} rapport(s) synchronisé(s) et transmis avec succès à l'observatoire.`
+          ? `✓ تم قبول ومزامنة ${successCount} بلاغ(ات) ميدانية مع المرصد الرئيسي.`
+          : `✓ ${successCount} rapport(s) accepté(s) et synchronisé(s) avec l'observatoire.`
       );
       setTimeout(() => setSyncStatusMsg(null), 8000);
     } else {
@@ -445,6 +461,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     let maxScore = -1;
 
     reports.forEach((rep) => {
+      if ((rep.status !== "pending" && rep.status !== "verified") || !isFreshThreatTimestamp(rep.timestamp) || !Number.isFinite(rep.lat) || !Number.isFinite(rep.lng)) return;
       const dist = getDistance(uLat, uLng, rep.lat, rep.lng);
       // Correlate reports within 15km
       if (dist > 15) return;
@@ -480,8 +497,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setMatchedReport(null);
       setAlignmentAccuracy(null);
     }
-  }, [lat, lng, heading, reports]);
-
+    }, [lat, lng, heading, reports]);
+  const safeAlignmentAccuracy = Number.isFinite(Number(alignmentAccuracy))
+    ? Math.max(0, Math.min(100, Number(alignmentAccuracy)))
+    : 0;
+  const safeMatchedDistance = matchedReport && Number.isFinite(Number(matchedReport.distance))
+    ? Number(matchedReport.distance).toFixed(1)
+    : "—";
+  const safeMatchedBearing = matchedReport && Number.isFinite(Number(matchedReport.bearing))
+    ? Number(matchedReport.bearing).toFixed(0)
+    : "—";
   // Attach the media stream to the <video> the moment it exists — no arbitrary
   // delay that races the element mount.
   useEffect(() => {
@@ -494,6 +519,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const startCamera = async () => {
     try {
       setIsCameraOpen(true);
+      setCameraStatus("closed");
       setErrorMsg(null);
       const constraints = {
         video: { facingMode: "environment" },
@@ -501,6 +527,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       };
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       setStream(mediaStream);
+      setCameraStatus("active");
       // iOS (Safari 13+) gates motion sensors behind an explicit permission
       // prompt; request it within the camera gesture.
       try {
@@ -516,8 +543,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       } catch (err) {
         console.warn("DeviceOrientation permission request failed", err);
       }
-    } catch (err: any) {
-      console.warn("Camera hardware failed or was blocked by sandboxed environment. Using dynamic digital telemetry simulation instead.", err);
+    } catch (err: unknown) {
+      console.warn("Camera hardware unavailable", err);
+      setCameraStatus("unavailable");
+      setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. المعاينة التالية تجريبية وليست صورة حقيقية." : "Caméra indisponible ou permission refusée. L'aperçu suivant est une démo, pas une image réelle.");
     }
   };
 
@@ -527,6 +556,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setStream(null);
     }
     setIsCameraOpen(false);
+    setCameraStatus("closed");
   };
 
   // High-fidelity image capture with embedded watermarked telemetry
@@ -702,15 +732,32 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
   // Image Upload & Smart Canvas Compression with Edge AI integration
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+        const file = e.target.files?.[0];
     if (!file) return;
-
+    const isImageType = file.type.startsWith("image/");
+    const MAX_INPUT_BYTES = 15 * 1024 * 1024;
+    if (!isImageType || file.size > MAX_INPUT_BYTES) {
+      setErrorMsg(isArabic ? "الصورة غير صالحة أو أكبر من 15 ميغابايت." : "Image invalide ou supérieure à 15 Mo.");
+      e.target.value = "";
+      return;
+    }
+    setErrorMsg(null);
     setOriginalSize((file.size / 1024).toFixed(1) + " KB");
     setIsCompressing(true);
 
     const reader = new FileReader();
+    reader.onerror = () => {
+      setIsCompressing(false);
+      setImage(null);
+      setErrorMsg(isArabic ? "تعذر قراءة الصورة المحددة." : "Impossible de lire l'image sélectionnée.");
+    };
     reader.onload = (event) => {
       const img = new Image();
+      img.onerror = () => {
+        setIsCompressing(false);
+        setImage(null);
+        setErrorMsg(isArabic ? "الصورة تالفة أو غير قابلة للفك." : "L'image est corrompue ou illisible.");
+      };
       img.onload = () => {
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
@@ -742,6 +789,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           
           const stringLength = dataUrl.length - "data:image/jpeg;base64,".length;
           const sizeInBytes = stringLength * (3 / 4);
+          if (sizeInBytes > 480_000) {
+            setImage(null);
+            setCompressedSize(null);
+            setUploadWarning(isArabic ? "الصورة المضغوطة ما زالت كبيرة جدًا للإرسال الآمن." : "L'image compressée reste trop volumineuse pour un envoi sûr.");
+            setIsCompressing(false);
+            return;
+          }
           setCompressedSize((sizeInBytes / 1024).toFixed(1) + " KB");
 
           const compressionPercent = file.size > 0
@@ -768,13 +822,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submittingRef.current) return;
     if (!lat || !lng) {
       setErrorMsg(isArabic ? "يرجى تحديد الموقع الجغرافي للحرائق أولاً." : "Veuillez spécifier la position GPS.");
       return;
     }
-    const parsedLat = parseFloat(lat);
-    const parsedLng = parseFloat(lng);
-    if (isNaN(parsedLat) || isNaN(parsedLng)) {
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
       setErrorMsg(isArabic ? "إحداثيات غير صالحة. يرجى تحديد الموقع من الخريطة." : "Coordonnées invalides. Veuillez choisir la position sur la carte.");
       return;
     }
@@ -786,11 +841,20 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setErrorMsg(isArabic ? "يرجى اختيار الولاية." : "Veuillez choisir la Wilaya.");
       return;
     }
-    if (!description || description.length < 10) {
+        const normalizedDescription = description.trim();
+    const normalizedLocationName = locationName.trim();
+    const normalizedName = reporterName.trim();
+    const normalizedPhone = reporterPhone.trim();
+    const normalizedBadge = reporterBadgeCode.trim();
+    if (normalizedDescription.length < 10) {
       setErrorMsg(isArabic ? "يرجى إعطاء وصف تفصيلي لا يقل عن 10 أحرف." : "Description trop courte (min 10 caract.).");
       return;
     }
-
+    if (normalizedPhone && !/^\+?[0-9][0-9 ()-]{5,29}$/.test(normalizedPhone)) {
+      setErrorMsg(isArabic ? "يرجى إدخال رقم هاتف صالح أو ترك الحقل فارغًا." : "Veuillez saisir un numéro de téléphone valide ou laisser le champ vide.");
+      return;
+    }
+    submittingRef.current = true;
     setIsSubmitting(true);
     setErrorMsg(null);
 
@@ -804,36 +868,45 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     const payload: any = {
       lat: parsedLat,
       lng: parsedLng,
-      locationName,
-      wilaya,
+      locationName: normalizedLocationName,
+      wilaya: wilaya.trim(),
       severity,
-      description,
-      reporterName: reporterName || undefined,
-      reporterPhone: reporterPhone || undefined,
+      description: normalizedDescription,
+      reporterName: normalizedName || undefined,
+      reporterPhone: normalizedPhone || undefined,
       reporterType,
-      reporterBadgeCode: reporterBadgeCode || undefined,
+      reporterBadgeCode: normalizedBadge || undefined,
       image,
       clientGeneratedId,
     };
 
     // --- INTERCEPT FOR OFFLINE DRAFT MODE ---
-    if (isOffline) {
+    const offlineMode = isOffline || isOfflineSimulation;
+    if (offlineMode) {
       const draftReport = {
         ...payload,
         id: clientGeneratedId,
         timestamp: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        queuedAt: new Date().toISOString(),
+        schemaVersion: 1,
+        retryCount: 0,
         isOfflineDraft: true,
         consensusCount: 1,
         status: "pending" as const,
       };
 
       const updatedDrafts = [draftReport, ...offlineDrafts];
-      setOfflineDrafts(updatedDrafts);
       try {
-        localStorage.setItem("offline_drafts", JSON.stringify(updatedDrafts));
-      } catch (err) {
+        await replaceOfflineDrafts(updatedDrafts);
+      } catch (err: unknown) {
         console.error("Failed to save drafts to storage", err);
+        setErrorMsg(isArabic ? "تعذر حفظ البلاغ محليًا. تحقق من مساحة التخزين أو أذونات المتصفح." : "Impossible d'enregistrer le brouillon localement. Vérifiez l'espace de stockage du navigateur.");
+        submittingRef.current = false;
+        setIsSubmitting(false);
+        return;
       }
+      setOfflineDrafts(updatedDrafts);
 
       setSuccessReport({
         ...draftReport,
@@ -841,17 +914,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         // server once the draft is pushed — and only then.
         aiVerification: null,
         aiComments: isArabic
-          ? `تم حفظ البلاغ كمسودة في ذاكرة الجهاز (${compressedSize || "0 KB"}). سيبثه النظام تلقائياً فور عودة الاتصال — التحقق بالذكاء الاصطناعي يتم بعد وصوله للخادم.`
-          : `Signalement enregistré localement (${compressedSize || "0 KB"}). Transmission automatique dès le retour du réseau ; la vérification IA se fait côté serveur.`,
+          ? `تم حفظ البلاغ كمسودة في ذاكرة الجهاز (${compressedSize || "0 KB"}). ستتم محاولة مزامنته عند عودة الاتصال — التحقق بالذكاء الاصطناعي يتم بعد وصوله للخادم.`
+          : `Signalement enregistré localement (${compressedSize || "0 KB"}). Une synchronisation sera tentée au retour du réseau ; la vérification IA se fait côté serveur.`,
       });
 
-      // The badge codes THIS DEVICE as a trusted reporter for the session
-      // (persisted + badge-changed event): subsequent reports, the operator
-      // tone gate and the location heartbeat all pick it up without re-entry.
-      // Persisting on SUCCESS only keeps failed attempts from claiming the
-      // identity.
-      if (reporterBadgeCode) setReporterBadge(reporterBadgeCode.trim());
-
+      // Offline drafts never grant trust: the badge must be validated by the
+      // server after synchronization before any client trust gate changes.
       // Clear fields on success
       setLocationName("");
       setDescription("");
@@ -861,20 +929,26 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setEdgeAiStatus(null);
       setLat("");
       setLng("");
+      setReporterName("");
+      setReporterPhone("");
+      setReporterBadgeCode("");
+      setReporterType("citizen");
+      setHeading(null);
+      setPitch(null);
+      setHeadingSource("none");
+      setMatchedReport(null);
+      setAlignmentAccuracy(null);
+      submittingRef.current = false;
       setIsSubmitting(false);
       return;
     }
-
     try {
-      const result = await onSubmit(payload);
+            const result = await onSubmit(payload);
       setSuccessReport(result);
-
-      // The badge codes THIS DEVICE as a trusted reporter for the session
-      // (persisted + badge-changed event): the operator tone gate and the
-      // location heartbeat pick it up without re-entry. Persisting on SUCCESS
-      // only keeps failed attempts from claiming the identity.
-      if (reporterBadgeCode) setReporterBadge(reporterBadgeCode.trim());
-      
+      // Only a server-issued verified result may activate the local operator
+      // tone gate. A user-supplied code, pending response, or malformed
+      // response is never treated as client-side authority.
+      if (normalizedBadge && result?.status === "verified") setReporterBadge(normalizedBadge);
       // Reset form on success
       setLocationName("");
       setDescription("");
@@ -884,13 +958,33 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setEdgeAiStatus(null);
       setLat("");
       setLng("");
-    } catch (err: any) {
-      const serverMsg = err?.data?.error || err?.response?.data?.error;
+      setReporterName("");
+      setReporterPhone("");
+      setReporterBadgeCode("");
+      setReporterType("citizen");
+      setHeading(null);
+      setPitch(null);
+      setHeadingSource("none");
+      setMatchedReport(null);
+      setAlignmentAccuracy(null);
+    } catch (err: unknown) {
+      const errorRecord = typeof err === "object" && err !== null ? err as Record<string, unknown> : {};
+      const responseRecord = typeof errorRecord.response === "object" && errorRecord.response !== null
+        ? errorRecord.response as Record<string, unknown>
+        : {};
+      const responseData = typeof responseRecord.data === "object" && responseRecord.data !== null
+        ? responseRecord.data as Record<string, unknown>
+        : {};
+      const serverMsgCandidate = typeof errorRecord.data === "object" && errorRecord.data !== null
+        ? (errorRecord.data as Record<string, unknown>).error
+        : responseData.error;
+      const serverMsg = typeof serverMsgCandidate === "string" ? serverMsgCandidate : undefined;
       setErrorMsg(
         serverMsg ||
         (isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.")
       );
     } finally {
+      submittingRef.current = false;
       setIsSubmitting(false);
     }
   };
@@ -910,36 +1004,40 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       <div className="mb-4 bg-black/60 border border-white/5 p-3 rounded-lg flex flex-col gap-2">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className={`h-2.5 w-2.5 rounded-full ${isOffline ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-pulse"}`}></span>
+            <span className={`h-2.5 w-2.5 rounded-full ${isOffline || isOfflineSimulation ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-pulse"}`}></span>
             <span className="text-[11px] font-bold text-slate-200">
-              {isOffline 
-                ? (isArabic ? "وضع انقطاع الشبكة (مسودة البلاغات مفعلة)" : "Mode Hors-ligne (Stockage des brouillons)") 
-                : (isArabic ? "متصل مباشر بالشبكة الوطنية" : "Connecté en direct au réseau national")}
+              {isOfflineSimulation
+                ? (isArabic ? "محاكاة انقطاع الشبكة — للتطوير فقط" : "Simulation hors-ligne — développement uniquement")
+                : isOffline
+                  ? (isArabic ? "انقطاع الشبكة — تُحفظ المسودات محليًا" : "Hors-ligne — brouillons enregistrés localement")
+                  : (isArabic ? "متصل مباشر بالشبكة الوطنية" : "Connecté en direct au réseau national")}
             </span>
           </div>
           
-          <button
-            type="button"
-            onClick={() => setIsOffline(!isOffline)}
-            className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
-              isOffline 
-                ? "bg-amber-500/25 text-amber-400 border-amber-500/40 hover:bg-amber-500/45" 
-                : "bg-slate-900 text-slate-400 border-white/10 hover:bg-slate-800"
-            }`}
-          >
-            {isOffline 
-              ? (isArabic ? "🛜 الانتقال للبث المباشر" : "🛜 Passer en ligne") 
-              : (isArabic ? "📴 محاكاة انقطاع الشبكة بالجبال" : "📴 Mode montagne (brouillons)")}
-          </button>
+          {allowOfflineSimulation && (
+            <button
+              type="button"
+              onClick={() => setIsOfflineSimulation((value) => !value)}
+              className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                isOfflineSimulation
+                  ? "bg-amber-500/25 text-amber-400 border-amber-500/40 hover:bg-amber-500/45"
+                  : "bg-slate-900 text-slate-400 border-white/10 hover:bg-slate-800"
+              }`}
+            >
+              {isOfflineSimulation
+                ? (isArabic ? "🛜 إيقاف المحاكاة" : "🛜 Désactiver la simulation")
+                : (isArabic ? "📴 محاكاة Offline (تطوير)" : "📴 Simuler le hors-ligne (dev)")}
+            </button>
+          )}
         </div>
 
         {offlineDrafts.length > 0 && (
           <div className="mt-2 p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-[10px] text-amber-300 font-bold flex items-center gap-1.5">
-                📦 {isArabic ? `لديك ${offlineDrafts.length} مسودة بانتظار البث` : `${offlineDrafts.length} brouillon(s) stocké(s)`}
+                📦 {isArabic ? `لديك ${offlineDrafts.length} مسودة بانتظار المزامنة` : `${offlineDrafts.length} brouillon(s) en attente de synchronisation`}
               </span>
-              {!isOffline && (
+              {!isOffline && !isOfflineSimulation && (
                 <button
                   type="button"
                   onClick={syncOfflineDrafts}
@@ -967,16 +1065,22 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <CheckCircle className="h-10 w-10" />
           </div>
           <h4 className="font-bold text-lg text-emerald-400">
-            {isArabic ? "تم استلام بلاغك بنجاح!" : "Signalement envoyé avec succès !"}
+            {successReport.responseValid === false
+              ? (isArabic ? "تم قبول البلاغ — جارٍ مزامنته" : "Signalement accepté — synchronisation en cours")
+              : (isArabic ? "تم استلام بلاغك بنجاح!" : "Signalement envoyé avec succès !")}
           </h4>
           <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
             {successReport.isOfflineDraft
               ? (isArabic
-                  ? "حُفظ البلاغ كمسودة على جهازك وسيُبث تلقائياً بمجرد عودة الاتصال. التحقق بالذكاء الاصطناعي واعتماده يتم بعد وصوله إلى الخادم."
-                  : "Signalement enregistré sur votre appareil ; il sera transmis automatiquement dès le retour du réseau. La vérification IA se fait ensuite côté serveur.")
-              : (isArabic
-                  ? "شكراً لك على حسّك الوطني والمسؤول. بلاغك متوفر الآن لجميع مستخدمي المنصة وفرق الحماية المدنية وسيساعد في إنقاذ الأرواح والسيطرة على الكارثة."
-                  : "Merci pour votre esprit citoyen. Votre signalement est désormais visible par tous et aide à guider la Protection Civile.")}
+                  ? "حُفظ البلاغ كمسودة على جهازك. ستتم محاولة مزامنته عند عودة الاتصال، والتحقق بالذكاء الاصطناعي يتم بعد وصوله إلى الخادم."
+                  : "Signalement enregistré sur votre appareil. Une synchronisation sera tentée au retour du réseau ; l'analyse IA se fait côté serveur.")
+              : successReport.responseValid === false
+                ? (isArabic
+                    ? "قبل الخادم طلب البلاغ، لكن استجابته التفصيلية لم تكن صالحة للعرض. ستتم إعادة المزامنة قبل عرض الحالة النهائية، دون اختلاق حالة أو نتيجة."
+                    : "Le serveur a accepté le signalement, mais sa réponse détaillée n'était pas exploitable. Une resynchronisation est lancée avant d'afficher l'état final.")
+                : (isArabic
+                    ? "شكراً لك. تم قبول البلاغ، وقد تظهر نتيجة التحليل أو المراجعة لاحقًا. لا يعني قبول الإرسال أن البلاغ حقيقة موثقة تلقائيًا."
+                    : "Merci. Le signalement est accepté ; l'analyse ou la revue peuvent intervenir ensuite. L'acceptation de l'envoi ne constitue pas une confirmation du fait.")}
           </p>
 
           {/* Honest disclosure when the photo could not be transmitted (bad
@@ -1000,17 +1104,19 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           {successReport.aiVerification && (
             <div className="bg-black/60 p-3.5 rounded-lg border border-emerald-500/20 text-left" dir={isArabic ? "rtl" : "ltr"}>
               <div className="flex items-center gap-1 text-emerald-300 font-bold text-xs mb-1.5 justify-between">
-                <span>🤖 {isArabic ? "مصادقة الذكاء الاصطناعي الفورية (Gemini)" : "Rapport d'analyse IA (Gemini)"}</span>
+                <span>🤖 {isArabic ? "تحليل بصري مساعد بالذكاء الاصطناعي (Gemini)" : "Analyse visuelle assistée par IA (Gemini)"}</span>
                 <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 px-1.5 py-0.5 rounded text-[10px]">
-                  {successReport.aiVerification.confidence}% {isArabic ? "ثقة" : "confiance"}
+                  {Number.isFinite(Number(successReport.aiVerification.confidence))
+                    ? `${Math.max(0, Math.min(100, Number(successReport.aiVerification.confidence)))}% ${isArabic ? "مؤشر تحليل" : "indice d'analyse"}`
+                    : (isArabic ? "غير متاح" : "indisponible")}
                 </span>
               </div>
               <p className="text-xs text-slate-300 mb-2 leading-relaxed">
                 {successReport.aiVerification.aiComments}
               </p>
               <div className="flex flex-wrap gap-1">
-                {successReport.aiVerification.detectedSigns.map((sign: string, idx: number) => (
-                  <span key={idx} className="bg-zinc-900 text-slate-300 text-[10px] px-2 py-0.5 rounded border border-white/5">
+                {(Array.isArray(successReport.aiVerification.detectedSigns) ? successReport.aiVerification.detectedSigns : []).map((sign: string, idx: number) => (
+                  <span key={`${sign}-${idx}`} className="bg-zinc-900 text-slate-300 text-[10px] px-2 py-0.5 rounded border border-white/5">
                     🔍 {sign}
                   </span>
                 ))}
@@ -1038,6 +1144,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 <input
                   type="number"
                   step="any"
+                  min="-90"
+                  max="90"
                   value={lat}
                   onChange={(e) => setLat(e.target.value)}
                   placeholder="36.88124"
@@ -1055,6 +1163,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 <input
                   type="number"
                   step="any"
+                  min="-180"
+                  max="180"
                   value={lng}
                   onChange={(e) => setLng(e.target.value)}
                   placeholder="8.41125"
@@ -1101,13 +1211,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               </label>
               <select
                 value={wilaya}
-                onChange={(e) => setWilaya(e.target.value)}
+                onChange={(e) => {
+                  setWilaya(e.target.value);
+                  setWilayaNote(null);
+                }}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40 cursor-pointer"
                 required
               >
                 <option value="">{isArabic ? "-- اختر الولاية --" : "-- Choisir Wilaya --"}</option>
-                {wilayaOptions.map((w, idx) => (
-                  <option key={idx} value={`${w.nameAr} (${w.nameFr})`}>
+                {wilayaOptions.map((w) => (
+                  <option key={`${w.nameAr}-${w.nameFr}`} value={`${w.nameAr} (${w.nameFr})`}>
                     {isArabic ? w.nameAr : w.nameFr}
                   </option>
                 ))}
@@ -1143,6 +1256,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               <input
                 type="text"
                 value={locationName}
+                maxLength={200}
                 onChange={(e) => setLocationName(e.target.value)}
                 placeholder={isArabic ? "مثال: غابة جبل الوحش، بالقرب من السد" : "Ex: Forêt de Seraïdi, près du réservoir"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
@@ -1161,9 +1275,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 { val: "medium", labelAr: "متوسط", labelFr: "Moyen" },
                 { val: "high", labelAr: "مرتفع", labelFr: "Élevé" },
                 { val: "critical", labelAr: "كارثي", labelFr: "Critique" },
-              ].map((item, idx) => (
+              ].map((item) => (
                 <button
-                  key={idx}
+                  key={item.val}
                   type="button"
                   onClick={() => setSeverity(item.val)}
                   className={`py-2 px-1 text-center rounded-lg border text-[11px] font-bold cursor-pointer transition-all ${
@@ -1185,6 +1299,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             </label>
             <textarea
               value={description}
+              maxLength={2000}
               onChange={(e) => setDescription(e.target.value)}
               placeholder={
                 isArabic
@@ -1334,24 +1449,26 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 className="absolute inset-0 w-full h-full object-cover"
               />
             ) : (
-              // High-tech responsive vector landscape simulation when camera is blocked/simulated in local preview sandbox
+              // Explicit demo fallback: this is never presented as camera or sensor data.
               <div className="absolute inset-0 flex flex-col justify-between p-4 bg-gradient-to-b from-slate-950 via-indigo-950/40 to-slate-950">
                 <div className="text-center pt-12">
                   <div className="text-[10px] uppercase tracking-widest text-red-500 bg-red-950/40 border border-red-500/20 py-1.5 px-3 rounded-lg inline-block font-bold">
-                    ⚠️ {isArabic ? "بيئة تجريبية: تم تحويل الكاميرا للتوجيه والاتصال الافتراضي" : "IFRAME PREVIEW: SIMULATING OPTICAL LENS SENSOR"}
+                    ⚠️ {cameraStatus === "unavailable"
+                      ? (isArabic ? "الكاميرا غير متاحة — معاينة تجريبية فقط" : "CAMERA UNAVAILABLE — DEMO PREVIEW ONLY")
+                      : (isArabic ? "معاينة تجريبية — لا توجد بيانات كاميرا حقيقية" : "DEMO PREVIEW ONLY — NO REAL CAMERA DATA")}
                   </div>
                 </div>
 
-                {/* Simulated mountains contours and fire plume */}
+                {/* Abstract guidance backdrop; no simulated fire or sensor claim. */}
                 <div className="relative h-48 w-full overflow-hidden opacity-80 mt-auto">
                   <div className="absolute bottom-0 w-full h-24 bg-slate-950 rounded-t-[100%] border-t border-red-500/20"></div>
                   
-                  {/* Fire smoke column */}
+                  {/* Abstract, non-evidentiary visual guidance marker */}
                   <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center">
                     <div className="h-28 w-16 bg-gradient-to-t from-red-600/40 via-amber-500/20 to-transparent rounded-full blur-xl animate-pulse"></div>
                     <div className="h-20 w-8 bg-gradient-to-t from-red-600 via-amber-500 to-transparent rounded-full blur-sm -mt-20 animate-pulse"></div>
                     <span className="text-[9px] text-red-400 tracking-widest mt-1 bg-black/80 px-1.5 py-0.5 rounded border border-red-500/20 font-bold">
-                      {isArabic ? "عمود الدخان النشط" : "ACTIVE SMOKE COLUMN"}
+                      {isArabic ? "توجيه بصري تجريبي فقط" : "VISUAL GUIDANCE DEMO ONLY"}
                     </span>
                   </div>
                 </div>
@@ -1433,8 +1550,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 type="range" 
                 min="0" 
                 max="359" 
-                value={heading ?? 0}
-                onChange={(e) => {
+                  value={heading ?? 0}
+                  aria-label={isArabic ? "اتجاه يدوي أو قراءة المستشعر" : "Direction manuelle ou lecture du capteur"}
+                  aria-valuetext={heading === null ? (isArabic ? "لا توجد قراءة مستشعر؛ القيمة اليدوية غير محددة" : "Aucune lecture capteur ; réglage manuel non défini") : `${heading}°`}
+                  onChange={(e) => {
                   setHeading(parseInt(e.target.value, 10));
                   setHeadingSource("manual");
                 }}
@@ -1492,16 +1611,16 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   </p>
                   <p className="text-slate-200 font-semibold line-clamp-1">{matchedReport.locationName}</p>
                   <div className="w-full h-1 bg-slate-900 rounded-full overflow-hidden mt-1">
-                    <div className="bg-emerald-500 h-full" style={{ width: `${alignmentAccuracy}%` }}></div>
+                    <div className="bg-emerald-500 h-full" style={{ width: `${safeAlignmentAccuracy}%` }}></div>
                   </div>
                   <div className="flex justify-between text-[8px] text-slate-500 mt-1">
                     <span>{isArabic ? "تقدير المطابقة:" : "Match estimate:"}</span>
-                    <span className="font-bold text-emerald-400">{alignmentAccuracy}%</span>
+                    <span className="font-bold text-emerald-400">{safeAlignmentAccuracy}%</span>
                   </div>
                   <p className="text-slate-400 text-[8px] mt-1 leading-normal italic">
                     {isArabic 
-                      ? `بلاغ قائم يتوافق مع الاتجاه والمدى (${matchedReport.distance.toFixed(1)} كلم، زاوية ${matchedReport.bearing?.toFixed(0)}°) — مطابقة تقديرية للموقع لا إثبات للمصدر.`
-                      : `Signalement existant corrélé en orientation/distance (${matchedReport.distance.toFixed(1)} km, bearing ${matchedReport.bearing?.toFixed(0)}°) — correspondance estimée.`}
+                      ? `بلاغ قائم يتوافق مع الاتجاه والمدى (${safeMatchedDistance} كلم، زاوية ${safeMatchedBearing}°) — مطابقة تقديرية للموقع لا إثبات للمصدر.`
+                      : `Signalement existant corrélé en orientation/distance (${safeMatchedDistance} km, bearing ${safeMatchedBearing}°) — correspondance estimée.`}
                   </p>
                 </div>
               ) : (
@@ -1525,9 +1644,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
             {/* Bottom Status bar overlay */}
             <div className="absolute bottom-3 left-4 right-4 bg-black/80 backdrop-blur rounded px-3 py-1.5 text-[9px] text-slate-400 flex flex-wrap gap-2 justify-between border border-white/5">
-              <span>GPS: <strong className="text-slate-200">{lat ? `${lat}, ${lng}` : (isArabic ? "لم يحدد" : "NOT SET")}</strong></span>
+              <span>GPS: <strong className="text-slate-200">{Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? `${lat}, ${lng}` : (isArabic ? "غير متاح" : "NOT SET")}</strong></span>
               <span>BEARING: <strong className="text-slate-200">{heading !== null ? `${heading}° (${headingSource})` : "N/A"}</strong></span>
-              <span>ELEVATION: <strong className="text-slate-200">{pitch !== null ? `${pitch}°` : "N/A"}</strong></span>
+              <span>PITCH: <strong className="text-slate-200">{pitch !== null ? `${pitch}°` : "N/A"}</strong></span>
               <span>STAMP: <strong className="text-red-500">{includeTelemetry ? "ACTIVE" : "OFF"}</strong></span>
             </div>
 
@@ -1561,13 +1680,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 { val: "citizen", labelAr: "👤 مواطن", labelFr: "Citoyen" },
                 { val: "volunteer", labelAr: "💚 متطوع معتمد", labelFr: "Bénévole" },
                 { val: "official", labelAr: "🛡️ حماية مدنية", labelFr: "Prot. Civile" },
-              ].map((item, idx) => (
+              ].map((item) => (
                 <button
-                  key={idx}
+                  key={item.val}
                   type="button"
                   onClick={() => {
                     setReporterType(item.val);
-                    if (item.val === "citizen") setReporterBadgeCode("");
+                    setReporterBadgeCode("");
                   }}
                   className={`py-2 px-1 text-center rounded-lg border text-[11px] font-bold cursor-pointer transition-all ${
                     reporterType === item.val
@@ -1583,20 +1702,23 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             {reporterType !== "citizen" && (
               <div className="space-y-1.5 animate-fade-in">
                 <label className="block text-[10px] uppercase tracking-wider font-bold text-amber-500">
-                  {isArabic ? "🔑 رمز الاعتماد (مثال للاختبار: 1021 أو 777)" : "🔑 Code d'accréditation (Ex: 1021 ou 777)"}
+                                    {isArabic
+                    ? "🔑 رمز اعتماد اختياري — يتحقق الخادم من صلاحيته"
+                    : "🔑 Code d'accréditation facultatif — validé par le serveur"}
                 </label>
                 <input
                   type="text"
                   value={reporterBadgeCode}
+                  maxLength={20}
                   onChange={(e) => setReporterBadgeCode(e.target.value)}
-                  placeholder={isArabic ? "أدخل الرمز لتصديق البلاغ فورياً" : "Saisir le code secret"}
+                  placeholder={isArabic ? "أدخل الرمز للتحقق الخادمي" : "Saisir le code à valider par le serveur"}
                   className="w-full bg-black/60 border border-amber-500/30 rounded-lg py-2 px-3 text-xs text-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500"
                   required
                 />
                 <p className="text-[9px] text-amber-400/80 italic leading-snug">
                   {isArabic 
-                    ? "✓ إدخال الرمز يمنح البلاغ وسم مصداقية رسمي ويجعله فورياً وموثوقاً لدى الجميع." 
-                    : "✓ Saisir le code confère un sceau d'accréditation officiel et valide le rapport instantanément."}
+                    ? "يُرسل الرمز إلى الخادم للتحقق فقط؛ لا يمنح هذا الحقل اعتمادًا أو صلاحية من الواجهة."
+                    : "Le code est seulement vérifié par le serveur ; ce champ n'accorde aucune autorité depuis l'interface."}
                 </p>
               </div>
             )}
@@ -1610,8 +1732,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               </label>
               <input
                 type="text"
-                value={reporterName}
-                onChange={(e) => setReporterName(e.target.value)}
+                  value={reporterName}
+                  maxLength={120}
+                  onChange={(e) => setReporterName(e.target.value)}
                 placeholder={isArabic ? "مثال: محمد بلخير" : "Ex: Mohamed"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
               />
@@ -1622,8 +1745,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               </label>
               <input
                 type="tel"
-                value={reporterPhone}
-                onChange={(e) => setReporterPhone(e.target.value)}
+                  value={reporterPhone}
+                  maxLength={30}
+                  inputMode="tel"
+                  onChange={(e) => setReporterPhone(e.target.value)}
                 placeholder="06XXXXXXXX"
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
               />

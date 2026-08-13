@@ -26,7 +26,7 @@ function mkSatellite(id: string, over: Record<string, unknown> = {}): SatelliteH
     lng: 7.62,
     confidence: 90,
     brightness: 400,
-    scanTime: "",
+    scanTime: new Date().toISOString(),
     satellite: "VIIRS",
     wilaya: "",
     ...over,
@@ -101,6 +101,25 @@ describe("getNearestActiveThreat — single definition of nearby danger", () => 
     expect(result.nearest?.kind).toBe("satellite");
     expect(result.nearest?.satelliteId).toBe("s1");
     expect(result.nearbyIncidents).toBe(1);
+  });
+
+  it("excludes stale sources and separates verified from pending clusters", () => {
+    const now = Date.parse("2026-08-13T12:00:00.000Z");
+    const result = getNearestActiveThreat({
+      lat: 36.8,
+      lng: 7.6,
+      now,
+      reports: [
+        mkReport({ id: "verified", status: "verified", timestamp: "2026-08-13T11:59:00.000Z", clusterId: "v" }),
+        mkReport({ id: "pending", status: "pending", timestamp: "2026-08-13T11:58:00.000Z", clusterId: "p" }),
+        mkReport({ id: "stale", status: "verified", timestamp: "2026-08-13T11:00:00.000Z", clusterId: "stale" }),
+      ],
+      satellites: [mkSatellite("fresh-satellite", { scanTime: "2026-08-13T11:59:00.000Z" })],
+    });
+    expect(result.nearbyIncidents).toBe(2);
+    expect(result.nearbyVerifiedIncidents).toBe(1);
+    expect(result.nearbyPendingIncidents).toBe(1);
+    expect(result.nearbySources.some((source) => source.reportId === "stale")).toBe(false);
   });
 });
 

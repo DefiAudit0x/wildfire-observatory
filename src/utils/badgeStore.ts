@@ -1,21 +1,14 @@
 /**
- * Single source of truth for the device's reporter badge code. Nothing else
- * writes this key directly: ReportForm persists it (via setReporterBadge) on
- * a SUCCESSFUL submission only, and every consumer (App's trusted-reporter
- * gate, the location heartbeat) reads it here.
- *
- * Session reactivity: the storage event alone cannot wake up the SAME tab
- * (it fires for other tabs only), so the writer also dispatches a
- * badge-changed event. subscribeReporterBadge listens to both, which covers
- * multi-tab and same-tab updates alike.
+ * Session-only convenience state for a server-validated reporter badge.
+ * This is never an authorization source: the server response is the authority,
+ * and ReportForm writes here only after receiving status === "verified".
  */
 export const REPORTER_BADGE_KEY = "reporterBadgeCode";
-
 export const BADGE_CHANGED_EVENT = "badge-changed";
 
 export function getReporterBadge(): string | null {
   try {
-    return localStorage.getItem(REPORTER_BADGE_KEY);
+    return sessionStorage.getItem(REPORTER_BADGE_KEY);
   } catch {
     return null;
   }
@@ -23,10 +16,12 @@ export function getReporterBadge(): string | null {
 
 export function setReporterBadge(code: string): void {
   try {
-    localStorage.setItem(REPORTER_BADGE_KEY, code);
+    sessionStorage.setItem(REPORTER_BADGE_KEY, code);
+    // Remove the old durable copy created by previous releases.
+    localStorage.removeItem(REPORTER_BADGE_KEY);
     window.dispatchEvent(new Event(BADGE_CHANGED_EVENT));
   } catch {
-    // storage unavailable — the badge applies to this session only
+    // Storage unavailable — the badge applies to this session only.
   }
 }
 

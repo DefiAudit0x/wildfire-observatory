@@ -12,15 +12,24 @@ import VolunteerRegistration from "../VolunteerRegistration";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
 import { EMERGENCY_CONTACTS } from "../../utils/emergency";
+import { DatasetHealth, SyncState } from "../../utils/datasetHealth";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
 const InteractiveMap = lazy(() => import("../InteractiveMap"));
 const AdminPanel = lazy(() => import("../AdminPanel"));
 const RosterBoard = lazy(() => import("../RosterBoard"));
 
-const PanelFallback = ({ isArabic }: { isArabic: boolean }) => (
-  <div className="col-span-12 py-24 flex items-center justify-center text-sm text-gray-500 font-bold animate-pulse">
-    ⏳ {isArabic ? "جارٍ تحميل لوحة القيادة..." : "Chargement du tableau de bord..."}
+const PanelFallback = ({
+  isArabic,
+  labelAr = "لوحة القيادة",
+  labelFr = "tableau de bord",
+}: {
+  isArabic: boolean;
+  labelAr?: string;
+  labelFr?: string;
+}) => (
+  <div role="status" aria-live="polite" className="col-span-12 py-24 flex items-center justify-center text-sm text-gray-500 font-bold animate-pulse">
+    ⏳ {isArabic ? `جارٍ تحميل ${labelAr}...` : `Chargement de ${labelFr}...`}
   </div>
 );
 
@@ -36,6 +45,8 @@ interface MainContentProps {
   mapClickedCoords: GeoPoint | null;
   selectedReportId: string | null;
   privilegedTabVisible: boolean;
+  syncState: SyncState;
+  reportsHealth: DatasetHealth;
   onMapClick: (lat: number, lng: number) => void;
   onConfirmReport: (id: string) => void;
   onCreateReport: (payload: any) => Promise<unknown>;
@@ -58,6 +69,8 @@ export default function MainContent({
   mapClickedCoords,
   selectedReportId,
   privilegedTabVisible,
+  syncState,
+  reportsHealth,
   onMapClick,
   onConfirmReport,
   onCreateReport,
@@ -82,6 +95,7 @@ export default function MainContent({
             satellites={satellites}
             userLocation={userLocation}
             showAdminEntries={privilegedTabVisible}
+            syncState={syncState}
           />
         </div>
       )}
@@ -96,7 +110,7 @@ export default function MainContent({
       {/* Admin Moderation Panel View */}
       {activeTab === "admin" && (
         <div className="col-span-12">
-          <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
+          <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="لوحة المشرف" labelFr="espace admin" />}>
             <AdminPanel reports={reports} onRefresh={onRefresh} lang={lang} />
           </Suspense>
         </div>
@@ -111,7 +125,7 @@ export default function MainContent({
 
       {/* Central Command - full-screen command dashboard */}
       {activeTab === "command" && (
-        <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
+        <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="غرفة القيادة" labelFr="commandement central" />}>
           <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={onRefresh} />
         </Suspense>
       )}
@@ -119,7 +133,7 @@ export default function MainContent({
       {/* Staff duty roster */}
       {activeTab === "roster" && (
         <div className="col-span-12 animate-fadeIn">
-          <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
+          <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="جدول المناوبة" labelFr="tableau de garde" />}>
             <RosterBoard lang={lang} />
           </Suspense>
         </div>
@@ -132,8 +146,21 @@ export default function MainContent({
         </div>
       )}
 
+      {/* Report is a focused full-width workflow, not a sidebar widget. */}
+      {activeTab === "report" && (
+        <div className="col-span-12 max-w-3xl mx-auto w-full animate-fadeIn">
+          <ReportForm
+            mapClickedCoords={mapClickedCoords}
+            onSubmit={onCreateReport}
+            lang={lang}
+            reports={reports}
+            wilayas={wilayas}
+          />
+        </div>
+      )}
+
       {/* Normal layout columns */}
-      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && activeTab !== "roster" && (
+      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && activeTab !== "roster" && activeTab !== "report" && (
         <>
           {/* Live statistics summary cards */}
           {activeTab === "map" && (
@@ -166,7 +193,7 @@ export default function MainContent({
                   )}
                 </div>
 
-                <Suspense fallback={<PanelFallback isArabic={isArabic} />}>
+                <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="الخريطة" labelFr="la carte" />}>
                   <InteractiveMap
                     reports={reports}
                     satellites={satellites}
@@ -182,6 +209,11 @@ export default function MainContent({
             {/* Active Community Reports Feed */}
             {activeTab === "map" && (
               <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)]">
+                {(reportsHealth.lastSuccess && (!reportsHealth.lastAttemptOk || syncState === "stale" || syncState === "offline")) && (
+                  <div role="status" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-950/20 px-3 py-2 text-[10px] font-bold text-amber-300">
+                    {isArabic ? "آخر بيانات البلاغات المتاحة قد تكون قديمة — تحقق من وقت آخر مزامنة." : "Les derniers signalements disponibles peuvent être anciens — vérifiez la dernière synchronisation."}
+                  </div>
+                )}
                 <h3 className="font-bold text-base text-slate-100 mb-3 flex items-center gap-2">
                   <MessageSquare className="h-4 w-4 text-orange-500" />
                   <span>{isArabic ? "سجل البلاغات الميدانية الأخيرة" : "Flux des signalements citoyens récents"}</span>
@@ -260,17 +292,6 @@ export default function MainContent({
 
           {/* RIGHT SIDEBAR PANEL */}
           <section className="lg:col-span-4 space-y-6">
-            {/* SOS Report Form tab on mobile / Sidebar on desktop */}
-            <div className={`${activeTab === "report" ? "block" : "hidden md:block"}`}>
-              <ReportForm
-                mapClickedCoords={mapClickedCoords}
-                onSubmit={onCreateReport}
-                lang={lang}
-                reports={reports}
-                wilayas={wilayas}
-              />
-            </div>
-
             {/* Wilayas Statuses List: desktop sidebar only — keeps the mobile
                 map tab focused on the map instead of piling up four layers */}
             <div className="hidden md:block">

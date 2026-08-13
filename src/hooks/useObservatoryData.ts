@@ -626,13 +626,21 @@ export function useObservatoryData() {
 
       // Refresh stats and statuses
       fetchData();
-      // Return contract: the caller (ReportForm) renders this value in the
-      // success modal, so the malformed server response must NEVER reach it —
-      // a display-safe local copy is built instead (same pattern the offline
-      // draft path uses). The imageNotAttached flag rides along so the modal
-      // can disclose the dropped photo.
-      const displayReport = reportIsValid ? newReport : buildLocalPendingReport(submission);
-      return imageNotAttached ? { ...displayReport, imageNotAttached: true } : displayReport;
+      // The server accepted the POST, but a malformed response is not safe to
+      // render as a fabricated pending report. Reconcile from the authoritative
+      // GET list and let the UI say "accepted; syncing" without inventing a
+      // status or report body.
+      if (!reportIsValid) {
+        await fetchData();
+        return {
+          submissionAccepted: true,
+          responseValid: false,
+          syncRequired: true,
+          clientGeneratedId: submission.clientGeneratedId,
+          imageNotAttached,
+        };
+      }
+      return imageNotAttached ? { ...newReport, imageNotAttached: true } : newReport;
     },
     [deviceId, fetchData]
   );

@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Language, Report, SatelliteHotspot } from "../types";
 import { getNearestActiveThreat } from "../utils/threats";
+import { SyncState } from "../utils/datasetHealth";
 import { EMERGENCY_CONTACTS, formatDistanceKm } from "../utils/emergency";
 
 interface HomeHubProps {
@@ -30,14 +31,15 @@ interface HomeHubProps {
   satellites?: SatelliteHotspot[];
   userLocation?: { lat: number; lng: number } | null;
   showAdminEntries?: boolean;
+  syncState: SyncState;
 }
 
-export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], satellites = [], userLocation, showAdminEntries = false }: HomeHubProps) {
+export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, sosCount, reports = [], satellites = [], userLocation, showAdminEntries = false, syncState }: HomeHubProps) {
   const isArabic = lang === "ar";
   const [showAllServices, setShowAllServices] = useState(false);
 
   // One shared definition of "nearby danger": clustered citizen reports
-  // (pending/verified) + satellite hotspots >= 70%, deduped by fire cluster.
+  // Fresh (pending/verified) reports + fresh satellite hotspots >= 70%, deduped by fire cluster.
   const nearbyAnalysis = userLocation
     ? getNearestActiveThreat({
         lat: userLocation.lat,
@@ -48,7 +50,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
     : null;
   // Emergency mode means *multiple distinct fires* (clusters), not multiple
   // reports of the same fire.
-  const emergencyMode = !!nearbyAnalysis && nearbyAnalysis.nearbyIncidents >= 2;
+  const emergencyMode = !!nearbyAnalysis && nearbyAnalysis.nearbyVerifiedIncidents >= 2;
   const nearestReport = nearbyAnalysis?.nearest?.kind === "report"
     ? reports.find((r) => r.id === nearbyAnalysis!.nearest!.reportId) || null
     : null;
@@ -62,10 +64,14 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
   const secondaryServices = [
     {
       id: "map" as const,
-      titleAr: "المرصد والخريطة التفاعلية المباشرة",
-      titleFr: "Carte Interactive & Observatoire",
-      descAr: "تصفح بؤر الحرائق النشطة والأقمار الصناعية والبلاغات الميدانية الحية",
-      descFr: "Visualisez les foyers actifs, données satellites et rapports en direct",
+      titleAr: syncState === "live" ? "المرصد والخريطة التفاعلية المحدثة" : "المرصد والخريطة التفاعلية",
+      titleFr: syncState === "live" ? "Carte interactive actualisée" : "Carte interactive & observatoire",
+      descAr: syncState === "live"
+        ? "تصفح مصادر الخطر المحدثة من الأقمار الصناعية والبلاغات الميدانية"
+        : "تصفح مصادر المرصد مع حالة التحديث الموضحة في الأعلى",
+      descFr: syncState === "live"
+        ? "Visualisez les sources actualisées, données satellites et signalements"
+        : "Visualisez les sources de l'observatoire avec leur état de mise à jour",
       color: "border-sky-500/20 hover:border-sky-500/40 text-sky-400 bg-sky-950/20",
       icon: <MapPin className="h-6 w-6 text-sky-400" />
     },
@@ -130,12 +136,12 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
               <span className="text-3xl">🚨</span>
               <div>
                 <h3 className="text-lg md:text-xl font-black text-white">
-                  {isArabic ? "⚠️ حالة طوارئ قصوى! حرائق متعددة قريبة منك" : "⚠️ Urgence maximale ! Foyers multiples à proximité"}
+                  {isArabic ? "⚠️ حالة طوارئ قصوى! بلاغات حريق موثقة متعددة قريبة منك" : "⚠️ Urgence maximale ! Signalements de feux vérifiés à proximité"}
                 </h3>
                 <p className="text-xs text-red-200 leading-relaxed">
                   {isArabic
-                    ? `${nearbyAnalysis!.nearbyIncidents} بؤرة حريق ضمن محيط 10 كم من موقعك${nearestReport ? ` — أقربها: ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, true)})` : ""}${nearestSatelliteKm !== null ? ` — كشف حراري فضائي قريب (${formatDistanceKm(nearestSatelliteKm, true)})` : ""}. تابع الخريطة الحية والتزم بتعليمات السلطات المحلية، وأبلغ فوراً عن أي تغيّر في الوضع.`
-                    : `${nearbyAnalysis!.nearbyIncidents} foyer(s) dans un rayon de 10 km${nearestReport ? ` — le plus proche : ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, false)})` : ""}${nearestSatelliteKm !== null ? ` — détection thermique satellite proche (${formatDistanceKm(nearestSatelliteKm, false)})` : ""}. Suivez la carte en direct et les consignes des autorités; signalez tout changement immédiatement.`}
+                    ? `${nearbyAnalysis!.nearbyVerifiedIncidents} بلاغات حريق موثقة ضمن محيط 10 كم من موقعك${nearestReport ? ` — أقربها: ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, true)})` : ""}. تابع حالة البيانات في الأعلى والتزم بتعليمات السلطات المحلية، وأبلغ فوراً عن أي تغيّر في الوضع.`
+                    : `${nearbyAnalysis!.nearbyVerifiedIncidents} signalement(s) vérifié(s) dans un rayon de 10 km${nearestReport ? ` — le plus proche : ${nearestReport.locationName} (${formatDistanceKm(nearestReportKm, false)})` : ""}. Vérifiez l'état des données ci-dessus et suivez les consignes des autorités.`}
                 </p>
               </div>
             </div>
@@ -177,8 +183,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
         {/* Live Counters */}
         <div className="flex items-center justify-center gap-3 flex-wrap pt-1">
           <div className="bg-red-500/10 border border-red-500/20 px-3 py-1 rounded-full flex items-center gap-2 text-xs text-red-400 font-bold">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+            <span className={`relative flex h-2 w-2 ${syncState === "live" ? "" : "opacity-50"}`}>
+              {syncState === "live" && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>}
               <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
             </span>
             <span>{isArabic ? `${sosCount} استغاثة نشطة` : `${sosCount} SOS Actif(s)`}</span>
@@ -213,7 +219,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع؛ يُحفظ في خادم المرصد ويظهر فوراً على الخريطة الميدانية للمساعدة."
+                ? "إرسال بلاغ عاجل بصورة وإحداثيات الموقع؛ يُرسل إلى خادم المرصد عند الاتصال ويظهر على الخريطة بعد قبوله ومزامنته."
                 : "Envoyez un rapport avec photo et coordonnées GPS ; il est enregistré sur le serveur de l'observatoire et affiché sur la carte."}
             </p>
           </div>
@@ -307,7 +313,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? "تصفح الخريطة التفاعلية، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA."
+                ? (syncState === "live" ? "تصفح الخريطة المحدثة، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA." : "تصفح الخريطة، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA مع حالة التحديث في الأعلى.")
                 : "Consultez la carte, les routes d'évacuation, le guide de survie et l'IA."}
             </p>
           </div>

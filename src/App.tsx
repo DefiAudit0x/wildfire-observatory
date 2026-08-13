@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useSyncExternalStore, useState } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore, useState } from "react";
 import { Language, TabId } from "./types";
 import { useSessionProbe } from "./hooks/useSessionProbe";
 import { useStaffSession } from "./hooks/useAuth";
@@ -15,6 +15,7 @@ import AppFooter from "./components/layout/AppFooter";
 import MainContent from "./components/layout/MainContent";
 import TrappedSOSModal from "./components/TrappedSOSModal";
 import { getNearestActiveThreat } from "./utils/threats";
+import { computeSyncState } from "./utils/datasetHealth";
 
 export default function App() {
   const [lang, setLang] = useState<Language>("ar");
@@ -27,12 +28,9 @@ export default function App() {
   const privilegedTabVisible = useSessionProbe();
   const { session: staffSession } = useStaffSession();
   const rosterVisible = staffSession.authenticated;
-  // Trusted reporter = a device holding a staff/volunteer badge code. Only
-  // these devices get the operator alert tone; citizens get the proximity
-  // siren (see useProximityAlerts). Session-reactive via useSyncExternalStore:
-  // a citizen who reports WITH a badge (ReportForm persists it on success)
-  // becomes trusted in the same tab immediately, without a reload — and a
-  // badge entered on another tab wakes this one through the storage event.
+  // Trusted reporter is a short-lived UI convenience derived only from a
+  // server-verified badge result. It is not authorization and never replaces
+  // backend role checks; it only selects the operator alert tone locally.
   const badgeCode = useSyncExternalStore(subscribeReporterBadge, getReporterBadge);
   const isTrustedReporter = Boolean(badgeCode);
 
@@ -55,8 +53,13 @@ export default function App() {
     handleMarkNotificationRead,
   } = useObservatoryData();
 
-  const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation, isTrustedReporter);
-
+    const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation, isTrustedReporter);
+  const [syncNow, setSyncNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setSyncNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const { sync: syncState } = computeSyncState(datasetHealth, syncNow);
   const handleToggleLang = useCallback(() => setLang((prev) => (prev === "ar" ? "fr" : "ar")), []);
 
   const handleMapClick = useCallback((lat: number, lng: number) => {
@@ -165,6 +168,8 @@ export default function App() {
         mapClickedCoords={mapClickedCoords}
         selectedReportId={selectedReportId}
         privilegedTabVisible={privilegedTabVisible}
+        syncState={syncState}
+        reportsHealth={datasetHealth.reports}
         onMapClick={handleMapClick}
         onConfirmReport={handleConfirmReport}
         onCreateReport={handleCreateReport}
