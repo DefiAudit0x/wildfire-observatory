@@ -43,4 +43,12 @@ describe("meshBridge anti-replay TTL", () => {
     vi.setSystemTime(recordedAt + 5 * 60 * 1000 + 1);
     expect(checkAndRecordNonce(434343)).toBe(true);
   });
+
+  it("tracks the authenticated messageId+nonce pair used by browserDecrypt", async () => {
+    const { checkAndRecordMessageNonce } = await import("../src/utils/meshBridge");
+    expect(checkAndRecordMessageNonce("browser-regression-message", 77)).toBe(true);
+    expect(checkAndRecordMessageNonce("browser-regression-message", 77)).toBe(false);
+    // A different nonce is a different authenticated message instance.
+    expect(checkAndRecordMessageNonce("browser-regression-message", 78)).toBe(true);
+  });
 });

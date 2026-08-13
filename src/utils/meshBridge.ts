@@ -465,13 +465,6 @@ async function browserDecrypt(
       return null;
     }
 
-    // Authenticate before recording replay state; otherwise forged frames
-    // could poison the cache and block a legitimate message.
-    if (!checkAndRecordMessageNonce(encrypted.messageId!, encrypted.nonce!)) {
-      console.warn("[MeshBridge] Replay detected");
-      return null;
-    }
-
     // Key agreement uses the sender's ECDH public key (senderPublicKey).
     const senderEcdhPub = await crypto.subtle.importKey(
       "spki",
@@ -509,6 +502,14 @@ async function browserDecrypt(
           aesKey,
           ciphertext
         );
+
+        // Record replay state only after authenticated ciphertext has been
+        // successfully decrypted. A signed frame that cannot be decrypted
+        // must remain retryable while key rotation or state catches up.
+        if (!checkAndRecordMessageNonce(encrypted.messageId!, encrypted.nonce!)) {
+          console.warn("[MeshBridge] Replay detected");
+          return null;
+        }
 
         return new TextDecoder().decode(decrypted);
       } catch {
