@@ -27,11 +27,11 @@ function ProximityAlertBar({
             <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600"></span>
           </span>
 
-          <div className="text-xs">
+          <div className="text-sm">
             <p className="font-extrabold text-red-400 flex items-center gap-1">
               🚨 {isArabic ? "تنبيه: بؤر خطر قريبة من موقعك" : "ALERTE : foyers à proximité de votre position"}
             </p>
-            <p className="text-[10.5px] text-slate-200 mt-1 leading-normal">
+            <p className="text-xs text-slate-200 mt-1 leading-normal">
               {isArabic
                 ? `رصد ${activeAlerts.length} بؤرة ضمن النطاق التحذيري (${activeAlerts[0].thresholdKm.toFixed(1)} كم — حسب الخطورة). الأقرب: "${activeAlerts[0].locationName}" على بعد ${activeAlerts[0].distance.toFixed(1)} كم.`
                 : `${activeAlerts.length} foyer(s) dans le rayon d'alerte (${activeAlerts[0].thresholdKm.toFixed(1)} km — selon la sévérité). Le plus proche : "${activeAlerts[0].locationName}" à ${activeAlerts[0].distance.toFixed(1)} km.`
@@ -41,7 +41,7 @@ function ProximityAlertBar({
                 reports only. Satellite hotspots (thermal points, unconfirmed)
                 never trigger an alarm — a false siren costs more than a missed
                 hotspot. The nearest hotspot is still shown on the map. */}
-            <p className="text-[9px] text-amber-300/70 mt-0.5 leading-normal">
+            <p className="text-[11px] text-amber-300/80 mt-0.5 leading-normal">
               {isArabic
                 ? "التنبيهات مبنية على بلاغات المواطنين الموثقة فقط — بقع الأقمار الصناعية الحرارية غير المؤكدة لا تُطلق إنذاراً."
                 : "Alarme basée sur les signalements citoyens vérifiés uniquement — les points thermiques satellites (non confirmés) ne déclenchent pas d'alerte."}
@@ -57,6 +57,7 @@ function ProximityAlertBar({
         <div className="flex items-center gap-2 flex-wrap text-[10px] font-bold">
           <button
             onClick={onToggleMute}
+            aria-pressed={isMuted}
             className="px-2.5 py-1 bg-black/55 hover:bg-black border border-white/10 rounded transition-colors text-slate-300 cursor-pointer"
           >
             {isMuted ? (isArabic ? "🔊 تشغيل الصوت" : "🔊 Activer Son") : (isArabic ? "🔇 كتم صوت الصفارة" : "🔇 Couper Sirène")}

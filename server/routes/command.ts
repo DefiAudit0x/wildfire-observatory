@@ -53,11 +53,11 @@ const heartbeatCleanupTimer = setInterval(pruneHeartbeatMaps, 60 * 1000);
 heartbeatCleanupTimer.unref();
 
 const heartbeatSchema = z.object({
-  deviceId: z.string().min(1),
-  lat: z.union([z.number(), z.string()]),
-  lng: z.union([z.number(), z.string()]),
-  name: z.string().optional(),
-  badgeCode: z.string().optional(),
+  deviceId: z.string().trim().min(1).max(128),
+  lat: z.coerce.number().finite().min(-90).max(90),
+  lng: z.coerce.number().finite().min(-180).max(180),
+  name: z.string().trim().max(120).optional(),
+  badgeCode: z.string().trim().max(64).optional(),
 });
 
 function safePasswordMatch(candidate: string, expected: string): boolean {
@@ -124,8 +124,8 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
   }
 
   activeUserLocations.set(deviceId, {
-    lat: Number(lat),
-    lng: Number(lng),
+    lat,
+    lng,
     name: finalName,
     role: finalRole,
     lastSeen: Date.now(),

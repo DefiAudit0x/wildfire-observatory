@@ -53,10 +53,10 @@ function TabBar({ isArabic, activeTab, privilegedTabVisible, rosterVisible, onSe
         <button
           onClick={() => onSelectTab("admin")}
           className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs font-black whitespace-nowrap cursor-pointer text-slate-500 hover:text-slate-300 hover:bg-white/5"
-          title={isArabic ? "وصول المشرفين" : "Accès administrateurs"}
+          title={isArabic ? "تسجيل دخول المشرفين" : "Connexion administrateur"}
         >
           <Shield className="h-4 w-4" />
-          <span>{isArabic ? "مشرف" : "Admin"}</span>
+          <span>{isArabic ? "دخول المشرف" : "Admin login"}</span>
         </button>
       )}
     </div>

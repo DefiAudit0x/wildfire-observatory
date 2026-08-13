@@ -11,7 +11,7 @@ import EvacuationRadar from "../EvacuationRadar";
 import VolunteerRegistration from "../VolunteerRegistration";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
-import { EMERGENCY_CONTACTS } from "../../utils/emergency";
+import EmergencyContactsCard from "./EmergencyContactsCard";
 import { DatasetHealth, SyncState } from "../../utils/datasetHealth";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
@@ -156,6 +156,7 @@ export default function MainContent({
             reports={reports}
             wilayas={wilayas}
           />
+          <EmergencyContactsCard isArabic={isArabic} compact />
         </div>
       )}
 
@@ -226,10 +227,11 @@ export default function MainContent({
                     </div>
                   ) : (
                     reports.map((rep) => (
-                      <div
+                      <button
+                        type="button"
                         key={rep.id}
                         onClick={() => onSelectReport(rep.id)}
-                        className={`bg-black/40 hover:bg-black/60 p-3.5 rounded-lg border transition-all cursor-pointer flex flex-col md:flex-row gap-3 items-start md:items-center justify-between ${
+                        className={`w-full text-left bg-black/40 hover:bg-black/60 p-3.5 rounded-lg border transition-all cursor-pointer flex flex-col md:flex-row gap-3 items-start md:items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 ${
                           selectedReportId === rep.id ? "border-red-650 bg-red-950/10 shadow-[0_0_15px_rgba(220,38,38,0.15)]" : "border-white/5"
                         }`}
                       >
@@ -255,7 +257,7 @@ export default function MainContent({
                                 </span>
                               )}
                             </div>
-                            <p className="text-[10px] text-gray-400 mt-0.5">{rep.wilaya} | {new Date(rep.timestamp).toLocaleTimeString()}</p>
+                            <p className="text-[10px] text-gray-400 mt-0.5">{rep.wilaya} | {new Date(rep.timestamp).toLocaleTimeString(isArabic ? "ar-DZ" : "fr-DZ")}</p>
                             <p className="text-[11px] text-gray-300 mt-1 line-clamp-1 italic">{rep.description}</p>
                           </div>
                         </div>
@@ -275,7 +277,7 @@ export default function MainContent({
                             {isArabic ? `تأكيدات: ${rep.consensusCount}` : `Confirmations: ${rep.consensusCount}`}
                           </span>
                         </div>
-                      </div>
+                      </button>
                     ))
                   )}
                 </div>
@@ -304,25 +306,7 @@ export default function MainContent({
             </div>
 
             {/* Printable Emergency Call Card */}
-            <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-4 shadow-[0_4px_25px_rgba(0,0,0,0.5)] text-center space-y-3 relative overflow-hidden">
-              <div className="absolute top-0 right-0 h-16 w-16 bg-red-500/5 rounded-full blur-xl"></div>
-              <h4 className="font-extrabold text-sm text-slate-200">
-                {isArabic ? "📞 أرقام النجدة الرسمية — شمال إفريقيا" : "Numéros de Secours — Afrique du Nord"}
-              </h4>
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                {EMERGENCY_CONTACTS.map((c) => (
-                  <a key={`${c.countryFr}-${c.phone}`} href={`tel:${c.phone}`} className="p-2 bg-black/40 hover:bg-zinc-800 rounded border border-white/5 text-red-400 font-bold flex flex-col items-center">
-                    <span className="text-[10px] text-gray-400 font-sans">
-                      {isArabic ? c.labelAr : c.labelFr} — {isArabic ? c.countryAr : c.countryFr}
-                    </span>
-                    <span className="text-sm mt-0.5">{c.phone}</span>
-                  </a>
-                ))}
-              </div>
-              <p className="text-[9px] text-gray-500 italic">
-                {isArabic ? "أرقام رسمية لكل دولة — اضغط للاتصال المباشر." : "Numéros officiels par pays — cliquez pour appeler."}
-              </p>
-            </div>
+            <EmergencyContactsCard isArabic={isArabic} />
           </section>
         </>
       )}

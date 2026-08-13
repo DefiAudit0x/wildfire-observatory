@@ -79,12 +79,20 @@ export function isReportEligibleForAlert(
   return r.status === "verified" || r.status === "pending";
 }
 
-const PROXIMITY_THRESHOLDS: Record<string, number> = {
+export type ReportSeverity = Report["severity"];
+
+const PROXIMITY_THRESHOLDS: Record<ReportSeverity, number> = {
   critical: 10, // km
   high: 7,
   medium: 5,
   low: 3,
 };
+
+export function getProximityThreshold(severity: string): number | undefined {
+  return severity in PROXIMITY_THRESHOLDS
+    ? PROXIMITY_THRESHOLDS[severity as ReportSeverity]
+    : undefined;
+}
 
 /** Inter-announcement floor for the operator channel (command-center tone). */
 const OPERATOR_BEEP_THROTTLE_MS = 20000;
@@ -141,6 +149,7 @@ export function useProximityAlerts(
   const operatorPendingRef = useRef<Map<string, string>>(new Map());
   const operatorFlushTimerRef = useRef<number | null>(null);
   const lastOperatorBeepAtRef = useRef(0);
+  const proximityScanInFlightRef = useRef(false);
 
   const closeAudioCtxAfter = (
     timerRef: { current: number | null },
@@ -157,13 +166,14 @@ export function useProximityAlerts(
     }, ms);
   };
 
-  const beepOperatorTone = useCallback((hasCritical: boolean) => {
+  const beepOperatorTone = useCallback(async (hasCritical: boolean): Promise<boolean> => {
     try {
       if (!operatorAudioCtxRef.current) {
         operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
       const audioCtx = operatorAudioCtxRef.current;
-      if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
       const t0 = audioCtx.currentTime;
       for (let i = 0; i < 3; i++) {
         const osc = audioCtx.createOscillator();
@@ -178,8 +188,10 @@ export function useProximityAlerts(
         osc.stop(t0 + i * 0.35 + 0.3);
       }
       closeAudioCtxAfter(operatorCloseTimerRef, operatorAudioCtxRef, 2000);
+      return true;
     } catch (err) {
       console.warn("Critical alert tone blocked:", err);
+      return false;
     }
   }, []);
 
@@ -187,7 +199,8 @@ export function useProximityAlerts(
   // back by the throttle. If the 20 s floor has not elapsed, the flush is
   // POSTPONED via a timer (never swallowed); severities that dropped below
   // high/critical meanwhile are dropped from the queue by the main effect.
-  const flushOperatorPending = useCallback(() => {
+  const flushOperatorPending = useCallback(async () => {
+    if (!isTrustedReporter) return;
     const pending = operatorPendingRef.current;
     if (pending.size === 0) return;
     const now = Date.now();
@@ -196,24 +209,34 @@ export function useProximityAlerts(
       if (operatorFlushTimerRef.current === null) {
         operatorFlushTimerRef.current = window.setTimeout(() => {
           operatorFlushTimerRef.current = null;
-          flushOperatorPending();
+          void flushOperatorPending();
         }, remaining + 50);
       }
       return;
     }
-    // Announcement happens NOW: pending moves to announced memory, then beeps.
-    const announced = lastCriticalIdsRef.current;
-    const nextMemory = new Map<string, string>(announced);
-    let hasCritical = false;
-    for (const [id, sev] of pending) {
-      nextMemory.set(id, sev);
-      if (sev === "critical") hasCritical = true;
+
+    const batch = new Map(pending);
+    const hasCritical = [...batch.values()].some((severity) => severity === "critical");
+    const played = await beepOperatorTone(hasCritical);
+    if (!played || !isTrustedReporter) {
+      if (operatorFlushTimerRef.current === null) {
+        operatorFlushTimerRef.current = window.setTimeout(() => {
+          operatorFlushTimerRef.current = null;
+          void flushOperatorPending();
+        }, 1000);
+      }
+      return;
     }
+
+    const nextMemory = new Map<string, string>(lastCriticalIdsRef.current);
+    for (const [id, sev] of batch) nextMemory.set(id, sev);
     lastCriticalIdsRef.current = nextMemory;
-    pending.clear();
-    beepOperatorTone(hasCritical);
+    for (const [id, sev] of batch) {
+      if (pending.get(id) === sev) pending.delete(id);
+    }
     lastOperatorBeepAtRef.current = Date.now();
-  }, [beepOperatorTone]);
+    if (pending.size > 0) void flushOperatorPending();
+  }, [beepOperatorTone, isTrustedReporter]);
 
   // Lifecycle cleanup: cancel pending close timers, release any context still
   // open, and drop a scheduled operator flush when the consumer unmounts.
@@ -242,7 +265,8 @@ export function useProximityAlerts(
       return;
     }
 
-    const scanProximity = () => {
+    const scanProximity = async () => {
+      if (proximityScanInFlightRef.current) return;
       // Non-finite coordinates (NaN markers from unresolved server responses)
       // are never measured: NaN distance comparisons are always false, but
       // the invariant is enforced here so no downstream consumer sees one.
@@ -251,11 +275,12 @@ export function useProximityAlerts(
           (rep) =>
             isReportEligibleForAlert(rep, "proximity-siren") &&
             Number.isFinite(rep.lat) &&
-            Number.isFinite(rep.lng)
+            Number.isFinite(rep.lng) &&
+            getProximityThreshold(rep.severity) !== undefined
         )
         .map((rep) => {
           const dist = getProximityDistance(userLocation.lat, userLocation.lng, rep.lat, rep.lng);
-          const threshold = PROXIMITY_THRESHOLDS[rep.severity] ?? 5;
+          const threshold = getProximityThreshold(rep.severity) as number;
           return { ...rep, distance: dist, isNear: dist <= threshold, thresholdKm: threshold };
         })
         .filter((rep) => rep.isNear) // Severity-aware radius
@@ -277,51 +302,45 @@ export function useProximityAlerts(
       const newly = computeNewAlerts(announced, nearReports);
       if (newly.length === 0) return; // nothing new: memory stays untouched
 
-      // Memory update is scoped to the ANNOUNCED reports only: writing every
-      // nearby report's current severity here would record OBSERVED (not
-      // announced) values, letting a later return-to-level re-alert falsely.
-      const nextMemory = new Map<string, string>(announced);
-      for (const a of newly) nextMemory.set(a.id, a.severity);
-      lastAlertedReportIdsRef.current = nextMemory;
-
+      proximityScanInFlightRef.current = true;
       try {
         if (!proximityAudioCtxRef.current) {
           proximityAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
         }
         const audioCtx = proximityAudioCtxRef.current;
+        if (audioCtx.state === "suspended") await audioCtx.resume();
+        if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
         const osc1 = audioCtx.createOscillator();
         const osc2 = audioCtx.createOscillator();
         const gainNode = audioCtx.createGain();
 
         osc1.type = "sine";
         osc1.frequency.setValueAtTime(880, audioCtx.currentTime);
-
         osc2.type = "sawtooth";
         osc2.frequency.setValueAtTime(440, audioCtx.currentTime);
-
         gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime);
         gainNode.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 1.0);
-
         osc1.connect(gainNode);
         osc2.connect(gainNode);
         gainNode.connect(audioCtx.destination);
-
         osc1.start();
         osc2.start();
-
         osc1.stop(audioCtx.currentTime + 1.0);
         osc2.stop(audioCtx.currentTime + 1.0);
-        // Autoplay policies may leave the context suspended: resume before
-        // the scheduled starts so the siren actually rings.
-        if (audioCtx.state === "suspended") void audioCtx.resume().catch(() => {});
+
+        const nextMemory = new Map<string, string>(announced);
+        for (const a of newly) nextMemory.set(a.id, a.severity);
+        lastAlertedReportIdsRef.current = nextMemory;
         closeAudioCtxAfter(proximityCloseTimerRef, proximityAudioCtxRef, 2000);
       } catch (err) {
         console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
+      } finally {
+        proximityScanInFlightRef.current = false;
       }
     };
 
-    scanProximity();
-    const alertInterval = setInterval(scanProximity, 15000);
+    void scanProximity();
+    const alertInterval = setInterval(() => void scanProximity(), 15000);
     return () => clearInterval(alertInterval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userLocation, reports, isMuted]);
@@ -333,7 +352,14 @@ export function useProximityAlerts(
   // proximity siren above, which is location-bound.
   const lastCriticalIdsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
-    if (!isTrustedReporter) return;
+    if (!isTrustedReporter) {
+      operatorPendingRef.current.clear();
+      if (operatorFlushTimerRef.current !== null) {
+        window.clearTimeout(operatorFlushTimerRef.current);
+        operatorFlushTimerRef.current = null;
+      }
+      return;
+    }
     const critical = reports.filter(
       (r) =>
         (r.severity === "critical" || r.severity === "high") &&
@@ -343,10 +369,12 @@ export function useProximityAlerts(
     const pending = operatorPendingRef.current;
 
     // Detected now = escalation against BOTH announced memory and whatever is
-    // already pending (a severity rising while pending re-queues the newer
-    // value; dropping below high/critical removes it from the queue).
+    // already pending. Refresh a queued report's severity before flushing so a
+    // downgrade cannot retain a stale critical tone.
     for (const id of [...pending.keys()]) {
-      if (!critical.some((r) => r.id === id)) pending.delete(id);
+      const current = critical.find((r) => r.id === id);
+      if (!current) pending.delete(id);
+      else if (pending.get(id) !== current.severity) pending.set(id, current.severity);
     }
     const newOnes = computeNewAlerts(announced, critical).filter((a) =>
       isEscalation(pending.get(a.id), a.severity)
@@ -360,7 +388,7 @@ export function useProximityAlerts(
     if (isMuted) return;
 
     for (const a of newOnes) pending.set(a.id, a.severity);
-    flushOperatorPending();
+    void flushOperatorPending();
   }, [reports, isMuted, isTrustedReporter, flushOperatorPending]);
 
   return { activeAlerts, isMuted, setIsMuted, getProximityDistance };

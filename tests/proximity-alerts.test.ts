@@ -4,6 +4,7 @@ import {
   isEscalation,
   SEVERITY_RANK,
   computeNewAlerts,
+  getProximityThreshold,
   isReportEligibleForAlert,
 } from "../src/hooks/useProximityAlerts.js";
 
@@ -30,6 +31,13 @@ describe("isReportEligibleForAlert — the observatory's ONE alert-eligibility p
   it("rejects unknown statuses on both channels", () => {
     expect(isReportEligibleForAlert(withStatus("nuclear"), "proximity-siren")).toBe(false);
     expect(isReportEligibleForAlert(withStatus("nuclear"), "operator-tone")).toBe(false);
+  });
+});
+
+describe("proximity thresholds", () => {
+  it("returns no radius for unknown severities", () => {
+    expect(getProximityThreshold("unknown")).toBeUndefined();
+    expect(getProximityThreshold("critical")).toBe(10);
   });
 });
 

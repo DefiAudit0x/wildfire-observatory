@@ -34,7 +34,17 @@ export default function App() {
   const badgeCode = useSyncExternalStore(subscribeReporterBadge, getReporterBadge);
   const isTrustedReporter = Boolean(badgeCode);
 
-  const { userLocation, geoError, refetch: requestLocation, locationSharingConsent, setLocationConsent } = useGeolocation(isArabic);
+  const {
+    userLocation,
+    geoError,
+    isLocating,
+    isLocationStale,
+    lastFixAt,
+    lastFixAccuracy,
+    refetch: requestLocation,
+    locationSharingConsent,
+    setLocationConsent,
+  } = useGeolocation(isArabic);
   const {
     reports,
     satellites,
@@ -143,6 +153,10 @@ export default function App() {
         isArabic={isArabic}
         userLocation={userLocation}
         geoError={geoError}
+        isLocating={isLocating}
+        isLocationStale={isLocationStale}
+        lastFixAt={lastFixAt}
+        lastFixAccuracy={lastFixAccuracy}
         onRequestLocation={requestLocation}
         locationSharingConsent={locationSharingConsent}
         onToggleLocationConsent={setLocationConsent}

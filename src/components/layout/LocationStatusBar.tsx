@@ -6,6 +6,10 @@ interface LocationStatusBarProps {
   userLocation: GeoPoint | null;
   /** Actionable GPS failure (permission/coverage/timeout/unsupported) from useGeolocation. */
   geoError: string | null;
+  isLocating: boolean;
+  isLocationStale: boolean;
+  lastFixAt: number | null;
+  lastFixAccuracy: number | null;
   /** Fires a one-shot FRESH geolocation request (the GPS button's real action). */
   onRequestLocation: () => void;
   /** Location-sharing consent for the heartbeat (PII audit). */
@@ -25,6 +29,10 @@ function LocationStatusBar({
   isArabic,
   userLocation,
   geoError,
+  isLocating,
+  isLocationStale,
+  lastFixAt,
+  lastFixAccuracy,
   onRequestLocation,
   locationSharingConsent,
   onToggleLocationConsent,
@@ -39,22 +47,34 @@ function LocationStatusBar({
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={onRequestLocation}
+            disabled={isLocating}
             className={`px-2.5 py-1 rounded border transition-all cursor-pointer max-w-[340px] truncate ${
-              userLocation
+              userLocation && !isLocationStale
                 ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
                 : geoError
                   ? "bg-red-500/20 text-red-300 border-red-500/40"
                   : "bg-amber-500/20 text-amber-400 border-amber-500/30"
-            }`}
+            } ${isLocating ? "opacity-70 cursor-wait" : ""}`}
             title={geoError || (isArabic ? "حالة تحديد الموقع — اضغط لإعادة تحديد الموقع الآن" : "État de la localisation — cliquer pour réacquérir la position")}
             aria-label={isArabic ? "إعادة تحديد الموقع الحالي" : "Réacquérir la position actuelle"}
           >
-            {userLocation
-              ? (isArabic ? "🌐 GPS حقيقي: " : "🌐 GPS Réel : ") + `${userLocation.lat.toFixed(3)}, ${userLocation.lng.toFixed(3)}`
-              : geoError
-                ? "⚠️ " + geoError
-                : (isArabic ? "📍 جاري تحديد الموقع..." : "📍 Localisation GPS...")}
+            {isLocating
+              ? (isArabic ? "📍 جاري تحديث الموقع..." : "📍 Actualisation GPS...")
+              : userLocation
+                ? (isLocationStale
+                  ? (isArabic ? "⚠️ آخر موقع معروف: " : "⚠️ Dernière position connue : ")
+                  : (isArabic ? "🌐 GPS حقيقي: " : "🌐 GPS Réel : ")) + `${userLocation.lat.toFixed(3)}, ${userLocation.lng.toFixed(3)}`
+                : geoError
+                  ? "⚠️ " + geoError
+                  : (isArabic ? "📍 جاري تحديد الموقع..." : "📍 Localisation GPS...")}
           </button>
+          {(userLocation && lastFixAt) && (
+            <span className={isLocationStale ? "text-amber-300" : "text-slate-500"}>
+              {isLocationStale
+                ? (isArabic ? "إشارة GPS مفقودة" : "Signal GPS perdu")
+                : `${isArabic ? "تحديث" : "Fix"} ${Math.max(0, Math.round((Date.now() - lastFixAt) / 1000))}s${lastFixAccuracy !== null ? ` · ±${Math.round(lastFixAccuracy)}m` : ""}`}
+            </span>
+          )}
 
           {/* Location-sharing consent (PII audit): the heartbeat NEVER runs
               without explicit opt-in; this toggle — always visible, so it can

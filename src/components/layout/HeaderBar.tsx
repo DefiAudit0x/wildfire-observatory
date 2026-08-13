@@ -87,6 +87,14 @@ function HeaderBar({
   }, []);
 
   const { states, sync } = computeSyncState(datasetHealth, nowTick);
+  const freshSourceCount = DATASET_KEYS.filter((key) => states[key] === "live").length;
+  const sourceCountLabel = isArabic
+    ? `${freshSourceCount}/${DATASET_KEYS.length} مصادر حديثة`
+    : `${freshSourceCount}/${DATASET_KEYS.length} sources à jour`;
+  const backendReachable = lastBackendContact > 0;
+  const backendLabel = isArabic
+    ? backendReachable ? "الخادم متاح" : "الخادم غير متاح"
+    : backendReachable ? "Serveur joignable" : "Serveur indisponible";
 
   // Honest "last update" wording: the primary clock is the moment of the last
   // FULL refresh, phrased per state so a partial sync never reads as a full
@@ -213,11 +221,14 @@ function HeaderBar({
           <div className="h-10 w-10 bg-gradient-to-tr from-red-600 via-orange-600 to-amber-500 rounded-xl flex items-center justify-center shadow-[0_4px_15px_rgba(220,38,38,0.3)] border border-red-500/20">
             <Flame className="h-6 w-6 text-white animate-pulse" />
           </div>
-          <div>
-            <h1 className="font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-none flex items-center gap-2">
-              <span>{isArabic ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث" : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes"}</span>
+          <div className="min-w-0 max-w-full">
+            <h1 className="min-w-0 font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-tight flex flex-wrap items-center gap-2">
+              <span className="min-w-0 break-words">
+                {isArabic ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث" : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes"}
+              </span>
               <span
                 title={badgeTitle}
+                aria-label={badgeTitle}
                 className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${badgeMeta[sync].cls}`}
               >
                 {isArabic ? badgeMeta[sync].ar : badgeMeta[sync].fr}
@@ -228,6 +239,13 @@ function HeaderBar({
                 ? "منصة تضامنية لمتابعة الكوارث والتبليغ الميداني الفوري والتأصيل الجغرافي"
                 : "Plateforme citoyenne de suivi cartographique et de signalement d'urgence"}
             </p>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-semibold" aria-live="polite">
+              <span className={sync === "live" ? "text-emerald-400" : "text-amber-300"}>
+                {isArabic ? `حالة البيانات: ${isArabic ? badgeMeta[sync].ar : badgeMeta[sync].fr}` : `État des données : ${badgeMeta[sync].fr}`}
+              </span>
+              <span className="text-slate-400">{sourceCountLabel}</span>
+              <span className={backendReachable ? "text-sky-300" : "text-red-300"}>{backendLabel}</span>
+            </div>
           </div>
         </div>
 

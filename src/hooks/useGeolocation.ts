@@ -38,10 +38,15 @@ export function geoErrorMessage(
 }
 
 const HEARTBEAT_CONSENT_KEY = "observatory_heartbeat_consent";
+const MAX_CLOCK_SKEW_MS = 60_000;
 
 export function useGeolocation(isArabic: boolean) {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [geoError, setGeoError] = useState<string | null>(null);
+  const [isLocating, setIsLocating] = useState(false);
+  const [isLocationStale, setIsLocationStale] = useState(false);
+  const [lastFixAt, setLastFixAt] = useState<number | null>(null);
+  const [lastFixAccuracy, setLastFixAccuracy] = useState<number | null>(null);
   // Location-sharing consent (PII audit): the heartbeat sends the device's
   // position to the observatory backend continuously. That only happens after
   // the user EXPLICITLY opts in via the UI toggle (default: OFF). Revoking
@@ -53,7 +58,7 @@ export function useGeolocation(isArabic: boolean) {
       return false;
     }
   });
-  const deviceId = getDeviceId();
+  const [deviceId] = useState(() => getDeviceId());
   // Monotonic sequence for one-shot refetches: only the LATEST refetch may
   // write location/error state — a slow earlier response can never overwrite
   // a newer one (rapid GPS button presses).
@@ -65,7 +70,6 @@ export function useGeolocation(isArabic: boolean) {
   // Tolerated skew between the device clock and our arrival clock: a device
   // clock far ahead of ours would stamp every fix with a future timestamp and
   // (without clamping) poison lastFixTsRef, blocking all later fixes.
-  const MAX_CLOCK_SKEW_MS = 60_000;
   // Latest fix, decoupled from render state: the heartbeat reads this so GPS
   // chatter only refreshes the value — it never tears down the interval.
   const locationRef = useRef<{ lat: number; lng: number } | null>(null);
@@ -101,6 +105,10 @@ export function useGeolocation(isArabic: boolean) {
     locationRef.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
     setUserLocation(locationRef.current);
     setGeoError(null);
+    setIsLocating(false);
+    setIsLocationStale(false);
+    setLastFixAt(arrivedAt);
+    setLastFixAccuracy(Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null);
   }, []);
 
   // The watch is installed exactly ONCE (empty deps): it never re-creates on
@@ -118,6 +126,8 @@ export function useGeolocation(isArabic: boolean) {
           // location from an in-flight report. The error is surfaced instead
           // and the form can still submit the last fix, visibly flagged.
           console.warn("Geolocation error:", err);
+          setIsLocating(false);
+          setIsLocationStale(Boolean(locationRef.current));
           setGeoError(geoErrorMessage(err?.code, isArabicRef.current));
         },
         // maximumAge bounds the age of a fix the browser may REPLAY from its
@@ -140,8 +150,11 @@ export function useGeolocation(isArabic: boolean) {
   // is cleared as the attempt begins.
   const refetch = useCallback(() => {
     const seq = ++refetchSeqRef.current;
+    setIsLocating(true);
     setGeoError(null);
     if (!navigator.geolocation) {
+      setIsLocating(false);
+      setIsLocationStale(Boolean(locationRef.current));
       setGeoError(geoErrorMessage("unsupported", isArabic));
       return;
     }
@@ -153,6 +166,8 @@ export function useGeolocation(isArabic: boolean) {
       (err) => {
         if (seq !== refetchSeqRef.current) return;
         console.warn("Geolocation refresh error:", err);
+        setIsLocating(false);
+        setIsLocationStale(Boolean(locationRef.current));
         setGeoError(geoErrorMessage(err?.code, isArabic));
       },
       { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
@@ -185,7 +200,12 @@ export function useGeolocation(isArabic: boolean) {
     const sendHeartbeat = () => {
       const loc = locationRef.current;
       if (!loc) return;
-      const storedBadge = localStorage.getItem("reporterBadgeCode") || undefined;
+      let storedBadge: string | undefined;
+      try {
+        storedBadge = localStorage.getItem("reporterBadgeCode") || undefined;
+      } catch {
+        storedBadge = undefined;
+      }
 
       fetchWithRetry("/api/location/heartbeat", {
         method: "POST",
@@ -204,5 +224,15 @@ export function useGeolocation(isArabic: boolean) {
     return () => clearInterval(interval);
   }, [deviceId, locationSharingConsent]);
 
-  return { userLocation, geoError, refetch, locationSharingConsent, setLocationConsent };
+  return {
+    userLocation,
+    geoError,
+    isLocating,
+    isLocationStale,
+    lastFixAt,
+    lastFixAccuracy,
+    refetch,
+    locationSharingConsent,
+    setLocationConsent,
+  };
 }
