@@ -152,13 +152,16 @@ function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
  */
 async function buildMultipartForm(
   payload: CitizenReportPayload,
-  deviceId: string
+  deviceId: string,
+  signal?: AbortSignal
 ): Promise<{ fd: FormData; imageDropped: boolean }> {
   const imgData = payload.image as string;
   const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
   let blob: Blob | null = null;
   try {
-    blob = await (await fetch(imgData, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })).blob();
+    const imageTimeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    const imageSignal = signal ? AbortSignal.any([signal, imageTimeout]) : imageTimeout;
+    blob = await (await fetch(imgData, { signal: imageSignal })).blob();
   } catch {
     // Older WebViews may refuse to fetch data URLs: fall back to atob.
     try {
@@ -424,6 +427,7 @@ export function useObservatoryData() {
   const liveRefreshInFlightRef = useRef(false);
   const liveRefreshPendingRef = useRef(false);
   const refreshFromLiveEvent = useCallback(async () => {
+    if (!mountedRef.current) return;
     if (liveRefreshInFlightRef.current) {
       liveRefreshPendingRef.current = true;
       return;
@@ -433,9 +437,11 @@ export function useObservatoryData() {
       await fetchData();
     } finally {
       liveRefreshInFlightRef.current = false;
-      if (liveRefreshPendingRef.current) {
+      if (liveRefreshPendingRef.current && mountedRef.current) {
         liveRefreshPendingRef.current = false;
         void refreshFromLiveEvent();
+      } else {
+        liveRefreshPendingRef.current = false;
       }
     }
   }, [fetchData]);
@@ -455,6 +461,8 @@ export function useObservatoryData() {
   });
 
   useEffect(() => () => {
+    liveRefreshPendingRef.current = false;
+    liveRefreshInFlightRef.current = false;
     if (liveRefreshTimerRef.current !== null) {
       window.clearTimeout(liveRefreshTimerRef.current);
       liveRefreshTimerRef.current = null;
@@ -546,7 +554,7 @@ export function useObservatoryData() {
         try {
           if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
             // Multipart upload: avoids sending base64 through the JSON body parser.
-            const { fd, imageDropped } = await buildMultipartForm(payload, deviceId);
+            const { fd, imageDropped } = await buildMultipartForm(payload, deviceId, controller.signal);
             res = await fetch("/api/reports", { method: "POST", body: fd, signal: controller.signal });
             imageNotAttached = imageDropped;
           } else {

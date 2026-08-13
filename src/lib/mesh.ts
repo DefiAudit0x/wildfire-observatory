@@ -133,6 +133,7 @@ class MeshClient {
     this.ws = ws;
 
     ws.onopen = () => {
+      if (this.ws !== ws || generation !== this.connectionGeneration || this.manualClosed) return;
       this.reconnectDelay = 1_000;
       ws.send(JSON.stringify({ type: "hello", deviceId: this.deviceId, label: this.label, token: this.meshToken }));
       if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
@@ -144,6 +145,7 @@ class MeshClient {
     };
 
     ws.onmessage = (event) => {
+      if (this.ws !== ws || generation !== this.connectionGeneration || this.manualClosed) return;
       try {
         const message = JSON.parse(String(event.data)) as MeshMessage;
         if (message.type === "welcome") {
@@ -184,6 +186,7 @@ class MeshClient {
     };
 
     ws.onclose = () => {
+      if (this.ws !== ws || generation !== this.connectionGeneration) return;
       this.ws = null;
       this.meshToken = null; // token is short-lived; fetch a fresh one on reconnect
       if (this.heartbeatTimer !== null) {
@@ -201,6 +204,7 @@ class MeshClient {
     };
 
     ws.onerror = () => {
+      if (this.ws !== ws || generation !== this.connectionGeneration) return;
       // onclose will follow and schedule a reconnect
     };
   }
@@ -211,7 +215,14 @@ class MeshClient {
   }
 
   private emitStatus(): void {
-    this.statusHandlers.forEach((handler) => handler(this.status, this.nodeCount, this.nodes));
+    const nodes = this.nodes.slice();
+    this.statusHandlers.forEach((handler) => {
+      try {
+        handler(this.status, this.nodeCount, nodes);
+      } catch {
+        // One status consumer must not block the remaining subscribers.
+      }
+    });
   }
 
   send(message: MeshMessage): boolean {

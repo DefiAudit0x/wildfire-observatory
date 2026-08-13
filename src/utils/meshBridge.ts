@@ -186,9 +186,10 @@ export function broadcastMessage(
   const bridge = getAndroidBridge();
 
   if (bridge) {
-    // Solve Proof-of-Work first (anti-spam)
-    const prefix = `${Date.now()}-${bridge.getDeviceId()}`;
-    const nonce = bridge.solvePoW(prefix, 8);
+    try {
+      // Solve Proof-of-Work first (anti-spam)
+      const prefix = `${Date.now()}-${bridge.getDeviceId()}`;
+      const nonce = bridge.solvePoW(prefix, 8);
 
     // Audit A9/B6: -1 means the solver gave up (out-of-band difficulty or
     // iteration budget). Broadcasting anyway would enqueue a frame every
@@ -213,7 +214,10 @@ export function broadcastMessage(
       powDifficulty: 8,
     });
 
-    bridge.broadcastMessage(enrichedMsg, type, lat, lng);
+      bridge.broadcastMessage(enrichedMsg, type, lat, lng);
+    } catch (err) {
+      console.error("[MeshBridge] Native broadcast failed:", err);
+    }
     return;
   }
 
@@ -495,13 +499,34 @@ async function browserDecrypt(
 // PEER MANAGEMENT
 // ========================
 
+function parsePeer(value: unknown): PeerInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const peer = value as Record<string, unknown>;
+  return typeof peer.endpointId === "string" && peer.endpointId.length > 0 &&
+    typeof peer.publicKey === "string" && peer.publicKey.length > 0 &&
+    typeof peer.lastSeen === "number" && Number.isFinite(peer.lastSeen) &&
+    typeof peer.reputation === "number" && Number.isFinite(peer.reputation)
+    ? {
+        endpointId: peer.endpointId,
+        publicKey: peer.publicKey,
+        lastSeen: peer.lastSeen,
+        reputation: peer.reputation,
+      }
+    : null;
+}
+
+function parsePeers(value: unknown): PeerInfo[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(parsePeer).filter((peer): peer is PeerInfo => peer !== null);
+}
+
 export function getConnectedPeers(): PeerInfo[] {
   const bridge = getAndroidBridge();
 
   if (bridge) {
     try {
       const json = bridge.getConnectedPeers();
-      return JSON.parse(json);
+      return parsePeers(JSON.parse(json));
     } catch {
       return [];
     }
@@ -512,7 +537,14 @@ export function getConnectedPeers(): PeerInfo[] {
 
 export function getPeerReputation(endpointId: string): number {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.getPeerReputation(endpointId);
+  if (bridge) {
+    try {
+      const reputation = bridge.getPeerReputation(endpointId);
+      return Number.isFinite(reputation) ? reputation : 0;
+    } catch {
+      return 0;
+    }
+  }
   return reputationCache.get(endpointId) || 0;
 }
 
@@ -535,7 +567,13 @@ function installNativeMessageHandler(): void {
     try {
       parsed = JSON.parse(message);
     } catch {
-      messageListeners.forEach((listener) => listener(message, "unknown", 0));
+      messageListeners.forEach((listener) => {
+        try {
+          listener(message, "unknown", 0);
+        } catch {
+          // A malformed frame must not let one listener block the others.
+        }
+      });
       return;
     }
     const peerId = parsed.peerId ?? "unknown";
@@ -608,6 +646,7 @@ export function onPeersUpdate(handler: PeerUpdateHandler): () => void {
 }
 
 export function onMeshReady(handler: (deviceId: string) => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
   let called = false;
   const handlerFn = (e: CustomEvent) => {
     if (called) return;
@@ -621,7 +660,12 @@ export function onMeshReady(handler: (deviceId: string) => void): () => void {
   const bridge = getAndroidBridge();
   if (bridge) {
     called = true;
-    handler(bridge.getDeviceId());
+    try {
+      handler(bridge.getDeviceId());
+    } catch {
+      // A stale bridge is equivalent to not being ready yet.
+      called = false;
+    }
   }
 
   return () => {
