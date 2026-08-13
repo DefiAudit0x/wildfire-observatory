@@ -640,7 +640,11 @@ export function useObservatoryData() {
           imageNotAttached,
         };
       }
-      return imageNotAttached ? { ...newReport, imageNotAttached: true } : newReport;
+      return {
+        ...newReport,
+        responseValid: true,
+        ...(imageNotAttached ? { imageNotAttached: true } : {}),
+      };
     },
     [deviceId, fetchData]
   );

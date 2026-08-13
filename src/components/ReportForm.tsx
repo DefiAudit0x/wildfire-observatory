@@ -29,7 +29,7 @@ export function normalizeSubmissionResult(value: unknown): SubmissionResultView 
   }
   const raw = value as Record<string, unknown>;
   const status = raw.status === "pending" || raw.status === "verified" ? raw.status : undefined;
-  const id = typeof raw.id === "string" ? raw.id : undefined;
+  const id = typeof raw.id === "string" && raw.id.trim().length >= 3 ? raw.id.trim() : undefined;
   const ai = raw.aiVerification && typeof raw.aiVerification === "object"
     ? raw.aiVerification as Record<string, unknown>
     : null;
@@ -48,9 +48,9 @@ export function normalizeSubmissionResult(value: unknown): SubmissionResultView 
       suggestedSeverity: typeof ai.suggestedSeverity === "string" ? ai.suggestedSeverity : undefined,
     }
     : undefined;
-  const responseValid = raw.responseValid === false
-    ? false
-    : raw.responseValid === true || Boolean(status || id || raw.isOfflineDraft === true);
+  const serverAccepted = raw.responseValid === true && Boolean(id && status);
+  const offlineAccepted = raw.responseValid === true && raw.isOfflineDraft === true;
+  const responseValid = serverAccepted || offlineAccepted;
   return {
     responseValid,
     isOfflineDraft: raw.isOfflineDraft === true,
@@ -961,6 +961,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         schemaVersion: 1,
         retryCount: 0,
         isOfflineDraft: true,
+        responseValid: true,
         consensusCount: 1,
         status: "pending" as const,
       };
