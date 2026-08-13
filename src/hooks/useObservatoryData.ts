@@ -50,8 +50,10 @@ const EMPTY_OUTCOME: FetchOutcome = { hasActiveActivity: false, allOk: false, an
  */
 const FETCH_TIMEOUT_MS = 15000;
 
-function fetchWithTimeout(url: string): Promise<Response> {
-  return fetch(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+function fetchWithTimeout(url: string, signal?: AbortSignal): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+  return fetch(url, { signal: combinedSignal });
 }
 
 /**
@@ -89,6 +91,15 @@ const isReportSeverity = (v: unknown): v is Report["severity"] =>
  * NEVER forwarded silently — a silent (0,0) mesh report would poison the map
  * on every peer.
  */
+const MESH_REPORT_FIELDS = [
+  "id", "clientGeneratedId", "deviceId", "lat", "lng", "locationName", "wilaya",
+  "description", "severity", "status", "timestamp", "consensusCount",
+] as const;
+
+function toMeshSafeReport(reportLike: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(MESH_REPORT_FIELDS.filter((key) => reportLike[key] !== undefined).map((key) => [key, reportLike[key]]));
+}
+
 function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): void {
   if (!isMeshSupported()) return;
   try {
@@ -98,9 +109,9 @@ function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): vo
       console.warn("Mesh broadcast skipped: invalid coordinates", reportLike.lat, reportLike.lng);
       return;
     }
-    // Audit B13: retain deviceId and clientGeneratedId for gateway attribution.
-    // PII fields (image, reporterPhone) are still stripped.
-    const { image: _img, reporterPhone: _rp, ...meshPayload } = reportLike as Record<string, unknown>;
+    // Mesh uses an allow-list: reporter name, phone, badge, image, and any
+    // future form fields never cross the mesh boundary accidentally.
+    const meshPayload = toMeshSafeReport(reportLike as Record<string, unknown>);
     broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
@@ -123,8 +134,7 @@ function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
       return;
     }
     const pending = buildLocalPendingReport(payload);
-    // Audit B13: retain deviceId and clientGeneratedId for gateway attribution.
-    const { image: _img, reporterPhone: _rp, ...meshPayload } = pending as unknown as Record<string, unknown>;
+    const meshPayload = toMeshSafeReport(pending as unknown as Record<string, unknown>);
     broadcastMessage(JSON.stringify(meshPayload), "report", lat, lng);
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
@@ -148,7 +158,7 @@ async function buildMultipartForm(
   const mime = imgData.split(";")[0].split(":")[1] || "image/jpeg";
   let blob: Blob | null = null;
   try {
-    blob = await (await fetch(imgData)).blob();
+    blob = await (await fetch(imgData, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })).blob();
   } catch {
     // Older WebViews may refuse to fetch data URLs: fall back to atob.
     try {
@@ -187,7 +197,7 @@ export function buildLocalPendingReport(payload: CitizenReportPayload): Report {
   const lat = Number(payload.lat);
   const lng = Number(payload.lng);
   return {
-    id: payload.clientGeneratedId || `rep-local-${Date.now()}`,
+    id: payload.clientGeneratedId || `rep-local-${crypto.randomUUID()}`,
     lat: Number.isFinite(lat) ? lat : NaN,
     lng: Number.isFinite(lng) ? lng : NaN,
     locationName: payload.locationName,
@@ -211,6 +221,7 @@ export function useObservatoryData() {
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<number>(0);
   const [lastBackendContact, setLastBackendContact] = useState<number>(0);
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
@@ -221,6 +232,8 @@ export function useObservatoryData() {
   // live-event vs post-report refresh) must NOT write state, health or the
   // spinner — otherwise an older response could overwrite a fresher one.
   const cycleRef = useRef(0);
+  const cycleAbortRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
   // Synchronous mirrors of the datasets that decide activity/scheduling, kept
   // in lockstep with every writer so a failed cycle can judge activity from
   // the PRESERVED state (see hasActiveActivity below), not just its own
@@ -236,8 +249,11 @@ export function useObservatoryData() {
   // an invalid payload fails THAT dataset only and preserves its previous
   // state — it can never wipe live reports/SOS from the UI.
   const fetchData = useCallback(async (): Promise<FetchOutcome> => {
+    cycleAbortRef.current?.abort();
+    const cycleController = new AbortController();
+    cycleAbortRef.current = cycleController;
     const cycle = ++cycleRef.current;
-    setLoading(true);
+    if (mountedRef.current) setLoading(true);
 
     const commit = async (key: DatasetKey, promise: Promise<Response>): Promise<DatasetAttempt> => {
       let res: Response;
@@ -260,7 +276,7 @@ export function useObservatoryData() {
         // invalid payload fails this source only and preserves its prior
         // state — it can never blank reports/SOS from the UI.
         const validated = validateDataset(key, data);
-        if (cycle === cycleRef.current) applyDataset(key, validated);
+        if (cycle === cycleRef.current && mountedRef.current) applyDataset(key, validated);
         return { ok: true, data: validated };
       } catch {
         return { ok: false, reason: "schema" };
@@ -297,11 +313,11 @@ export function useObservatoryData() {
     // slowest response, not the sum of the five. The schema validation lives
     // per-source inside commit and still gates each commit independently.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
-      commit("reports", fetchWithTimeout("/api/reports")),
-      commit("satellites", fetchWithTimeout("/api/satellite-data")),
-      commit("wilayas", fetchWithTimeout("/api/wilayas")),
-      commit("sos", fetchWithTimeout("/api/sos")),
-      commit("notifications", fetchWithTimeout(`/api/notifications/${deviceId}`)),
+      commit("reports", fetchWithTimeout("/api/reports", cycleController.signal)),
+      commit("satellites", fetchWithTimeout("/api/satellite-data", cycleController.signal)),
+      commit("wilayas", fetchWithTimeout("/api/wilayas", cycleController.signal)),
+      commit("sos", fetchWithTimeout("/api/sos", cycleController.signal)),
+      commit("notifications", fetchWithTimeout(`/api/notifications/${deviceId}`, cycleController.signal)),
     ]);
 
     const outcomes: Record<DatasetKey, DatasetAttempt> = {
@@ -316,7 +332,7 @@ export function useObservatoryData() {
     const allOk = DATASET_KEYS.every((k) => outcomes[k].ok);
     const now = Date.now();
 
-    if (cycle !== cycleRef.current) {
+    if (cycle !== cycleRef.current || !mountedRef.current) {
       // Superseded by a newer cycle: IT owns state, health AND the spinner.
       // The spinner follows the CURRENT cycle: the winner clears it when it
       // settles (commit never rejects — a timeout/HTTP failure is a settled
@@ -362,9 +378,16 @@ export function useObservatoryData() {
 
     const outcome: FetchOutcome = { hasActiveActivity, allOk, anyOk };
     lastOutcomeRef.current = outcome;
-    setLoading(false);
+    if (cycleAbortRef.current === cycleController) cycleAbortRef.current = null;
+    if (mountedRef.current) setLoading(false);
     return outcome;
   }, [deviceId]);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    cycleAbortRef.current?.abort();
+    cycleAbortRef.current = null;
+  }, []);
 
   // Stable self-rescheduling poll: the timer re-arms itself inside its own
   // callback. Cadence is computed from the data THIS poll just returned
@@ -482,11 +505,12 @@ export function useObservatoryData() {
         // Consensus updates are protocol data: the status must be a real
         // report status and the count a non-negative INTEGER (Infinity,
         // fractions and coerced garbage are not consensus).
-        if (
+          if (
           id &&
           isReportStatus(rawStatus) &&
           Number.isInteger(consensusCount) &&
-          consensusCount >= 0
+          consensusCount >= 0 &&
+          consensusCount <= 1_000_000
         ) {
           setReports((prev) => {
             const next = prev.map((r) =>
@@ -603,6 +627,7 @@ export function useObservatoryData() {
 
   // Upvote/Confirm fire (Consensus Engine)
   const handleConfirmReport = useCallback(async (id: string) => {
+    setConfirmError(null);
     try {
       // 15s timeout for all write paths (audit B7).
       const controller = new AbortController();
@@ -614,7 +639,17 @@ export function useObservatoryData() {
           body: JSON.stringify({ deviceId }),
           signal: controller.signal,
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          let message = "تعذر تسجيل التأكيد";
+          try {
+            const body = await res.json();
+            if (typeof body?.error === "string" && body.error.length <= 200) message = body.error;
+          } catch {
+            // Non-JSON error response.
+          }
+          setConfirmError(message);
+          return false;
+        }
         const result: any = await res.json();
         const status = result?.status;
         const consensusCount = Number(result?.consensusCount);
@@ -627,12 +662,20 @@ export function useObservatoryData() {
           // reconciliation instead of racing an optimistic state update with
           // a GET that may still contain the previous status.
           await fetchData();
+          return true;
         }
+        setConfirmError("استجابة غير صالحة من خادم التأكيد");
+        return false;
       } finally {
         clearTimeout(timeoutId);
       }
     } catch (err) {
+      const message = err instanceof Error && err.name === "AbortError"
+        ? "انتهت مهلة التأكيد"
+        : "تعذر الاتصال بخادم التأكيد";
+      setConfirmError(message);
       console.error("Failed to confirm report:", err);
+      return false;
     }
   }, [deviceId, fetchData]);
 
@@ -663,6 +706,7 @@ export function useObservatoryData() {
     fetchData,
     handleCreateReport,
     handleConfirmReport,
+    confirmError,
     handleMarkNotificationRead,
   };
 }

@@ -44,6 +44,7 @@ let browserKeyPair: CryptoKeyPair | null = null;
 let browserSignKey: CryptoKeyPair | null = null;
 let browserEphemeralId = "";
 let browserPublicKeyBase64 = "";
+let initMeshPromise: Promise<{ supported: boolean; deviceId: string }> | null = null;
 
 // Retired private keys (audit round 12 — recipient-side rotation): a message
 // encrypted to our previously-advertised key while we rotate stays
@@ -65,6 +66,16 @@ const peerListeners = new Set<PeerUpdateHandler>();
 // ========================
 
 export async function initMesh(): Promise<{ supported: boolean; deviceId: string }> {
+  if (initMeshPromise) return initMeshPromise;
+  initMeshPromise = initMeshInternal();
+  try {
+    return await initMeshPromise;
+  } finally {
+    initMeshPromise = null;
+  }
+}
+
+async function initMeshInternal(): Promise<{ supported: boolean; deviceId: string }> {
   const bridge = getAndroidBridge();
 
   if (bridge) {
@@ -225,8 +236,13 @@ export function encryptForPeer(
   const bridge = getAndroidBridge();
 
   if (bridge) {
-    const json = bridge.encryptForPeer(peerPublicKey, plaintext, lat, lng);
-    return Promise.resolve(JSON.parse(json));
+    try {
+      const json = bridge.encryptForPeer(peerPublicKey, plaintext, lat, lng);
+      const parsed = JSON.parse(json) as EncryptedMessage;
+      return Promise.resolve(isEncryptedMessageShape(parsed) ? parsed : null);
+    } catch {
+      return Promise.resolve(null);
+    }
   }
 
   // Browser fallback: Web Crypto API E2EE
@@ -240,8 +256,12 @@ export function decryptFromPeer(
   const bridge = getAndroidBridge();
 
   if (bridge) {
-    const result = bridge.decryptFromPeer(JSON.stringify(encrypted), peerPublicKey);
-    return Promise.resolve(result || null);
+    try {
+      const result = bridge.decryptFromPeer(JSON.stringify(encrypted), peerPublicKey);
+      return Promise.resolve(result || null);
+    } catch {
+      return Promise.resolve(null);
+    }
   }
 
   return browserDecrypt(encrypted, peerPublicKey);
@@ -320,7 +340,7 @@ async function browserEncrypt(
     const exportedSignPub = await crypto.subtle.exportKey("spki", browserSignKey.publicKey);
     const messageId = generateId();
     const timestamp = Date.now();
-    const nonce = Math.floor(Math.random() * 2 ** 31);
+    const nonce = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
     const canonical = buildSignedData(
       new Uint8Array(ciphertext),
       new Uint8Array(iv),
@@ -368,9 +388,12 @@ async function browserDecrypt(
   try {
     if (!browserKeyPair) return null;
 
-    // Signature verification uses the SENDER's ECDSA key — the fallback's
-    // self-consistent contract (see the keypairs note); native messages
-    // verify against senderPublicKey (same field they carry).
+    if (!hasRequiredEncryptedMetadata(encrypted)) return null;
+    if (peerPublicKeyBase64 && encrypted.senderPublicKey !== peerPublicKeyBase64) return null;
+
+    // Signature verification uses the sender's ECDSA key carried in the
+    // fallback envelope. The expected peer ECDH key, when supplied, is also
+    // checked above so the envelope cannot silently decrypt as another peer.
     const verifyPubKeyB64 = encrypted.signatureKey || encrypted.senderPublicKey;
 
     // Import sender's public key
@@ -394,15 +417,15 @@ async function browserDecrypt(
     const canonical = buildSignedData(
       new Uint8Array(ciphertext),
       new Uint8Array(iv),
-      encrypted.messageId || "",
-      encrypted.type || "",
+      encrypted.messageId!,
+      encrypted.type!,
       0,
       encrypted.ephemeralId,
       encrypted.senderPublicKey,
       encrypted.timestamp,
-      encrypted.nonce || 0,
-      encrypted.lat || 0,
-      encrypted.lng || 0
+      encrypted.nonce!,
+      encrypted.lat,
+      encrypted.lng
     );
 
     const valid = await crypto.subtle.verify(
@@ -597,6 +620,7 @@ export function onMeshReady(handler: (deviceId: string) => void): () => void {
   // Also check if bridge already exists
   const bridge = getAndroidBridge();
   if (bridge) {
+    called = true;
     handler(bridge.getDeviceId());
   }
 
@@ -679,6 +703,22 @@ function difficultyTarget(difficulty: number): bigint | null {
 // UTILITY
 // ========================
 
+function hasRequiredEncryptedMetadata(message: EncryptedMessage): boolean {
+  return typeof message.messageId === "string" && message.messageId.length > 0 &&
+    typeof message.type === "string" && message.type.length > 0 &&
+    typeof message.nonce === "number" && Number.isInteger(message.nonce) && message.nonce >= 0 &&
+    typeof message.lat === "number" && Number.isFinite(message.lat) && message.lat >= -90 && message.lat <= 90 &&
+    typeof message.lng === "number" && Number.isFinite(message.lng) && message.lng >= -180 && message.lng <= 180;
+}
+
+function isEncryptedMessageShape(value: unknown): value is EncryptedMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<EncryptedMessage>;
+  return typeof message.ciphertext === "string" && typeof message.iv === "string" &&
+    typeof message.signature === "string" && typeof message.ephemeralId === "string" &&
+    typeof message.senderPublicKey === "string" && hasRequiredEncryptedMetadata(message as EncryptedMessage);
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = "";
@@ -702,6 +742,9 @@ function randomNonce(): number {
  * absorbs float accumulation noise (0.1+0.2 → 300000 on both).
  */
 export function canonicalLatLng(value: number): string {
+  if (!Number.isFinite(value) || value < -90 || value > 90) {
+    throw new RangeError("coordinate out of range");
+  }
   return String(Math.round(value * 1_000_000));
 }
 
@@ -764,8 +807,9 @@ function base64ToArrayBuffer(base64: string): Uint8Array {
 }
 
 function generateId(): string {
-  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
-  return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // ========================
@@ -795,6 +839,7 @@ export function checkAndRecordNonce(nonce: number): boolean {
  * and nonce match a previously seen pair within the TTL window.
  */
 export function checkAndRecordMessageNonce(messageId: string, nonce: number): boolean {
+  if (typeof messageId !== "string" || messageId.length === 0 || !Number.isInteger(nonce) || nonce < 0) return false;
   const now = Date.now();
   const key = `${messageId}:${nonce}`;
   if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {

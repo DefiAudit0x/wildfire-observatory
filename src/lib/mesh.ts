@@ -16,6 +16,7 @@ type MessageHandler = (message: MeshMessage) => void;
 type StatusHandler = (status: MeshStatus, nodeCount: number, nodes: MeshNodeInfo[]) => void;
 
 const HEARTBEAT_MS = 30_000;
+const FETCH_TOKEN_TIMEOUT_MS = 10_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const DEVICE_ID_KEY = "mesh_device_id";
 let memoryDeviceId: string | null = null;
@@ -47,6 +48,8 @@ class MeshClient {
   private heartbeatTimer: number | null = null;
   private manualClosed = false;
   private meshToken: string | null = null;
+  private tokenController: AbortController | null = null;
+  private connectionGeneration = 0;
   private messageHandlers = new Set<MessageHandler>();
   private statusHandlers = new Set<StatusHandler>();
 
@@ -68,6 +71,9 @@ class MeshClient {
 
   disconnect(): void {
     this.manualClosed = true;
+    this.connectionGeneration++;
+    this.tokenController?.abort();
+    this.tokenController = null;
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -83,23 +89,34 @@ class MeshClient {
     this.setStatus("offline");
   }
 
-  private async fetchMeshToken(): Promise<string | null> {
+  private async fetchMeshToken(generation: number): Promise<string | null> {
+    const controller = new AbortController();
+    this.tokenController = controller;
+    const timeout = window.setTimeout(() => controller.abort(), FETCH_TOKEN_TIMEOUT_MS);
     try {
       const res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
         headers: { Accept: "application/json" },
+        signal: controller.signal,
       });
+      if (generation !== this.connectionGeneration || this.manualClosed) return null;
       if (!res.ok) return null;
-      const data = (await res.json()) as { token?: string };
-      return data.token || null;
+      const data = (await res.json()) as { token?: unknown };
+      return typeof data.token === "string" && data.token.length > 0 ? data.token : null;
     } catch {
       return null;
+    } finally {
+      window.clearTimeout(timeout);
+      if (this.tokenController === controller) this.tokenController = null;
     }
   }
 
   private async openSocket(): Promise<void> {
+    const generation = ++this.connectionGeneration;
+    if (this.manualClosed) return;
     if (!this.meshToken) {
-      this.meshToken = await this.fetchMeshToken();
+      this.meshToken = await this.fetchMeshToken(generation);
     }
+    if (generation !== this.connectionGeneration || this.manualClosed) return;
     if (!this.meshToken) {
       this.setStatus("offline");
       this.reconnectTimer = window.setTimeout(() => {
@@ -130,22 +147,37 @@ class MeshClient {
       try {
         const message = JSON.parse(String(event.data)) as MeshMessage;
         if (message.type === "welcome") {
-          this.nodeCount = Number(message.nodeCount ?? 0);
-          this.nodes = (message.nodes as MeshNodeInfo[]) || [];
+          const nodeCount = parseNodeCount(message.nodeCount, 0);
+          const nodes = parseNodes(message.nodes);
+          if (nodeCount === null || nodes === null) return;
+          this.nodeCount = nodeCount;
+          this.nodes = nodes;
           this.setStatus("online");
         } else if (message.type === "node:joined") {
-          this.nodeCount = Number(message.nodeCount ?? this.nodeCount);
-          const node = message.node as MeshNodeInfo;
-          if (node) this.nodes = [...this.nodes.filter((n) => n.id !== node.id), node];
+          const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
+          const node = parseNode(message.node);
+          if (nodeCount === null || node === null) return;
+          this.nodeCount = nodeCount;
+          this.nodes = [...this.nodes.filter((n) => n.id !== node.id), node];
           this.emitStatus();
         } else if (message.type === "node:left") {
-          this.nodeCount = Number(message.nodeCount ?? this.nodeCount);
-          this.nodes = this.nodes.filter((n) => n.id !== message.nodeId);
+          const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
+          if (nodeCount === null) return;
+          this.nodeCount = nodeCount;
+          if (typeof message.nodeId === "string") {
+            this.nodes = this.nodes.filter((n) => n.id !== message.nodeId);
+          }
           this.emitStatus();
         } else if (message.type === "error") {
           // Log only; connection stays alive
         }
-        this.messageHandlers.forEach((handler) => handler(message));
+        this.messageHandlers.forEach((handler) => {
+          try {
+            handler(message);
+          } catch {
+            // One consumer must not prevent delivery to the remaining listeners.
+          }
+        });
       } catch {
         // Ignore malformed frames
       }
@@ -183,11 +215,13 @@ class MeshClient {
   }
 
   send(message: MeshMessage): boolean {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    try {
       this.ws.send(JSON.stringify(message));
       return true;
+    } catch {
+      return false;
     }
-    return false;
   }
 
   onMessage(handler: MessageHandler): () => void {
@@ -208,6 +242,28 @@ class MeshClient {
   getNodeCount(): number {
     return this.nodeCount;
   }
+}
+
+function parseNodeCount(value: unknown, fallback: number): number | null {
+  if (value === undefined) return fallback;
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function parseNode(value: unknown): MeshNodeInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const node = value as Record<string, unknown>;
+  return typeof node.id === "string" &&
+    typeof node.label === "string" &&
+    typeof node.lastSeen === "number" &&
+    Number.isFinite(node.lastSeen)
+    ? { id: node.id, label: node.label, lastSeen: node.lastSeen }
+    : null;
+}
+
+function parseNodes(value: unknown): MeshNodeInfo[] | null {
+  if (!Array.isArray(value)) return [];
+  const nodes = value.map(parseNode);
+  return nodes.every((node): node is MeshNodeInfo => node !== null) ? nodes : null;
 }
 
 export const meshClient = new MeshClient();
