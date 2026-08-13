@@ -11,6 +11,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.Uri
 import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
@@ -64,6 +65,10 @@ class MainActivity : AppCompatActivity() {
     private val activeNetworks = ConcurrentHashMap.newKeySet<Network>()
     private var rebindRunnable: Runnable? = null
     private var rebindAttempt = 0
+    private var bindingTimeoutRunnable: Runnable? = null
+    private val meshUiQueue = ArrayDeque<String>()
+    private var meshUiDrainScheduled = false
+    private val meshUiQueueLock = Any()
 
     // Audit round 11: the message listener added on bind is KEPT as a field so
     // onDestroy can remove THAT EXACT instance. The old code called
@@ -104,6 +109,8 @@ class MainActivity : AppCompatActivity() {
             }
             meshBindingInProgress = false
             rebindAttempt = 0
+            bindingTimeoutRunnable?.let(mainHandler::removeCallbacks)
+            bindingTimeoutRunnable = null
             rebindRunnable?.let(mainHandler::removeCallbacks)
             rebindRunnable = null
             // Remove a previous listener before replacing the bound service
@@ -117,12 +124,7 @@ class MainActivity : AppCompatActivity() {
 
             // Forward received mesh messages to WebView (sanitized JSON string)
             val listener: (String) -> Unit = { message ->
-                runOnUiThread {
-                    val messageJs = JSONObject.quote(message)
-                    webView.evaluateJavascript(
-                        "window.dispatchEvent(new CustomEvent('meshMessage', { detail: $messageJs }));", null
-                    )
-                }
+                enqueueMeshUiMessage(message)
             }
             meshMessageListener = listener
             meshService?.addMessageListener(listener)
@@ -137,6 +139,8 @@ class MainActivity : AppCompatActivity() {
             meshService = null
             meshInitialized = false
             meshBindingInProgress = false
+            bindingTimeoutRunnable?.let(mainHandler::removeCallbacks)
+            bindingTimeoutRunnable = null
             dispatchMeshState("disconnected")
             scheduleMeshRebind()
         }
@@ -164,7 +168,28 @@ class MainActivity : AppCompatActivity() {
             meshInitialized = false
             dispatchMeshState("failed")
             scheduleMeshRebind()
+        } else {
+            scheduleBindingTimeout()
         }
+    }
+
+    private fun scheduleBindingTimeout() {
+        bindingTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        val timeout = Runnable {
+            bindingTimeoutRunnable = null
+            if (!meshBindingInProgress) return@Runnable
+            meshBindingInProgress = false
+            meshInitialized = false
+            try {
+                unbindService(meshConnection)
+            } catch (e: IllegalArgumentException) {
+                // Binding was never established or was already released.
+            }
+            dispatchMeshState("failed")
+            scheduleMeshRebind()
+        }
+        bindingTimeoutRunnable = timeout
+        mainHandler.postDelayed(timeout, 10_000L)
     }
 
     private fun scheduleMeshRebind() {
@@ -183,6 +208,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         if (meshBound || meshBindingInProgress) {
             meshMessageListener?.let { meshService?.removeMessageListener(it) }
+        synchronized(meshUiQueueLock) {
+            meshUiQueue.clear()
+            meshUiDrainScheduled = false
+        }
             meshMessageListener = null
             try {
                 unbindService(meshConnection)
@@ -206,6 +235,8 @@ class MainActivity : AppCompatActivity() {
         connectivityCallback = null
         rebindRunnable?.let(mainHandler::removeCallbacks)
         rebindRunnable = null
+        bindingTimeoutRunnable?.let(mainHandler::removeCallbacks)
+        bindingTimeoutRunnable = null
         rebindAttempt = 0
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
@@ -278,7 +309,9 @@ class MainActivity : AppCompatActivity() {
                 // ever proceeded. Self-signed certs stay rejected even in
                 // debug builds.
                 val isDebuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                if (isDebuggable && error?.primaryError == SslError.SSL_IDMISMATCH) {
+                val host = runCatching { Uri.parse(error?.url.orEmpty()).host?.lowercase() }.getOrNull()
+                val isTrustedLocalHost = host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
+                if (isDebuggable && isTrustedLocalHost && error?.primaryError == SslError.SSL_IDMISMATCH) {
                     handler?.proceed()
                 } else {
                     handler?.cancel()
@@ -323,7 +356,7 @@ class MainActivity : AppCompatActivity() {
             window.__meshBridgeInjected = true;
             window.__meshServiceState = window.__meshServiceState || { state: 'unknown', ready: false };
             window.dispatchEvent(new CustomEvent('meshReady', {
-                detail: { deviceId: $deviceIdJs }
+                detail: Object.assign({ deviceId: $deviceIdJs }, window.__meshServiceState)
             }));
             window.addEventListener('meshMessage', function(e) {
                 const handler = window.onMeshMessage;
@@ -336,16 +369,34 @@ class MainActivity : AppCompatActivity() {
 
     private fun bindMeshService(): Boolean {
         val intent = Intent(this, MeshService::class.java)
+        var bound = false
         return try {
-            val bound = bindService(intent, meshConnection, Context.BIND_AUTO_CREATE)
+            bound = bindService(intent, meshConnection, Context.BIND_AUTO_CREATE)
             if (!bound) return false
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(intent)
-            } else {
-                startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(intent)
+                } else {
+                    startService(intent)
+                }
+                true
+            } catch (e: Exception) {
+                try {
+                    unbindService(meshConnection)
+                } catch (unbindError: IllegalArgumentException) {
+                    // Binding was already released or never established.
+                }
+                Log.e("MainActivity", "Unable to start MeshService", e)
+                false
             }
-            bound
         } catch (e: Exception) {
+            if (bound) {
+                try {
+                    unbindService(meshConnection)
+                } catch (unbindError: IllegalArgumentException) {
+                    // Binding was already released or never established.
+                }
+            }
             Log.e("MainActivity", "Unable to bind MeshService", e)
             false
         }
@@ -368,8 +419,44 @@ class MainActivity : AppCompatActivity() {
         } && meshBound && meshService != null
     }
 
+    private fun enqueueMeshUiMessage(message: String) {
+        synchronized(meshUiQueueLock) {
+            if (meshUiQueue.size >= 100) meshUiQueue.removeFirst()
+            meshUiQueue.addLast(message)
+            if (meshUiDrainScheduled) return
+            meshUiDrainScheduled = true
+        }
+        mainHandler.post(::drainMeshUiQueue)
+    }
+
+    private fun drainMeshUiQueue() {
+        if (isFinishing || isDestroyed || !::webView.isInitialized) {
+            synchronized(meshUiQueueLock) {
+                meshUiQueue.clear()
+                meshUiDrainScheduled = false
+            }
+            return
+        }
+        repeat(25) {
+            val message = synchronized(meshUiQueueLock) {
+                if (meshUiQueue.isEmpty()) null else meshUiQueue.removeFirst()
+            } ?: return@repeat
+            val messageJs = JSONObject.quote(message)
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('meshMessage', { detail: $messageJs }));", null
+            )
+        }
+        synchronized(meshUiQueueLock) {
+            if (meshUiQueue.isEmpty()) {
+                meshUiDrainScheduled = false
+            } else {
+                mainHandler.post(::drainMeshUiQueue)
+            }
+        }
+    }
+
     private fun dispatchMeshState(state: String) {
-        if (!::webView.isInitialized) return
+        if (isFinishing || isDestroyed || !::webView.isInitialized) return
         val escaped = JSONObject.quote(state)
         val ready = state == "connected"
         runOnUiThread {
@@ -405,7 +492,9 @@ class MainActivity : AppCompatActivity() {
                     .setPositiveButton("Grant") { _, _ ->
                         ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
                     }
-                    .setNegativeButton("Exit") { _, _ -> finish() }
+                    .setNegativeButton("Continue without Mesh") { _, _ ->
+                        dispatchMeshState("unavailable")
+                    }
                     .show()
             } else {
                 ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
