@@ -17,13 +17,20 @@ type StatusHandler = (status: MeshStatus, nodeCount: number, nodes: MeshNodeInfo
 
 const HEARTBEAT_MS = 30_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+const DEVICE_ID_KEY = "mesh_device_id";
+let memoryDeviceId: string | null = null;
 
 function getDeviceId(): string {
-  const KEY = "mesh_device_id";
-  let id = localStorage.getItem(KEY);
+  const storage = typeof localStorage !== "undefined" ? localStorage : null;
+  let id = storage?.getItem(DEVICE_ID_KEY) ?? memoryDeviceId;
   if (!id) {
     id = `dev-${crypto.randomUUID()}`;
-    localStorage.setItem(KEY, id);
+    memoryDeviceId = id;
+    try {
+      storage?.setItem(DEVICE_ID_KEY, id);
+    } catch {
+      // Private browsing or test environments may expose no writable storage.
+    }
   }
   return id;
 }

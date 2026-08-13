@@ -1,6 +1,7 @@
 package com.observatory.wildfire
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -27,19 +28,18 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 1001
-        private val REQUIRED_PERMISSIONS = mutableListOf(
-            Manifest.permission.BLUETOOTH,
-            Manifest.permission.BLUETOOTH_ADMIN,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-        ).apply {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        private val REQUIRED_PERMISSIONS = buildList {
+            // These are mesh prerequisites only. Notification permission is
+            // optional for the PWA and must not prevent WebView startup.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+                add(Manifest.permission.BLUETOOTH)
+                add(Manifest.permission.BLUETOOTH_ADMIN)
+                add(Manifest.permission.ACCESS_FINE_LOCATION)
+                add(Manifest.permission.ACCESS_COARSE_LOCATION)
+            } else {
                 add(Manifest.permission.BLUETOOTH_SCAN)
                 add(Manifest.permission.BLUETOOTH_ADVERTISE)
                 add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
 
@@ -49,6 +49,7 @@ class MainActivity : AppCompatActivity() {
 
     private var meshService: MeshService? = null
     private var meshBound = false
+    private var meshInitialized = false
 
     // Audit round 11: the message listener added on bind is KEPT as a field so
     // onDestroy can remove THAT EXACT instance. The old code called
@@ -80,8 +81,14 @@ class MainActivity : AppCompatActivity() {
     private val meshConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as MeshService.LocalBinder
+            // Remove a previous listener before replacing the bound service
+            // instance. This prevents listener accumulation across rebinds.
+            meshMessageListener?.let { previous ->
+                meshService?.removeMessageListener(previous)
+            }
             meshService = binder.getService()
             meshBound = true
+            meshInitialized = true
 
             // Forward received mesh messages to WebView (sanitized JSON string)
             val listener: (String) -> Unit = { message ->
@@ -94,11 +101,17 @@ class MainActivity : AppCompatActivity() {
             }
             meshMessageListener = listener
             meshService?.addMessageListener(listener)
+            dispatchMeshState("connected")
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            val oldService = meshService
+            meshMessageListener?.let { oldService?.removeMessageListener(it) }
+            meshMessageListener = null
             meshBound = false
             meshService = null
+            meshInitialized = false
+            dispatchMeshState("disconnected")
         }
     }
 
@@ -107,15 +120,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        checkPermissions()
-
-        // Monitor connectivity for offline detection
+        // The PWA is useful even when optional mesh permissions are denied.
+        // Create it before registering callbacks so network events cannot touch
+        // an uninitialized WebView during the permission dialog.
+        setupWebView()
         registerConnectivityMonitor()
+        checkPermissions()
     }
 
     private fun initializeMesh() {
-        setupWebView()
+        if (meshInitialized) return
+        meshInitialized = true
         bindMeshService()
+        dispatchMeshState("starting")
     }
 
     override fun onDestroy() {
@@ -123,6 +140,8 @@ class MainActivity : AppCompatActivity() {
             meshMessageListener?.let { meshService?.removeMessageListener(it) }
             meshMessageListener = null
             unbindService(meshConnection)
+        } else {
+            meshMessageListener = null
         }
         // Audit round 11: unregister the network monitor — the old code left
         // it registered for the lifetime of the process, stacking duplicates
@@ -224,11 +243,7 @@ class MainActivity : AppCompatActivity() {
                 meshProvider = { meshService },
                 urlProvider = { webView.url ?: "" },
                 deviceIdProvider = { stableDeviceId() },
-                capabilityProvider = {
-                    // Audit A6: interface presence is not the capability — the
-                    // mesh radio must actually exist on this device.
-                    packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)
-                }
+                    capabilityProvider = { hasMeshRuntimeCapability() }
             ),
             "AndroidBridge"
         )
@@ -280,6 +295,30 @@ class MainActivity : AppCompatActivity() {
     // PERMISSIONS
     // ========================
 
+    private fun hasMeshRuntimeCapability(): Boolean {
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) return false
+        val bluetoothReady = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                (getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true)
+        } else {
+            (getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true)
+        }
+        return bluetoothReady && REQUIRED_PERMISSIONS.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        } && meshBound && meshService != null
+    }
+
+    private fun dispatchMeshState(state: String) {
+        if (!::webView.isInitialized) return
+        val escaped = JSONObject.quote(state)
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new CustomEvent('meshServiceState', { detail: { state: $escaped } }));",
+                null
+            )
+        }
+    }
+
     private fun checkPermissions() {
         val needed = REQUIRED_PERMISSIONS.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
@@ -314,8 +353,9 @@ class MainActivity : AppCompatActivity() {
             val denied = permissions.filterIndexed { i, _ -> grantResults[i] != PackageManager.PERMISSION_GRANTED }
             if (denied.isNotEmpty()) {
                 Toast.makeText(this, "Mesh networking disabled: ${denied.size} permission(s) denied", Toast.LENGTH_LONG).show()
+                dispatchMeshState("unavailable")
             } else {
-                // All requested permissions granted — initialize mesh now.
+                // All mesh permissions granted — initialize mesh now.
                 initializeMesh()
             }
         }
@@ -331,17 +371,21 @@ class MainActivity : AppCompatActivity() {
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 runOnUiThread {
-                    webView.evaluateJavascript(
-                        "window.dispatchEvent(new Event('online'));", null
-                    )
+                    if (::webView.isInitialized) {
+                        webView.evaluateJavascript(
+                            "window.dispatchEvent(new Event('online'));", null
+                        )
+                    }
                 }
             }
 
             override fun onLost(network: Network) {
                 runOnUiThread {
-                    webView.evaluateJavascript(
-                        "window.dispatchEvent(new Event('offline'));", null
-                    )
+                    if (::webView.isInitialized) {
+                        webView.evaluateJavascript(
+                            "window.dispatchEvent(new Event('offline'));", null
+                        )
+                    }
                 }
             }
         }

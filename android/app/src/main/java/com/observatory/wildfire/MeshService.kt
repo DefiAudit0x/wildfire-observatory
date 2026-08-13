@@ -541,6 +541,10 @@ class MeshService : Service() {
      */
     @Synchronized
     private fun registerPeer(endpointId: String, publicKey: String) {
+        if (endpointId.isBlank() || !isLikelyPublicKey(publicKey) || !CryptoEngine.isValidPublicKey(publicKey)) {
+            Log.w(TAG, "Ignoring peer with invalid identity: $endpointId")
+            return
+        }
         val now = System.currentTimeMillis()
         val existing = peers[endpointId]
         val lastSeen = if (existing != null) maxOf(existing.lastSeen, now) else now
@@ -832,6 +836,11 @@ class MeshService : Service() {
                 ))
             }
 
+            if (decrypted != null && decrypted.size > MAX_PLAINTEXT_BYTES) {
+                Log.w(TAG, "Rejecting oversized decrypted plaintext: ${decrypted.size} bytes")
+                return false
+            }
+
             if (decrypted != null) {
                 // Notify web layer
                 val plaintext = String(decrypted, Charsets.UTF_8)
@@ -859,9 +868,15 @@ class MeshService : Service() {
      */
     @Synchronized
     fun broadcastMessage(plaintext: String, reportType: String, lat: Double, lng: Double) {
+        if (reportType !in setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)) return
+        if (!lat.isFinite() || !lng.isFinite() || lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0) {
+            Log.w(TAG, "Rejecting broadcast with invalid coordinates")
+            return
+        }
         // Audit: reject oversized plaintext before queueing to prevent OOM.
-        if (plaintext.toByteArray(Charsets.UTF_8).size > MAX_PLAINTEXT_BYTES) {
-            Log.w(TAG, "Rejecting oversized plaintext: ${plaintext.length} chars > $MAX_PLAINTEXT_BYTES bytes")
+        val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
+        if (plaintextBytes.size > MAX_PLAINTEXT_BYTES) {
+            Log.w(TAG, "Rejecting oversized plaintext: ${plaintextBytes.size} bytes > $MAX_PLAINTEXT_BYTES bytes")
             return
         }
         val messageId = UUID.randomUUID().toString()
@@ -1018,6 +1033,7 @@ class MeshService : Service() {
             msg.inFlight = true
             try {
                 val targetPeers = peers.filter { (id, info) ->
+                    connectedPeers.contains(id) &&
                     (deviceRecords[info.publicKey]?.reputation ?: REPUTATION_INITIAL) > REPUTATION_MIN / 2 &&
                         now - info.lastSeen < PEER_STALE_MS &&
                         !forwardedMessages.containsKey("$id:${msg.messageId}")

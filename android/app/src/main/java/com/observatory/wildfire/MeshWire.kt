@@ -38,6 +38,7 @@ object MeshWire {
     /** Allowed message types on the wire (audit: inbound whitelist). */
     const val MESSAGE_TYPE_REPORT = "report"
     const val MESSAGE_TYPE_ECHO = "echo"
+    private val ALLOWED_TYPES = setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)
 
     private val COMPRESS_MAGIC = byteArrayOf(0x4D, 0x43) // "MC"
 
@@ -296,7 +297,7 @@ object MeshWire {
                 lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0
             ) return null
             // Inbound type whitelist (audit): only known protocol types accepted.
-            if (type !in setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)) return null
+            if (type !in ALLOWED_TYPES) return null
 
             Frame(
                 protocolVersion = protocolVersion,

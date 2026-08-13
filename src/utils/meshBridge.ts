@@ -109,14 +109,11 @@ function getAndroidBridge(): AndroidBridge | null {
 
 export function isMeshSupported(): boolean {
   const bridge = getAndroidBridge();
-  if (!bridge) return false;
-  // The truth source is the bridge itself: presence of the interface is not
-  // the capability (an app shell could expose the object yet lack the radio).
+  if (!bridge || typeof bridge.isMeshSupported !== "function") return false;
   try {
-    return bridge.isMeshSupported() !== false;
+    return bridge.isMeshSupported() === true;
   } catch {
-    // Legacy bridges without the method: interface presence implies support.
-    return true;
+    return false;
   }
 }
 
@@ -485,33 +482,40 @@ export function getPeerReputation(endpointId: string): number {
 const PEER_POLL_MS = 5000;
 let peerPollInterval: number | null = null;
 
+function installNativeMessageHandler(): void {
+  const bridge = getAndroidBridge();
+  if (!bridge || messageListeners.size === 0 || typeof window === "undefined") return;
+  if ((window as any).__meshNativeHandlerInstalled) return;
+
+  (window as any).onMeshMessage = (message: string) => {
+    messageListeners.forEach((listener) => {
+      try {
+        const parsed = JSON.parse(message);
+        const peerId = parsed.peerId ?? "unknown";
+        const validPeerId = typeof peerId === "string" ? peerId : "unknown";
+        const reputation = bridge.getPeerReputation(validPeerId);
+        listener(parsed.payload ?? message, validPeerId, reputation);
+      } catch {
+        listener(message, "unknown", 0);
+      }
+    });
+  };
+  (window as any).__meshNativeHandlerInstalled = true;
+}
+
 export function onMeshMessage(handler: MeshMessageHandler): () => void {
   messageListeners.add(handler);
+  installNativeMessageHandler();
 
-  const bridge = getAndroidBridge();
-  if (bridge && messageListeners.size === 1) {
-    // First subscriber: install the single native callback that fans out to all listeners.
-    (window as any).onMeshMessage = (message: string) => {
-      messageListeners.forEach((listener) => {
-        try {
-          const parsed = JSON.parse(message);
-          const peerId = parsed.peerId ?? "unknown";
-          // Validate peerId is a string (defense against malformed messages)
-          const validPeerId = typeof peerId === "string" ? peerId : "unknown";
-          const reputation = bridge.getPeerReputation(validPeerId);
-          listener(parsed.payload ?? message, validPeerId, reputation);
-        } catch {
-          listener(message, "unknown", 0);
-        }
-      });
-    };
-  }
+  const onMeshReady = () => installNativeMessageHandler();
+  if (typeof window !== "undefined") window.addEventListener("meshReady", onMeshReady);
 
   return () => {
     messageListeners.delete(handler);
-    if (bridge && messageListeners.size === 0) {
-      // Last subscriber: remove the native callback.
+    if (typeof window !== "undefined") window.removeEventListener("meshReady", onMeshReady);
+    if (messageListeners.size === 0 && typeof window !== "undefined") {
       delete (window as any).onMeshMessage;
+      delete (window as any).__meshNativeHandlerInstalled;
     }
   };
 }
@@ -716,13 +720,15 @@ export function buildSignedData(
   return new Uint8Array(out);
 }
 
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
+function base64ToArrayBuffer(base64: string): Uint8Array {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
     bytes[i] = binary.charCodeAt(i);
   }
-  return bytes.buffer;
+  // Pass the typed array itself to WebCrypto. In jsdom, its backing
+  // ArrayBuffer can belong to a different realm and fail Node's brand check.
+  return bytes;
 }
 
 function generateId(): string {

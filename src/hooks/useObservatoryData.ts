@@ -397,16 +397,27 @@ export function useObservatoryData() {
   }, [fetchData]);
 
   // Server push events (report created/updated/deleted, safezones changed) → refresh
-  const lastLiveRefreshRef = useRef(0);
+  const liveRefreshTimerRef = useRef<number | null>(null);
   useLiveEvents((event) => {
     if (["report:new", "report:update", "report:delete", "safezones:changed"].includes(event.type)) {
-      const now = Date.now();
-      if (now - lastLiveRefreshRef.current > 3000) {
-        lastLiveRefreshRef.current = now;
-        fetchData();
+      if (liveRefreshTimerRef.current !== null) {
+        window.clearTimeout(liveRefreshTimerRef.current);
       }
+      // Trailing debounce: refresh once after the burst settles so the final
+      // server-side event cannot be skipped by a leading-edge throttle.
+      liveRefreshTimerRef.current = window.setTimeout(() => {
+        liveRefreshTimerRef.current = null;
+        void fetchData();
+      }, 3000);
     }
   });
+
+  useEffect(() => () => {
+    if (liveRefreshTimerRef.current !== null) {
+      window.clearTimeout(liveRefreshTimerRef.current);
+      liveRefreshTimerRef.current = null;
+    }
+  }, []);
 
   // Mesh network: live peer-to-peer-ish synchronization
   useEffect(() => {
@@ -545,6 +556,7 @@ export function useObservatoryData() {
       const reportIsValid = isValidReport(newReport);
       if (reportIsValid) {
         setReports((prev) => {
+          if (prev.some((report) => report.id === newReport.id)) return prev;
           const next = [newReport, ...prev];
           reportsRef.current = next;
           return next;
@@ -596,21 +608,10 @@ export function useObservatoryData() {
           Number.isInteger(consensusCount) &&
           consensusCount >= 0
         ) {
-          setReports((prev) => {
-            const existing = prev.find((r) => r.id === id);
-            if (!existing || !validTransition(existing.status, status)) return prev;
-            const next = prev.map((r) =>
-              r.id === id
-                ? { ...r, consensusCount, status: status as Report["status"] }
-                : r
-            );
-            reportsRef.current = next;
-            return next;
-          });
-          // Audit B9: read-after-write — the optimistic update is committed
-          // server-side now; re-sync so local state reflects server truth
-          // (same pattern the create path uses after a successful POST).
-          fetchData();
+          // The server response is authoritative. Await the read-after-write
+          // reconciliation instead of racing an optimistic state update with
+          // a GET that may still contain the previous status.
+          await fetchData();
         }
       } finally {
         clearTimeout(timeoutId);

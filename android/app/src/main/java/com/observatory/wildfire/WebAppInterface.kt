@@ -33,6 +33,10 @@ class WebAppInterface(
 
     companion object {
         private const val TAG = "WebAppInterface"
+        private val ALLOWED_MESSAGE_TYPES = setOf(
+            MeshService.MESSAGE_TYPE_REPORT,
+            MeshService.MESSAGE_TYPE_ECHO
+        )
     }
 
     private val meshService: MeshService?
@@ -76,7 +80,7 @@ class WebAppInterface(
 
     @JavascriptInterface
     fun isMeshSupported(): Boolean =
-        isTrustedOrigin() && capabilityProvider()
+        isTrustedOrigin() && meshService != null && capabilityProvider()
 
     @JavascriptInterface
     fun getDeviceId(): String {
@@ -115,7 +119,11 @@ class WebAppInterface(
         // the protocol has no reputation-message handling, so advertising the
         // type was a dead branch. Reputation is scored from report/echo
         // traffic only.)
-        if (type !in setOf(MeshService.MESSAGE_TYPE_REPORT, MeshService.MESSAGE_TYPE_ECHO)) return
+        if (type !in ALLOWED_MESSAGE_TYPES) return
+        if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) {
+            Log.w(TAG, "Rejecting broadcast with invalid coordinates")
+            return
+        }
         meshService?.broadcastMessage(plaintext, type, lat, lng)
     }
 
@@ -128,6 +136,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun encryptForPeer(peerPublicKey: String, plaintext: String, lat: Double, lng: Double): String {
         if (!isTrustedOrigin()) return ""
+        if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) return ""
         return try {
             val secureMsg = CryptoEngine.encryptForPeer(
                 peerPublicKeyBase64 = peerPublicKey,
