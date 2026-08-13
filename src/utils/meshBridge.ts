@@ -117,6 +117,26 @@ export function isMeshSupported(): boolean {
   }
 }
 
+export interface MeshServiceState {
+  state: "unknown" | "starting" | "connected" | "disconnected" | "failed" | "unavailable";
+  ready: boolean;
+}
+
+/**
+ * Returns the latest native service snapshot without requiring a prior event
+ * listener. The Android bridge also emits meshServiceState/meshReady events
+ * for reactive consumers, but late subscribers can query this value directly.
+ */
+export function getMeshServiceState(): MeshServiceState {
+  if (typeof window === "undefined") return { state: "unknown", ready: false };
+  const state = (window as any).__meshServiceState;
+  if (!state || typeof state.state !== "string") return { state: "unknown", ready: false };
+  return {
+    state: state.state as MeshServiceState["state"],
+    ready: state.ready === true,
+  };
+}
+
 /**
  * Our own current ephemeral public key (SPKI base64). Mirror of the native
  * bridge's getPublicKey(); useful for test vectors and for addressing

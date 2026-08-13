@@ -45,6 +45,8 @@ class MainActivity : AppCompatActivity() {
                 add(Manifest.permission.BLUETOOTH_ADVERTISE)
                 add(Manifest.permission.BLUETOOTH_CONNECT)
             }
+            // Nearby Connections P2P_CLUSTER may use Wi-Fi transports on
+            // Android 13+, so keep this permission coupled to mesh startup.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
@@ -61,6 +63,7 @@ class MainActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val activeNetworks = ConcurrentHashMap.newKeySet<Network>()
     private var rebindRunnable: Runnable? = null
+    private var rebindAttempt = 0
 
     // Audit round 11: the message listener added on bind is KEPT as a field so
     // onDestroy can remove THAT EXACT instance. The old code called
@@ -100,6 +103,7 @@ class MainActivity : AppCompatActivity() {
                 return
             }
             meshBindingInProgress = false
+            rebindAttempt = 0
             rebindRunnable?.let(mainHandler::removeCallbacks)
             rebindRunnable = null
             // Remove a previous listener before replacing the bound service
@@ -170,14 +174,21 @@ class MainActivity : AppCompatActivity() {
             initializeMesh()
         }
         rebindRunnable = retry
-        mainHandler.postDelayed(retry, 5_000L)
+        val delaysMs = longArrayOf(2_000L, 5_000L, 10_000L, 30_000L)
+        val delay = delaysMs[rebindAttempt.coerceAtMost(delaysMs.lastIndex)]
+        rebindAttempt++
+        mainHandler.postDelayed(retry, delay)
     }
 
     override fun onDestroy() {
-        if (meshBound) {
+        if (meshBound || meshBindingInProgress) {
             meshMessageListener?.let { meshService?.removeMessageListener(it) }
             meshMessageListener = null
-            unbindService(meshConnection)
+            try {
+                unbindService(meshConnection)
+            } catch (e: IllegalArgumentException) {
+                // Binding was never established or was already released.
+            }
         } else {
             meshMessageListener = null
         }
@@ -195,6 +206,7 @@ class MainActivity : AppCompatActivity() {
         connectivityCallback = null
         rebindRunnable?.let(mainHandler::removeCallbacks)
         rebindRunnable = null
+        rebindAttempt = 0
         mainHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
@@ -309,6 +321,7 @@ class MainActivity : AppCompatActivity() {
         (function() {
             if (window.__meshBridgeInjected) return;
             window.__meshBridgeInjected = true;
+            window.__meshServiceState = window.__meshServiceState || { state: 'unknown', ready: false };
             window.dispatchEvent(new CustomEvent('meshReady', {
                 detail: { deviceId: $deviceIdJs }
             }));
@@ -325,6 +338,7 @@ class MainActivity : AppCompatActivity() {
         val intent = Intent(this, MeshService::class.java)
         return try {
             val bound = bindService(intent, meshConnection, Context.BIND_AUTO_CREATE)
+            if (!bound) return false
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(intent)
             } else {
@@ -357,11 +371,18 @@ class MainActivity : AppCompatActivity() {
     private fun dispatchMeshState(state: String) {
         if (!::webView.isInitialized) return
         val escaped = JSONObject.quote(state)
+        val ready = state == "connected"
         runOnUiThread {
-            webView.evaluateJavascript(
-                "window.dispatchEvent(new CustomEvent('meshServiceState', { detail: { state: $escaped } }));",
-                null
-            )
+            val js = """
+                (function() {
+                    const detail = { state: $escaped, ready: $ready };
+                    window.__meshServiceState = detail;
+                    window.__meshReady = $ready;
+                    window.dispatchEvent(new CustomEvent('meshServiceState', { detail }));
+                    if ($ready) window.dispatchEvent(new CustomEvent('meshReady', { detail }));
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
         }
     }
 
@@ -431,17 +452,24 @@ class MainActivity : AppCompatActivity() {
                 dispatchConnectivityState(activeNetworks.isNotEmpty())
             }
         }
-        connectivityCallback = callback
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
-        cm.registerNetworkCallback(request, callback)
-        cm.activeNetwork?.let { network ->
-            if (cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true) {
-                activeNetworks.add(network)
+        try {
+            cm.registerNetworkCallback(request, callback)
+            connectivityCallback = callback
+            cm.activeNetwork?.let { network ->
+                if (cm.getNetworkCapabilities(network)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true) {
+                    activeNetworks.add(network)
+                }
             }
+            dispatchConnectivityState(activeNetworks.isNotEmpty())
+        } catch (e: Exception) {
+            connectivityCallback = null
+            activeNetworks.clear()
+            Log.w("MainActivity", "Unable to register connectivity monitor", e)
+            dispatchConnectivityState(false)
         }
-        dispatchConnectivityState(activeNetworks.isNotEmpty())
     }
 
     private fun dispatchConnectivityState(online: Boolean) {
