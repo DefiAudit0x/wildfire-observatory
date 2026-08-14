@@ -4,6 +4,7 @@ test.describe("Citizen report full pipeline", () => {
   test("submit via UI → persisted → confirm via map popup → consensus grows", async ({ page, request }) => {
     const before = await (await request.get("/api/reports")).json();
     const beforeCount = Array.isArray(before) ? before.length : 0;
+    const locationName = `غابة اختبار نظام الإنذار المبكر ${Date.now()}`;
 
     await page.goto("/");
     await page.click('button:has-text("إرسال بلاغ حريق")');
@@ -11,7 +12,7 @@ test.describe("Citizen report full pipeline", () => {
     await page.getByPlaceholder("36.88124").fill("36.55");
     await page.getByPlaceholder("8.41125").fill("8.05");
     await page.locator("select:visible").first().selectOption({ label: "الجزائر - الطارف" });
-    await page.getByPlaceholder(/مثال: غابة جبل الوحش/).fill("غابة اختبار نظام الإنذار المبكر");
+    await page.getByPlaceholder(/مثال: غابة جبل الوحش/).fill(locationName);
     await page
       .getByPlaceholder(/ما الذي يحترق/)
       .fill("حريق محدود في الأحراش قرب مسالك الغابة — اختبار سير كامل");
@@ -23,7 +24,7 @@ test.describe("Citizen report full pipeline", () => {
     const reports = Array.isArray(after) ? after : [];
     expect(reports.length).toBe(beforeCount + 1);
 
-    const submitted = reports.find((r: any) => r.locationName === "غابة اختبار نظام الإنذار المبكر");
+    const submitted = reports.find((r: any) => r.locationName === locationName);
     expect(submitted).toBeTruthy();
     expect(submitted.description).toContain("اختبار سير كامل");
     expect(submitted.lat).toBeCloseTo(36.55, 4);

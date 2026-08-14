@@ -6,6 +6,7 @@ import { broadcastMessage, isMeshSupported, checkAndRecordMessageHash } from "..
 import { useLiveEvents } from "../utils/live";
 import { getDeviceId } from "../utils/device";
 import { DATASET_KEYS, DatasetHealth, DatasetKey, FailureReason } from "../utils/datasetHealth";
+import type { ConfirmationErrorCode } from "../utils/confirmationErrors";
 import {
   validateDataset,
   isValidReport,
@@ -224,7 +225,7 @@ export function useObservatoryData() {
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
-  const [confirmError, setConfirmError] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<ConfirmationErrorCode | string | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<number>(0);
   const [lastBackendContact, setLastBackendContact] = useState<number>(0);
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
@@ -624,14 +625,15 @@ export function useObservatoryData() {
         console.warn("Server returned a malformed report payload; keeping the current list");
       }
 
-      // Refresh stats and statuses
-      fetchData();
+      // Reconcile the authoritative datasets before the success flow returns;
+      // callers that navigate immediately to the map must see the accepted
+      // report in the refreshed marker list.
+      await fetchData();
       // The server accepted the POST, but a malformed response is not safe to
       // render as a fabricated pending report. Reconcile from the authoritative
       // GET list and let the UI say "accepted; syncing" without inventing a
       // status or report body.
       if (!reportIsValid) {
-        await fetchData();
         return {
           submissionAccepted: true,
           responseValid: false,
@@ -664,7 +666,7 @@ export function useObservatoryData() {
           signal: controller.signal,
         });
         if (!res.ok) {
-          let message = "تعذر تسجيل التأكيد";
+          let message: ConfirmationErrorCode | string = "CONFIRMATION_FAILED";
           try {
             const body = await res.json();
             if (typeof body?.error === "string" && body.error.length <= 200) message = body.error;
@@ -688,15 +690,15 @@ export function useObservatoryData() {
           await fetchData();
           return true;
         }
-        setConfirmError("استجابة غير صالحة من خادم التأكيد");
+        setConfirmError("INVALID_CONFIRMATION_RESPONSE");
         return false;
       } finally {
         clearTimeout(timeoutId);
       }
     } catch (err) {
-      const message = err instanceof Error && err.name === "AbortError"
-        ? "انتهت مهلة التأكيد"
-        : "تعذر الاتصال بخادم التأكيد";
+      const message: ConfirmationErrorCode = err instanceof Error && err.name === "AbortError"
+        ? "CONFIRMATION_TIMEOUT"
+        : "CONFIRMATION_CONNECTION_FAILED";
       setConfirmError(message);
       console.error("Failed to confirm report:", err);
       return false;

@@ -153,7 +153,7 @@ observatory/
 │       ├── wilayas.ts         # GET /api/wilayas (dynamic stats)
 │       └── ai.ts              # POST /api/ai/guidance
 ├── src/                       # React frontend
-│   ├── App.tsx                # Main app with 7 tabs
+│   ├── App.tsx                # Main app with citizen, operational, and admin navigation tabs
 │   ├── types.ts               # TypeScript interfaces
 │   ├── main.tsx               # Entry with Sentry
 │   └── components/

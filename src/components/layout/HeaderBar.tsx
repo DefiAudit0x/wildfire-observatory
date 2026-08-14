@@ -58,6 +58,7 @@ function HeaderBar({
   const notificationsRef = useRef<HTMLDivElement | null>(null);
   const notificationsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [showEmergencies, setShowEmergencies] = useState(false);
+  const [showSourceHealth, setShowSourceHealth] = useState(false);
   const emergenciesRef = useRef<HTMLDivElement | null>(null);
   const emergenciesTriggerRef = useRef<HTMLButtonElement | null>(null);
   const headerRef = useRef<HTMLElement | null>(null);
@@ -226,12 +227,38 @@ function HeaderBar({
               <span className="min-w-0 break-words">
                 {isArabic ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث" : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes"}
               </span>
-              <span
-                title={badgeTitle}
-                aria-label={badgeTitle}
-                className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${badgeMeta[sync].cls}`}
-              >
-                {isArabic ? badgeMeta[sync].ar : badgeMeta[sync].fr}
+              <span className="relative shrink-0">
+                <button
+                  type="button"
+                  title={badgeTitle}
+                  aria-label={isArabic ? "تفاصيل صحة مصادر البيانات" : "Détails de santé des sources"}
+                  aria-expanded={showSourceHealth}
+                  aria-controls="header-source-health"
+                  onClick={() => setShowSourceHealth((value) => !value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") setShowSourceHealth(false);
+                  }}
+                  className={`text-[10px] font-black px-1.5 py-0.5 rounded uppercase tracking-wider ${badgeMeta[sync].cls}`}
+                >
+                  {isArabic ? badgeMeta[sync].ar : badgeMeta[sync].fr}
+                </button>
+                {showSourceHealth && (
+                  <div
+                    id="header-source-health"
+                    role="status"
+                    aria-live="polite"
+                    className={`absolute top-full mt-2 w-72 max-w-[calc(100vw-2rem)] bg-zinc-900 border border-white/10 rounded-xl shadow-2xl z-[1200] p-3 text-[10px] normal-case tracking-normal ${isArabic ? "right-0" : "left-0"}`}
+                  >
+                    <p className="font-bold text-slate-100 mb-2">
+                      {isArabic ? badgeMeta[sync].titleAr : badgeMeta[sync].titleFr}
+                    </p>
+                    <ul className="space-y-1 text-gray-400">
+                      {sourceBreakdown.split(" · ").map((source) => (
+                        <li key={source} className="leading-relaxed">{source}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </span>
             </h1>
             <p className="text-[10px] text-gray-400 mt-1">

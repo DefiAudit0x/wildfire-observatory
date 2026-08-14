@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect, useState } from "react";
 import { GeoPoint } from "../../hooks/useProximityAlerts";
 
 interface LocationStatusBarProps {
@@ -37,6 +37,13 @@ function LocationStatusBar({
   locationSharingConsent,
   onToggleLocationConsent,
 }: LocationStatusBarProps) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   return (
     <div className="bg-black/70 border-b border-white/10 text-slate-300 px-4 py-1.5 md:px-8 z-[1000]">
       <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-1.5 text-[10px] font-bold">
@@ -72,7 +79,7 @@ function LocationStatusBar({
             <span className={isLocationStale ? "text-amber-300" : "text-slate-500"}>
               {isLocationStale
                 ? (isArabic ? "إشارة GPS مفقودة" : "Signal GPS perdu")
-                : `${isArabic ? "تحديث" : "Fix"} ${Math.max(0, Math.round((Date.now() - lastFixAt) / 1000))}s${lastFixAccuracy !== null ? ` · ±${Math.round(lastFixAccuracy)}m` : ""}`}
+                : `${isArabic ? "تحديث" : "Fix"} ${Math.max(0, Math.round((now - lastFixAt) / 1000))}s${lastFixAccuracy !== null ? ` · ±${Math.round(lastFixAccuracy)}m` : ""}`}
             </span>
           )}
 

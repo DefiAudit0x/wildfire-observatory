@@ -231,7 +231,7 @@ export default function MainContent({
                         type="button"
                         key={rep.id}
                         onClick={() => onSelectReport(rep.id)}
-                        className={`w-full text-left bg-black/40 hover:bg-black/60 p-3.5 rounded-lg border transition-all cursor-pointer flex flex-col md:flex-row gap-3 items-start md:items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 ${
+                        className={`w-full text-start bg-black/40 hover:bg-black/60 p-3.5 rounded-lg border transition-all cursor-pointer flex flex-col md:flex-row gap-3 items-start md:items-center justify-between focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400 ${
                           selectedReportId === rep.id ? "border-red-650 bg-red-950/10 shadow-[0_0_15px_rgba(220,38,38,0.15)]" : "border-white/5"
                         }`}
                       >

@@ -47,6 +47,7 @@ export default function InteractiveMap({
   const [severityFilter, setSeverityFilter] = useState<Set<string>>(new Set(["low", "medium", "high", "critical"]));
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [heatEnabled, setHeatEnabled] = useState(false);
+  const [mapReady, setMapReady] = useState(false);
 
   useEffect(() => {
     onMapClickRef.current = onMapClick;
@@ -107,6 +108,7 @@ export default function InteractiveMap({
     markersRef.current = L.layerGroup().addTo(map);
     heatRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
+    setMapReady(true);
 
     // Ensure correct size if container dimensions change after mount
     setTimeout(() => {
@@ -118,6 +120,11 @@ export default function InteractiveMap({
         mapRef.current.remove();
         mapRef.current = null;
       }
+      markersRef.current = null;
+      heatRef.current = null;
+      markersSigRef.current = "";
+      heatSigRef.current = "";
+      setMapReady(false);
     };
   }, []);
 
@@ -153,7 +160,7 @@ export default function InteractiveMap({
   useEffect(() => {
     const map = mapRef.current;
     const markerGroup = markersRef.current;
-    if (!map || !markerGroup) return;
+    if (!mapReady || !map || !markerGroup) return;
 
     // 2. Plot citizen reports (filtered)
     const visibleReports = reports.filter(
@@ -372,7 +379,7 @@ export default function InteractiveMap({
         .bindPopup(popupContent, { maxWidth: 300 })
         .addTo(markerGroup);
     });
-  }, [reports, satellites, lang, isArabic, severityFilter, statusFilter]);
+  }, [reports, satellites, lang, isArabic, severityFilter, statusFilter, mapReady]);
 
   // Handle flyTo when a selected report is clicked in list
   useEffect(() => {

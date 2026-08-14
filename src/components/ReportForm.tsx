@@ -235,6 +235,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   const [heading, setHeading] = useState<number | null>(null); // 0-360 degrees (compass bearing)
   const [pitch, setPitch] = useState<number | null>(null); // -90 to 90 degrees (elevation angle)
   const [headingSource, setHeadingSource] = useState<"sensor" | "manual" | "none">("none");
+  const [pitchSource, setPitchSource] = useState<"sensor" | "manual" | "none">("none");
   const [matchedReport, setMatchedReport] = useState<any | null>(null);
   const [alignmentAccuracy, setAlignmentAccuracy] = useState<number | null>(null);
   const [showCalibrationGuide, setShowCalibrationGuide] = useState(false);
@@ -504,6 +505,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
       if (e.beta !== null) {
         setPitch(Math.round(e.beta));
+        setPitchSource("sensor");
       }
     };
 
@@ -607,6 +609,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             setHeading(null);
             setPitch(null);
             setHeadingSource(permission === "denied" ? "none" : headingSource);
+            setPitchSource("none");
           }
         }
       } catch (err) {
@@ -615,7 +618,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     } catch (err: unknown) {
       console.warn("Camera hardware unavailable", err);
       setCameraStatus("unavailable");
-      setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. المعاينة التالية تجريبية وليست صورة حقيقية." : "Caméra indisponible ou permission refusée. L'aperçu suivant est une démo, pas une image réelle.");
+      setStream(null);
+      setIsCameraOpen(false);
+      setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة." : "Caméra indisponible ou permission refusée. Vous pouvez joindre une photo ou continuer sans image.");
     }
   };
 
@@ -626,6 +631,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
     setIsCameraOpen(false);
     setCameraStatus("closed");
+    setHeading(null);
+    setPitch(null);
+    setHeadingSource("none");
+    setPitchSource("none");
+    setMatchedReport(null);
+    setAlignmentAccuracy(null);
+    setShowCalibrationGuide(false);
   };
 
   // High-fidelity image capture with embedded watermarked telemetry
@@ -636,8 +648,25 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    if (stream && videoRef.current && videoRef.current.videoWidth > 0) {
-      ctx.drawImage(videoRef.current, 0, 0, 640, 480);
+    if (stream && videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+      const video = videoRef.current;
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+      const targetRatio = 640 / 480;
+      let sourceX = 0;
+      let sourceY = 0;
+      let sourceWidth = videoWidth;
+      let sourceHeight = videoHeight;
+
+      if (videoWidth / videoHeight > targetRatio) {
+        sourceWidth = videoHeight * targetRatio;
+        sourceX = (videoWidth - sourceWidth) / 2;
+      } else {
+        sourceHeight = videoWidth / targetRatio;
+        sourceY = (videoHeight - sourceHeight) / 2;
+      }
+
+      ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, 640, 480);
     } else {
       // Never fabricate a fake photo: if the camera is unavailable, tell the
       // user and let the report proceed without an image (or via file upload).
@@ -687,7 +716,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     ctx.fillText(`GPS LNG: ${lng || "N/A"}`, 30, 130);
     if (includeTelemetry) {
       ctx.fillText(`BEARING: ${heading !== null ? `${heading}° ${getBearingDirection(heading)}` : "N/A"} (${headingSource.toUpperCase()})`, 30, 145);
-      ctx.fillText(`PITCH: ${pitch !== null ? `${pitch}°` : "N/A"}`, 30, 160);
+      ctx.fillText(`PITCH: ${pitch !== null ? `${pitch}° (${pitchSource.toUpperCase()})` : "N/A"}`, 30, 160);
     } else {
       ctx.fillText("SENSOR STAMP: OFF", 30, 145);
     }
@@ -1005,6 +1034,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setReporterType("citizen");
       setHeading(null);
       setPitch(null);
+      setPitchSource("none");
       setHeadingSource("none");
       setMatchedReport(null);
       setAlignmentAccuracy(null);
@@ -1034,6 +1064,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setReporterType("citizen");
       setHeading(null);
       setPitch(null);
+      setPitchSource("none");
       setHeadingSource("none");
       setMatchedReport(null);
       setAlignmentAccuracy(null);
@@ -1123,7 +1154,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               )}
             </div>
             {syncStatusMsg && (
-              <p className="text-[9px] text-emerald-400 font-bold leading-normal">{syncStatusMsg}</p>
+              <p role="status" aria-live="polite" className="text-[9px] text-emerald-400 font-bold leading-normal">{syncStatusMsg}</p>
             )}
           </div>
         )}
@@ -1135,9 +1166,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <CheckCircle className="h-10 w-10" />
           </div>
           <h4 className="font-bold text-lg text-emerald-400">
-            {successReport.responseValid === false
-              ? (isArabic ? "تم قبول البلاغ — جارٍ مزامنته" : "Signalement accepté — synchronisation en cours")
-              : (isArabic ? "تم استلام بلاغك بنجاح!" : "Signalement envoyé avec succès !")}
+            {successReport.isOfflineDraft
+              ? (isArabic ? "تم حفظ البلاغ كمسودة" : "Signalement enregistré comme brouillon")
+              : successReport.responseValid === false
+                ? (isArabic ? "تم قبول البلاغ — جارٍ مزامنته" : "Signalement accepté — synchronisation en cours")
+                : (isArabic ? "تم إرسال البلاغ بنجاح" : "Signalement envoyé avec succès !")}
           </h4>
           <p className="text-xs text-slate-300 leading-relaxed max-w-sm mx-auto">
             {successReport.isOfflineDraft
@@ -1158,7 +1191,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               the evidence photo — a silent drop would mislead the reporter
               into believing the image reached the coordination team. */}
           {successReport.imageNotAttached && (
-            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-left" dir={isArabic ? "rtl" : "ltr"}>
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-start" dir={isArabic ? "rtl" : "ltr"}>
               <p className="text-[11px] text-amber-300 font-bold mb-1">
                 ⚠️ {isArabic ? "أُرسل البلاغ بدون الصورة" : "Signalement envoyé SANS photo"}
               </p>
@@ -1172,7 +1205,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
           {/* AI Feedback presentation */}
           {successReport.aiVerification && (
-            <div className="bg-black/60 p-3.5 rounded-lg border border-emerald-500/20 text-left" dir={isArabic ? "rtl" : "ltr"}>
+            <div className="bg-black/60 p-3.5 rounded-lg border border-emerald-500/20 text-start" dir={isArabic ? "rtl" : "ltr"}>
               <div className="flex items-center gap-1 text-emerald-300 font-bold text-xs mb-1.5 justify-between">
                 <span>🤖 {isArabic ? "تحليل بصري مساعد بالذكاء الاصطناعي (Gemini)" : "Analyse visuelle assistée par IA (Gemini)"}</span>
                 <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 px-1.5 py-0.5 rounded text-[10px]">
@@ -1350,6 +1383,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   key={item.val}
                   type="button"
                   onClick={() => setSeverity(item.val)}
+                  aria-pressed={severity === item.val}
                   className={`py-2 px-1 text-center rounded-lg border text-[11px] font-bold cursor-pointer transition-all ${
                     severity === item.val
                       ? "bg-red-600 text-white border-red-600 shadow-[0_0_12px_rgba(220,38,38,0.3)]"
@@ -1475,8 +1509,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             </div>
             <p className="text-[9px] text-gray-500 mt-1 italic">
               {isArabic
-                ? "🔒 تُضغط الصور محلياً ويُطبع ختم الإحداثيات والتوقيت عليها لتوثيق اللقطة. المطابقة مع البلاغات المجاورة تقديرية ولا تُثبت الحريق."
-                : "🔒 Photos compressées localement, coordonnées et heure imprimées sur l'image. L'alignement avec les signalements voisins reste une estimation."}
+                ? "🔒 تُضغط الصور محلياً. قد تتضمن الصور الملتقطة بالكاميرا ختم الموقع والوقت؛ الصور المرفوعة لا تُعامل كإثبات GPS/وقت. المطابقة مع البلاغات المجاورة تقديرية ولا تُثبت الحريق."
+                : "🔒 Les images sont compressées localement. Les captures caméra peuvent porter une empreinte de position et d'heure ; les fichiers joints ne constituent pas une preuve GPS/temps. L'alignement reste une estimation."}
             </p>
           </div>
 
@@ -1657,7 +1691,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   min="-60" 
                   max="60" 
                   value={pitch ?? 0}
-                  onChange={(e) => setPitch(parseInt(e.target.value, 10))}
+                  onChange={(e) => {
+                    setPitch(parseInt(e.target.value, 10));
+                    setPitchSource("manual");
+                  }}
                   className="h-28 accent-amber-500 cursor-row-resize appearance-none bg-slate-800 rounded w-1"
                   style={{ WebkitAppearance: "slider-vertical" as any }}
                 />
@@ -1716,7 +1753,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <div className="absolute bottom-3 left-4 right-4 bg-black/80 backdrop-blur rounded px-3 py-1.5 text-[9px] text-slate-400 flex flex-wrap gap-2 justify-between border border-white/5">
               <span>GPS: <strong className="text-slate-200">{Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? `${lat}, ${lng}` : (isArabic ? "غير متاح" : "NOT SET")}</strong></span>
               <span>BEARING: <strong className="text-slate-200">{heading !== null ? `${heading}° (${headingSource})` : "N/A"}</strong></span>
-              <span>PITCH: <strong className="text-slate-200">{pitch !== null ? `${pitch}°` : "N/A"}</strong></span>
+              <span>PITCH: <strong className="text-slate-200">{pitch !== null ? `${pitch}° (${pitchSource})` : "N/A"}</strong></span>
               <span>STAMP: <strong className="text-red-500">{includeTelemetry ? "ACTIVE" : "OFF"}</strong></span>
             </div>
 
@@ -1758,6 +1795,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                     setReporterType(item.val);
                     setReporterBadgeCode("");
                   }}
+                  aria-pressed={reporterType === item.val}
                   className={`py-2 px-1 text-center rounded-lg border text-[11px] font-bold cursor-pointer transition-all ${
                     reporterType === item.val
                       ? "bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-[0_0_8px_rgba(245,158,11,0.15)]"
@@ -1827,7 +1865,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
           {/* Feedback message and Submit */}
           {errorMsg && (
-            <div className="p-3 bg-red-950/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-semibold leading-relaxed">
+            <div role="alert" aria-live="assertive" className="p-3 bg-red-950/20 border border-red-500/30 text-red-400 rounded-lg text-xs font-semibold leading-relaxed">
               ⚠️ {errorMsg}
             </div>
           )}
@@ -1842,8 +1880,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>
                   {isArabic
-                    ? "جاري إرسال البلاغ والمصادقة بالذكاء الاصطناعي..."
-                    : "Envoi et analyse IA par Gemini..."}
+                    ? "جاري إرسال البلاغ..."
+                    : "Envoi du signalement..."}
                 </span>
               </>
             ) : (

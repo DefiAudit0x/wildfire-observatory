@@ -252,7 +252,7 @@ const res = await fetch("/api/admin/verify", {
         </form>
 
         <p className="text-[10px] text-gray-600 font-mono">
-          {isArabic ? "مستوى التشفير: AES-256 Cloud Firewall" : "Niveau de sécurité : Pare-feu AES-256"}
+          {isArabic ? "الوصول مخصص للمشرفين المعتمدين" : "Accès réservé aux administrateurs autorisés"}
         </p>
       </div>
     );
