@@ -94,6 +94,19 @@ export function getProximityThreshold(severity: string): number | undefined {
     : undefined;
 }
 
+export async function commitOperatorBatchAfterTone(
+  playTone: () => Promise<boolean>,
+  isTrusted: () => boolean,
+  getEpoch: () => number,
+  startEpoch: number,
+  commit: () => void,
+): Promise<boolean> {
+  const played = await playTone();
+  if (!played || !isTrusted() || startEpoch !== getEpoch()) return false;
+  commit();
+  return true;
+}
+
 /** Inter-announcement floor for the operator channel (command-center tone). */
 const OPERATOR_BEEP_THROTTLE_MS = 20000;
 
@@ -150,6 +163,10 @@ export function useProximityAlerts(
   const operatorFlushTimerRef = useRef<number | null>(null);
   const lastOperatorBeepAtRef = useRef(0);
   const proximityScanInFlightRef = useRef(false);
+  const trustedReporterRef = useRef(isTrustedReporter);
+  trustedReporterRef.current = isTrustedReporter;
+  const operatorFlushEpochRef = useRef(0);
+  const operatorFlushInFlightRef = useRef(false);
 
   const closeAudioCtxAfter = (
     timerRef: { current: number | null },
@@ -173,6 +190,7 @@ export function useProximityAlerts(
       }
       const audioCtx = operatorAudioCtxRef.current;
       if (audioCtx.state === "suspended") await audioCtx.resume();
+      if (!trustedReporterRef.current) return false;
       if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
       const t0 = audioCtx.currentTime;
       for (let i = 0; i < 3; i++) {
@@ -200,7 +218,8 @@ export function useProximityAlerts(
   // POSTPONED via a timer (never swallowed); severities that dropped below
   // high/critical meanwhile are dropped from the queue by the main effect.
   const flushOperatorPending = useCallback(async () => {
-    if (!isTrustedReporter) return;
+    if (!trustedReporterRef.current || operatorFlushInFlightRef.current) return;
+    const flushEpoch = operatorFlushEpochRef.current;
     const pending = operatorPendingRef.current;
     if (pending.size === 0) return;
     const now = Date.now();
@@ -217,8 +236,28 @@ export function useProximityAlerts(
 
     const batch = new Map(pending);
     const hasCritical = [...batch.values()].some((severity) => severity === "critical");
-    const played = await beepOperatorTone(hasCritical);
-    if (!played || !isTrustedReporter) {
+    operatorFlushInFlightRef.current = true;
+    let committed = false;
+    try {
+      committed = await commitOperatorBatchAfterTone(
+        () => beepOperatorTone(hasCritical),
+        () => trustedReporterRef.current,
+        () => operatorFlushEpochRef.current,
+        flushEpoch,
+        () => {
+          const nextMemory = new Map<string, string>(lastCriticalIdsRef.current);
+          for (const [id, sev] of batch) nextMemory.set(id, sev);
+          lastCriticalIdsRef.current = nextMemory;
+          for (const [id, sev] of batch) {
+            if (pending.get(id) === sev) pending.delete(id);
+          }
+          lastOperatorBeepAtRef.current = Date.now();
+        },
+      );
+    } finally {
+      operatorFlushInFlightRef.current = false;
+    }
+    if (!committed) {
       if (operatorFlushTimerRef.current === null) {
         operatorFlushTimerRef.current = window.setTimeout(() => {
           operatorFlushTimerRef.current = null;
@@ -227,21 +266,14 @@ export function useProximityAlerts(
       }
       return;
     }
-
-    const nextMemory = new Map<string, string>(lastCriticalIdsRef.current);
-    for (const [id, sev] of batch) nextMemory.set(id, sev);
-    lastCriticalIdsRef.current = nextMemory;
-    for (const [id, sev] of batch) {
-      if (pending.get(id) === sev) pending.delete(id);
-    }
-    lastOperatorBeepAtRef.current = Date.now();
     if (pending.size > 0) void flushOperatorPending();
-  }, [beepOperatorTone, isTrustedReporter]);
+  }, [beepOperatorTone]);
 
   // Lifecycle cleanup: cancel pending close timers, release any context still
   // open, and drop a scheduled operator flush when the consumer unmounts.
   useEffect(() => {
     return () => {
+      operatorFlushEpochRef.current += 1;
       if (proximityCloseTimerRef.current !== null) window.clearTimeout(proximityCloseTimerRef.current);
       if (operatorCloseTimerRef.current !== null) window.clearTimeout(operatorCloseTimerRef.current);
       if (operatorFlushTimerRef.current !== null) window.clearTimeout(operatorFlushTimerRef.current);
@@ -353,6 +385,7 @@ export function useProximityAlerts(
   const lastCriticalIdsRef = useRef<Map<string, string>>(new Map());
   useEffect(() => {
     if (!isTrustedReporter) {
+      operatorFlushEpochRef.current += 1;
       operatorPendingRef.current.clear();
       if (operatorFlushTimerRef.current !== null) {
         window.clearTimeout(operatorFlushTimerRef.current);

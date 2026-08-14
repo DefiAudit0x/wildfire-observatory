@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchWithRetry } from "../utils/api";
 import { getDeviceId } from "../utils/device";
+import { getReporterBadge } from "../utils/badgeStore";
 
 /**
  * Human-readable, per-code GPS failure messages. A single generic message
@@ -39,6 +40,19 @@ export function geoErrorMessage(
 
 const HEARTBEAT_CONSENT_KEY = "observatory_heartbeat_consent";
 const MAX_CLOCK_SKEW_MS = 60_000;
+
+export function buildHeartbeatPayload(
+  deviceId: string,
+  location: { lat: number; lng: number }
+): { deviceId: string; lat: number; lng: number; badgeCode?: string } {
+  const badgeCode = getReporterBadge() || undefined;
+  return {
+    deviceId,
+    lat: location.lat,
+    lng: location.lng,
+    ...(badgeCode ? { badgeCode } : {}),
+  };
+}
 
 export function useGeolocation(isArabic: boolean) {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -200,22 +214,10 @@ export function useGeolocation(isArabic: boolean) {
     const sendHeartbeat = () => {
       const loc = locationRef.current;
       if (!loc) return;
-      let storedBadge: string | undefined;
-      try {
-        storedBadge = localStorage.getItem("reporterBadgeCode") || undefined;
-      } catch {
-        storedBadge = undefined;
-      }
-
       fetchWithRetry("/api/location/heartbeat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          deviceId,
-          lat: loc.lat,
-          lng: loc.lng,
-          ...(storedBadge ? { badgeCode: storedBadge } : {}),
-        }),
+        body: JSON.stringify(buildHeartbeatPayload(deviceId, loc)),
       }).catch(() => {});
     };
 
