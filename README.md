@@ -348,7 +348,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 | Sentry monitoring (server + React) | ✅ Implemented |
 | PWA offline (Workbox precache + API cache) | ✅ Implemented |
 | Full user-flow E2E coverage beyond smoke paths | ⬜ In progress |
-| Dependency scanning / dependency review in CI | ⬜ Planned |
+| Dependency scanning / dependency review in CI | ✅ Enabled (Dependabot + CodeQL) |
 | Load testing & capacity checks | ⬜ Planned |
 
 ### What was improved / التحسينات المنجزة
@@ -374,5 +374,5 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 <p>
   <strong>FR:</strong> Initiative humanitaire open source — <a href="https://facebook.com/groups/1295962545580951/">Rejoignez-nous</a>
 </p>
-<p>© 2026 Nova DZ</p>
+<p>© 2026 DefiAudit</p>
 </div>
