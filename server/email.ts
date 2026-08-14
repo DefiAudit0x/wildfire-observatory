@@ -80,7 +80,7 @@ function buildAlertHtml(report: {
   severity: string; locationName: string; wilaya: string;
   description: string; lat: number; lng: number;
   timestamp: string; reporterType: string;
-}): string {
+}, unsubscribeUrl = `${config.appUrl}/#unsubscribe`): string {
   const colorMap: Record<string, string> = {
     critical: "#dc2626", high: "#ea580c", medium: "#ca8a04", low: "#16a34a",
   };
@@ -117,32 +117,32 @@ function buildAlertHtml(report: {
     </td></tr>
     <tr><td style="text-align:center;padding:20px;color:#6b7280;font-size:10px">
       <p>تم إرسال هذا التنبيه تلقائياً من منصة المرصد الشمال افريقي لحرائق الغابات</p>
-      <p><a href="${config.appUrl}/#unsubscribe" style="color:#6b7280">إلغاء الاشتراك</a></p>
+      <p><a href="${escapeHtml(unsubscribeUrl)}" style="color:#6b7280">إلغاء الاشتراك</a></p>
     </td></tr>
   </table>
 </body>
 </html>`.trim();
 }
 
-async function getVerifiedSubscribers(): Promise<string[]> {
+async function getVerifiedSubscribers(): Promise<Array<{ email: string; unsubscribeToken?: string }>> {
   try {
     const { getDb, isAdminDb } = await import("./firebase.js");
     const db = getDb();
     if (!db) return [];
 
-    const emails: string[] = [];
+    const subscribers: Array<{ email: string; unsubscribeToken?: string }> = [];
 
     if (isAdminDb(db)) {
       const snap = await db.collection("subscribers").where("verified", "==", true).get();
-      snap.forEach((doc: any) => emails.push(doc.data().email));
+      snap.forEach((doc: any) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
     } else {
       const { collection, getDocs, query, where } = await import("firebase/firestore");
       const q = query(collection(db, "subscribers"), where("verified", "==", true));
       const snap = await getDocs(q);
-      snap.forEach((doc) => emails.push(doc.data().email));
+      snap.forEach((doc) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
     }
 
-    return emails;
+    return subscribers;
   } catch (err) {
     logger.error({ err }, "Failed to fetch subscribers");
     return [];
@@ -188,18 +188,20 @@ export async function sendFireAlert(report: {
   const subscribers = await getVerifiedSubscribers();
   if (subscribers.length === 0) return;
 
-  const html = buildAlertHtml(report);
   const subject = `🔥 [${report.severity.toUpperCase()}] حريق في ${report.wilaya}`;
 
   const BATCH_SIZE = 10;
   for (let i = 0; i < subscribers.length; i += BATCH_SIZE) {
     const batch = subscribers.slice(i, i + BATCH_SIZE);
     await Promise.allSettled(
-      batch.map((email) =>
-        sendEmail({ to: email, subject, html }).catch((err) => {
+      batch.map(({ email, unsubscribeToken }) => {
+        const unsubscribeUrl = unsubscribeToken
+          ? `${config.appUrl}/api/notifications/unsubscribe?email=${encodeURIComponent(email)}&token=${encodeURIComponent(unsubscribeToken)}`
+          : `${config.appUrl}/#unsubscribe`;
+        return sendEmail({ to: email, subject, html: buildAlertHtml(report, unsubscribeUrl) }).catch((err) => {
           logger.error({ err, email }, "Failed to send alert email");
-        })
-      )
+        });
+      })
     );
   }
 

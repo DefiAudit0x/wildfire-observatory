@@ -33,6 +33,7 @@ const RELAY_QUEUE_KEY = "mesh_relay_queue";
 const MAX_QUEUE = 50;
 const MAX_SEEN_HASHES = 2000;
 const seenRelayHashes = new Set<string>();
+let flushInFlight: Promise<void> | null = null;
 
 function hashString(input: string): string {
   let h = 5381;
@@ -40,17 +41,41 @@ function hashString(input: string): string {
   return String(h >>> 0);
 }
 
-function readQueue(): any[] {
+interface QueuedRelay {
+  id: string;
+  report: Record<string, unknown>;
+  ts: number;
+}
+
+function queueItemId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function readQueue(): QueuedRelay[] {
   try {
     const raw = localStorage.getItem(RELAY_QUEUE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is { report: Record<string, unknown>; ts?: unknown; id?: unknown } =>
+        item && typeof item === "object" && item.report && typeof item.report === "object"
+      )
+      .map((item) => ({
+        id: typeof item.id === "string" && item.id.length > 0
+          ? item.id
+          : hashString(JSON.stringify(item)),
+        report: item.report,
+        ts: typeof item.ts === "number" && Number.isFinite(item.ts) ? item.ts : Date.now(),
+      }));
   } catch {
     return [];
   }
 }
 
-function writeQueue(queue: any[]): void {
+function writeQueue(queue: QueuedRelay[]): void {
   try {
     localStorage.setItem(RELAY_QUEUE_KEY, JSON.stringify(queue.slice(-MAX_QUEUE)));
   } catch {
@@ -77,40 +102,48 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
   const lng = Number(envelope.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
 
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+
+  const locationName = typeof payload.locationName === "string" ? payload.locationName.trim() : "";
+  const wilaya = typeof payload.wilaya === "string" ? payload.wilaya.trim() : "";
+  const description = typeof payload.description === "string" ? payload.description.trim() : "";
+  if (locationName.length < 3 || locationName.length > 200 ||
+      wilaya.length < 3 || wilaya.length > 200 ||
+      description.length < 10 || description.length > 2000) return null;
+
+  if (payload.severity !== undefined &&
+      !["low", "medium", "high", "critical"].includes(payload.severity)) return null;
+  if (payload.reporterType !== undefined &&
+      !["citizen", "volunteer", "official"].includes(payload.reporterType)) return null;
+
   const report: Record<string, unknown> = {
     lat,
     lng,
-    locationName: typeof payload.locationName === "string" ? payload.locationName : "",
-    wilaya: typeof payload.wilaya === "string" ? payload.wilaya : "",
-    description: typeof payload.description === "string" ? payload.description : "",
-    severity: ["low", "medium", "high", "critical"].includes(payload.severity)
-      ? payload.severity
-      : "medium",
-    reporterType: ["citizen", "volunteer", "official"].includes(payload.reporterType)
-      ? payload.reporterType
-      : "citizen",
+    locationName,
+    wilaya,
+    description,
+    severity: payload.severity ?? "medium",
+    reporterType: payload.reporterType ?? "citizen",
   };
 
   // The origin's client-generated id travels VERBATIM through the relay: the
   // server deduplicates on it, so a report that an online origin already
   // posted (or posts later) is never double-committed. Dropping it here would
   // break that idempotency contract.
-  if (
-    typeof payload.clientGeneratedId === "string" &&
-    payload.clientGeneratedId.length >= 8 &&
-    payload.clientGeneratedId.length <= 64
-  ) {
+  if (payload.clientGeneratedId !== undefined &&
+      (typeof payload.clientGeneratedId !== "string" ||
+       payload.clientGeneratedId.length < 8 || payload.clientGeneratedId.length > 64)) {
+    return null;
+  }
+  if (typeof payload.clientGeneratedId === "string") {
     report.clientGeneratedId = payload.clientGeneratedId;
   }
 
-  // Same minimums as the server schema (locationName ≥3, wilaya ≥3, description ≥10).
+  // The length and enum gates above mirror the server schema exactly.
   if (
     typeof report.locationName !== "string" ||
-    report.locationName.length < 3 ||
     typeof report.wilaya !== "string" ||
-    report.wilaya.length < 3 ||
-    typeof report.description !== "string" ||
-    report.description.length < 10
+    typeof report.description !== "string"
   ) {
     return null;
   }
@@ -165,20 +198,35 @@ async function handleRelayMessage(raw: string): Promise<void> {
 
 export function enqueueRelay(report: Record<string, unknown>): void {
   const queue = readQueue();
-  queue.push({ report, ts: Date.now() });
+  queue.push({ id: queueItemId(), report, ts: Date.now() });
   writeQueue(queue);
 }
 
-export async function flushQueue(): Promise<void> {
+async function flushQueueInternal(): Promise<void> {
   const queue = readQueue();
   if (queue.length === 0) return;
-  const remaining: any[] = [];
-  let changed = false;
+  const processedIds = new Set<string>();
+  const failedIds = new Set<string>();
   for (const item of queue) {
-    if (await submitRelay(item.report)) changed = true;
-    else remaining.push(item);
+    if (await submitRelay(item.report)) processedIds.add(item.id);
+    else failedIds.add(item.id);
   }
-  if (changed) writeQueue(remaining);
+
+  if (processedIds.size === 0) return;
+
+  // Re-read after awaits: enqueueRelay may have appended a newer item while
+  // network submissions were in flight. Remove only the IDs from this flush;
+  // never overwrite the newer snapshot with the stale pre-await queue.
+  const latestQueue = readQueue();
+  writeQueue(latestQueue.filter((item) => !processedIds.has(item.id) || failedIds.has(item.id)));
+}
+
+export function flushQueue(): Promise<void> {
+  if (flushInFlight) return flushInFlight;
+  flushInFlight = flushQueueInternal().finally(() => {
+    flushInFlight = null;
+  });
+  return flushInFlight;
 }
 
 let started = false;

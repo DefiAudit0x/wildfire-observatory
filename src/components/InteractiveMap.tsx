@@ -204,7 +204,7 @@ export default function InteractiveMap({
 
     // Heat layer toggle/refresh is tracked separately from markers
     const heatLayer = heatRef.current;
-    const heatSig = `${heatEnabled ? 1 : 0}|${visibleReports.map((r) => `${r.id}:${r.severity}`).join(",")}`;
+    const heatSig = `${heatEnabled ? 1 : 0}|${visibleReports.map((r) => `${r.id}:${r.lat}:${r.lng}:${r.severity}:${r.status}`).join(",")}`;
     if (heatSig !== heatSigRef.current && heatLayer) {
       heatSigRef.current = heatSig;
       heatLayer.clearLayers();
@@ -229,7 +229,7 @@ export default function InteractiveMap({
         .join(";"),
       visibleReports
         .map((r) =>
-          `${r.id}|${r.lat}|${r.lng}|${r.severity}|${r.status}|${r.locationName}|${r.wilaya}|${r.timestamp}|${r.description}|${r.image || ""}|${r.reporterType || ""}|${r.consensusCount}|${r.clusterSize || 0}|${r.clusterId || ""}|${r.isClusterLeader ? 1 : 0}|${r.aiVerification?.confidence || ""}|${r.aiVerification?.aiComments || ""}|${isArabic ? 1 : 0}`
+          `${r.id}|${r.lat}|${r.lng}|${r.severity}|${r.status}|${r.locationName}|${r.wilaya}|${r.timestamp}|${r.description}|${r.image || ""}|${r.reporterType || ""}|${r.consensusCount}|${r.clusterSize || 0}|${r.clusterId || ""}|${r.isClusterLeader ? 1 : 0}|${r.aiVerification?.isVerified ? 1 : 0}|${r.aiVerification?.confidence || ""}|${r.aiVerification?.aiComments || ""}|${r.aiVerification?.suggestedSeverity || ""}|${r.aiVerification?.detectedSigns?.join(",") || ""}|${isArabic ? 1 : 0}`
         )
         .join(";"),
     ].join("~");

@@ -19,6 +19,7 @@ import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
 import { docGet, incrementDocField } from "../fs.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
+import type { Report } from "../../src/types.js";
 
 const router = Router();
 
@@ -52,12 +53,20 @@ function pruneClientIds(): void {
   if (recentClientIds.length > 2000) recentClientIds.splice(0, recentClientIds.length - 2000);
 }
 
-function findReportByClientId(clientId: string): any | null {
+async function findReportByClientId(clientId: string): Promise<any | null> {
   pruneClientIds();
   for (const entry of recentClientIds) {
     if (entry.id === clientId) {
       const existing = citizenReports.find((r) => r.clientGeneratedId === clientId);
       return existing || null;
+    }
+  }
+  const dbResult = await getReportsDbResult();
+  if (dbResult.status === "ok") {
+    const existing = dbResult.reports.find((r: any) => r.clientGeneratedId === clientId);
+    if (existing) {
+      recentClientIds.push({ id: clientId, timestamp: Date.now() });
+      return existing;
     }
   }
   return null;
@@ -76,6 +85,21 @@ function isDuplicateReport(lat: number, lng: number): boolean {
   }
   if (recentReports.length > 2000) recentReports.splice(0, recentReports.length - 2000);
   return false;
+}
+
+function releaseReservations(clientGeneratedId: string | undefined, lat: number, lng: number): void {
+  if (clientGeneratedId) {
+    for (let i = recentClientIds.length - 1; i >= 0; i--) {
+      if (recentClientIds[i].id === clientGeneratedId) recentClientIds.splice(i, 1);
+    }
+  }
+  for (let i = recentReports.length - 1; i >= 0; i--) {
+    const entry = recentReports[i];
+    if (entry.lat === lat && entry.lng === lng) {
+      recentReports.splice(i, 1);
+      break;
+    }
+  }
 }
 
 /**
@@ -231,18 +255,35 @@ const createReportSchema = z.object({
 
 let initialReportsSeeded = false;
 
-async function getReportsFromDb() {
-  const result = await getReportsDbResult();
-  if (result.status === "ok") return result.reports;
-  if (result.status === "empty" && !initialReportsSeeded) {
-    seedReportsToFirestore();
-    initialReportsSeeded = true;
-  }
-  return citizenReports;
+function isClusterableReport(value: any): value is Report {
+  return Boolean(value) &&
+    typeof value.id === "string" && value.id.length > 0 &&
+    Number.isFinite(value.lat) && value.lat >= -90 && value.lat <= 90 &&
+    Number.isFinite(value.lng) && value.lng >= -180 && value.lng <= 180 &&
+    typeof value.timestamp === "string" && !Number.isNaN(Date.parse(value.timestamp)) &&
+    Number.isInteger(value.consensusCount) && value.consensusCount >= 0 &&
+    ["low", "medium", "high", "critical"].includes(value.severity) &&
+    ["pending", "verified", "rejected", "resolved"].includes(value.status);
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const currentReports = await getReportsFromDb();
+  const result = await getReportsDbResult();
+  if (result.status === "error") {
+    res.status(503).json({ error: "Report data is currently unavailable" });
+    return;
+  }
+  if (result.status === "empty" && !initialReportsSeeded) {
+    initialReportsSeeded = true;
+    void seedReportsToFirestore().then((seeded) => {
+      if (!seeded) initialReportsSeeded = false;
+    });
+  }
+  const currentReports = result.status === "ok" ? result.reports : citizenReports;
+  if (!currentReports.every(isClusterableReport)) {
+    logger.error("Report dataset failed runtime validation before clustering");
+    res.status(503).json({ error: "Report data is currently unavailable" });
+    return;
+  }
   const clustered = runClustering(currentReports);
   res.json(clustered.map(sanitizePublicReport));
 });
@@ -276,7 +317,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   // (no new row, no duplicate-conflict 409) — checked before any validation or
   // async work so a sync retry after a mid-flight crash is safe.
   if (clientGeneratedId) {
-    const existing = findReportByClientId(clientGeneratedId);
+    const existing = await findReportByClientId(clientGeneratedId);
     if (existing) {
       res.json(sanitizePublicReport(existing));
       return;
@@ -432,7 +473,12 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   }
 
   const saved = await saveReportToFirestore(newReport);
-  if (!saved) {
+  if (saved === "error") {
+    releaseReservations(clientGeneratedId, lat, lng);
+    res.status(503).json({ error: "Report persistence is temporarily unavailable; retry with the same clientGeneratedId" });
+    return;
+  }
+  if (saved === "no-db") {
     citizenReports.unshift(newReport);
     if (citizenReports.length > MAX_IN_MEMORY_REPORTS) {
       citizenReports.length = MAX_IN_MEMORY_REPORTS;
@@ -497,11 +543,6 @@ router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) 
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
   const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
 
-  if (!recordVoter(id, voterKey)) {
-    res.status(409).json({ error: "Already confirmed from this device" });
-    return;
-  }
-
   const result = await confirmReportInFirestore(id, voterKey);
   if (result) {
     if ("error" in result && result.error === "ALREADY_VOTED") {
@@ -521,6 +562,10 @@ router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) 
   const report = citizenReports.find((r) => r.id === id);
   if (!report) {
     res.status(404).json({ error: "Report not found" });
+    return;
+  }
+  if (!recordVoter(id, voterKey)) {
+    res.status(409).json({ error: "Already confirmed from this device" });
     return;
   }
   report.consensusCount += 1;

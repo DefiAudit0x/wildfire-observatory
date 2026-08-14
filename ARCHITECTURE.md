@@ -292,6 +292,17 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 - [ ] PoW verification on every incoming relayed hop
 - [ ] Unified Transport abstraction: `InternetTransport` (WebSocket MeshHub) · `NearbyTransport` (Android) · `LoRaTransport` (T-Beam/Meshtastic, future) · `StoreAndForwardQueue`
 
+### Audit-deferred decisions / قرارات مؤجلة من دورة التدقيق
+
+| Decision | Current treatment | Why it is deferred |
+|----------|-------------------|--------------------|
+| **Device ownership / mesh token possession** | `deviceId` remains a bearer-style identifier; HTTP cookie bindings now reject cross-device reuse where the route has a browser session. | Closing first-bind spoofing requires a registration or key-possession protocol shared by browser, Android, and WebSocket clients; cookie binding alone is not proof of physical-device possession. |
+| **TOFU reputation continuity** | Reputation remains keyed to the advertised ephemeral public key. | Binding rotating ephemeral keys to the persistent Android identity changes the trust protocol and requires an identity-signed handshake; it was not changed silently in this compatibility pass. |
+| **Android Keystore migration of legacy identities** | Existing legacy SharedPreferences identities are preserved for continuity; Keystore is preferred for new installs. | Deleting or migrating the legacy private key without an explicit rollout would rotate device identity and invalidate established trust/history. |
+| **Hazard-aware evacuation routing** | The UI reports OSRM distance or a clearly labelled estimate and does not claim fire-safe routing. | Fire polygons, closures, official route advisories, and policy ownership are not present in the current data contract. |
+| **OSRM privacy proxy** | The client sends route coordinates directly to the public OSRM endpoint when the user requests a calculation. | A server-side proxy requires a deployment/privacy decision and operational ownership; it was not introduced as an unreviewed data-flow change. |
+| **Polygon geofences** | Request-time wilaya validation uses available bounding-box data and rejects unknown declared wilayas. | Authoritative GeoJSON boundaries are required before replacing the current dataset contract. |
+
 ---
 
 ## 8. Traffic & Scaling / التحمّل والتوسع

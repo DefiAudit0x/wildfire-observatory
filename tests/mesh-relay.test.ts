@@ -159,9 +159,7 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
     expect(buildRelayedPayload(envelope({ payload: 123 }))).toBeNull();
   });
 
-  it("clamps severity/reporterType to allowed enums", () => {
-    const report = buildRelayedPayload(envelope({ payload: undefined }));
-    // rebuild with junk values
+  it("rejects invalid severity/reporterType instead of clamping them silently", () => {
     const e = envelope();
     e.payload = JSON.stringify({
       locationName: "غابة اختبار",
@@ -170,8 +168,11 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
       severity: "catastrophic",
       reporterType: "admin",
     });
-    const clamped = buildRelayedPayload(e);
-    expect(clamped!.severity).toBe("medium");
-    expect(clamped!.reporterType).toBe("citizen");
+    expect(buildRelayedPayload(e)).toBeNull();
+  });
+
+  it("rejects out-of-range coordinates before submitting to the API", () => {
+    expect(buildRelayedPayload(envelope({ lat: 91 }))).toBeNull();
+    expect(buildRelayedPayload(envelope({ lng: -181 }))).toBeNull();
   });
 });

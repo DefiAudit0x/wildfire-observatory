@@ -8,6 +8,7 @@ import { collectionGet, docSet, docUpdate } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 
 const router = Router();
+const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
 
 const memoryNotifications: any[] = [];
 
@@ -18,6 +19,52 @@ async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
   }
   return memoryNotifications.filter((n) => n.deviceId === deviceId);
 }
+
+async function deleteSubscriberByToken(email: string, token: string): Promise<boolean> {
+  const { getDb, isAdminDb } = await import("../firebase.js");
+  const db = getDb();
+  if (!db) return false;
+  if (isAdminDb(db)) {
+    const existing = await db.collection("subscribers").where("email", "==", email).get();
+    const match = existing.docs.find((doc: any) => doc.data().unsubscribeToken === token);
+    if (!match) return false;
+    await match.ref.delete();
+    return true;
+  }
+  const { collection, getDocs, query, where, deleteDoc, doc } = await import("firebase/firestore");
+  const snap = await getDocs(query(collection(db, "subscribers"), where("email", "==", email)));
+  const match = snap.docs.find((entry) => entry.data().unsubscribeToken === token);
+  if (!match) return false;
+  await deleteDoc(doc(db, "subscribers", match.id));
+  return true;
+}
+
+const unsubscribeLinkLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+router.get("/unsubscribe", unsubscribeLinkLimiter, async (req: Request, res: Response) => {
+  const email = typeof req.query.email === "string" ? req.query.email : "";
+  const token = typeof req.query.token === "string" ? req.query.token : "";
+  const parsed = unsubscribeSchema.safeParse({ email, token });
+  if (!parsed.success) {
+    res.status(400).send("Invalid unsubscribe link");
+    return;
+  }
+  try {
+    if (!(await deleteSubscriberByToken(parsed.data.email, parsed.data.token))) {
+      res.status(403).send("Invalid or expired unsubscribe link");
+      return;
+    }
+    res.send("<h2>تم إلغاء اشتراكك بنجاح.</h2>");
+  } catch (err) {
+    logger.error({ err }, "Failed to unsubscribe from link");
+    res.status(500).send("Unable to process unsubscribe request");
+  }
+});
 
 export async function createNotification(notif: { deviceId: string; titleAr: string; titleFr: string; bodyAr: string; bodyFr: string; type: "success" | "warning" | "error" | "info" }) {
   const newNotif = {
@@ -163,6 +210,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
 
   const { email, wilayas, minSeverity } = parsed.data;
   const verificationToken = generateVerificationToken();
+  const unsubscribeToken = generateVerificationToken();
 
   try {
     const { getDb, isAdminDb } = await import("../firebase.js");
@@ -179,6 +227,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           wilayas: wilayas || [],
           minSeverity: minSeverity || "medium",
           verificationToken,
+          unsubscribeToken,
           updatedAt: new Date().toISOString(),
         });
         sendVerificationEmail(email, verificationToken);
@@ -187,7 +236,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       }
       await db.collection("subscribers").add({
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     } else {
       const { collection, getDocs, query, where, addDoc, updateDoc, doc } = await import("firebase/firestore");
@@ -197,7 +246,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       if (!snap.empty) {
         await updateDoc(doc(db, "subscribers", snap.docs[0].id), {
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-          verificationToken, updatedAt: new Date().toISOString(),
+          verificationToken, unsubscribeToken, updatedAt: new Date().toISOString(),
         });
         sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
@@ -205,7 +254,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       }
       await addDoc(subsCol, {
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     }
 
@@ -226,15 +275,13 @@ const unsubscribeLimiter = rateLimit({
   message: { error: "Too many unsubscribe requests. Try again shortly." },
 });
 
-const unsubscribeSchema = z.object({ email: z.string().email().max(200) });
-
 router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Response) => {
   const parsed = unsubscribeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "A valid email is required" });
     return;
   }
-  const { email } = parsed.data;
+  const { email, token } = parsed.data;
 
   try {
     const { getDb, isAdminDb } = await import("../firebase.js");
@@ -244,16 +291,9 @@ router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Respon
       return;
     }
 
-    if (isAdminDb(db)) {
-      const existing = await db.collection("subscribers").where("email", "==", email).get();
-      const deletePromises: Promise<any>[] = [];
-      existing.forEach((doc: any) => deletePromises.push(doc.ref.delete()));
-      await Promise.all(deletePromises);
-    } else {
-      const { collection, getDocs, query, where, deleteDoc, doc } = await import("firebase/firestore");
-      const q = query(collection(db, "subscribers"), where("email", "==", email));
-      const snap = await getDocs(q);
-      await Promise.all(snap.docs.map((d) => deleteDoc(doc(db, "subscribers", d.id))));
+    if (!(await deleteSubscriberByToken(email, token))) {
+      res.status(403).json({ error: "Invalid unsubscribe token" });
+      return;
     }
 
     logger.info({ email }, "Subscriber unsubscribed");

@@ -902,13 +902,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           
           // Trigger local Edge AI analysis immediately
           runEdgeAiPreScan(dataUrl, compressionPercent);
-          // Honest disclosure: a file upload carries no EXIF/GPS watermark proof
-          // unlike a live capture, so a report backed only by an upload carries
-          // a lighter verification weight — surfaced here to the reporter.
+          // A file upload has no in-app telemetry overlay. EXIF/GPS metadata is
+          // not inspected here, so it must not be described as absent or proof.
           setUploadWarning(
             isArabic
-              ? "⚠️ الصور المرفوعة أقل موثوقية من التصوير المباشر — لا تحمل بيانات GPS/وقت التحقق."
-              : "⚠️ Les photos jointes sont moins fiables que la capture directe (pas de GPS/timestamp)."
+              ? "⚠️ الصور المرفوعة لا تتضمن ختم القياس الميداني الخاص بالتصوير المباشر. لا يفحص التطبيق بيانات EXIF/GPS، لذلك لا تُعد هذه البيانات إثباتًا مستقلًا."
+              : "⚠️ Les photos jointes n'ont pas le marquage de télémétrie de la capture directe. L'application ne vérifie pas les métadonnées EXIF/GPS; elles ne constituent donc pas une preuve indépendante."
           );
         }
         setIsCompressing(false);

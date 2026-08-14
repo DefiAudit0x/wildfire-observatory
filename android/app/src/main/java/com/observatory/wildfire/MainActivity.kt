@@ -69,6 +69,8 @@ class MainActivity : AppCompatActivity() {
     private val meshUiQueue = ArrayDeque<String>()
     private var meshUiDrainScheduled = false
     private val meshUiQueueLock = Any()
+    @Volatile
+    private var rendererRecoveryInProgress = false
 
     // Audit round 11: the message listener added on bind is KEPT as a field so
     // onDestroy can remove THAT EXACT instance. The old code called
@@ -317,6 +319,29 @@ class MainActivity : AppCompatActivity() {
                     handler?.cancel()
                     Toast.makeText(this@MainActivity, "Secure connection error. Using a secure URL is required.", Toast.LENGTH_LONG).show()
                 }
+            }
+
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                val crashedView = view ?: return true
+                if (crashedView !== webView) return true
+                if (rendererRecoveryInProgress || isFinishing || isDestroyed) return true
+                rendererRecoveryInProgress = true
+                mainHandler.post {
+                    try {
+                        if (!isFinishing && !isDestroyed) {
+                            crashedView.stopLoading()
+                            crashedView.destroy()
+                            setupWebView()
+                            dispatchMeshState(if (meshService != null) "connected" else "unavailable")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "WebView renderer recovery failed", e)
+                        dispatchMeshState("failed")
+                    } finally {
+                        rendererRecoveryInProgress = false
+                    }
+                }
+                return true
             }
         }
 

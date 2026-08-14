@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
-import { collectionGet, docSet, docUpdate, docDelete } from "../fs.js";
+import { collectionGet, docSet, docUpdate, docDelete, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { liveHub } from "../live.js";
 import logger from "../logger.js";
@@ -12,9 +12,9 @@ let cachedZones: any[] | null = null;
 const zoneSchema = z.object({
   nameAr: z.string().min(2).max(120),
   nameFr: z.string().min(2).max(120),
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
-  capacity: z.number().int().positive().max(100000),
+  lat: z.coerce.number().finite().min(-90).max(90),
+  lng: z.coerce.number().finite().min(-180).max(180),
+  capacity: z.coerce.number().int().positive().max(100000),
   hasMedical: z.boolean().default(false),
   isActive: z.boolean().default(true),
 });
@@ -22,7 +22,7 @@ const zoneSchema = z.object({
 async function loadZones(): Promise<any[]> {
   if (cachedZones) return cachedZones;
   try {
-    const fromDb = await collectionGet("safeZones", "createdAt", 100);
+    const fromDb = await collectionGet("safeZones", "createdAt", 1000);
     cachedZones = fromDb || [];
     return cachedZones;
   } catch (err) {
@@ -46,10 +46,13 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
     return;
   }
-  const id = `zone-${Date.now()}`;
+  const id = `zone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const zone = { id, ...parsed.data, createdAt: new Date().toISOString() };
-  await docSet("safeZones", id, zone);
-  cachedZones = cachedZones ? [zone, ...cachedZones] : [zone];
+  if (!(await docSet("safeZones", id, zone))) {
+    res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+    return;
+  }
+  cachedZones = null;
   liveHub.broadcast("safezones:changed", { id });
   res.json(zone);
 });
@@ -61,18 +64,28 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
     return;
   }
   const { id } = req.params;
-  const existing = cachedZones?.find((z: any) => z.id === id) || {};
-  const zone = { ...existing, id, ...parsed.data, updatedAt: new Date().toISOString() };
-  await docSet("safeZones", id, zone);
-  cachedZones = cachedZones?.map((z: any) => (z.id === id ? zone : z)) || [zone];
+  const existing = cachedZones?.find((z: any) => z.id === id) || await docGet("safeZones", id);
+  if (!existing) {
+    res.status(404).json({ error: "Safe zone not found" });
+    return;
+  }
+  const zone = { ...existing, id, ...parsed.data, createdAt: existing.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+  if (!(await docSet("safeZones", id, zone))) {
+    res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+    return;
+  }
+  cachedZones = null;
   liveHub.broadcast("safezones:changed", { id });
   res.json(zone);
 });
 
 router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  await docDelete("safeZones", id).catch(() => {});
-  cachedZones = cachedZones?.filter((z: any) => z.id !== id) || null;
+  if (!(await docDelete("safeZones", id))) {
+    res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+    return;
+  }
+  cachedZones = null;
   liveHub.broadcast("safezones:changed", { id });
   res.json({ success: true });
 });

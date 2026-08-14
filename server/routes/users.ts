@@ -53,10 +53,20 @@ function callerUnit(admin: any): { unitId: string | null; isSuperadmin: boolean 
   return { unitId: isSuperadmin ? null : admin?.unitId || null, isSuperadmin };
 }
 
+function requireScopedCommander(res: Response, admin: any): string | null {
+  const { unitId, isSuperadmin } = callerUnit(admin);
+  if (!isSuperadmin && !unitId) {
+    res.status(403).json({ error: "Commander account has no assigned unit" });
+    return null;
+  }
+  return unitId;
+}
+
 router.get("/", requireRole("superadmin", "commander"), async (req: Request, res: Response) => {
   try {
     const admin = (req as any).admin;
     const { unitId, isSuperadmin } = callerUnit(admin);
+    if (requireScopedCommander(res, admin) === null && !isSuperadmin) return;
     let users = (await collectionGet("users")) || [];
     if (!isSuperadmin && unitId) {
       users = users.filter((u: any) => u.unitId === unitId);
@@ -76,6 +86,7 @@ router.post("/", requireRole("superadmin", "commander"), async (req: Request, re
   }
   const admin = (req as any).admin;
   const { unitId: allowedUnit, isSuperadmin } = callerUnit(admin);
+  if (requireScopedCommander(res, admin) === null && !isSuperadmin) return;
 
   // A commander can only create agents inside their own unit.
   if (!isSuperadmin) {
@@ -133,6 +144,7 @@ router.put("/:agentId", requireRole("superadmin", "commander"), async (req: Requ
   }
   const admin = (req as any).admin;
   const { unitId: allowedUnit, isSuperadmin } = callerUnit(admin);
+  if (requireScopedCommander(res, admin) === null && !isSuperadmin) return;
 
   try {
     const existing = await docGet("users", agentId);

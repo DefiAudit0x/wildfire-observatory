@@ -1,10 +1,12 @@
 import { describe, it, expect } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import cookieParser from "cookie-parser";
 import sosRouter from "../server/routes/sos.js";
 
 function createApp() {
   const app = express();
+  app.use(cookieParser());
   app.use(express.json({ limit: "10mb" }));
   app.use("/api/sos", sosRouter);
   return app;
@@ -160,5 +162,18 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
       .put(`/api/sos/profile/${uniqueDevice()}`)
       .send({ name: "x".repeat(500) });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects a profile request for another device after the browser is bound", async () => {
+    const agent = supertest.agent(createApp());
+    const firstDevice = uniqueDevice();
+    const secondDevice = uniqueDevice();
+
+    const first = await agent.get(`/api/sos/profile/${firstDevice}`);
+    expect(first.status).toBe(200);
+
+    const mismatch = await agent.get(`/api/sos/profile/${secondDevice}`);
+    expect(mismatch.status).toBe(403);
+    expect(mismatch.body.error).toContain("mismatch");
   });
 });

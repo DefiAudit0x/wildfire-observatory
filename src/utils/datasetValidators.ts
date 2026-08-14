@@ -65,7 +65,15 @@ const isNonNegativeNumber = (v: unknown): v is number =>
 // Counts must be whole numbers: consensusCount/activeFires are counters, and
 // the mesh confirm contract (Number.isInteger) must not contradict the poll.
 const isIntegerCount = (v: unknown): v is number =>
-  typeof v === "number" && Number.isInteger(v) && v >= 0;
+  typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 1_000_000;
+
+const isValidAiVerification = (v: unknown): boolean =>
+  isRecord(v) &&
+  typeof v.isVerified === "boolean" &&
+  typeof v.confidence === "number" && Number.isFinite(v.confidence) && v.confidence >= 0 && v.confidence <= 100 &&
+  Array.isArray(v.detectedSigns) && v.detectedSigns.every((sign) => isNonEmptyString(sign)) &&
+  typeof v.aiComments === "string" &&
+  isNonEmptyString(v.suggestedSeverity);
 
 const isOneOf = <T extends string>(allowed: readonly T[]) => (v: unknown): v is T =>
   typeof v === "string" && (allowed as readonly string[]).includes(v);
@@ -93,7 +101,8 @@ export const isValidReport = (v: unknown): v is Report =>
   isReportSeverity(v.severity) &&
   isReportStatus(v.status) &&
   isIsoTimestamp(v.timestamp) &&
-  isIntegerCount(v.consensusCount);
+  isIntegerCount(v.consensusCount) &&
+  (v.aiVerification === undefined || isValidAiVerification(v.aiVerification));
 
 /**
  * Satellite hotspot contract: the identity/location fields are not enough —

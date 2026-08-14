@@ -29,6 +29,9 @@ export interface PeerInfo {
 // a burst of traffic must not wipe the whole replay window at once.
 const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
 const MAX_REPLAY_ENTRIES = 4096;
+const MESSAGE_TTL_MS = 10 * 60 * 1000;
+const MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000;
+const ALLOWED_MESSAGE_TYPES = new Set(["report", "echo"]);
 const seenNonces = new Map<number, number>();
 const seenMessageHashes = new Map<string, number>();
 
@@ -421,7 +424,8 @@ async function browserDecrypt(
   try {
     if (!browserKeyPair) return null;
 
-    if (!hasRequiredEncryptedMetadata(encrypted)) return null;
+    if (!hasRequiredEncryptedMetadata(encrypted) || !isFreshMeshTimestamp(encrypted.timestamp)) return null;
+    if (!ALLOWED_MESSAGE_TYPES.has(encrypted.type!)) return null;
     if (typeof encrypted.signatureKey !== "string" || encrypted.signatureKey.length === 0) return null;
     if (peerPublicKeyBase64 && encrypted.senderPublicKey !== peerPublicKeyBase64) return null;
 
@@ -605,13 +609,8 @@ function installNativeMessageHandler(): void {
     try {
       parsed = JSON.parse(message);
     } catch {
-      messageListeners.forEach((listener) => {
-        try {
-          listener(message, "unknown", 0);
-        } catch {
-          // A malformed frame must not let one listener block the others.
-        }
-      });
+      // The native boundary is untrusted input. Drop malformed JSON instead
+      // of forwarding raw text to application listeners that expect envelopes.
       return;
     }
     const peerId = parsed.peerId ?? "unknown";
@@ -787,11 +786,18 @@ function difficultyTarget(difficulty: number): bigint | null {
 
 function hasRequiredEncryptedMetadata(message: EncryptedMessage): boolean {
   return typeof message.messageId === "string" && message.messageId.length > 0 &&
-    typeof message.type === "string" && message.type.length > 0 &&
+    typeof message.type === "string" && message.type.length > 0 && ALLOWED_MESSAGE_TYPES.has(message.type) &&
+    typeof message.timestamp === "number" && Number.isSafeInteger(message.timestamp) &&
     typeof message.nonce === "number" && Number.isInteger(message.nonce) &&
     message.nonce >= -2147483648 && message.nonce <= 2147483647 &&
     typeof message.lat === "number" && Number.isFinite(message.lat) && message.lat >= -90 && message.lat <= 90 &&
     typeof message.lng === "number" && Number.isFinite(message.lng) && message.lng >= -180 && message.lng <= 180;
+}
+
+export function isFreshMeshTimestamp(timestamp: number, now = Date.now()): boolean {
+  if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(now)) return false;
+  const age = now - timestamp;
+  return age <= MESSAGE_TTL_MS && age >= -MESSAGE_CLOCK_SKEW_MS;
 }
 
 function isEncryptedMessageShape(value: unknown): value is EncryptedMessage {

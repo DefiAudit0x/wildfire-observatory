@@ -53,13 +53,10 @@ dependencies {
     // Google Nearby Connections for Bluetooth mesh
     implementation 'com.google.android.gms:play-services-nearby:19.0.0'
 
-    // Bouncy Castle for crypto on Android (audit): bcprov-jdk15on stopped at
-    // 1.70 (2021, with known CVE fixes missing) and the artifact family was
-    // RELOCATED to bcprov-jdk18on — the maintained line. 1.77 keeps the
-    // Java-8 bytecode baseline our minSdk 26 needs (1.81+ jumps to Java 21
-    // bytecode, unloadable on Android); Jetifier is excluded for the jar in
-    // gradle.properties (pure-JDK crypto, no AndroidX references).
-    implementation 'org.bouncycastle:bcprov-jdk18on:1.77'
+    // Bouncy Castle for crypto on Android. The official JDK 1.8-and-later
+    // line currently publishes 1.85.2; validate the Android release build
+    // outside this sandbox because no Gradle wrapper is checked in here.
+    implementation 'org.bouncycastle:bcprov-jdk18on:1.85.2'
 
     // Kotlin coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

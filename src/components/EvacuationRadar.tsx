@@ -21,7 +21,11 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   // Live wind from Open-Meteo (free, no API key) at the user's location
   useEffect(() => {
     let cancelled = false;
-    const activeLoc = userLocation || { lat: 36.72, lng: 5.08 };
+    if (!userLocation) {
+      setWind(null);
+      return;
+    }
+    const activeLoc = userLocation;
     setWind(null);
 
     const fetchWind = async () => {
@@ -32,7 +36,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
         if (!res.ok) return;
         const data = await res.json();
         const cur = data?.current;
-        if (!cur || cur.wind_speed_10m === undefined || cur.wind_direction_10m === undefined) return;
+        if (!cur || !Number.isFinite(cur.temperature_2m) || !Number.isFinite(cur.wind_speed_10m) || !Number.isFinite(cur.wind_direction_10m)) return;
         if (cancelled) return;
         setWind({
           direction: Math.round(cur.wind_direction_10m),
@@ -79,6 +83,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   };
 
   const getDirectionName = (angle: number) => {
+    if (!Number.isFinite(angle)) return isArabic ? "غير متاح" : "indisponible";
     const directions = isArabic
       ? ["الشمال 🧭", "الشمال الشرقي ↗️", "الشرق ➡️", "الجنوب الشرقي ↘️", "الجنوب ⬇️", "الجنوب الغربي ↙️", "الغرب ⬅️", "الشمال الغربي ↖️"]
       : ["Nord 🧭", "Nord-Est ↗️", "Est ➡️", "Sud-Est ↘️", "Sud ⬇️", "Sud-Ouest ↙️", "Ouest ⬅️", "Nord-Ouest ↖️"];
@@ -87,6 +92,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   };
 
   const getBearingDirection = (angle: number) => {
+    if (!Number.isFinite(angle)) return isArabic ? "غير متاح" : "N/A";
     const directions = isArabic
       ? ["شمال", "شمال شرقي", "شرق", "جنوب شرقي", "جنوب", "جنوب غربي", "غرب", "شمال غربي"]
       : ["N", "NE", "E", "SE", "S", "SO", "O", "NO"];
@@ -94,22 +100,20 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
     return directions[index];
   };
 
-  // Location near Bejaia / Tizi Ouzou if user geolocation isn't active in sandboxed preview
-  const activeLoc = userLocation || { lat: 36.72, lng: 5.08 };
-
   // Calculate distances to all reports
   const reportsWithDistance = useMemo(() => {
+    if (!userLocation) return [];
     return reports
       .filter((r) => r.status === "verified")
       .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lng))
       .map((r) => {
-        const dist = getDistance(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
-        const bearing = getBearing(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
+        const dist = getDistance(userLocation.lat, userLocation.lng, r.lat, r.lng);
+        const bearing = getBearing(userLocation.lat, userLocation.lng, r.lat, r.lng);
         return { ...r, distance: dist, bearing };
       })
+      .filter((r) => r.distance <= 30)
       .sort((a, b) => a.distance - b.distance);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports, activeLoc.lat, activeLoc.lng]);
+  }, [reports, userLocation]);
 
   const closestFire = reportsWithDistance[0];
 
@@ -180,7 +184,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           ></div>
 
             {/* Blips/Fires on radar */}
-            {reportsWithDistance.slice(0, 3).map((fire, idx) => {
+            {reportsWithDistance.filter((fire) => fire.distance <= 15).slice(0, 3).map((fire, idx) => {
               // Convert polar coords (bearing, distance) to cartesian coords for display
               // Map max distance of 15km to radius of 96px
               const maxDist = 15;
@@ -192,7 +196,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
 
               return (
                 <div
-                  key={idx}
+                  key={fire.id}
                   className="absolute h-3.5 w-3.5 bg-red-500 rounded-full flex items-center justify-center animate-ping text-[8px] text-white font-extrabold border border-white"
                   style={{ 
                     transform: `translate(${x}px, ${y}px)`,
@@ -223,7 +227,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
 
           <div className="mt-3 flex justify-between w-full text-[9px] text-slate-500 font-semibold uppercase">
             <span>Range: 15KM</span>
-            <span>Ref: {isArabic ? "بجاية / تيزي وزو" : "Béjaïa Grid"}</span>
+            <span>Ref: {isArabic ? "نطاق 15 كم" : "Rayon 15 km"}</span>
           </div>
         </div>
 
@@ -234,19 +238,19 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
               <div className="bg-red-950/20 border border-red-500/20 rounded-lg p-3 space-y-1.5">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-red-400">
                   <AlertTriangle className="h-4 w-4 text-red-500 animate-bounce" />
-                  <span>{isArabic ? "تم رصد مهدد حريق نشط ومقرب!" : "Alerte : Foyer d'Incendie Actif Proche !"}</span>
+                  <span>{isArabic ? "بلاغ مؤكد قريب ضمن نطاق الرادار" : "Signalement vérifié proche dans le rayon du radar"}</span>
                 </div>
                 <p className="text-[11px] text-slate-300">
                   {isArabic 
-                    ? `أقرب بؤرة لهب تقع في "${closestFire.locationName}" على بعد ${closestFire.distance.toFixed(1)} كلم بالاتجاه ${closestFire.bearing.toFixed(0)}° (${getDirectionName(closestFire.bearing)}).`
-                    : `Le foyer le plus proche est situé à "${closestFire.locationName}" (${closestFire.distance.toFixed(1)} km) à l'angle ${closestFire.bearing.toFixed(0)}° (${getDirectionName(closestFire.bearing)}).`
+                    ? `أقرب بلاغ مؤكد هو "${closestFire.locationName}" على بعد ${closestFire.distance.toFixed(1)} كلم بالاتجاه ${closestFire.bearing.toFixed(0)}° (${getDirectionName(closestFire.bearing)}).`
+                    : `Le signalement vérifié le plus proche est "${closestFire.locationName}" (${closestFire.distance.toFixed(1)} km) à l'angle ${closestFire.bearing.toFixed(0)}° (${getDirectionName(closestFire.bearing)}).`
                   }
                 </p>
                 <div className="text-[10px] text-orange-400 font-extrabold flex items-center gap-1 border-t border-red-500/10 pt-1.5 mt-1.5">
                   ⚠️ {driftHeading !== null
                     ? (isArabic
-                      ? `اتجاه انتشار تقريبي مستنتج من الرياح الحية: ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`
-                      : `Direction approximative déduite du vent en direct : ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`)
+                      ? `مرجع اتجاه الرياح فقط، وليس نموذج انتشار حريق: ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`
+                      : `Référence de direction du vent uniquement, pas un modèle de propagation : ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`)
                     : (isArabic
                       ? "بيانات الرياح الحية غير متاحة؛ لا يتم حساب اتجاه الانتشار."
                       : "Aucune donnée de vent en direct; aucune direction de propagation n'est calculée.")}
@@ -289,11 +293,11 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           ) : (
             <div className="bg-emerald-950/10 border border-emerald-500/10 rounded-lg p-5 text-center space-y-2">
               <div className="text-3xl">🛡️</div>
-              <p className="font-bold text-emerald-400 text-xs">{isArabic ? "سماء المنطقة خالية من البؤر النشطة المجاورة" : "Secteur de Navigation Complètement Sûr"}</p>
+              <p className="font-bold text-emerald-400 text-xs">{isArabic ? "لا توجد بلاغات مؤكدة ضمن نطاق الرادار" : "Aucun signalement vérifié dans le rayon du radar"}</p>
               <p className="text-[10px] text-gray-400 max-w-sm mx-auto">
                 {isArabic 
-                  ? "لا توجد بلاغات حريق مؤكدة على مدى 30 كم من موقعك. يمكنك رصد البؤر البعيدة أو تصفح الخريطة التفاعلية."
-                  : "Aucun foyer d'incendie actif répertorié dans un rayon de 30 km. Votre périmètre actuel est sous contrôle."}
+                  ? "هذا لا يثبت خلو المنطقة من الخطر؛ راجع الخريطة والمصادر الرسمية قبل اتخاذ قرار."
+                  : "Cela ne prouve pas l'absence de danger; consultez la carte et les sources officielles avant toute décision."}
               </p>
             </div>
           )}
@@ -302,10 +306,10 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           <div className="bg-black/40 border border-white/5 rounded-lg p-3 text-[10px] space-y-1.5 leading-relaxed text-gray-400">
             <p className="font-bold text-slate-300 text-[11px] flex items-center gap-1">
               <HelpCircle className="h-3.5 w-3.5 text-gray-500" />
-              <span>{isArabic ? "بروتوكول السلامة تحت النيران الكثيفة:" : "Protocole d'urgence évacuation :"}</span>
+              <span>{isArabic ? "حدود هذا الرادار:" : "Limites du radar :"}</span>
             </p>
-            <p>• {isArabic ? "تحرك دائماً عكس اتجاه الرياح (مواجهةً للريح) لتجنب الاختناق السريع بالغازات السامة والدخان الأسود." : "Marchez toujours face au vent (à contre-vent) pour éviter l'asphyxie par le CO2."}</p>
-            <p>• {isArabic ? "احمِ مسالكك التنفسية بقطعة قماش مبللة بالماء وتوجه مباشرةً نحو التجمعات السكنية المكشوفة أو الشواطئ الآمنة." : "Protégez vos voies respiratoires avec un linge humide et visez les clairières rocheuses ou plages."}</p>
+            <p>{isArabic ? "البلاغات والرياح المعروضة لا تنشئ مسار إخلاء ولا تثبت اتجاه انتشار الحريق." : "Les signalements et le vent affichés ne créent pas de route d'évacuation et ne prouvent pas la propagation du feu."}</p>
+            <p>{isArabic ? "اتبع تعليمات الحماية المدنية والمصادر الرسمية في الميدان." : "Suivez les consignes de la Protection civile et les sources officielles sur le terrain."}</p>
           </div>
         </div>
 

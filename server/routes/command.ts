@@ -113,10 +113,17 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
   if (badgeCode) {
     try {
       const badges = await collectionGet("badgeCodes");
-      const match = badges?.find((b: any) => b.code === badgeCode && b.isActive);
+      const match = badges?.find((b: any) => {
+        if (b.code !== badgeCode || b.isActive !== true) return false;
+        if (b.expiresAt) {
+          const expiry = typeof b.expiresAt === "number" ? b.expiresAt : Date.parse(b.expiresAt);
+          if (Number.isFinite(expiry) && now >= expiry) return false;
+        }
+        return true;
+      });
       if (match) {
         finalName = match.ownerName;
-        finalRole = match.type;
+        finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
       }
     } catch (err) {
       // ignore badge matching errors, fall back to provided name/role

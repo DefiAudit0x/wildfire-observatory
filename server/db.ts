@@ -66,9 +66,9 @@ export async function getReportsFromFirestore() {
   return result.status === "ok" ? result.reports : null;
 }
 
-export async function seedReportsToFirestore() {
+export async function seedReportsToFirestore(): Promise<boolean> {
   const db = getDb();
-  if (!db) return;
+  if (!db) return false;
   try {
     if (isAdminDb(db)) {
       for (const rep of citizenReports) {
@@ -81,14 +81,18 @@ export async function seedReportsToFirestore() {
       }
     }
     logger.info("Seeded initial reports to Firestore");
+    return true;
   } catch (err) {
     logger.error({ err }, "Failed to seed reports");
+    return false;
   }
 }
 
-export async function saveReportToFirestore(report: any) {
+export type ReportSaveResult = "saved" | "no-db" | "error";
+
+export async function saveReportToFirestore(report: any): Promise<ReportSaveResult> {
   const db = getDb();
-  if (!db) return false;
+  if (!db) return "no-db";
   try {
     if (isAdminDb(db)) {
       await db.collection("reports").doc(report.id).set(report);
@@ -97,10 +101,10 @@ export async function saveReportToFirestore(report: any) {
       await setDoc(doc(db, "reports", report.id), report);
     }
     invalidateReportsCache();
-    return true;
+    return "saved";
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to save report");
-    return false;
+    return "error";
   }
 }
 

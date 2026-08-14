@@ -68,4 +68,12 @@ describe("meshBridge anti-replay TTL", () => {
     // The cache is bounded at 4096, so the oldest entry is admitted again.
     expect(checkAndRecordMessageNonce(first, 1)).toBe(true);
   });
+
+  it("rejects timestamps older than the native ten-minute freshness window", async () => {
+    const { isFreshMeshTimestamp } = await import("../src/utils/meshBridge");
+    const now = 1_700_000_000_000;
+    expect(isFreshMeshTimestamp(now - 10 * 60 * 1000 - 1, now)).toBe(false);
+    expect(isFreshMeshTimestamp(now + 2 * 60 * 1000 + 1, now)).toBe(false);
+    expect(isFreshMeshTimestamp(now - 60_000, now)).toBe(true);
+  });
 });

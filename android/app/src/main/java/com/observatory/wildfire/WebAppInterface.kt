@@ -4,6 +4,7 @@ import android.util.Log
 import android.webkit.JavascriptInterface
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 /**
  * JavaScript bridge exposed to the WebView as `window.AndroidBridge`.
@@ -93,10 +94,26 @@ class WebAppInterface(
     }
 
     @JavascriptInterface
-    fun getPublicKey(): String = if (isTrustedOrigin()) CryptoEngine.getPublicKeyBase64() else ""
+    fun getPublicKey(): String {
+        if (!isTrustedOrigin()) return ""
+        return try {
+            CryptoEngine.getPublicKeyBase64()
+        } catch (e: Exception) {
+            Log.w(TAG, "Public key requested before CryptoEngine initialization")
+            ""
+        }
+    }
 
     @JavascriptInterface
-    fun getIdentityKey(): String = if (isTrustedOrigin()) CryptoEngine.getIdentityPublicKeyBase64() else ""
+    fun getIdentityKey(): String {
+        if (!isTrustedOrigin()) return ""
+        return try {
+            CryptoEngine.getIdentityPublicKeyBase64()
+        } catch (e: Exception) {
+            Log.w(TAG, "Identity key requested before CryptoEngine initialization")
+            ""
+        }
+    }
 
     // ========================
     // MESSAGING
@@ -140,11 +157,15 @@ class WebAppInterface(
         val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
         if (plaintextBytes.size > MeshService.MAX_PLAINTEXT_BYTES) return ""
         return try {
+            val messageId = UUID.randomUUID().toString()
             val secureMsg = CryptoEngine.encryptForPeer(
                 peerPublicKeyBase64 = peerPublicKey,
                 payload = plaintextBytes,
                 lat = lat,
-                lng = lng
+                lng = lng,
+                messageId = messageId,
+                type = MeshService.MESSAGE_TYPE_REPORT,
+                hopCount = 0
             )
             JSONObject().apply {
                 put("ciphertext", secureMsg.ciphertext)
@@ -156,6 +177,9 @@ class WebAppInterface(
                 put("lat", secureMsg.lat)
                 put("lng", secureMsg.lng)
                 put("nonce", secureMsg.nonce)
+                put("messageId", secureMsg.messageId)
+                put("type", secureMsg.type)
+                put("hopCount", secureMsg.hopCount)
             }.toString()
         } catch (e: Exception) {
             Log.e(TAG, "encryptForPeer failed", e)

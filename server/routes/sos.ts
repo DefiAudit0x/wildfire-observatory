@@ -40,6 +40,25 @@ const profileSchema = z.object({
   phone: z.string().max(30).optional(),
 });
 
+const PROFILE_COOKIE = "sos_device_id";
+
+function bindProfileDevice(req: Request, res: Response, deviceId: string): boolean {
+  const bound = (req as any).cookies?.[PROFILE_COOKIE];
+  if (bound && bound !== deviceId) {
+    res.status(403).json({ error: "Device identity mismatch" });
+    return false;
+  }
+  if (!bound) {
+    res.cookie(PROFILE_COOKIE, deviceId, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.cookieSecure,
+      maxAge: PROFILE_TTL_MS,
+    });
+  }
+  return true;
+}
+
 const memorySos: any[] = [];
 
 export interface SosSummary {
@@ -200,6 +219,7 @@ router.get("/profile/:deviceId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Invalid deviceId" });
     return;
   }
+  if (!bindProfileDevice(req, res, deviceId)) return;
   const mem = memoryProfiles.get(deviceId);
   let profile: { name?: string; phone?: string } | null = null;
   if (mem && Date.now() < mem.expiresAt) {
@@ -219,6 +239,7 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
     res.status(400).json({ error: "Invalid deviceId" });
     return;
   }
+  if (!bindProfileDevice(req, res, deviceId)) return;
   const parsed = profileSchema.safeParse({ deviceId, ...req.body });
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid profile data" });
