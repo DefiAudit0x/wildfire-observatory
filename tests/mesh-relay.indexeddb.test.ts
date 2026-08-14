@@ -16,8 +16,8 @@ function storedSnapshot(): Snapshot {
   return JSON.parse(storage.get("mesh_relay_queue") || '{"revision":0,"items":[]}') as Snapshot;
 }
 
-function createDelayedIndexedDb(writeDelayMs: number) {
-  let stored: unknown = undefined;
+function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot) {
+  let stored: unknown = initialSnapshot;
   let writeCount = 0;
   const objectStoreNames = { contains: () => true };
   const objectStore = {
@@ -102,5 +102,27 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     expect(storedSnapshot().revision).toBe(3);
     expect(storedSnapshot().items.map((item) => item.report.clientGeneratedId))
       .toEqual(["late-a", "late-b", "late-c"]);
+  });
+
+  it("selects a higher IndexedDB revision than localStorage after reload", async () => {
+    const indexed = createDelayedIndexedDb(0, {
+      revision: 12,
+      items: [{ report: { clientGeneratedId: "indexed-revision-12" } }],
+    });
+    storage.set("mesh_relay_queue", JSON.stringify({
+      revision: 11,
+      items: [{ report: { clientGeneratedId: "local-revision-11" } }],
+    }));
+    vi.stubGlobal("indexedDB", indexed.factory);
+
+    const relay = await import("../src/lib/meshRelay.js");
+    const enqueue = relay.enqueueRelay({ clientGeneratedId: "after-reload" });
+    await vi.advanceTimersByTimeAsync(1);
+    await enqueue;
+
+    expect(indexed.getStored()?.revision).toBe(13);
+    expect(indexed.getStored()?.items.map((item) => item.report.clientGeneratedId))
+      .toEqual(["indexed-revision-12", "after-reload"]);
+    expect(storedSnapshot().revision).toBe(13);
   });
 });

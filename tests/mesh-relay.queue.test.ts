@@ -109,6 +109,30 @@ describe("mesh relay queue concurrency", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("preserves volatile items when a failed flush overlaps with enqueue", async () => {
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    await enqueueRelay({ clientGeneratedId: "volatile-a" });
+
+    let resolveFirst: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { resolveFirst = resolve; }));
+    vi.stubGlobal("fetch", fetchMock);
+    const flush = flushQueue();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    await enqueueRelay({ clientGeneratedId: "volatile-b" });
+    resolveFirst!(new Response(null, { status: 503 }));
+    await flush;
+    setItem.mockRestore();
+
+    await enqueueRelay({ clientGeneratedId: "volatile-c" });
+    const saved = storedQueue();
+    expect(saved.map((item) => item.report.clientGeneratedId).sort())
+      .toEqual(["volatile-a", "volatile-b", "volatile-c"]);
+    expect(saved.find((item) => item.report.clientGeneratedId === "volatile-a")?.attempts).toBe(1);
+  });
+
   it("backs off failed items and dead-letters items after the attempt cap", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
     vi.stubGlobal("fetch", fetchMock);
