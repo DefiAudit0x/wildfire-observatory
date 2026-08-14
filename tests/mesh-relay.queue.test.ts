@@ -24,11 +24,12 @@ function storedQueue(): Array<{
   attempts?: number;
   nextAttemptAt?: number;
   deadLetter?: boolean;
+  lastError?: string;
 }> {
   const value = JSON.parse(storage.get("mesh_relay_queue") || "[]") as unknown;
   if (Array.isArray(value)) return value;
   return value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items)
-    ? (value as { items: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean }> }).items
+    ? (value as { items: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean; lastError?: string }> }).items
     : [];
 }
 
@@ -84,6 +85,51 @@ describe("mesh relay queue concurrency", () => {
     expect(saved).toHaveLength(2);
     expect(saved.map((item) => item.report.clientGeneratedId).sort())
       .toEqual(["concurrent-a", "concurrent-b"]);
+  });
+
+  it("moves the oldest pending item to capacity dead-letter instead of silently dropping item 51", async () => {
+    for (let i = 0; i < 51; i++) {
+      await enqueueRelay({ clientGeneratedId: `capacity-${i}` });
+    }
+
+    const saved = storedQueue();
+    const pending = saved.filter((item) => !item.deadLetter);
+    const deadLetters = saved.filter((item) => item.deadLetter);
+    expect(pending).toHaveLength(50);
+    expect(deadLetters).toHaveLength(1);
+    expect(deadLetters[0].report.clientGeneratedId).toBe("capacity-0");
+    expect(deadLetters[0].lastError).toBe("capacity_exceeded");
+    expect(pending.some((item) => item.report.clientGeneratedId === "capacity-50")).toBe(true);
+  });
+
+  it("bounds volatile pending and dead-letter history when every persistence layer fails", async () => {
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    for (let i = 0; i < 101; i++) {
+      await enqueueRelay({ clientGeneratedId: `volatile-capacity-${i}` });
+    }
+    setItem.mockRestore();
+
+    await enqueueRelay({ clientGeneratedId: "volatile-capacity-final" });
+    const saved = storedQueue();
+    expect(saved).toHaveLength(100);
+    expect(saved.filter((item) => !item.deadLetter)).toHaveLength(50);
+    expect(saved.filter((item) => item.deadLetter)).toHaveLength(50);
+    expect(saved.every((item) => !item.deadLetter || item.lastError === "capacity_exceeded")).toBe(true);
+  });
+
+  it("preserves every report as pending or capacity dead-letter during concurrent overflow", async () => {
+    const ids = Array.from({ length: 52 }, (_, index) => `overflow-concurrent-${index}`);
+    for (const id of ids.slice(0, 49)) {
+      await enqueueRelay({ clientGeneratedId: id });
+    }
+    await Promise.all(ids.slice(49).map((clientGeneratedId) => enqueueRelay({ clientGeneratedId })));
+
+    const saved = storedQueue();
+    expect(saved.filter((item) => !item.deadLetter)).toHaveLength(50);
+    expect(saved.filter((item) => item.deadLetter && item.lastError === "capacity_exceeded")).toHaveLength(2);
+    expect(saved.map((item) => item.report.clientGeneratedId).sort()).toEqual(ids.sort());
   });
 
   it("does not treat an unclassified 409 as a successful relay submission", async () => {

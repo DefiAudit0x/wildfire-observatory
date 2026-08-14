@@ -41,6 +41,7 @@ const RELAY_DB_NAME = "wildfire_observatory_mesh";
 const RELAY_DB_VERSION = 1;
 const RELAY_STORE_NAME = "relay_queue";
 const MAX_QUEUE = 50;
+const MAX_DEAD_LETTERS = 50;
 const MAX_SEEN_HASHES = 2000;
 export const RELAY_REPLAY_RETENTION_MS = MESH_MESSAGE_TTL_MS + MESH_MESSAGE_CLOCK_SKEW_MS;
 export const RELAY_MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000;
@@ -72,6 +73,7 @@ interface QueuedRelay {
   attempts: number;
   nextAttemptAt: number;
   deadLetter?: boolean;
+  deadLetteredAt?: number;
   lastError?: string;
 }
 
@@ -94,6 +96,7 @@ function normalizeQueueItem(item: {
   attempts?: unknown;
   nextAttemptAt?: unknown;
   deadLetter?: unknown;
+  deadLetteredAt?: unknown;
   lastError?: unknown;
 }): QueuedRelay {
   const now = Date.now();
@@ -104,6 +107,7 @@ function normalizeQueueItem(item: {
     attempts: typeof item.attempts === "number" && Number.isInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
     nextAttemptAt: typeof item.nextAttemptAt === "number" && Number.isFinite(item.nextAttemptAt) ? item.nextAttemptAt : now,
     deadLetter: item.deadLetter === true,
+    deadLetteredAt: typeof item.deadLetteredAt === "number" && Number.isFinite(item.deadLetteredAt) ? item.deadLetteredAt : undefined,
     lastError: typeof item.lastError === "string" ? item.lastError : undefined,
   };
 }
@@ -118,9 +122,28 @@ function normalizeQueue(value: unknown): QueuedRelay[] {
       attempts?: unknown;
       nextAttemptAt?: unknown;
       deadLetter?: unknown;
+      deadLetteredAt?: unknown;
       lastError?: unknown;
     } => item && typeof item === "object" && "report" in item && !!item.report && typeof item.report === "object")
     .map(normalizeQueueItem);
+}
+
+function enforceQueueCapacity(queue: QueuedRelay[], now = Date.now()): QueuedRelay[] {
+  const byAge = (a: QueuedRelay, b: QueuedRelay) => a.ts - b.ts;
+  const byDeadLetteredAt = (a: QueuedRelay, b: QueuedRelay) =>
+    (a.deadLetteredAt ?? a.ts) - (b.deadLetteredAt ?? b.ts);
+  const pending = queue.filter((item) => !item.deadLetter).sort(byAge);
+  const existingDeadLetters = queue.filter((item) => item.deadLetter).sort(byDeadLetteredAt);
+  const overflow = pending.splice(0, Math.max(0, pending.length - MAX_QUEUE)).map((item) => ({
+    ...item,
+    deadLetter: true,
+    deadLetteredAt: now,
+    lastError: "capacity_exceeded",
+  }));
+  const deadLetters = [...existingDeadLetters, ...overflow]
+    .sort(byDeadLetteredAt)
+    .slice(-MAX_DEAD_LETTERS);
+  return [...deadLetters, ...pending];
 }
 
 function normalizeQueueSnapshot(value: unknown): QueueSnapshot {
@@ -140,7 +163,7 @@ function mergeVolatileQueue(queue: QueuedRelay[]): QueuedRelay[] {
   for (const item of volatileQueue) {
     byId.set(item.id, item);
   }
-  return [...byId.values()];
+  return enforceQueueCapacity([...byId.values()]);
 }
 
 function readLocalQueue(): QueueSnapshot {
@@ -158,7 +181,7 @@ function writeLocalQueue(snapshot: QueueSnapshot): boolean {
     if (typeof localStorage === "undefined") return false;
     localStorage.setItem(RELAY_QUEUE_KEY, JSON.stringify({
       revision: snapshot.revision,
-      items: snapshot.items.slice(-MAX_QUEUE),
+      items: snapshot.items,
     }));
     return true;
   } catch {
@@ -262,7 +285,7 @@ async function writeIndexedQueue(
     try {
       const request = db.transaction(RELAY_STORE_NAME, "readwrite").objectStore(RELAY_STORE_NAME).put({
         revision: snapshot.revision,
-        items: snapshot.items.slice(-MAX_QUEUE),
+        items: snapshot.items,
       }, "items");
       request.onsuccess = () => {
         if (settled) return;
@@ -301,9 +324,10 @@ async function readQueue(): Promise<QueuedRelay[]> {
 }
 
 async function writeQueue(queue: QueuedRelay[]): Promise<boolean> {
+  const boundedQueue = enforceQueueCapacity(queue);
   const snapshot = {
     revision: queueRevision + 1,
-    items: queue.slice(-MAX_QUEUE),
+    items: boundedQueue,
   } satisfies QueueSnapshot;
   queueRevision = snapshot.revision;
   const db = await openRelayDb();
@@ -479,7 +503,7 @@ export function enqueueRelay(report: Record<string, unknown>): Promise<void> {
   return serializeQueueMutation(async () => {
     const queue = await readQueue();
     queue.push(item);
-    if (!(await writeQueue(queue))) volatileQueue.push(item);
+    if (!(await writeQueue(queue))) volatileQueue = enforceQueueCapacity([...volatileQueue, item]);
   });
 }
 
@@ -493,7 +517,7 @@ async function flushQueueInternal(): Promise<void> {
   for (const item of queue) {
     if (item.deadLetter) continue;
     if (now - item.ts >= RELAY_MAX_QUEUE_AGE_MS) {
-      updatedItems.set(item.id, { ...item, deadLetter: true, lastError: "expired" });
+      updatedItems.set(item.id, { ...item, deadLetter: true, deadLetteredAt: now, lastError: "expired" });
       changed = true;
       continue;
     }
@@ -511,6 +535,7 @@ async function flushQueueInternal(): Promise<void> {
       attempts,
       nextAttemptAt: now + backoff,
       deadLetter,
+      deadLetteredAt: deadLetter ? now : undefined,
       lastError: "submission failed",
     });
     changed = true;
@@ -526,7 +551,7 @@ async function flushQueueInternal(): Promise<void> {
     const nextQueue = latestQueue
       .filter((item) => !processedIds.has(item.id))
       .map((item) => updatedItems.get(item.id) ?? item);
-    if (!(await writeQueue(nextQueue))) volatileQueue = nextQueue;
+    if (!(await writeQueue(nextQueue))) volatileQueue = enforceQueueCapacity(nextQueue);
   });
 }
 
