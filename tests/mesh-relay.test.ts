@@ -15,6 +15,7 @@ const {
   getLocalPublicKeyBase64,
   encryptForPeer,
   decryptFromPeer,
+  isEncryptedMessageShape,
 } = await import("../src/utils/meshBridge.js");
 const { buildRelayedPayload, isRelayEnvelopeAdmissible } = await import("../src/lib/meshRelay.js");
 
@@ -96,6 +97,25 @@ describe("canonical signed metadata — cross-runtime byte contract (audit round
     );
     expect(bytesToHex(bytes)).toBe(expected);
     // Same expectation is pinned in MeshWireTest.canonicalSignedDataVectorsArePinnedForTheBrowserMirror
+  });
+});
+
+describe("EncryptedMessage runtime contract", () => {
+  it("rejects missing wire-required metadata", () => {
+    const incomplete = {
+      ciphertext: "YQ==",
+      iv: "YQ==",
+      signature: "YQ==",
+      ephemeralId: "ephemeral",
+      senderPublicKey: "public-key",
+      signatureKey: "signature-key",
+      timestamp: Date.now(),
+      lat: 36.5,
+      lng: 8.1,
+      nonce: 1,
+    };
+    expect(isEncryptedMessageShape(incomplete)).toBe(false);
+    expect(isEncryptedMessageShape({ ...incomplete, signatureKey: undefined, messageId: "message", type: "report", hopCount: 0 })).toBe(true);
   });
 });
 

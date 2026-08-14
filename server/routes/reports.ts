@@ -352,7 +352,10 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   }
 
   if (isDuplicateReport(lat, lng)) {
-    res.status(409).json({ error: "يوجد بلاغ مشابه قريب من هذا الموقع خلال الساعة الماضية. يرجى تأكيد البلاغ الموجود بدلاً من إنشاء بلاغ جديد." });
+    res.status(409).json({
+      code: "DUPLICATE_SPATIAL_REPORT",
+      error: "يوجد بلاغ مشابه قريب من هذا الموقع خلال الساعة الماضية. يرجى تأكيد البلاغ الموجود بدلاً من إنشاء بلاغ جديد.",
+    });
     return;
   }
 

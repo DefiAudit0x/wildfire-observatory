@@ -16,7 +16,14 @@
  * encryption or signed-plaintext report envelope).
  */
 
-import { isFreshMeshTimestamp, onMeshMessage, verifyPoW } from "../utils/meshBridge";
+import {
+  isFreshMeshTimestamp,
+  MESH_MESSAGE_CLOCK_SKEW_MS,
+  MESH_MESSAGE_TTL_MS,
+  NETWORK_POW_DIFFICULTY,
+  onMeshMessage,
+  verifyPoW,
+} from "../utils/meshBridge";
 
 export interface MeshEnvelope {
   payload?: unknown;
@@ -30,9 +37,23 @@ export interface MeshEnvelope {
 }
 
 const RELAY_QUEUE_KEY = "mesh_relay_queue";
+const RELAY_DB_NAME = "wildfire_observatory_mesh";
+const RELAY_DB_VERSION = 1;
+const RELAY_STORE_NAME = "relay_queue";
 const MAX_QUEUE = 50;
 const MAX_SEEN_HASHES = 2000;
-const seenRelayHashes = new Set<string>();
+export const RELAY_REPLAY_RETENTION_MS = MESH_MESSAGE_TTL_MS + MESH_MESSAGE_CLOCK_SKEW_MS;
+export const RELAY_MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000;
+export const RELAY_MAX_QUEUE_ATTEMPTS = 8;
+export const RELAY_BASE_RETRY_BACKOFF_MS = 60 * 1000;
+export const RELAY_MAX_RETRY_BACKOFF_MS = 60 * 60 * 1000;
+const TERMINAL_DUPLICATE_CODES = new Set([
+  "DUPLICATE_CLIENT_GENERATED_ID",
+  "DUPLICATE_SPATIAL_REPORT",
+]);
+const seenRelayHashes = new Map<string, number>();
+let relayDbPromise: Promise<IDBDatabase | null> | null = null;
+let volatileQueue: QueuedRelay[] = [];
 let flushInFlight: Promise<void> | null = null;
 
 function hashString(input: string): string {
@@ -45,6 +66,10 @@ interface QueuedRelay {
   id: string;
   report: Record<string, unknown>;
   ts: number;
+  attempts: number;
+  nextAttemptAt: number;
+  deadLetter?: boolean;
+  lastError?: string;
 }
 
 function queueItemId(): string {
@@ -54,33 +79,231 @@ function queueItemId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function readQueue(): QueuedRelay[] {
+function normalizeQueueItem(item: {
+  report: Record<string, unknown>;
+  ts?: unknown;
+  id?: unknown;
+  attempts?: unknown;
+  nextAttemptAt?: unknown;
+  deadLetter?: unknown;
+  lastError?: unknown;
+}): QueuedRelay {
+  const now = Date.now();
+  return {
+    id: typeof item.id === "string" && item.id.length > 0 ? item.id : hashString(JSON.stringify(item)),
+    report: item.report,
+    ts: typeof item.ts === "number" && Number.isFinite(item.ts) ? item.ts : now,
+    attempts: typeof item.attempts === "number" && Number.isInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
+    nextAttemptAt: typeof item.nextAttemptAt === "number" && Number.isFinite(item.nextAttemptAt) ? item.nextAttemptAt : now,
+    deadLetter: item.deadLetter === true,
+    lastError: typeof item.lastError === "string" ? item.lastError : undefined,
+  };
+}
+
+function normalizeQueue(value: unknown): QueuedRelay[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is {
+      report: Record<string, unknown>;
+      ts?: unknown;
+      id?: unknown;
+      attempts?: unknown;
+      nextAttemptAt?: unknown;
+      deadLetter?: unknown;
+      lastError?: unknown;
+    } => item && typeof item === "object" && "report" in item && !!item.report && typeof item.report === "object")
+    .map(normalizeQueueItem);
+}
+
+function mergeVolatileQueue(queue: QueuedRelay[]): QueuedRelay[] {
+  const byId = new Map(queue.map((item) => [item.id, item]));
+  for (const item of volatileQueue) {
+    byId.set(item.id, item);
+  }
+  return [...byId.values()];
+}
+
+function readLocalQueue(): QueuedRelay[] {
   try {
+    if (typeof localStorage === "undefined") return [];
     const raw = localStorage.getItem(RELAY_QUEUE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is { report: Record<string, unknown>; ts?: unknown; id?: unknown } =>
-        item && typeof item === "object" && item.report && typeof item.report === "object"
-      )
-      .map((item) => ({
-        id: typeof item.id === "string" && item.id.length > 0
-          ? item.id
-          : hashString(JSON.stringify(item)),
-        report: item.report,
-        ts: typeof item.ts === "number" && Number.isFinite(item.ts) ? item.ts : Date.now(),
-      }));
+    return normalizeQueue(raw ? JSON.parse(raw) : []);
   } catch {
     return [];
   }
 }
 
-function writeQueue(queue: QueuedRelay[]): void {
+function writeLocalQueue(queue: QueuedRelay[]): boolean {
   try {
+    if (typeof localStorage === "undefined") return false;
     localStorage.setItem(RELAY_QUEUE_KEY, JSON.stringify(queue.slice(-MAX_QUEUE)));
+    return true;
   } catch {
-    // storage unavailable — message lost, acceptable for a best-effort relay
+    return false;
   }
+}
+
+function openRelayDb(): Promise<IDBDatabase | null> {
+  if (typeof globalThis.indexedDB === "undefined") return Promise.resolve(null);
+  if (relayDbPromise) return relayDbPromise;
+  relayDbPromise = new Promise((resolve) => {
+    let settled = false;
+    const fallbackTimer = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, 100);
+    try {
+      const request = globalThis.indexedDB.open(RELAY_DB_NAME, RELAY_DB_VERSION);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(RELAY_STORE_NAME)) {
+          request.result.createObjectStore(RELAY_STORE_NAME);
+        }
+      };
+      request.onsuccess = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(null);
+      };
+      request.onblocked = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(null);
+      };
+    } catch {
+      if (!settled) {
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(null);
+      }
+    }
+  });
+  return relayDbPromise;
+}
+
+async function readIndexedQueue(db: IDBDatabase): Promise<QueuedRelay[] | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const fallbackTimer = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(null);
+      }
+    }, 100);
+    try {
+      const request = db.transaction(RELAY_STORE_NAME, "readonly").objectStore(RELAY_STORE_NAME).get("items");
+      request.onsuccess = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(normalizeQueue(request.result));
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(null);
+      };
+    } catch {
+      if (!settled) {
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(null);
+      }
+    }
+  });
+}
+
+async function writeIndexedQueue(db: IDBDatabase, queue: QueuedRelay[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const fallbackTimer = globalThis.setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+    }, 100);
+    try {
+      const request = db.transaction(RELAY_STORE_NAME, "readwrite").objectStore(RELAY_STORE_NAME).put(queue.slice(-MAX_QUEUE), "items");
+      request.onsuccess = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(true);
+      };
+      request.onerror = () => {
+        if (settled) return;
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(false);
+      };
+    } catch {
+      if (!settled) {
+        settled = true;
+        globalThis.clearTimeout(fallbackTimer);
+        resolve(false);
+      }
+    }
+  });
+}
+
+async function readQueue(): Promise<QueuedRelay[]> {
+  const db = await openRelayDb();
+  if (db) {
+    const indexed = await readIndexedQueue(db);
+    if (indexed !== null) {
+      if (indexed.length === 0) {
+        const legacy = readLocalQueue();
+        if (legacy.length > 0) await writeIndexedQueue(db, legacy);
+        return mergeVolatileQueue(legacy);
+      }
+      return mergeVolatileQueue(indexed);
+    }
+  }
+  return mergeVolatileQueue(readLocalQueue());
+}
+
+async function writeQueue(queue: QueuedRelay[]): Promise<boolean> {
+  const bounded = queue.slice(-MAX_QUEUE);
+  const db = await openRelayDb();
+  if (db && await writeIndexedQueue(db, bounded)) {
+    volatileQueue = [];
+    return true;
+  }
+  if (writeLocalQueue(bounded)) {
+    volatileQueue = [];
+    return true;
+  }
+  console.error("[MeshRelay] Queue persistence unavailable; retaining item in memory only");
+  return false;
+}
+
+function pruneSeenRelayHashes(now: number): void {
+  const cutoff = now - RELAY_REPLAY_RETENTION_MS;
+  for (const [hash, recordedAt] of seenRelayHashes) {
+    if (recordedAt <= cutoff) seenRelayHashes.delete(hash);
+  }
+}
+
+export function checkAndRecordRelayHash(raw: string, now = Date.now()): boolean {
+  pruneSeenRelayHashes(now);
+  const hash = hashString(raw);
+  const recordedAt = seenRelayHashes.get(hash);
+  if (recordedAt !== undefined && now - recordedAt <= RELAY_REPLAY_RETENTION_MS) return false;
+  // Fail closed while the freshness window is still populated. Evicting a
+  // fresh entry would turn bounded memory into a replay bypass under flooding.
+  if (seenRelayHashes.size >= MAX_SEEN_HASHES) return false;
+  seenRelayHashes.set(hash, now);
+  return true;
 }
 
 export function isRelayEnvelopeAdmissible(envelope: MeshEnvelope, now = Date.now()): boolean {
@@ -90,7 +313,7 @@ export function isRelayEnvelopeAdmissible(envelope: MeshEnvelope, now = Date.now
   return envelope.type === "report" &&
     powPrefix.length > 0 &&
     Number.isInteger(powNonce) && powNonce >= 0 &&
-    powDifficulty === 8 &&
+    powDifficulty === NETWORK_POW_DIFFICULTY &&
     typeof envelope.ts === "number" &&
     isFreshMeshTimestamp(envelope.ts, now);
 }
@@ -162,15 +385,17 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
   return report;
 }
 
-async function submitRelay(report: Record<string, unknown>): Promise<boolean> {
+export async function submitRelay(report: Record<string, unknown>): Promise<boolean> {
   try {
     const res = await fetch("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(report),
     });
-    // 409 = duplicate already known (the origin device posted it online) — fine.
-    return res.status === 200 || res.status === 409;
+    if (res.status === 200) return true;
+    if (res.status !== 409) return false;
+    const body = await res.json().catch(() => null) as { code?: unknown } | null;
+    return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code);
   } catch {
     return false;
   }
@@ -195,42 +420,67 @@ async function handleRelayMessage(raw: string): Promise<void> {
   if (!powOk) return;
 
   // Anti-duplicate: the same gossip may arrive from several peers.
-  const hash = hashString(raw);
-  if (seenRelayHashes.has(hash)) return;
-  if (seenRelayHashes.size > MAX_SEEN_HASHES) seenRelayHashes.clear();
-  seenRelayHashes.add(hash);
+  if (!checkAndRecordRelayHash(raw)) return;
 
   const report = buildRelayedPayload(envelope);
   if (!report) return;
 
   if (!(await submitRelay(report))) {
-    enqueueRelay(report);
+    void enqueueRelay(report);
   }
 }
 
-export function enqueueRelay(report: Record<string, unknown>): void {
-  const queue = readQueue();
-  queue.push({ id: queueItemId(), report, ts: Date.now() });
-  writeQueue(queue);
+export async function enqueueRelay(report: Record<string, unknown>): Promise<void> {
+  const now = Date.now();
+  const item = { id: queueItemId(), report, ts: now, attempts: 0, nextAttemptAt: now } satisfies QueuedRelay;
+  const queue = await readQueue();
+  queue.push(item);
+  if (!(await writeQueue(queue))) volatileQueue.push(item);
 }
 
 async function flushQueueInternal(): Promise<void> {
-  const queue = readQueue();
+  const now = Date.now();
+  const queue = await readQueue();
   if (queue.length === 0) return;
   const processedIds = new Set<string>();
-  const failedIds = new Set<string>();
+  const updatedItems = new Map<string, QueuedRelay>();
+  let changed = false;
   for (const item of queue) {
-    if (await submitRelay(item.report)) processedIds.add(item.id);
-    else failedIds.add(item.id);
+    if (item.deadLetter) continue;
+    if (now - item.ts >= RELAY_MAX_QUEUE_AGE_MS) {
+      updatedItems.set(item.id, { ...item, deadLetter: true, lastError: "expired" });
+      changed = true;
+      continue;
+    }
+    if (item.nextAttemptAt > now) continue;
+    if (await submitRelay(item.report)) {
+      processedIds.add(item.id);
+      changed = true;
+      continue;
+    }
+    const attempts = item.attempts + 1;
+    const deadLetter = attempts >= RELAY_MAX_QUEUE_ATTEMPTS;
+    const backoff = Math.min(RELAY_BASE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), RELAY_MAX_RETRY_BACKOFF_MS);
+    updatedItems.set(item.id, {
+      ...item,
+      attempts,
+      nextAttemptAt: now + backoff,
+      deadLetter,
+      lastError: "submission failed",
+    });
+    changed = true;
   }
 
-  if (processedIds.size === 0) return;
+  if (!changed) return;
 
   // Re-read after awaits: enqueueRelay may have appended a newer item while
   // network submissions were in flight. Remove only the IDs from this flush;
   // never overwrite the newer snapshot with the stale pre-await queue.
-  const latestQueue = readQueue();
-  writeQueue(latestQueue.filter((item) => !processedIds.has(item.id) || failedIds.has(item.id)));
+  const latestQueue = await readQueue();
+  const nextQueue = latestQueue
+    .filter((item) => !processedIds.has(item.id))
+    .map((item) => updatedItems.get(item.id) ?? item);
+  if (!(await writeQueue(nextQueue))) volatileQueue = nextQueue;
 }
 
 export function flushQueue(): Promise<void> {

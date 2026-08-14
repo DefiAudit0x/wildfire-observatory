@@ -9,8 +9,15 @@ Object.defineProperty(globalThis, "localStorage", {
     removeItem: (key: string) => storage.delete(key),
   },
 });
+vi.stubGlobal("indexedDB", undefined);
 
-const { enqueueRelay, flushQueue } = await import("../src/lib/meshRelay.js");
+const {
+  checkAndRecordRelayHash,
+  enqueueRelay,
+  flushQueue,
+  RELAY_MAX_QUEUE_AGE_MS,
+  submitRelay,
+} = await import("../src/lib/meshRelay.js");
 
 describe("mesh relay queue concurrency", () => {
   beforeEach(() => {
@@ -24,11 +31,11 @@ describe("mesh relay queue concurrency", () => {
     const fetchMock = vi.fn().mockReturnValueOnce(firstResponse);
     vi.stubGlobal("fetch", fetchMock);
 
-    enqueueRelay({ clientGeneratedId: "queued-a" });
+    await enqueueRelay({ clientGeneratedId: "queued-a" });
     const firstFlush = flushQueue();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
-    enqueueRelay({ clientGeneratedId: "queued-b" });
+    await enqueueRelay({ clientGeneratedId: "queued-b" });
     resolveFirst!(new Response(null, { status: 200 }));
     await firstFlush;
 
@@ -43,14 +50,86 @@ describe("mesh relay queue concurrency", () => {
     const fetchMock = vi.fn().mockReturnValueOnce(firstResponse);
     vi.stubGlobal("fetch", fetchMock);
 
-    enqueueRelay({ clientGeneratedId: "queued-overlap" });
+    await enqueueRelay({ clientGeneratedId: "queued-overlap" });
     const firstFlush = flushQueue();
     const overlappingFlush = flushQueue();
     expect(overlappingFlush).toBe(firstFlush);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     resolveFirst!(new Response(null, { status: 200 }));
     await firstFlush;
     expect(storage.get("mesh_relay_queue")).toBe("[]");
+  });
+
+  it("does not treat an unclassified 409 as a successful relay submission", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "conflict" }), { status: 409 })));
+    await expect(submitRelay({ clientGeneratedId: "conflict-unknown" })).resolves.toBe(false);
+  });
+
+  it("accepts only an explicitly classified duplicate 409", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "DUPLICATE_CLIENT_GENERATED_ID" }), { status: 409 })));
+    await expect(submitRelay({ clientGeneratedId: "duplicate-known" })).resolves.toBe(true);
+  });
+
+  it("keeps an item in memory when storage is unavailable and flushes it after storage recovers", async () => {
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    await enqueueRelay({ clientGeneratedId: "volatile-item" });
+    setItem.mockRestore();
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off failed items and dead-letters items after the attempt cap", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await enqueueRelay({ clientGeneratedId: "retry-item" });
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const afterFirstFailure = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    expect(afterFirstFailure[0].attempts).toBe(1);
+    expect(afterFirstFailure[0].nextAttemptAt).toBeGreaterThan(Date.now());
+
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    afterFirstFailure[0].nextAttemptAt = Date.now() - 1;
+    afterFirstFailure[0].attempts = 7;
+    storage.set("mesh_relay_queue", JSON.stringify(afterFirstFailure));
+    await flushQueue();
+    const deadLetter = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    expect(deadLetter[0].deadLetter).toBe(true);
+    expect(deadLetter[0].attempts).toBe(8);
+  });
+
+  it("expires stale queue items without submitting them", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storage.set("mesh_relay_queue", JSON.stringify([{
+      id: "expired-item",
+      report: { clientGeneratedId: "expired-item" },
+      ts: Date.now() - RELAY_MAX_QUEUE_AGE_MS - 1,
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    }]));
+
+    await flushQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+    const expired = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    expect(expired[0].deadLetter).toBe(true);
+  });
+
+  it("fails closed when relay replay capacity is full before retention expires", () => {
+    const now = Date.now();
+    expect(checkAndRecordRelayHash(`relay-capacity-first-${now}`, now)).toBe(true);
+    for (let i = 0; i < 1999; i++) {
+      expect(checkAndRecordRelayHash(`relay-capacity-${now}-${i}`, now)).toBe(true);
+    }
+    expect(checkAndRecordRelayHash(`relay-capacity-overflow-${now}`, now)).toBe(false);
+    expect(checkAndRecordRelayHash(`relay-capacity-first-${now}`, now)).toBe(false);
   });
 });

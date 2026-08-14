@@ -101,6 +101,27 @@ describe("POST /api/reports", () => {
     expect(second.body).toEqual(first.body);
   });
 
+  it("labels spatial duplicate conflicts so relays do not treat arbitrary 409 responses as success", async () => {
+    const app = createTestApp();
+    const payload = {
+      lat: 36.8123,
+      lng: 7.7123,
+      locationName: "Spatial Duplicate Test",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغ أول لاختبار رمز التعارض المكاني في relay",
+      severity: "medium",
+      clientGeneratedId: "cg-spatial-code-0001",
+    };
+    const first = await supertest(app).post("/api/reports").send(payload);
+    const second = await supertest(app).post("/api/reports").send({
+      ...payload,
+      clientGeneratedId: "cg-spatial-code-0002",
+    });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(second.body.code).toBe("DUPLICATE_SPATIAL_REPORT");
+  });
+
   it("does not deduplicate distinct clientGeneratedIds at the same location too eagerly past the retry rule", async () => {
     const app = createTestApp();
     const base = {

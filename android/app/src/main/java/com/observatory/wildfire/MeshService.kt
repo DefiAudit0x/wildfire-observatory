@@ -98,7 +98,7 @@ class MeshService : Service() {
         // than the network requirement is rejected before any hashing — this
         // bounds the verification cost an untrusted neighbor can impose (a
         // "difficulty 999999" frame is dropped, not computed).
-        const val PO_W_DIFFICULTY = 8
+        const val PO_W_DIFFICULTY = MeshWire.NETWORK_POW_DIFFICULTY
 
         // Seen-hash cache bound (audit): the 5-minute TTL limits LIFETIME but
         // not SIZE — an attacker flooding unique garbage could grow the map
@@ -1337,9 +1337,13 @@ class MeshService : Service() {
         connectionsClient.sendPayload(endpointId, payload)
             .addOnFailureListener { e ->
                 Log.w(TAG, "sendPayload failed for $endpointId", e)
-                forwardedMessages.remove("$endpointId:${msg.messageId}")
+                MeshDeliveryRetry.onTransportFailure(
+                    endpointId,
+                    msg.messageId,
+                    forwardedMessages,
+                    msg.attemptedTargets
+                )
                 payloadToMessage.remove(payload.id)
-                msg.attemptedTargets.remove(endpointId)
             }
         // Update lastSeen for this peer since we successfully handed off a frame to the transport.
         peers[endpointId]?.let { info ->
