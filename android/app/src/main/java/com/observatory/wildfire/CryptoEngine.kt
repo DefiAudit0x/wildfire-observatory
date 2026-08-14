@@ -431,8 +431,14 @@ object CryptoEngine {
         message: SecureMessage,
         peerPublicKeyBase64: String? = null
     ): ByteArray? {
-        val pubKeyB64 = peerPublicKeyBase64 ?: message.senderPublicKey
-        val peerPublicKey = decodePublicKey(pubKeyB64)
+        val messageSenderKey = decodePublicKey(message.senderPublicKey)
+        val peerPublicKey = if (peerPublicKeyBase64 != null) {
+            val suppliedKey = decodePublicKey(peerPublicKeyBase64)
+            if (!MessageDigest.isEqual(suppliedKey.encoded, messageSenderKey.encoded)) return null
+            suppliedKey
+        } else {
+            messageSenderKey
+        }
 
         // Signature covers canonical metadata (same bytes both sides).
         val ciphertext = Base64.decode(message.ciphertext, Base64.NO_WRAP)
@@ -468,8 +474,8 @@ object CryptoEngine {
                 val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
                 cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
                 return cipher.doFinal(ciphertext)
-            } catch (e: Exception) {
-                android.util.Log.d("CryptoEngine", "Decrypt attempt with one key candidate failed", e)
+            } catch (_: Exception) {
+                android.util.Log.d("CryptoEngine", "Decrypt attempt with one key candidate failed")
             }
         }
         android.util.Log.e("CryptoEngine", "Decryption failed with all key candidates")

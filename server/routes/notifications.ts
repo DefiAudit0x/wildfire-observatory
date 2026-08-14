@@ -14,7 +14,7 @@ const memoryNotifications: any[] = [];
 
 async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
   const fromDb = await collectionGet("notifications", "timestamp", 100);
-  if (fromDb && fromDb.length > 0) {
+  if (fromDb !== null) {
     return fromDb.filter((n: any) => n.deviceId === deviceId);
   }
   return memoryNotifications.filter((n) => n.deviceId === deviceId);
@@ -39,6 +39,22 @@ async function deleteSubscriberByToken(email: string, token: string): Promise<bo
   return true;
 }
 
+function isVerificationTokenValid(sub: any, token: string): boolean {
+  const expiresAt = typeof sub.verificationExpiresAt === "string" ? Date.parse(sub.verificationExpiresAt) : NaN;
+  return typeof sub.verificationToken === "string" &&
+    sub.verificationToken === token &&
+    Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
+function actionConfirmationHtml(action: "verify" | "unsubscribe", email: string, token: string): string {
+  const title = action === "verify" ? "تأكيد الاشتراك" : "تأكيد إلغاء الاشتراك";
+  const label = action === "verify" ? "تأكيد الاشتراك" : "إلغاء الاشتراك";
+  const endpoint = action === "verify" ? "/api/notifications/verify" : "/api/notifications/unsubscribe";
+  const escapedEmail = email.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  const escapedToken = token.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return `<html dir="rtl"><meta charset="utf-8"><title>${title}</title><body><h2>${title}</h2><form method="post" action="${endpoint}"><input type="hidden" name="email" value="${escapedEmail}"><input type="hidden" name="token" value="${escapedToken}"><button type="submit">${label}</button></form></body></html>`;
+}
+
 const unsubscribeLinkLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
@@ -54,16 +70,7 @@ router.get("/unsubscribe", unsubscribeLinkLimiter, async (req: Request, res: Res
     res.status(400).send("Invalid unsubscribe link");
     return;
   }
-  try {
-    if (!(await deleteSubscriberByToken(parsed.data.email, parsed.data.token))) {
-      res.status(403).send("Invalid or expired unsubscribe link");
-      return;
-    }
-    res.send("<h2>تم إلغاء اشتراكك بنجاح.</h2>");
-  } catch (err) {
-    logger.error({ err }, "Failed to unsubscribe from link");
-    res.status(500).send("Unable to process unsubscribe request");
-  }
+  res.type("html").send(actionConfirmationHtml("unsubscribe", parsed.data.email, parsed.data.token));
 });
 
 export async function createNotification(notif: { deviceId: string; titleAr: string; titleFr: string; bodyAr: string; bodyFr: string; type: "success" | "warning" | "error" | "info" }) {
@@ -74,9 +81,11 @@ export async function createNotification(notif: { deviceId: string; titleAr: str
     read: false,
   };
   try {
-    await docSet("notifications", newNotif.id, newNotif);
+    const persisted = await docSet("notifications", newNotif.id, newNotif);
+    if (!persisted) throw new Error("notification persistence unavailable");
   } catch (err) {
     logger.error({ err }, "Error saving notification");
+    throw err;
   }
   memoryNotifications.unshift(newNotif);
   return newNotif;
@@ -91,7 +100,16 @@ const verifyLimiter = rateLimit({
 });
 
 router.get("/verify", verifyLimiter, async (req: Request, res: Response) => {
-  const { email, token } = req.query;
+  const parsed = verificationSchema.safeParse({ email: req.query.email, token: req.query.token });
+  if (!parsed.success) {
+    res.status(400).json({ error: "Email and token are required" });
+    return;
+  }
+  res.type("html").send(actionConfirmationHtml("verify", parsed.data.email, parsed.data.token));
+});
+
+router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
+  const { email, token } = req.body;
   if (!email || !token) {
     res.status(400).json({ error: "Email and token are required" });
     return;
@@ -112,11 +130,11 @@ router.get("/verify", verifyLimiter, async (req: Request, res: Response) => {
         return;
       }
       const sub = existing.docs[0].data() as any;
-      if (!sub.verificationToken || sub.verificationToken !== token) {
+      if (!isVerificationTokenValid(sub, token)) {
         res.status(403).json({ error: "Invalid verification token" });
         return;
       }
-      await existing.docs[0].ref.update({ verified: true, verificationToken: null });
+      await existing.docs[0].ref.update({ verified: true, verificationToken: null, verificationExpiresAt: null });
     } else {
       const { collection, getDocs, query, where, updateDoc, doc } = await import("firebase/firestore");
       const q = query(collection(db, "subscribers"), where("email", "==", email));
@@ -126,11 +144,11 @@ router.get("/verify", verifyLimiter, async (req: Request, res: Response) => {
         return;
       }
       const sub = snap.docs[0].data() as any;
-      if (!sub.verificationToken || sub.verificationToken !== token) {
+      if (!isVerificationTokenValid(sub, token)) {
         res.status(403).json({ error: "Invalid verification token" });
         return;
       }
-      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null });
+      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null, verificationExpiresAt: null });
     }
     res.send("<h2>✅ اشتراكك مؤكد! سنرسل لك تنبيهات الحرائق.</h2>");
   } catch (err) {
@@ -174,9 +192,15 @@ router.post("/:id/read", async (req: Request, res: Response) => {
     return;
   }
   try {
-    await docUpdate("notifications", id, { read: true });
+    const persisted = await docUpdate("notifications", id, { read: true });
+    if (!persisted) {
+      res.status(503).json({ error: "Notification persistence unavailable" });
+      return;
+    }
   } catch (err) {
     logger.error({ err, id }, "Error updating notification");
+    res.status(503).json({ error: "Notification persistence unavailable" });
+    return;
   }
   const notif = memoryNotifications.find((n: any) => n.id === id);
   if (notif) notif.read = true;
@@ -211,6 +235,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
   const { email, wilayas, minSeverity } = parsed.data;
   const verificationToken = generateVerificationToken();
   const unsubscribeToken = generateVerificationToken();
+  const verificationExpiresAt = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
 
   try {
     const { getDb, isAdminDb } = await import("../firebase.js");
@@ -227,16 +252,17 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           wilayas: wilayas || [],
           minSeverity: minSeverity || "medium",
           verificationToken,
+          verificationExpiresAt,
           unsubscribeToken,
           updatedAt: new Date().toISOString(),
         });
-        sendVerificationEmail(email, verificationToken);
+        await sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
       await db.collection("subscribers").add({
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, unsubscribeToken, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     } else {
       const { collection, getDocs, query, where, addDoc, updateDoc, doc } = await import("firebase/firestore");
@@ -246,19 +272,19 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       if (!snap.empty) {
         await updateDoc(doc(db, "subscribers", snap.docs[0].id), {
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-          verificationToken, unsubscribeToken, updatedAt: new Date().toISOString(),
+          verificationToken, verificationExpiresAt, unsubscribeToken, updatedAt: new Date().toISOString(),
         });
-        sendVerificationEmail(email, verificationToken);
+        await sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
       await addDoc(subsCol, {
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, unsubscribeToken, createdAt: new Date().toISOString(),
+        verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     }
 
-    sendVerificationEmail(email, verificationToken);
+    await sendVerificationEmail(email, verificationToken);
     logger.info({ email }, "New subscriber registered");
     res.json({ success: true, message: "Subscription created. Check email to verify." });
   } catch (err) {
@@ -305,3 +331,5 @@ router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Respon
 });
 
 export default router;
+const verificationSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
+const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;

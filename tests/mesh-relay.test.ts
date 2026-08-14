@@ -16,7 +16,7 @@ const {
   encryptForPeer,
   decryptFromPeer,
 } = await import("../src/utils/meshBridge.js");
-const { buildRelayedPayload } = await import("../src/lib/meshRelay.js");
+const { buildRelayedPayload, isRelayEnvelopeAdmissible } = await import("../src/lib/meshRelay.js");
 
 const bytesToHex = (b: Uint8Array): string =>
   Array.from(b)
@@ -43,6 +43,16 @@ describe("mesh PoW (browser fallback) — 32-bit window semantics", () => {
     await expect(solvePoW("pow-test-prefix-4", 0)).resolves.toBe(-1);
     await expect(solvePoW("pow-test-prefix-4", 32)).resolves.toBe(-1);
     await expect(verifyPoW("pow-test-prefix-4", 123, 0)).resolves.toBe(false);
+  });
+});
+
+describe("relay admission policy", () => {
+  it("requires exact network difficulty and fresh timestamp", () => {
+    const now = 1_700_000_000_000;
+    const base = { type: "report", powPrefix: "prefix", powNonce: 1, powDifficulty: 8, ts: now };
+    expect(isRelayEnvelopeAdmissible(base, now)).toBe(true);
+    expect(isRelayEnvelopeAdmissible({ ...base, powDifficulty: 7 }, now)).toBe(false);
+    expect(isRelayEnvelopeAdmissible({ ...base, ts: now - 10 * 60 * 1000 - 1 }, now)).toBe(false);
   });
 });
 

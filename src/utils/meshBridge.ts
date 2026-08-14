@@ -27,10 +27,10 @@ export interface PeerInfo {
 // Anti-replay cache with a REAL time-to-live: entries are purged by age
 // (5 minutes, matching the native service), never "when the set got big" —
 // a burst of traffic must not wipe the whole replay window at once.
-const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
 const MAX_REPLAY_ENTRIES = 4096;
 const MESSAGE_TTL_MS = 10 * 60 * 1000;
 const MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000;
+const REPLAY_RETENTION_MS = MESSAGE_TTL_MS + MESSAGE_CLOCK_SKEW_MS;
 const ALLOWED_MESSAGE_TYPES = new Set(["report", "echo"]);
 const seenNonces = new Map<number, number>();
 const seenMessageHashes = new Map<string, number>();
@@ -193,7 +193,7 @@ interface AndroidBridge {
   getDeviceId(): string;
   getPublicKey(): string;
   getIdentityKey(): string;
-  broadcastMessage(plaintext: string, type: string, lat: number, lng: number): void;
+  broadcastMessage(plaintext: string, type: string, lat: number, lng: number): boolean;
   encryptForPeer(peerPublicKey: string, plaintext: string, lat: number, lng: number): string;
   decryptFromPeer(jsonMessage: string, peerPublicKey?: string): string;
   getConnectedPeers(): string;
@@ -243,8 +243,7 @@ export function broadcastMessage(
       powDifficulty: 8,
     });
 
-      bridge.broadcastMessage(enrichedMsg, type, lat, lng);
-      return true;
+      return bridge.broadcastMessage(enrichedMsg, type, lat, lng) === true;
     } catch (err) {
       console.error("[MeshBridge] Native broadcast failed:", err);
       return false;
@@ -716,7 +715,7 @@ export function onMeshReady(handler: (deviceId: string) => void): () => void {
 
 export async function solvePoW(prefix: string, difficulty: number = 8): Promise<number> {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.solvePoW(prefix, difficulty);
+  if (bridge) return difficulty === 8 ? bridge.solvePoW(prefix, difficulty) : -1;
 
   // Browser fallback — MUST match CryptoEngine.kt / MeshWire.ProofOfWork
   // semantics exactly: length-prefixed challenge framing (the naive
@@ -750,7 +749,7 @@ export async function verifyPoW(
   difficulty: number = 8
 ): Promise<boolean> {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.verifyPoW(prefix, nonce, difficulty);
+  if (bridge) return difficulty === 8 && bridge.verifyPoW(prefix, nonce, difficulty);
 
   const target = difficultyTarget(difficulty);
   if (target === null) return false;
@@ -922,7 +921,7 @@ function isNativeInt32(value: number): boolean {
 }
 
 function pruneReplayCache(cache: Map<unknown, number>, now: number): void {
-  const cutoff = now - ANTI_REPLAY_TTL_MS;
+  const cutoff = now - REPLAY_RETENTION_MS;
   for (const [key, timestamp] of cache) {
     if (timestamp <= cutoff) cache.delete(key);
   }
@@ -946,7 +945,7 @@ export function checkAndRecordNonce(nonce: number): boolean {
   // weaker than the native messageId+nonce scheme.
   if (!isNativeInt32(nonce)) return false;
   const now = Date.now();
-  if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenNonces.set(nonce, now);
@@ -965,7 +964,7 @@ export function checkAndRecordMessageNonce(messageId: string, nonce: number): bo
   // Match MeshWire.seenMessageHash framing: length-prefix both fields so
   // distinct (messageId, nonce) pairs cannot collide by concatenation.
   const key = `nonce:${messageId.length}:${messageId}:${String(nonce).length}:${nonce}`;
-  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenMessageHashes.set(key, now);
@@ -977,7 +976,7 @@ export function checkAndRecordMessageHash(hash: string): boolean {
   if (typeof hash !== "string" || hash.length === 0) return false;
   const now = Date.now();
   const key = `hash:${hash}`;
-  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenMessageHashes.set(key, now);

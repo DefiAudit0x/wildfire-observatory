@@ -91,6 +91,7 @@ class MeshService : Service() {
         const val PEER_STALE_MS = 10 * 60 * 1000L
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
         const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
+        const val MAX_BRIDGE_JSON_BYTES = 512 * 1024 // JSON envelope before parsing
 
         // Network-wide proof-of-work requirement: the receiver does NOT trust
         // the sender's declared difficulty. A frame carrying anything other
@@ -742,7 +743,7 @@ class MeshService : Service() {
             // would be a no-op. Difficulty is clamped to a sane band: solving
             // more than our constant is a marker of a modified (non-stock)
             // client and is rejected, keeping the network uniform.
-            if (payload.powDifficulty <= 0 || payload.powDifficulty > PO_W_DIFFICULTY) {
+            if (payload.powDifficulty != PO_W_DIFFICULTY) {
                 Log.w(TAG, "Out-of-band proof-of-work difficulty")
                 updateReputation(endpointId, REPUTATION_BAD_DIFFICULTY)
                 return false
@@ -890,17 +891,17 @@ class MeshService : Service() {
      * Web layer calls this via JS bridge.
      */
     @Synchronized
-    fun broadcastMessage(plaintext: String, reportType: String, lat: Double, lng: Double) {
-        if (reportType !in setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)) return
+    fun broadcastMessage(plaintext: String, reportType: String, lat: Double, lng: Double): Boolean {
+        if (reportType !in setOf(MESSAGE_TYPE_REPORT, MESSAGE_TYPE_ECHO)) return false
         if (!lat.isFinite() || !lng.isFinite() || lat < -90.0 || lat > 90.0 || lng < -180.0 || lng > 180.0) {
             Log.w(TAG, "Rejecting broadcast with invalid coordinates")
-            return
+            return false
         }
         // Audit: reject oversized plaintext before queueing to prevent OOM.
         val plaintextBytes = plaintext.toByteArray(Charsets.UTF_8)
         if (plaintextBytes.size > MAX_PLAINTEXT_BYTES) {
             Log.w(TAG, "Rejecting oversized plaintext: ${plaintextBytes.size} bytes > $MAX_PLAINTEXT_BYTES bytes")
-            return
+            return false
         }
         val messageId = UUID.randomUUID().toString()
         val nonce = protocolRandom.nextInt()
@@ -918,7 +919,7 @@ class MeshService : Service() {
         val powPrefix = MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId)
         val powNonce = MeshWire.ProofOfWork.solve(powPrefix, PO_W_DIFFICULTY) ?: run {
             Log.w(TAG, "Proof-of-work budget exhausted; dropping frame locally")
-            return
+            return false
         }
 
         // Eviction policy: entries that have never been sent to anyone
@@ -962,6 +963,7 @@ class MeshService : Service() {
             needsEncryption = true,
             plaintext = plaintext
         ))
+        return true
     }
 
     // ========================
@@ -1009,8 +1011,8 @@ class MeshService : Service() {
                 (msg.attemptedTargets.isNotEmpty() &&
                     msg.attemptedTargets.all { ep -> deliveredTargets[msg.messageId]?.contains(ep) == true })
         }
-        val cutoff2 = now - 300_000L
-        seenMessageHashes.entries.removeAll { it.value < cutoff2 }
+        val replayCutoff = now - (MESSAGE_TTL_MS + MESSAGE_CLOCK_SKEW_MS)
+        seenMessageHashes.entries.removeAll { it.value < replayCutoff }
         // Bound enforcement as a safety net (audit): the cap is primarily
         // enforced at insert time (handleIncomingMessage); this catches any
         // growth from the window between inserts.
@@ -1018,7 +1020,8 @@ class MeshService : Service() {
             seenMessageHashes.entries.minByOrNull { it.value }
                 ?.let { seenMessageHashes.remove(it.key) } ?: break
         }
-        forwardedMessages.entries.removeAll { it.value < cutoff2 }
+        val forwardedCutoff = now - 300_000L
+        forwardedMessages.entries.removeAll { it.value < forwardedCutoff }
         val liveMessageIds = pendingMessages.map { it.messageId }.toSet()
         // Delivery sets for evicted messages can go; in-flight mapping entries
         // for gone messages too (bounded by payloads actually in flight).
@@ -1105,13 +1108,14 @@ class MeshService : Service() {
                                 ?: return@peerLoop // encryption failure: retry next window
                         } else null
 
-                        sendToTarget(endpointId, msg, encrypted)
-                        anySent = true
-                        // Per-target dedup: the same frame is never handed
-                        // to the same peer twice within a window. A SEND
-                        // attempt marker, not a delivery ack (outcome lives
-                        // in deliveredTargets).
-                        forwardedMessages["$endpointId:${msg.messageId}"] = now
+                        if (sendToTarget(endpointId, msg, encrypted)) {
+                            anySent = true
+                            // Per-target dedup: the same frame is never handed
+                            // to the same peer twice within a window. A SEND
+                            // attempt marker, not a delivery ack (outcome lives
+                            // in deliveredTargets).
+                            forwardedMessages["$endpointId:${msg.messageId}"] = now
+                        }
                     } catch (e: Exception) {
                         // EXCEPTION CONTAINMENT (audit round 12): the tick
                         // runs inside a TimerTask — one uncaught exception
@@ -1261,7 +1265,7 @@ class MeshService : Service() {
      * block relays the stored ciphertext verbatim (store-and-forward); a
      * non-null one carries a fresh per-target E2EE encryption.
      */
-    private fun sendToTarget(endpointId: String, msg: MeshMessage, encrypted: CryptoEngine.SecureMessage?) {
+    private fun sendToTarget(endpointId: String, msg: MeshMessage, encrypted: CryptoEngine.SecureMessage?): Boolean {
         val frame = if (encrypted != null) {
             MeshWire.Frame(
                 protocolVersion = PROTOCOL_VERSION,
@@ -1315,7 +1319,7 @@ class MeshService : Service() {
             // never emit it (audit round 11). Only buggy generators reach
             // this; dropping the frame beats corrupting the wire.
             Log.w(TAG, "Frame rejected before send (pipe in field): ${e.message}")
-            return
+            return false
         }
         val compressed = MeshWire.compress(json.toByteArray(Charsets.UTF_8))
         val payload = Payload.fromBytes(compressed)
@@ -1344,6 +1348,7 @@ class MeshService : Service() {
                 peers[endpointId] = info.copy(lastSeen = now)
             }
         }
+        return true
     }
 
     private fun notifyListeners(message: String) {

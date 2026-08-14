@@ -16,9 +16,9 @@
  * encryption or signed-plaintext report envelope).
  */
 
-import { onMeshMessage, verifyPoW } from "../utils/meshBridge";
+import { isFreshMeshTimestamp, onMeshMessage, verifyPoW } from "../utils/meshBridge";
 
-interface MeshEnvelope {
+export interface MeshEnvelope {
   payload?: unknown;
   type?: string;
   lat?: unknown;
@@ -81,6 +81,18 @@ function writeQueue(queue: QueuedRelay[]): void {
   } catch {
     // storage unavailable — message lost, acceptable for a best-effort relay
   }
+}
+
+export function isRelayEnvelopeAdmissible(envelope: MeshEnvelope, now = Date.now()): boolean {
+  const powPrefix = typeof envelope.powPrefix === "string" ? envelope.powPrefix : "";
+  const powNonce = typeof envelope.powNonce === "number" ? envelope.powNonce : -1;
+  const powDifficulty = typeof envelope.powDifficulty === "number" ? envelope.powDifficulty : 0;
+  return envelope.type === "report" &&
+    powPrefix.length > 0 &&
+    Number.isInteger(powNonce) && powNonce >= 0 &&
+    powDifficulty === 8 &&
+    typeof envelope.ts === "number" &&
+    isFreshMeshTimestamp(envelope.ts, now);
 }
 
 /**
@@ -176,7 +188,7 @@ async function handleRelayMessage(raw: string): Promise<void> {
   const powPrefix = typeof envelope.powPrefix === "string" ? envelope.powPrefix : "";
   const powNonce = typeof envelope.powNonce === "number" ? envelope.powNonce : -1;
   const powDifficulty = typeof envelope.powDifficulty === "number" ? envelope.powDifficulty : 0;
-  if (!powPrefix || powNonce < 0 || powDifficulty < 1) return;
+  if (!isRelayEnvelopeAdmissible(envelope)) return;
 
   // Anti-spam: drop messages that fail the attached proof-of-work.
   const powOk = await verifyPoW(powPrefix, powNonce, powDifficulty).catch(() => false);

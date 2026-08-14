@@ -34,7 +34,7 @@ export async function collectionGet(
   const db = getDb();
   if (!db) return null;
   try {
-    let data: any[] | null = null;
+    let data: any[] = [];
     if (isAdminDb(db)) {
       let ref: any = db.collection(collectionName);
       if (orderByField) ref = ref.orderBy(orderByField, "desc");
