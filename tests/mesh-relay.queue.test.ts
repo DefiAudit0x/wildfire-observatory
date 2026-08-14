@@ -19,6 +19,19 @@ const {
   submitRelay,
 } = await import("../src/lib/meshRelay.js");
 
+function storedQueue(): Array<{
+  report: { clientGeneratedId?: string };
+  attempts?: number;
+  nextAttemptAt?: number;
+  deadLetter?: boolean;
+}> {
+  const value = JSON.parse(storage.get("mesh_relay_queue") || "[]") as unknown;
+  if (Array.isArray(value)) return value;
+  return value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items)
+    ? (value as { items: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean }> }).items
+    : [];
+}
+
 describe("mesh relay queue concurrency", () => {
   beforeEach(() => {
     storage.clear();
@@ -39,7 +52,7 @@ describe("mesh relay queue concurrency", () => {
     resolveFirst!(new Response(null, { status: 200 }));
     await firstFlush;
 
-    const saved = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    const saved = storedQueue();
     expect(saved).toHaveLength(1);
     expect(saved[0].report.clientGeneratedId).toBe("queued-b");
   });
@@ -58,7 +71,19 @@ describe("mesh relay queue concurrency", () => {
 
     resolveFirst!(new Response(null, { status: 200 }));
     await firstFlush;
-    expect(storage.get("mesh_relay_queue")).toBe("[]");
+    expect(storedQueue()).toEqual([]);
+  });
+
+  it("serializes concurrent enqueues so neither queued report is lost", async () => {
+    await Promise.all([
+      enqueueRelay({ clientGeneratedId: "concurrent-a" }),
+      enqueueRelay({ clientGeneratedId: "concurrent-b" }),
+    ]);
+
+    const saved = storedQueue();
+    expect(saved).toHaveLength(2);
+    expect(saved.map((item) => item.report.clientGeneratedId).sort())
+      .toEqual(["concurrent-a", "concurrent-b"]);
   });
 
   it("does not treat an unclassified 409 as a successful relay submission", async () => {
@@ -90,7 +115,7 @@ describe("mesh relay queue concurrency", () => {
     await enqueueRelay({ clientGeneratedId: "retry-item" });
     await flushQueue();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const afterFirstFailure = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    const afterFirstFailure = storedQueue();
     expect(afterFirstFailure[0].attempts).toBe(1);
     expect(afterFirstFailure[0].nextAttemptAt).toBeGreaterThan(Date.now());
 
@@ -101,7 +126,7 @@ describe("mesh relay queue concurrency", () => {
     afterFirstFailure[0].attempts = 7;
     storage.set("mesh_relay_queue", JSON.stringify(afterFirstFailure));
     await flushQueue();
-    const deadLetter = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    const deadLetter = storedQueue();
     expect(deadLetter[0].deadLetter).toBe(true);
     expect(deadLetter[0].attempts).toBe(8);
   });
@@ -119,7 +144,7 @@ describe("mesh relay queue concurrency", () => {
 
     await flushQueue();
     expect(fetchMock).not.toHaveBeenCalled();
-    const expired = JSON.parse(storage.get("mesh_relay_queue") || "[]");
+    const expired = storedQueue();
     expect(expired[0].deadLetter).toBe(true);
   });
 
