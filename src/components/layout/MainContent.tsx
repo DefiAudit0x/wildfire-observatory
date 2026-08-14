@@ -45,10 +45,11 @@ interface MainContentProps {
   mapClickedCoords: GeoPoint | null;
   selectedReportId: string | null;
   privilegedTabVisible: boolean;
+  rosterVisible: boolean;
   syncState: SyncState;
   reportsHealth: DatasetHealth;
   onMapClick: (lat: number, lng: number) => void;
-  onConfirmReport: (id: string) => void;
+  onConfirmReport: (id: string) => Promise<boolean>;
   onCreateReport: (payload: any) => Promise<unknown>;
   onSelectReport: (id: string) => void;
   onNavigate: (tab: TabId) => void;
@@ -69,6 +70,7 @@ export default function MainContent({
   mapClickedCoords,
   selectedReportId,
   privilegedTabVisible,
+  rosterVisible,
   syncState,
   reportsHealth,
   onMapClick,
@@ -108,6 +110,7 @@ export default function MainContent({
       )}
 
       {/* Admin Moderation Panel View */}
+      {/* AdminPanel owns its login/session gate; keep this route reachable for unauthenticated login. */}
       {activeTab === "admin" && (
         <div className="col-span-12">
           <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="لوحة المشرف" labelFr="espace admin" />}>
@@ -124,14 +127,14 @@ export default function MainContent({
       )}
 
       {/* Central Command - full-screen command dashboard */}
-      {activeTab === "command" && (
+      {activeTab === "command" && privilegedTabVisible && (
         <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="غرفة القيادة" labelFr="commandement central" />}>
           <CentralCommand reports={reports} satellites={satellites} sosCalls={sosCalls} userLocation={userLocation} lang={lang} onRefresh={onRefresh} />
         </Suspense>
       )}
 
       {/* Staff duty roster */}
-      {activeTab === "roster" && (
+      {activeTab === "roster" && rosterVisible && (
         <div className="col-span-12 animate-fadeIn">
           <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="جدول المناوبة" labelFr="tableau de garde" />}>
             <RosterBoard lang={lang} />

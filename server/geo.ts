@@ -62,38 +62,14 @@ function pointInBounds(lat: number, lng: number, bounds: typeof WILAYA_BOUNDS[0]
   return lat >= bounds.minLat && lat <= bounds.maxLat && lng >= bounds.minLng && lng <= bounds.maxLng;
 }
 
-const COUNTRY_MARKERS: { re: RegExp; code: string }[] = [
-  { re: /الجزائر/, code: "dz" },
-  { re: /تونس/, code: "tn" },
-  { re: /المغرب/, code: "ma" },
-  { re: /ليبيا/, code: "ly" },
-];
-
-function detectCountry(wilayaOrRegion: string): string | null {
-  for (const marker of COUNTRY_MARKERS) {
-    if (marker.re.test(wilayaOrRegion)) return marker.code;
-  }
-  return null;
-}
-
 export function wilayaContainsCoords(wilaya: string, lat: number, lng: number): boolean {
   const bounds = WILAYA_BOUNDS.find((b) => b.name === wilaya);
   if (bounds) return pointInBounds(lat, lng, bounds);
 
-  // Unknown/precise bounds wilaya (e.g. any of the 58+ Algerian wilayas that have
-  // no fine-grained bounds table): decline unless the declared country matches the
-  // country derived from the actual coordinates AND the coordinates are in coverage.
-  const declared = detectCountry(wilaya);
-  if (!declared) {
-    logger.warn({ wilaya, lat, lng }, "Geofence rejected — unrecognized country/wilaya name");
-    return false;
-  }
-  const resolved = determineWilayaByCoords(lat, lng);
-  if (resolved === "خارج التغطية (Hors zone)" || detectCountry(resolved) !== declared) {
-    logger.warn({ wilaya, resolved, lat, lng }, "Geofence rejected — country mismatch or outside coverage");
-    return false;
-  }
-  return true;
+  // Country-level coverage is not a wilaya geofence. Reject until precise
+  // bounds or polygon data exists for the declared wilaya.
+  logger.warn({ wilaya, lat, lng }, "Geofence rejected — wilaya bounds unavailable");
+  return false;
 }
 
 export function runClustering(reports: Report[]): Report[] {

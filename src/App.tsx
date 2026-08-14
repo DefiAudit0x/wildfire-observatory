@@ -99,6 +99,14 @@ export default function App() {
 
   const handleNavigate = useCallback((tab: TabId) => setActiveTab(tab), []);
 
+  useEffect(() => {
+    if (activeTab === "command" && !privilegedTabVisible) {
+      setActiveTab("home");
+    } else if (activeTab === "roster" && !rosterVisible) {
+      setActiveTab("home");
+    }
+  }, [activeTab, privilegedTabVisible, rosterVisible]);
+
   // Nearest active danger to the user, combining clustered citizen reports
   // (non-resolved) and high-confidence satellite hotspots (>=70%) through the
   // single shared threat helper (same definition as the home emergency banner).
@@ -182,6 +190,7 @@ export default function App() {
         mapClickedCoords={mapClickedCoords}
         selectedReportId={selectedReportId}
         privilegedTabVisible={privilegedTabVisible}
+        rosterVisible={rosterVisible}
         syncState={syncState}
         reportsHealth={datasetHealth.reports}
         onMapClick={handleMapClick}

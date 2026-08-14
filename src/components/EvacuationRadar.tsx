@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { Compass, Wind, AlertTriangle, ArrowRight, ShieldCheck, HelpCircle } from "lucide-react";
+import { Compass, Wind, AlertTriangle, ShieldCheck, HelpCircle } from "lucide-react";
 import { Report } from "../types";
 import { haversineKm } from "../utils/geo";
 
@@ -11,17 +11,18 @@ interface EvacuationRadarProps {
 
 export default function EvacuationRadar({ reports, userLocation, lang }: EvacuationRadarProps) {
   const isArabic = lang === "ar";
-  const [wind, setWind] = useState({
-    direction: 260,
-    speed: 35,
-    temperature: 42,
-    isLive: false,
-  });
+  const [wind, setWind] = useState<{
+    direction: number;
+    speed: number;
+    temperature: number;
+    isLive: true;
+  } | null>(null);
 
   // Live wind from Open-Meteo (free, no API key) at the user's location
   useEffect(() => {
     let cancelled = false;
     const activeLoc = userLocation || { lat: 36.72, lng: 5.08 };
+    setWind(null);
 
     const fetchWind = async () => {
       try {
@@ -40,7 +41,7 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           isLive: true,
         });
       } catch {
-        // fallback to simulated drift below
+        // No live weather means no spread-direction guidance.
       }
     };
 
@@ -51,25 +52,6 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
       clearInterval(timer);
     };
   }, [userLocation?.lat, userLocation?.lng]);
-
-  // Fallback: drift the wind within a realistic range every 10s (only when live data unavailable)
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setWind((prev) => {
-        if (prev.isLive) return prev;
-        const jitter = () => Math.round((Math.random() - 0.5) * 16);
-        const nextDirection = Math.min(285, Math.max(235, prev.direction + jitter()));
-        const nextSpeed = Math.min(48, Math.max(22, prev.speed + jitter()));
-        return {
-          direction: nextDirection,
-          speed: nextSpeed,
-          temperature: prev.temperature + (Math.random() - 0.5) * 2,
-          isLive: false,
-        };
-      });
-    }, 10000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Rotate the radar sweep line with CSS animation (no state churn)
   const sweepStyle = `
@@ -118,6 +100,8 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
   // Calculate distances to all reports
   const reportsWithDistance = useMemo(() => {
     return reports
+      .filter((r) => r.status === "verified")
+      .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lng))
       .map((r) => {
         const dist = getDistance(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
         const bearing = getBearing(activeLoc.lat, activeLoc.lng, r.lat, r.lng);
@@ -129,13 +113,11 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
 
   const closestFire = reportsWithDistance[0];
 
-  // Calculate optimal evacuation heading (opposite of the closest fire heading)
-  const safeHeading = closestFire ? (closestFire.bearing + 180) % 360 : 0;
+  // This is only the opposite bearing of the closest verified report, not a safe route.
+  const oppositeFireHeading = closestFire ? (closestFire.bearing + 180) % 360 : null;
 
-  // Let's adjust safe heading if the wind is blowing fire toward a direction!
-  // Wind direction is from where it blows (260 degrees = from West). Fire spreads to East (80 degrees).
-  // If safe direction matches wind drift, warn and adjust.
-  const driftHeading = (wind.direction + 180) % 360; // Spread direction
+  // A spread direction is shown only when live wind data is available.
+  const driftHeading = wind?.isLive ? (wind.direction + 180) % 360 : null;
   
   return (
     <div className="bg-zinc-900/60 border border-red-500/10 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)] font-mono text-slate-200">
@@ -148,8 +130,8 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
             </h3>
             <p className="text-[10px] text-slate-400 mt-0.5">
               {isArabic 
-                ? "حساب مسارات الهروب العكسية الآمنة بناءً على اتجاه البؤر النشطة وسرعة الرياح" 
-                : "Calcul des voies de fuite inverses basé sur les brasiers actifs et la dérive du vent"}
+                ? "عرض اتجاه معاكس لأقرب بلاغ مؤكد؛ لا يُثبت ذلك سلامة الطريق أو الإخلاء."
+                : "Direction opposée au signalement vérifié le plus proche; cela ne prouve pas la sécurité de la route."}
             </p>
           </div>
         </div>
@@ -160,15 +142,15 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
           <div>
             <p className="text-[10px] text-gray-400">{isArabic ? "ناقل الرياح السطحية" : "Vent & Vitesse"}</p>
             <p className="font-bold text-orange-400">
-              {wind.speed} km/h • {getDirectionName(wind.direction)} ({wind.temperature}°C)
+              {wind ? `${wind.speed} km/h • ${getDirectionName(wind.direction)} (${wind.temperature}°C)` : (isArabic ? "البيانات غير متاحة" : "Données indisponibles")}
             </p>
           </div>
-          <span className={`text-[8px] border border-white/10 rounded px-1 py-0.5 ${wind.isLive ? "text-emerald-400" : "text-slate-500"}`}
-            title={wind.isLive
+          <span className={`text-[8px] border border-white/10 rounded px-1 py-0.5 ${wind?.isLive ? "text-emerald-400" : "text-slate-500"}`}
+            title={wind?.isLive
               ? (isArabic ? "بيانات جوية حية من Open-Meteo" : "Données météo live Open-Meteo")
-              : (isArabic ? "بيانات جوية تقديرية (تعذر الوصول للبيانات الحية)" : "Données approximatives (service live indisponible)")}
+              : (isArabic ? "بيانات الرياح الحية غير متاحة؛ لا يتم حساب اتجاه الانتشار" : "Données de vent live indisponibles; aucune propagation n'est calculée")}
           >
-            {wind.isLive ? (isArabic ? "مباشر" : "Live") : (isArabic ? "تقديري" : "≈ approx")}
+            {wind?.isLive ? (isArabic ? "مباشر" : "Live") : (isArabic ? "غير متاح" : "Indisponible")}
           </span>
         </div>
       </div>
@@ -226,15 +208,15 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
             {/* User coordinate core blip */}
             <div className="absolute h-3.5 w-3.5 bg-sky-500 border-2 border-white rounded-full shadow-[0_0_8px_rgba(14,165,233,0.8)] z-10 animate-pulse"></div>
 
-            {/* Safe exit arrow blip */}
-            {closestFire && (
+            {/* Opposite-bearing reference only; not a safe-exit arrow */}
+            {closestFire && oppositeFireHeading !== null && (
               <div 
-                className="absolute h-6 w-6 text-emerald-400 font-bold z-10"
+                className="absolute h-6 w-6 text-amber-400 font-bold z-10"
                 style={{
-                  transform: `rotate(${safeHeading}deg) translateY(-85px) rotate(-${safeHeading}deg)`
+                  transform: `rotate(${oppositeFireHeading}deg) translateY(-85px) rotate(-${oppositeFireHeading}deg)`
                 }}
               >
-                🟢
+                🟠
               </div>
             )}
           </div>
@@ -261,37 +243,44 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
                   }
                 </p>
                 <div className="text-[10px] text-orange-400 font-extrabold flex items-center gap-1 border-t border-red-500/10 pt-1.5 mt-1.5">
-                  ⚠️ {isArabic 
-                    ? `اتجاه انتشار ألسنة اللهب المتوقع (مع اتجاه الرياح): ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`
-                    : `Dérive attendue de la propagation du feu : ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`}
+                  ⚠️ {driftHeading !== null
+                    ? (isArabic
+                      ? `اتجاه انتشار تقريبي مستنتج من الرياح الحية: ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`
+                      : `Direction approximative déduite du vent en direct : ${driftHeading.toFixed(0)}° (${getDirectionName(driftHeading)})`)
+                    : (isArabic
+                      ? "بيانات الرياح الحية غير متاحة؛ لا يتم حساب اتجاه الانتشار."
+                      : "Aucune donnée de vent en direct; aucune direction de propagation n'est calculée.")}
                 </div>
               </div>
 
               {/* RECOMMENDED REVERSE ESCAPE ROUTE */}
-              <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-lg p-3 space-y-2">
+              <div className="bg-amber-950/20 border border-amber-500/30 rounded-lg p-3 space-y-2">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-black text-emerald-400 flex items-center gap-1">
+                  <span className="text-xs font-black text-amber-400 flex items-center gap-1">
                     <ShieldCheck className="h-4 w-4" />
-                    <span>{isArabic ? "مسار الإخلاء التكتيكي الموصى به" : "VECTEUR D'ÉVACUATION RECOMMANDÉ"}</span>
+                    <span>{isArabic ? "اتجاه معاكس لأقرب بلاغ" : "DIRECTION OPPOSÉE AU SIGNALEMENT"}</span>
                   </span>
-                  <span className="bg-emerald-500 text-slate-950 font-black px-1.5 py-0.5 rounded text-[10px]">
-                    {safeHeading.toFixed(0)}° {getBearingDirection(safeHeading)}
+                  <span className="bg-amber-400 text-slate-950 font-black px-1.5 py-0.5 rounded text-[10px]">
+                    {oppositeFireHeading?.toFixed(0)}° {getBearingDirection(oppositeFireHeading ?? 0)}
                   </span>
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-full flex items-center justify-center font-black animate-pulse">
-                    {getBearingDirection(safeHeading)}
+                  <div className="h-10 w-10 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-full flex items-center justify-center font-black animate-pulse">
+                    {getBearingDirection(oppositeFireHeading ?? 0)}
                   </div>
                   <div className="flex-1 text-[11px] text-slate-300 leading-normal">
-                    <p className="font-bold text-emerald-400">
-                      {isArabic ? `توجه فوراً بعكس اتجاه الحريق نحو: ${getDirectionName(safeHeading)}` : `Quitter la zone immédiatement vers : ${getDirectionName(safeHeading)}`}
+                    <p className="font-bold text-amber-400">
+                      {isArabic ? `هذا اتجاه معاكس لأقرب بلاغ فقط: ${getDirectionName(oppositeFireHeading ?? 0)}` : `Direction opposée au signalement le plus proche uniquement : ${getDirectionName(oppositeFireHeading ?? 0)}`}
                     </p>
                     <p className="text-[10px] text-gray-400 mt-1">
-                      {isArabic 
-                        ? `املك الطرق الفرعية الآمنة بعيداً عن الغطاء الغابي الكثيف. وتجنب تماماً التقدم نحو الشرق (${getDirectionName(driftHeading)}) بسبب تزايد معدل الانتشار السريع بدعم من هبات الرياح الحارة.`
-                        : `Prenez les routes dégagées hors des zones boisées. Évitez absolument le secteur Est (${getDirectionName(driftHeading)}) en raison de la vélocité de propagation du vent chaud.`
-                      }
+                      {isArabic
+                        ? driftHeading !== null
+                          ? `لا يثبت هذا الاتجاه سلامة الطريق. تجنب الاتجاه التقريبي للانتشار (${getDirectionName(driftHeading)}) واتبع تعليمات الحماية المدنية.`
+                          : "لا توجد بيانات رياح حية؛ لا يمكن استنتاج اتجاه انتشار أو مسار آمن."
+                        : driftHeading !== null
+                          ? `Cette direction ne prouve pas la sécurité de la route. Évitez la direction approximative de propagation (${getDirectionName(driftHeading)}) et suivez les consignes officielles.`
+                          : "Aucune donnée de vent en direct; aucune direction de propagation ou voie sûre ne peut être déduite."}
                     </p>
                   </div>
                 </div>

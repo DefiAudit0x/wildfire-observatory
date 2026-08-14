@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { AlertTriangle, MapPin, Mic, RadioReceiver, ShieldAlert, X, Volume2, Activity, ShieldCheck, RefreshCw } from "lucide-react";
+import { getDeviceId } from "../utils/device";
 
 interface TrappedSOSModalProps {
   lang: "ar" | "fr";
@@ -49,7 +50,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     let cancelled = false;
     (async () => {
       try {
-        const storedId = sessionStorage.getItem("device_id") || localStorage.getItem("deviceId") || "";
+        const storedId = getDeviceId();
         if (!storedId) return;
         const res = await fetch(`/api/sos/profile/${encodeURIComponent(storedId)}`);
         if (!res.ok) return;
@@ -64,10 +65,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const getDeviceId = useCallback((): string => {
-    return sessionStorage.getItem("device_id") || localStorage.getItem("deviceId") || `web_${Math.random().toString(36).substring(2, 10)}`;
   }, []);
 
   const playSOSTestSound = () => {

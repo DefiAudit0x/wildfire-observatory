@@ -7,12 +7,6 @@ import logger from "../logger.js";
 
 const router = Router();
 
-const DEFAULT_ZONES = [
-  { id: "z1", nameAr: "ملعب مصطفى تشاكر - البليدة", nameFr: "Stade Mustapha Tchaker - Blida", lat: 36.5058, lng: 2.8266, capacity: 5000, hasMedical: true, isActive: true, createdAt: "" },
-  { id: "z2", nameAr: "القطب الجامعي - تيزي وزو", nameFr: "Pôle Universitaire - Tizi Ouzou", lat: 36.717, lng: 4.064, capacity: 8000, hasMedical: true, isActive: true, createdAt: "" },
-  { id: "z3", nameAr: "ساحة التضامن - بجاية", nameFr: "Place de la Solidarité - Béjaïa", lat: 36.7509, lng: 5.0567, capacity: 2000, hasMedical: false, isActive: true, createdAt: "" },
-];
-
 let cachedZones: any[] | null = null;
 
 const zoneSchema = z.object({
@@ -29,19 +23,21 @@ async function loadZones(): Promise<any[]> {
   if (cachedZones) return cachedZones;
   try {
     const fromDb = await collectionGet("safeZones", "createdAt", 100);
-    if (fromDb && fromDb.length > 0) {
-      cachedZones = fromDb;
-      return cachedZones;
-    }
+    cachedZones = fromDb || [];
+    return cachedZones;
   } catch (err) {
     logger.error({ err }, "Safe zones read failed");
+    throw err;
   }
-  return DEFAULT_ZONES;
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const zones = await loadZones();
-  res.json(zones.filter((z: any) => z.isActive !== false));
+  try {
+    const zones = await loadZones();
+    res.json(zones.filter((z: any) => z.isActive !== false));
+  } catch {
+    res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+  }
 });
 
 router.post("/", requireAdmin, async (req: Request, res: Response) => {

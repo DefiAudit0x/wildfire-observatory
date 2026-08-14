@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getHaversineDistance, determineWilayaByCoords, runClustering } from "../server/geo.js";
+import { getHaversineDistance, determineWilayaByCoords, runClustering, wilayaContainsCoords } from "../server/geo.js";
 import type { Report } from "../src/types";
 
 describe("getHaversineDistance", () => {
@@ -52,6 +52,16 @@ describe("determineWilayaByCoords", () => {
     expect(determineWilayaByCoords(36.6, 4.2)).toContain("تيزي وزو");
     expect(determineWilayaByCoords(36.7, 4.45)).not.toContain("بجاية");
     expect(determineWilayaByCoords(36.7, 5.0)).not.toContain("تيزي وزو");
+  });
+});
+
+describe("wilayaContainsCoords", () => {
+  it("accepts coordinates inside a known wilaya bounds entry", () => {
+    expect(wilayaContainsCoords("الجزائر - تيزي وزو (Algérie - Tizi Ouzou)", 36.6, 4.2)).toBe(true);
+  });
+
+  it("rejects an unbounded wilaya instead of accepting country-level coverage", () => {
+    expect(wilayaContainsCoords("الجزائر - البليدة (Algérie - Blida)", 36.75, 3.05)).toBe(false);
   });
 });
 

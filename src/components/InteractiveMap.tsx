@@ -23,7 +23,7 @@ interface InteractiveMapProps {
   reports: Report[];
   satellites: SatelliteHotspot[];
   onMapClick: (lat: number, lng: number) => void;
-  onConfirmReport: (id: string) => void;
+  onConfirmReport: (id: string) => Promise<boolean>;
   selectedReportId: string | null;
   lang: "ar" | "fr";
 }
@@ -44,6 +44,8 @@ export default function InteractiveMap({
   const heatSigRef = useRef("");
   const onMapClickRef = useRef(onMapClick);
   const onConfirmReportRef = useRef(onConfirmReport);
+  const basemapsRef = useRef<Record<string, L.TileLayer>>({});
+  const layerControlRef = useRef<L.Control.Layers | null>(null);
   const [severityFilter, setSeverityFilter] = useState<Set<string>>(new Set(["low", "medium", "high", "critical"]));
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [heatEnabled, setHeatEnabled] = useState(false);
@@ -58,9 +60,6 @@ export default function InteractiveMap({
   }, [onConfirmReport]);
 
   const isArabic = lang === "ar";
-
-  // Basemap options the user can switch between
-  const basemaps: Record<string, L.TileLayer> = {};
 
   // Initial map setup (runs once on mount)
   useEffect(() => {
@@ -86,19 +85,7 @@ export default function InteractiveMap({
     // Default: light map (dark_all is nearly black, looks broken)
     lightLayer.addTo(map);
 
-    basemaps.light = lightLayer;
-    basemaps.dark = darkLayer;
-    basemaps.voyager = voyagerLayer;
-
-    L.control.layers(
-      {
-        [isArabic ? "فاتحة" : "Clair"]: lightLayer,
-        [isArabic ? "ملونة" : "Voyager"]: voyagerLayer,
-        [isArabic ? "داكنة" : "Sombre"]: darkLayer,
-      },
-      undefined,
-      { position: "bottomright", collapsed: false }
-    ).addTo(map);
+    basemapsRef.current = { light: lightLayer, dark: darkLayer, voyager: voyagerLayer };
 
     // Click handler for coordinates reporting
     map.on("click", (e: L.LeafletMouseEvent) => {
@@ -122,33 +109,68 @@ export default function InteractiveMap({
       }
       markersRef.current = null;
       heatRef.current = null;
+      layerControlRef.current = null;
+      basemapsRef.current = {};
       markersSigRef.current = "";
       heatSigRef.current = "";
       setMapReady(false);
     };
   }, []);
 
+  // Rebuild only the control when language changes; tile layers stay intact.
+  useEffect(() => {
+    const map = mapRef.current;
+    const layers = basemapsRef.current;
+    if (!mapReady || !map || !layers.light || !layers.voyager || !layers.dark) return;
+
+    if (layerControlRef.current) {
+      map.removeControl(layerControlRef.current);
+    }
+
+    layerControlRef.current = L.control.layers(
+      {
+        [isArabic ? "فاتحة" : "Clair"]: layers.light,
+        [isArabic ? "ملونة" : "Voyager"]: layers.voyager,
+        [isArabic ? "داكنة" : "Sombre"]: layers.dark,
+      },
+      undefined,
+      { position: "bottomright", collapsed: false }
+    ).addTo(map);
+  }, [isArabic, mapReady]);
+
   // Single delegated listener for all popup confirm buttons (no per-popup DOM listeners)
   useEffect(() => {
     const container = mapContainerRef.current;
     if (!container) return;
 
-    const handleClick = (ev: MouseEvent) => {
+    const handleClick = async (ev: MouseEvent) => {
       const target = ev.target as HTMLElement | null;
       if (!target || !target.closest) return;
       const btn = target.closest("[data-confirm-report]") as HTMLElement | null;
       if (!btn) return;
+      if (btn.hasAttribute("disabled") || btn.getAttribute("aria-busy") === "true") return;
       const reportId = btn.getAttribute("data-confirm-report");
       if (!reportId) return;
-      onConfirmReportRef.current(reportId);
-      const countEl = btn.parentElement?.querySelector("strong");
-      if (countEl) {
-        const currentVal = parseInt(countEl.textContent || "0", 10);
-        countEl.textContent = String(currentVal + 1);
-      }
       btn.setAttribute("disabled", "true");
-      btn.className = "px-2 py-1 bg-slate-800 text-slate-500 rounded text-xs cursor-not-allowed";
-      btn.textContent = btn.getAttribute("data-done-text") || "✓";
+      btn.setAttribute("aria-busy", "true");
+      try {
+        const confirmed = await onConfirmReportRef.current(reportId);
+        if (!confirmed) {
+          btn.removeAttribute("disabled");
+          return;
+        }
+        const countEl = btn.parentElement?.querySelector("strong");
+        if (countEl) {
+          const currentVal = parseInt(countEl.textContent || "0", 10);
+          countEl.textContent = String(currentVal + 1);
+        }
+        btn.className = "px-2 py-1 bg-slate-800 text-slate-500 rounded text-xs cursor-not-allowed";
+        btn.textContent = btn.getAttribute("data-done-text") || "✓";
+      } catch {
+        btn.removeAttribute("disabled");
+      } finally {
+        btn.removeAttribute("aria-busy");
+      }
     };
 
     container.addEventListener("click", handleClick);
@@ -272,12 +294,21 @@ export default function InteractiveMap({
         iconAnchor: [12, 12],
       });
 
-      const aiStatusHtml = rep.aiVerification
+      const aiStatusHtml = rep.aiVerification?.isVerified === true
         ? `
           <div class="mt-2 bg-emerald-950/40 border border-emerald-500/30 rounded p-1.5 text-[11px] text-emerald-300">
             <div class="flex items-center gap-1 font-bold">
               <span>🤖 ${isArabic ? "تم التحقق بالذكاء الاصطناعي" : "Vérifié par l'IA"}</span>
               <span class="bg-emerald-500 text-slate-950 text-[9px] px-1 rounded">${esc(rep.aiVerification.confidence)}%</span>
+            </div>
+            <p class="mt-1 text-[10px] text-slate-300">${esc(rep.aiVerification.aiComments)}</p>
+          </div>
+        `
+        : rep.aiVerification
+        ? `
+          <div class="mt-2 bg-amber-950/40 border border-amber-500/30 rounded p-1.5 text-[11px] text-amber-300">
+            <div class="flex items-center gap-1 font-bold">
+              <span>🤖 ${isArabic ? "تحليل الذكاء الاصطناعي غير حاسم" : "Analyse IA non conclue"}</span>
             </div>
             <p class="mt-1 text-[10px] text-slate-300">${esc(rep.aiVerification.aiComments)}</p>
           </div>
