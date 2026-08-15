@@ -739,9 +739,11 @@ async function handleRelayMessage(raw: string): Promise<void> {
   const report = buildRelayedPayload(envelope);
   if (!report) return;
 
-  if (!(await submitRelay(report))) {
-    void enqueueRelay(report);
-  }
+  // Online ingress shares the same durable lifecycle as deferred retries:
+  // enqueue creates the stable clientGeneratedId, then flush persists
+  // `prepared` before any HTTP submission is allowed.
+  const enqueued = await enqueueRelay(report);
+  if (enqueued.accepted) await flushQueue();
 }
 
 export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqueueResult> {
