@@ -11,6 +11,7 @@ Object.defineProperty(globalThis, "localStorage", {
 });
 
 type StoredState = {
+  revision: number;
   pending: Array<{ report: { clientGeneratedId: string } }>;
   journal: Array<{ state: string; clientGeneratedId: string }>;
 };
@@ -19,8 +20,8 @@ function storedState(): StoredState {
   return JSON.parse(storage.get("mesh_relay_queue") || '{"pending":[],"journal":[]}') as StoredState;
 }
 
-async function loadRelay() {
-  vi.stubGlobal("indexedDB", undefined);
+async function loadRelay(indexedDb: IDBFactory | undefined = undefined) {
+  vi.stubGlobal("indexedDB", indexedDb);
   return import("../src/lib/meshRelay.js");
 }
 
@@ -31,6 +32,100 @@ function failWriteAt(targetCall: number) {
     if (calls === targetCall) throw new Error("quota");
     storage.set(key, value);
   });
+}
+
+function replicaState(revision: number, journalState: "prepared" | "delivered" | "committed") {
+  const report = { clientGeneratedId: "replica-divergence-a" };
+  const item = {
+    id: "replica-item-a",
+    report,
+    ts: 1,
+    attempts: 0,
+    nextAttemptAt: 0,
+  };
+  const fingerprint = (() => {
+    const raw = JSON.stringify(report);
+    let hash = 5381;
+    for (let index = 0; index < raw.length; index++) hash = ((hash << 5) + hash + raw.charCodeAt(index)) | 0;
+    return String(hash >>> 0);
+  })();
+  return {
+    revision,
+    pending: [item],
+    deadLetters: [],
+    journal: [{
+      journalId: "journal-replica-item-a",
+      queueItemId: item.id,
+      storageReplica: "co_located",
+      baseQueueRevision: revision,
+      clientGeneratedId: report.clientGeneratedId,
+      reportFingerprint: fingerprint,
+      report,
+      state: journalState,
+      createdAt: 1,
+      updatedAt: 1,
+      deliveredAt: journalState === "prepared" ? undefined : 1,
+      deliveryDisposition: journalState === "prepared" ? undefined : "http_200",
+    }],
+  };
+}
+
+function indexedDbWithState(initialState: unknown): IDBFactory {
+  let stored = initialState;
+  const db = {
+    objectStoreNames: { contains: () => true },
+    createObjectStore: () => ({}),
+    transaction: () => {
+      const transaction: {
+        objectStore: () => typeof objectStore;
+        abort: () => void;
+        oncomplete?: () => void;
+        onabort?: () => void;
+        onerror?: () => void;
+      } = {
+        objectStore: () => objectStore,
+        abort: () => queueMicrotask(() => transaction.onabort?.()),
+      };
+      const objectStore = {
+        get: (key: string) => {
+          const request: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
+          queueMicrotask(() => {
+            request.result = key === "state" ? stored : undefined;
+            request.onsuccess?.();
+          });
+          return request;
+        },
+        put: (value: unknown) => {
+          const request: { onsuccess?: () => void; onerror?: () => void } = {};
+          queueMicrotask(() => {
+            stored = value;
+            request.onsuccess?.();
+            transaction.oncomplete?.();
+          });
+          return request;
+        },
+      };
+      return transaction;
+    },
+  };
+  return {
+    open: () => {
+      const request: { result: typeof db; onsuccess?: () => void; onupgradeneeded?: () => void } = { result: db };
+      queueMicrotask(() => request.onsuccess?.());
+      return request;
+    },
+  } as unknown as IDBFactory;
+}
+
+async function expectNoDispatchForReplicaDivergence(indexedState: unknown, localState: unknown) {
+  storage.set("mesh_relay_queue", JSON.stringify(localState));
+  const relay = await loadRelay(indexedDbWithState(indexedState));
+  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  await relay.flushQueue();
+
+  expect(fetchMock).not.toHaveBeenCalled();
 }
 
 describe("mesh relay durable reconciliation journal", () => {
@@ -132,5 +227,33 @@ describe("mesh relay durable reconciliation journal", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(storedState().journal[0]?.state).toBe("committed");
+  });
+
+  it("does not dispatch when lower-revision IndexedDB records delivered and localStorage records prepared", async () => {
+    await expectNoDispatchForReplicaDivergence(
+      replicaState(12, "delivered"),
+      replicaState(13, "prepared")
+    );
+  });
+
+  it("does not dispatch when lower-revision localStorage records delivered and IndexedDB records prepared", async () => {
+    await expectNoDispatchForReplicaDivergence(
+      replicaState(13, "prepared"),
+      replicaState(12, "delivered")
+    );
+  });
+
+  it("does not dispatch when IndexedDB records delivered and higher-revision localStorage records committed", async () => {
+    await expectNoDispatchForReplicaDivergence(
+      replicaState(12, "delivered"),
+      replicaState(13, "committed")
+    );
+  });
+
+  it("does not dispatch when IndexedDB records committed and localStorage records delivered", async () => {
+    await expectNoDispatchForReplicaDivergence(
+      replicaState(13, "committed"),
+      replicaState(12, "delivered")
+    );
   });
 });
