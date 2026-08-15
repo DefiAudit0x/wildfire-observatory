@@ -283,49 +283,6 @@ function commitDeliveredJournal(entries: RelayJournalEntry[], pending: QueuedRel
   });
 }
 
-function deliveryOutcomeRank(state: RelayJournalState): number {
-  if (state === "committed") return 2;
-  if (state === "delivered") return 1;
-  return 0;
-}
-
-function strongestDeliveryOutcome(entries: RelayJournalEntry[], item: QueuedRelay): RelayJournalEntry | null {
-  let strongest: RelayJournalEntry | null = null;
-  for (const entry of entries) {
-    if (deliveryOutcomeRank(entry.state) === 0 || !journalMatchesItem(entry, item)) continue;
-    if (!strongest || deliveryOutcomeRank(entry.state) > deliveryOutcomeRank(strongest.state)) strongest = entry;
-  }
-  return strongest;
-}
-
-function reconcileReplicaDeliveryOutcomes(
-  state: RelayQueueState,
-  replicaJournals: RelayJournalEntry[][]
-): RelayQueueState {
-  const outcomes = replicaJournals.flat();
-  let journal = state.journal;
-  const pending = state.pending.filter((item) => {
-    const outcome = strongestDeliveryOutcome(outcomes, item);
-    if (!outcome) return true;
-    const local = strongestDeliveryOutcome(journal, item);
-    if (!local || deliveryOutcomeRank(outcome.state) > deliveryOutcomeRank(local.state)) {
-      // This is an identity-bound delivery outcome, not a snapshot merge. It
-      // is re-recorded as delivered before recovery finalizes it to committed.
-      const now = Date.now();
-      journal = upsertJournalEntry(journal, {
-        ...outcome,
-        storageReplica: "co_located",
-        baseQueueRevision: state.revision,
-        state: "delivered",
-        updatedAt: now,
-        deliveredAt: outcome.deliveredAt ?? now,
-      });
-    }
-    return false;
-  });
-  return { ...state, pending, journal };
-}
-
 function mergeVolatilePending(pending: QueuedRelay[]): QueuedRelay[] {
   const durablePending = volatilePendingIsAuthoritative ? [] : pending;
   const byId = new Map(durablePending.map((item) => [item.id, item]));
@@ -517,18 +474,13 @@ async function writeIndexedQueue(
 }
 
 async function readRelayQueueState(): Promise<RelayQueueState> {
-  const localReplica = readLocalQueueState();
-  const local = rebuildPendingFromJournal(localReplica);
+  const local = rebuildPendingFromJournal(readLocalQueueState());
   queueRevision = Math.max(queueRevision, local.revision);
   const db = await openRelayDb();
   if (db) {
-    const indexedReplica = await readIndexedQueueState(db);
-    if (indexedReplica !== null) {
-      const indexed = rebuildPendingFromJournal(indexedReplica);
-      const selected = reconcileReplicaDeliveryOutcomes(
-        indexed.revision >= local.revision ? indexed : local,
-        [localReplica.journal, indexedReplica.journal]
-      );
+    const indexed = await readIndexedQueueState(db);
+    if (indexed !== null) {
+      const selected = rebuildPendingFromJournal(indexed.revision >= local.revision ? indexed : local);
       queueRevision = Math.max(queueRevision, selected.revision);
       return {
         ...selected,

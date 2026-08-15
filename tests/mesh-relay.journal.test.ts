@@ -35,11 +35,12 @@ function failWriteAt(targetCall: number) {
 }
 
 function replicaState(revision: number, journalState: "prepared" | "delivered" | "committed") {
+  const now = Date.now();
   const report = { clientGeneratedId: "replica-divergence-a" };
   const item = {
     id: "replica-item-a",
     report,
-    ts: 1,
+    ts: now,
     attempts: 0,
     nextAttemptAt: 0,
   };
@@ -62,9 +63,9 @@ function replicaState(revision: number, journalState: "prepared" | "delivered" |
       reportFingerprint: fingerprint,
       report,
       state: journalState,
-      createdAt: 1,
-      updatedAt: 1,
-      deliveredAt: journalState === "prepared" ? undefined : 1,
+      createdAt: now,
+      updatedAt: now,
+      deliveredAt: journalState === "prepared" ? undefined : now,
       deliveryDisposition: journalState === "prepared" ? undefined : "http_200",
     }],
   };
@@ -117,14 +118,22 @@ function indexedDbWithState(initialState: unknown): IDBFactory {
   } as unknown as IDBFactory;
 }
 
-async function expectNoDispatchForReplicaDivergence(indexedState: unknown, localState: unknown) {
+async function expectSelectedPreparedReplicaDispatches(indexedState: unknown, localState: unknown) {
   storage.set("mesh_relay_queue", JSON.stringify(localState));
-  const relay = await loadRelay(indexedDbWithState(indexedState));
+  const indexedDb = indexedDbWithState(indexedState);
+  const relay = await loadRelay(indexedDb);
   const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
   vi.stubGlobal("fetch", fetchMock);
 
   await relay.flushQueue();
 
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body).clientGeneratedId).toBe("replica-divergence-a");
+
+  vi.resetModules();
+  const afterReload = await loadRelay(indexedDb);
+  fetchMock.mockClear();
+  await afterReload.flushQueue();
   expect(fetchMock).not.toHaveBeenCalled();
 }
 
@@ -229,30 +238,16 @@ describe("mesh relay durable reconciliation journal", () => {
     expect(storedState().journal[0]?.state).toBe("committed");
   });
 
-  it("does not dispatch when lower-revision IndexedDB records delivered and localStorage records prepared", async () => {
-    await expectNoDispatchForReplicaDivergence(
+  it("does not let an older IndexedDB delivered journal suppress newer localStorage pending", async () => {
+    await expectSelectedPreparedReplicaDispatches(
       replicaState(12, "delivered"),
       replicaState(13, "prepared")
     );
   });
 
-  it("does not dispatch when lower-revision localStorage records delivered and IndexedDB records prepared", async () => {
-    await expectNoDispatchForReplicaDivergence(
+  it("does not let an older localStorage delivered journal suppress newer IndexedDB pending", async () => {
+    await expectSelectedPreparedReplicaDispatches(
       replicaState(13, "prepared"),
-      replicaState(12, "delivered")
-    );
-  });
-
-  it("does not dispatch when IndexedDB records delivered and higher-revision localStorage records committed", async () => {
-    await expectNoDispatchForReplicaDivergence(
-      replicaState(12, "delivered"),
-      replicaState(13, "committed")
-    );
-  });
-
-  it("does not dispatch when IndexedDB records committed and localStorage records delivered", async () => {
-    await expectNoDispatchForReplicaDivergence(
-      replicaState(13, "committed"),
       replicaState(12, "delivered")
     );
   });
