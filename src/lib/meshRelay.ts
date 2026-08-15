@@ -313,17 +313,27 @@ async function writeIndexedQueue(
       transaction = db.transaction(RELAY_STORE_NAME, "readwrite");
       const request = transaction.objectStore(RELAY_STORE_NAME).put(state, "state");
       request.onsuccess = () => {
+        // A successful request only means the operation was accepted by this
+        // transaction. Persisted state is confirmed exclusively on complete.
+      };
+      request.onerror = () => {
+        // The transaction's error/abort handler owns the final outcome, so a
+        // request failure cannot race a later transaction completion.
+      };
+      transaction.oncomplete = () => {
         if (settled) return;
         settled = true;
         globalThis.clearTimeout(fallbackTimer);
         resolve("written");
       };
-      request.onerror = () => {
+      const failTransaction = () => {
         if (settled) return;
         settled = true;
         globalThis.clearTimeout(fallbackTimer);
         resolve("failed");
       };
+      transaction.onabort = failTransaction;
+      transaction.onerror = failTransaction;
     } catch {
       if (!settled) {
         settled = true;

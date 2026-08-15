@@ -20,7 +20,12 @@ function storedSnapshot(): Snapshot {
   return JSON.parse(storage.get("mesh_relay_queue") || '{"revision":0,"pending":[],"deadLetters":[]}') as Snapshot;
 }
 
-function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot) {
+function createDelayedIndexedDb(
+  writeDelayMs: number,
+  initialSnapshot?: Snapshot,
+  writeOutcome: "complete" | "abort" = "complete",
+  transactionDelayMs = 0
+) {
   let stored: unknown = initialSnapshot;
   let writeCount = 0;
   let abortCount = 0;
@@ -30,6 +35,21 @@ function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot
     createObjectStore: () => ({}),
     transaction: () => {
       let aborted = false;
+      const transaction: {
+        objectStore: () => typeof objectStore;
+        abort: () => void;
+        onabort?: () => void;
+        oncomplete?: () => void;
+        onerror?: () => void;
+      } = {
+        objectStore: () => objectStore,
+        abort: () => {
+          if (aborted) return;
+          aborted = true;
+          abortCount += 1;
+          queueMicrotask(() => transaction.onabort?.());
+        },
+      };
       const objectStore = {
         get: () => {
           const request: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
@@ -44,19 +64,21 @@ function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot
           writeCount += 1;
           globalThis.setTimeout(() => {
             if (aborted) return;
-            stored = value;
             request.onsuccess?.();
+            globalThis.setTimeout(() => {
+              if (aborted) return;
+              if (writeOutcome === "abort") {
+                transaction.onabort?.();
+                return;
+              }
+              stored = value;
+              transaction.oncomplete?.();
+            }, transactionDelayMs);
           }, writeDelayMs);
           return request;
         },
       };
-      return {
-        objectStore: () => objectStore,
-        abort: () => {
-          aborted = true;
-          abortCount += 1;
-        },
-      };
+      return transaction;
     },
   };
   return {
@@ -168,6 +190,61 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     expect(indexed.getAbortCount()).toBe(1);
     expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
       .toEqual(Array.from({ length: 50 }, (_, index) => `source-${index}`));
+    expect(indexed.getStored()?.deadLetters).toEqual([]);
+  });
+
+  it("waits for transaction complete before confirming a persistent write", async () => {
+    const indexed = createDelayedIndexedDb(0, undefined, "complete", 25);
+    vi.stubGlobal("indexedDB", indexed.factory);
+    const relay = await import("../src/lib/meshRelay.js");
+
+    let result: unknown;
+    const enqueue = relay.enqueueRelay({ clientGeneratedId: "complete-after-request-success" })
+      .then((value) => {
+        result = value;
+        return value;
+      });
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(result).toBeUndefined();
+    expect(indexed.getStored()).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(enqueue).resolves.toEqual({ accepted: true, storage: "persistent" });
+    expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
+      .toEqual(["complete-after-request-success"]);
+  });
+
+  it("keeps volatile state when request success is followed by transaction abort", async () => {
+    const pending = Array.from({ length: 49 }, (_, index) => ({
+      report: { clientGeneratedId: `source-${index}` },
+      id: `source-${index}`,
+      ts: index,
+      attempts: 0,
+      nextAttemptAt: 0,
+    }));
+    const indexed = createDelayedIndexedDb(
+      0,
+      { revision: 10, pending, deadLetters: [] },
+      "abort",
+      25
+    );
+    vi.stubGlobal("indexedDB", indexed.factory);
+    vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const relay = await import("../src/lib/meshRelay.js");
+
+    const volatileEnqueue = relay.enqueueRelay({ clientGeneratedId: "volatile-after-abort" });
+    await vi.advanceTimersByTimeAsync(26);
+    await expect(volatileEnqueue).resolves.toEqual({ accepted: true, storage: "volatile" });
+
+    const rejectedEnqueue = relay.enqueueRelay({ clientGeneratedId: "rejected-after-abort" });
+    await vi.advanceTimersByTimeAsync(26);
+    await expect(rejectedEnqueue).resolves.toEqual({ accepted: false, reason: "dead_letter_unavailable" });
+
+    expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
+      .toEqual(Array.from({ length: 49 }, (_, index) => `source-${index}`));
     expect(indexed.getStored()?.deadLetters).toEqual([]);
   });
 });
