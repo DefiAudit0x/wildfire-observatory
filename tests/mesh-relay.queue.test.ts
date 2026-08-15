@@ -170,6 +170,62 @@ describe("mesh relay queue concurrency", () => {
     expect(saved.some((item) => item.report.clientGeneratedId === "after-dlq-failure" && !item.deadLetter)).toBe(true);
   });
 
+  it("does not replay a delivered report when a mixed flush cannot persist its DLQ transition", async () => {
+    await enqueueRelay({ clientGeneratedId: "delivered-before-dlq-failure" });
+    await enqueueRelay({ clientGeneratedId: "dlq-source-after-persistence-failure" });
+    const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    const source = persisted.pending.find((item: { report: { clientGeneratedId: string } }) =>
+      item.report.clientGeneratedId === "dlq-source-after-persistence-failure"
+    );
+    source.attempts = 7;
+    storage.set("mesh_relay_queue", JSON.stringify(persisted));
+
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    setItem.mockRestore();
+    fetchMock.mockClear();
+    fetchMock.mockResolvedValue(new Response(null, { status: 503 }));
+    await flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).clientGeneratedId)
+      .toBe("dlq-source-after-persistence-failure");
+    const saved = storedQueue();
+    expect(saved).toHaveLength(1);
+    expect(saved[0].report.clientGeneratedId).toBe("dlq-source-after-persistence-failure");
+    expect(saved[0].deadLetter).toBe(true);
+  });
+
+  it("does not replay delivered reports when all-success flush persistence fails", async () => {
+    await enqueueRelay({ clientGeneratedId: "delivered-a-after-persistence-failure" });
+    await enqueueRelay({ clientGeneratedId: "delivered-b-after-persistence-failure" });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    await flushQueue();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    setItem.mockRestore();
+    fetchMock.mockClear();
+    await flushQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await enqueueRelay({ clientGeneratedId: "post-recovery" });
+    const saved = storedQueue();
+    expect(saved).toHaveLength(1);
+    expect(saved[0].report.clientGeneratedId).toBe("post-recovery");
+  });
+
   it("preserves every report as pending or capacity dead-letter during concurrent overflow", async () => {
     const ids = Array.from({ length: 52 }, (_, index) => `overflow-concurrent-${index}`);
     for (const id of ids.slice(0, 49)) {

@@ -55,6 +55,7 @@ const seenRelayHashes = new Map<string, number>();
 let relayDbPromise: Promise<IDBDatabase | null> | null = null;
 let indexedDbDisabledForSession = false;
 let volatilePending: QueuedRelay[] = [];
+let volatilePendingIsAuthoritative = false;
 let flushInFlight: Promise<void> | null = null;
 let queueMutationTail: Promise<void> = Promise.resolve();
 let queueRevision = 0;
@@ -157,7 +158,8 @@ function normalizeRelayQueueState(value: unknown): RelayQueueState {
 }
 
 function mergeVolatilePending(pending: QueuedRelay[]): QueuedRelay[] {
-  const byId = new Map(pending.map((item) => [item.id, item]));
+  const durablePending = volatilePendingIsAuthoritative ? [] : pending;
+  const byId = new Map(durablePending.map((item) => [item.id, item]));
   for (const item of volatilePending) byId.set(item.id, item);
   return [...byId.values()];
 }
@@ -378,6 +380,7 @@ async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): P
       queueRevision = snapshot.revision;
       writeLocalQueueState(snapshot);
       volatilePending = [];
+      volatilePendingIsAuthoritative = false;
       return "persistent";
     }
     if (result === "timedOut") indexedDbDisabledForSession = true;
@@ -385,6 +388,7 @@ async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): P
   if (writeLocalQueueState(snapshot)) {
     queueRevision = snapshot.revision;
     volatilePending = [];
+    volatilePendingIsAuthoritative = false;
     return "persistent";
   }
   return "failed";
@@ -634,9 +638,13 @@ async function flushQueueInternal(): Promise<void> {
       deadLetters: [...latestState.deadLetters, ...deadLetterMoves],
     });
     if (storage === "failed") {
-      // A failed DLQ write must not delete the source pending item. Keep the
-      // pre-transition pending set in volatile memory for a later retry.
-      volatilePending = deadLetterMoves.length > 0 ? latestState.pending : nextPending;
+      // A failed DLQ write must retain the source pending item, but a report
+      // already accepted by the server must not be replayed from stale storage.
+      const deadLetterMoveIds = new Set(deadLetterMoves.map((item) => item.id));
+      volatilePending = latestState.pending
+        .filter((item) => !processedIds.has(item.id))
+        .map((item) => deadLetterMoveIds.has(item.id) ? item : (updatedItems.get(item.id) ?? item));
+      volatilePendingIsAuthoritative = true;
       console.error("[MeshRelay] Queue reconciliation persistence unavailable; preserving pending source items");
     }
   });
