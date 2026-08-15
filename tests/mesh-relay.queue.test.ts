@@ -184,8 +184,11 @@ describe("mesh relay queue concurrency", () => {
       .mockResolvedValueOnce(new Response(null, { status: 200 }))
       .mockResolvedValueOnce(new Response(null, { status: 503 }));
     vi.stubGlobal("fetch", fetchMock);
-    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
-      throw new Error("quota");
+    let writes = 0;
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation((key, value) => {
+      writes += 1;
+      if (writes === 4) throw new Error("quota");
+      storage.set(key, value);
     });
     await flushQueue();
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -209,8 +212,11 @@ describe("mesh relay queue concurrency", () => {
     await enqueueRelay({ clientGeneratedId: "delivered-b-after-persistence-failure" });
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
-      throw new Error("quota");
+    let writes = 0;
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation((key, value) => {
+      writes += 1;
+      if (writes === 5) throw new Error("quota");
+      storage.set(key, value);
     });
     await flushQueue();
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -267,6 +273,14 @@ describe("mesh relay queue concurrency", () => {
       throw new Error("quota");
     });
     await enqueueRelay({ clientGeneratedId: "volatile-a" });
+    setItem.mockRestore();
+
+    let writes = 0;
+    const failQueueTransition = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation((key, value) => {
+      writes += 1;
+      if (writes === 3) throw new Error("quota");
+      storage.set(key, value);
+    });
 
     let resolveFirst: ((value: Response) => void) | undefined;
     const fetchMock = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { resolveFirst = resolve; }));
@@ -277,7 +291,7 @@ describe("mesh relay queue concurrency", () => {
     await enqueueRelay({ clientGeneratedId: "volatile-b" });
     resolveFirst!(new Response(null, { status: 503 }));
     await flush;
-    setItem.mockRestore();
+    failQueueTransition.mockRestore();
 
     await enqueueRelay({ clientGeneratedId: "volatile-c" });
     const saved = storedQueue();

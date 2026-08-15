@@ -119,14 +119,14 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     vi.stubGlobal("indexedDB", indexed.factory);
     const relay = await import("../src/lib/meshRelay.js");
 
-    const first = relay.enqueueRelay({ clientGeneratedId: "late-a" });
+    const first = relay.enqueueRelay({ clientGeneratedId: "late-a-01" });
     await vi.advanceTimersByTimeAsync(101);
     await first;
 
-    await relay.enqueueRelay({ clientGeneratedId: "late-b" });
+    await relay.enqueueRelay({ clientGeneratedId: "late-b-01" });
     expect(indexed.getWriteCount()).toBe(1);
     expect(storedSnapshot().revision).toBe(2);
-    expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId)).toEqual(["late-a", "late-b"]);
+    expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId)).toEqual(["late-a-01", "late-b-01"]);
 
     await vi.advanceTimersByTimeAsync(100);
     expect(indexed.getStored()).toBeUndefined();
@@ -134,13 +134,13 @@ describe("mesh relay IndexedDB timeout recovery", () => {
 
     vi.resetModules();
     const afterReload = await import("../src/lib/meshRelay.js");
-    const third = afterReload.enqueueRelay({ clientGeneratedId: "late-c" });
+    const third = afterReload.enqueueRelay({ clientGeneratedId: "late-c-01" });
     await vi.advanceTimersByTimeAsync(101);
     await third;
 
     expect(storedSnapshot().revision).toBe(3);
     expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId))
-      .toEqual(["late-a", "late-b", "late-c"]);
+      .toEqual(["late-a-01", "late-b-01", "late-c-01"]);
   });
 
   it("selects a higher IndexedDB revision than localStorage after reload", async () => {

@@ -312,6 +312,55 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | **BLE capability policy** | `android.hardware.bluetooth_le` is currently declared as required by the Android manifest. | Choosing a graceful no-BLE mode versus keeping BLE mandatory is a product and distribution decision; changing the manifest affects device eligibility and fallback UX. |
 | **Consensus voter identity** | Browser confirmations combine the request IP with a supplied device identifier, while native/storage paths keep their existing voter records. | Strong voter possession proof or a stable authenticated identity is required to make consensus resistant to identity spoofing without breaking anonymous field use. |
 | **Mesh Relay DLQ retention** | Pending relay items are capped at 50. Capacity overflow moves the oldest pending item to an independent DLQ only when that transition persists; if DLQ persistence is unavailable, the new relay item is rejected explicitly and the source pending item remains intact. | DLQ retention duration, storage budget, monitoring, export, and deletion procedure are operational policy decisions. No implicit FIFO trimming is permitted before that policy is configured and reviewed. |
+
+### 7.c Durable Reconciliation Journal for Mesh Relay / سجل مصالحة التسليم الدائم
+
+> **قرار معتمد قبل التنفيذ:** Relay delivery لا يعتمد على RAM لتقرير مصير بلاغ استلم الخادم له استجابة نجاح. إذا فشل حفظ queue بعد استجابة نجاح ثم حدث reload أو crash، يجب أن تسمح البيانات الدائمة بإعادة بناء queue من دون إعادة إدخال البلاغ المسلَّم إلى pending.
+
+هذا العقد محصور في `src/lib/meshRelay.ts` وطبقة التخزين المحلية للـrelay. لا يغيّر badge `maxUses` أو Firestore consensus أو بروتوكول Mesh أو API الخادم. يعتمد recovery على `clientGeneratedId` الموجود أصلًا في API كمعرّف idempotency؛ لذلك يجب أن يحمل كل `QueuedRelay` قابل للإرسال معرّفًا ثابتًا صالحًا. يحتفظ الـrelay بالمعرّف الوارد كما هو، وإذا غاب يُنشئه مرة واحدة قبل أول journal `prepared` ويخزنه مع التقرير لإعادة استخدامه في كل محاولة لاحقة. هذا استعمال لحقل API اختياري قائم، لا عقد endpoint جديد.
+
+#### Journal record / سجل journal
+
+كل سجل يمثل **عنصر queue واحدًا** لا batch كاملًا، ويُخزّن بجوار نسخة الـqueue التي يحميها؛ لا يجوز تطبيق journal من IndexedDB على snapshot من localStorage أو العكس. يضم السجل، كحد أدنى، `journalId` و`queueItemId` و`storageReplica` و`baseQueueRevision` و`clientGeneratedId` و`reportFingerprint` ونسخة التقرير اللازمة لإعادة المحاولة ووقت الإنشاء والتحديث وبيانات المحاولة. عند تسجيل التسليم يضاف `deliveredAt` و`deliveryDisposition` (`http_200` أو duplicate terminal مصنّف) ووصف transition المتوقع: إزالة `queueItemId` من pending مع بقاء بقية pending وDLQ كما هي أو وفق الانتقالات المسجلة لها.
+
+| حالة السجل | المعنى | أثر recovery |
+|---|---|---|
+| `prepared` | intent دائم كُتب قبل استدعاء `submitRelay()`؛ النتيجة الشبكية غير مؤكدة بعد. | يبقى المصدر pending ويعاد الإرسال بالـ`clientGeneratedId` نفسه وفق backoff؛ لا يجوز إنشاء ID جديد. |
+| `delivered` | وردت استجابة نجاح أو duplicate terminal ثم حُفظ outcome بشكل دائم؛ queue transition قد لا يكون حُفظ بعد. | يعاد بناء queue مع إزالة العنصر المسلَّم حتى لو كانت snapshot الدائمة قديمة. |
+| `committed` | أصبحت queue المعاد بناؤها durable وتثبت إزالة delivered IDs وأي انتقال DLQ مرتبط. | لا يشارك السجل في الإرسال أو reconstruction بعد التحقق من commit؛ يحتفظ به إلى أن توجد سياسة حذف صريحة. |
+
+#### Write and recovery lifecycle / دورة الكتابة والاسترداد
+
+يكتب الـrelay سجل `prepared` durable **قبل** أي طلب HTTP. إذا نجحت الكتابة فقط، يستدعي `submitRelay()`؛ وبذلك لا يمكن أن تنجح الشبكة بلا أثر دائم لخطة التسليم. عند استجابة نجاح أو duplicate terminal، يرقّي السجل إلى `delivered` durable قبل محاولة إزالة العنصر من queue. عند فشل HTTP أو غموض النتيجة، يبقى `prepared` وتستمر queue/backoff؛ إعادة المحاولة تستخدم الـ`clientGeneratedId` نفسه وتستفيد من idempotency الخادم القائمة بدل افتراض أن الطلب لم يصل.
+
+عند إعادة تحميل الصفحة أو استئناف التطبيق، يعاد بناء كل نسخة durable بصورة مستقلة: queue snapshot مع journal co-located معها، ثم تطبق سجلات `delivered` بصورة idempotent بإزالة `queueItemId` المطابق و`reportFingerprint` المطابق من pending. لا يمزج recovery journal من replica مع queue replica أخرى. بعد reconstruction تختار آلية revision النسخة المعاد بناؤها ذات revision الأعلى كما تفعل queue حاليًا؛ ثم تكتب queue الناتجة durable وتحوّل سجلاتها المنطبقة إلى `committed`.
+
+لـIndexedDB، يكون تحديث queue+journal ضمن transaction واحدة حين يتاح ذلك. ولـlocalStorage fallback، يكون الترتيب recoverable: `prepared/delivered` أولًا، ثم queue snapshot، ثم `committed`. إذا وقع crash بين هذه الخطوات، يعيد recovery تطبيق journal بدل إعادة التقرير المسلَّم. لا يحذف journal قبل تحقق هذه العلاقة الدائمة.
+
+#### Commit, deletion, and failure handling / الالتزام والحذف والفشل
+
+السجل `delivered` لا يتحول إلى `committed` إلا إذا أثبتت نسخة queue الدائمة أن `queueItemId` أزيل من pending وأن انتقالات DLQ الأخرى ما زالت ممثلة. إذا نجحت كتابة queue وفشل تعليم السجل `committed`، يبقى السجل ويكون recovery idempotent؛ لا تعود الرسالة إلى pending. لا يجوز حذف سجل `committed` إلا بعد تحقق commit الدائم **وبموجب retention/deletion policy تشغيلية صريحة لاحقة**. لا تضيف هذه المرحلة أي مدة أو حد حجم أو FIFO trimming للـjournal أو DLQ.
+
+| موضع الفشل | السلوك الإلزامي |
+|---|---|
+| تعذّر حفظ `prepared` | لا يستدعى `submitRelay()`؛ يبقى pending وDLQ بدون تغيير ويسجل failure قابل للرصد. |
+| فشل/غموض HTTP بعد `prepared` | يبقى `prepared` وpending؛ يعاد الإرسال بالـ`clientGeneratedId` نفسه، لا بمعرّف جديد. |
+| نجاح HTTP وتعذّر حفظ `delivered` | لا يزال `prepared` قائمًا ولا تزال queue غير محذوفة؛ لا يدّعي العميل التسليم الدائم. recovery يعيد المحاولة idempotently. |
+| `delivered` محفوظ وتعذّر حفظ queue transition | يبقى `delivered` durable؛ recovery يزيل العنصر من reconstruction ولا يعيد إرساله. |
+| queue محفوظ وتعذّر تعليم/تنظيف `committed` | يبقى السجل؛ recovery يتحقق من queue commit ولا يعيد إدخال العنصر أو إرساله. |
+
+#### Required invariants and implementation tests / الثوابت والاختبارات المطلوبة
+
+| Invariant | اختبار implementation المطلوب |
+|---|---|
+| لا يبدأ HTTP dispatch بلا `prepared` durable. | فشل journal قبل الإرسال يمنع استدعاء `fetch` ويحافظ على pending. |
+| لا تضيع نتيجة `delivered` قبل أن تصبح queue transition durable. | نجاح HTTP ثم فشل queue persistence ثم reset module يعيد بناء queue من دون إعادة إرسال التقرير. |
+| `prepared` يعالج النتيجة الغامضة بأمان. | crash بعد dispatch وقبل `delivered` يعيد المحاولة بنفس `clientGeneratedId` فقط. |
+| DLQ source لا يحذف إذا لم يثبت انتقاله، وdelivered IDs لا تعود pending. | flush مختلط (success + dead-letter) مع فشل persistence ثم reload يعيد مصدر DLQ وحده ولا يعيد delivered ID. |
+| recovery لا يخلط نسخ التخزين. | IndexedDB/localStorage يحملان revisions مختلفة وسجلين مختلفين؛ يعاد بناء كل replica مع سجلها ثم تطبق precedence. |
+| `committed` لا يمسح ضمنيًا. | crash بعد queue commit وقبل journal finalization لا يعيد إرسال العنصر ولا يحذف السجل تلقائيًا. |
+
+**حد العقد:** journal يمنع فقدان knowledge المحلي عن استجابة نجاح ويحوّل إعادة المحاولة الغامضة إلى retry ثابت المعرف. لا يدّعي distributed exactly-once بين المتصفح والخادم؛ سلامة retry بعد failure غامض تعتمد على idempotency الحالية لـ`clientGeneratedId`. أي تغيير لاحق في مدة idempotency الخادم أو retention/deletion للـjournal يحتاج قرار policy منفصل.
 ---
 
 ## 8. Traffic & Scaling / التحمّل والتوسع

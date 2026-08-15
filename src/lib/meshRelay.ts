@@ -77,10 +77,29 @@ interface QueuedRelay {
   lastError?: string;
 }
 
+type RelayJournalState = "prepared" | "delivered" | "committed";
+type RelayDeliveryDisposition = "http_200" | "terminal_duplicate";
+
+interface RelayJournalEntry {
+  journalId: string;
+  queueItemId: string;
+  storageReplica: "co_located";
+  baseQueueRevision: number;
+  clientGeneratedId: string;
+  reportFingerprint: string;
+  report: Record<string, unknown>;
+  state: RelayJournalState;
+  createdAt: number;
+  updatedAt: number;
+  deliveredAt?: number;
+  deliveryDisposition?: RelayDeliveryDisposition;
+}
+
 interface RelayQueueState {
   revision: number;
   pending: QueuedRelay[];
   deadLetters: QueuedRelay[];
+  journal: RelayJournalEntry[];
 }
 
 export type RelayEnqueueResult =
@@ -140,10 +159,49 @@ function splitLegacyQueue(items: QueuedRelay[]): Pick<RelayQueueState, "pending"
   };
 }
 
+function normalizeJournal(value: unknown): RelayJournalEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries = new Map<string, RelayJournalEntry>();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const entry = candidate as Partial<RelayJournalEntry>;
+    if (
+      typeof entry.journalId !== "string" ||
+      typeof entry.queueItemId !== "string" ||
+      typeof entry.clientGeneratedId !== "string" ||
+      entry.clientGeneratedId.length < 8 ||
+      entry.clientGeneratedId.length > 64 ||
+      typeof entry.reportFingerprint !== "string" ||
+      !entry.report || typeof entry.report !== "object" ||
+      !["prepared", "delivered", "committed"].includes(entry.state ?? "") ||
+      typeof entry.createdAt !== "number" ||
+      typeof entry.updatedAt !== "number" ||
+      typeof entry.baseQueueRevision !== "number"
+    ) continue;
+    entries.set(entry.queueItemId, {
+      journalId: entry.journalId,
+      queueItemId: entry.queueItemId,
+      storageReplica: "co_located",
+      baseQueueRevision: entry.baseQueueRevision,
+      clientGeneratedId: entry.clientGeneratedId,
+      reportFingerprint: entry.reportFingerprint,
+      report: entry.report as Record<string, unknown>,
+      state: entry.state as RelayJournalState,
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt,
+      deliveredAt: typeof entry.deliveredAt === "number" ? entry.deliveredAt : undefined,
+      deliveryDisposition: entry.deliveryDisposition === "http_200" || entry.deliveryDisposition === "terminal_duplicate"
+        ? entry.deliveryDisposition
+        : undefined,
+    });
+  }
+  return [...entries.values()];
+}
+
 function normalizeRelayQueueState(value: unknown): RelayQueueState {
-  if (Array.isArray(value)) return { revision: 0, ...splitLegacyQueue(normalizeQueue(value)) };
-  if (!value || typeof value !== "object") return { revision: 0, pending: [], deadLetters: [] };
-  const snapshot = value as { revision?: unknown; items?: unknown; pending?: unknown; deadLetters?: unknown };
+  if (Array.isArray(value)) return { revision: 0, ...splitLegacyQueue(normalizeQueue(value)), journal: [] };
+  if (!value || typeof value !== "object") return { revision: 0, pending: [], deadLetters: [], journal: [] };
+  const snapshot = value as { revision?: unknown; items?: unknown; pending?: unknown; deadLetters?: unknown; journal?: unknown };
   const revision = typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision >= 0
     ? snapshot.revision
     : 0;
@@ -152,9 +210,77 @@ function normalizeRelayQueueState(value: unknown): RelayQueueState {
       revision,
       pending: normalizeQueue(snapshot.pending),
       deadLetters: normalizeQueue(snapshot.deadLetters),
+      journal: normalizeJournal(snapshot.journal),
     };
   }
-  return { revision, ...splitLegacyQueue(normalizeQueue(snapshot.items)) };
+  return { revision, ...splitLegacyQueue(normalizeQueue(snapshot.items)), journal: normalizeJournal(snapshot.journal) };
+}
+
+function relayReportWithClientGeneratedId(report: Record<string, unknown>): Record<string, unknown> {
+  const current = report.clientGeneratedId;
+  if (typeof current === "string" && current.length >= 8 && current.length <= 64) return report;
+  return { ...report, clientGeneratedId: queueItemId() };
+}
+
+function journalMatchesItem(entry: RelayJournalEntry, item: QueuedRelay): boolean {
+  return entry.queueItemId === item.id &&
+    entry.clientGeneratedId === item.report.clientGeneratedId &&
+    entry.reportFingerprint === hashString(JSON.stringify(item.report));
+}
+
+function rebuildPendingFromJournal(state: RelayQueueState): RelayQueueState {
+  const outcomes = state.journal.filter((entry) => entry.state === "delivered" || entry.state === "committed");
+  if (outcomes.length === 0) return state;
+  return {
+    ...state,
+    pending: state.pending.filter((item) => !outcomes.some((entry) => journalMatchesItem(entry, item))),
+  };
+}
+
+function upsertJournalEntry(entries: RelayJournalEntry[], entry: RelayJournalEntry): RelayJournalEntry[] {
+  return [...entries.filter((existing) => existing.queueItemId !== entry.queueItemId), entry];
+}
+
+function prepareJournalEntry(item: QueuedRelay, baseQueueRevision: number): RelayJournalEntry {
+  const now = Date.now();
+  const clientGeneratedId = item.report.clientGeneratedId as string;
+  return {
+    journalId: `journal-${item.id}`,
+    queueItemId: item.id,
+    storageReplica: "co_located",
+    baseQueueRevision,
+    clientGeneratedId,
+    reportFingerprint: hashString(JSON.stringify(item.report)),
+    report: item.report,
+    state: "prepared",
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function markJournalDelivered(
+  entries: RelayJournalEntry[],
+  item: QueuedRelay,
+  disposition: RelayDeliveryDisposition
+): RelayJournalEntry[] {
+  const existing = entries.find((entry) => entry.queueItemId === item.id);
+  if (!existing) return entries;
+  const now = Date.now();
+  return upsertJournalEntry(entries, {
+    ...existing,
+    state: "delivered",
+    updatedAt: now,
+    deliveredAt: now,
+    deliveryDisposition: disposition,
+  });
+}
+
+function commitDeliveredJournal(entries: RelayJournalEntry[], pending: QueuedRelay[]): RelayJournalEntry[] {
+  const now = Date.now();
+  return entries.map((entry) => {
+    if (entry.state !== "delivered" || pending.some((item) => journalMatchesItem(entry, item))) return entry;
+    return { ...entry, state: "committed", updatedAt: now };
+  });
 }
 
 function mergeVolatilePending(pending: QueuedRelay[]): QueuedRelay[] {
@@ -166,11 +292,11 @@ function mergeVolatilePending(pending: QueuedRelay[]): QueuedRelay[] {
 
 function readLocalQueueState(): RelayQueueState {
   try {
-    if (typeof localStorage === "undefined") return { revision: 0, pending: [], deadLetters: [] };
+    if (typeof localStorage === "undefined") return { revision: 0, pending: [], deadLetters: [], journal: [] };
     const raw = localStorage.getItem(RELAY_QUEUE_KEY);
     return normalizeRelayQueueState(raw ? JSON.parse(raw) : []);
   } catch {
-    return { revision: 0, pending: [], deadLetters: [] };
+    return { revision: 0, pending: [], deadLetters: [], journal: [] };
   }
 }
 
@@ -181,6 +307,7 @@ function writeLocalQueueState(state: RelayQueueState): boolean {
       revision: state.revision,
       pending: state.pending,
       deadLetters: state.deadLetters,
+      journal: state.journal,
     }));
     return true;
   } catch {
@@ -347,13 +474,13 @@ async function writeIndexedQueue(
 }
 
 async function readRelayQueueState(): Promise<RelayQueueState> {
-  const local = readLocalQueueState();
+  const local = rebuildPendingFromJournal(readLocalQueueState());
   queueRevision = Math.max(queueRevision, local.revision);
   const db = await openRelayDb();
   if (db) {
     const indexed = await readIndexedQueueState(db);
     if (indexed !== null) {
-      const selected = indexed.revision >= local.revision ? indexed : local;
+      const selected = rebuildPendingFromJournal(indexed.revision >= local.revision ? indexed : local);
       queueRevision = Math.max(queueRevision, selected.revision);
       return {
         ...selected,
@@ -372,6 +499,7 @@ async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): P
     revision: queueRevision + 1,
     pending: state.pending,
     deadLetters: state.deadLetters,
+    journal: state.journal,
   } satisfies RelayQueueState;
   const db = await openRelayDb();
   if (db) {
@@ -397,10 +525,11 @@ async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): P
 function makeCapacityTransition(state: RelayQueueState, item: QueuedRelay, now: number): {
   pending: QueuedRelay[];
   deadLetters: QueuedRelay[];
+  journal: RelayJournalEntry[];
   requiresDlq: boolean;
 } {
   if (state.pending.length < MAX_QUEUE) {
-    return { pending: [...state.pending, item], deadLetters: state.deadLetters, requiresDlq: false };
+    return { pending: [...state.pending, item], deadLetters: state.deadLetters, journal: state.journal, requiresDlq: false };
   }
   const [oldest, ...remaining] = [...state.pending].sort((a, b) => a.ts - b.ts);
   return {
@@ -411,6 +540,7 @@ function makeCapacityTransition(state: RelayQueueState, item: QueuedRelay, now: 
       deadLetteredAt: now,
       lastError: "capacity_exceeded",
     }],
+    journal: state.journal,
     requiresDlq: true,
   };
 }
@@ -519,20 +649,70 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
   return report;
 }
 
-export async function submitRelay(report: Record<string, unknown>): Promise<boolean> {
+async function submitRelayOutcome(report: Record<string, unknown>): Promise<RelayDeliveryDisposition | null> {
   try {
     const res = await fetch("/api/reports", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(report),
     });
-    if (res.status === 200) return true;
-    if (res.status !== 409) return false;
+    if (res.status === 200) return "http_200";
+    if (res.status !== 409) return null;
     const body = await res.json().catch(() => null) as { code?: unknown } | null;
-    return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code);
+    return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code)
+      ? "terminal_duplicate"
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export async function submitRelay(report: Record<string, unknown>): Promise<boolean> {
+  return (await submitRelayOutcome(report)) !== null;
+}
+
+async function persistPreparedJournal(item: QueuedRelay): Promise<RelayJournalEntry | null> {
+  return serializeQueueMutation(async () => {
+    const state = await readRelayQueueState();
+    const existing = state.journal.find((entry) => entry.queueItemId === item.id);
+    if (existing?.state === "delivered" || existing?.state === "committed") return null;
+    const prepared = existing ?? prepareJournalEntry(item, state.revision);
+    const storage = await writeRelayQueueState({
+      pending: state.pending.map((candidate) => candidate.id === item.id ? item : candidate),
+      deadLetters: state.deadLetters,
+      journal: upsertJournalEntry(state.journal, prepared),
+    });
+    return storage === "persistent" ? prepared : null;
+  });
+}
+
+async function persistDeliveredJournal(
+  item: QueuedRelay,
+  disposition: RelayDeliveryDisposition
+): Promise<boolean> {
+  return serializeQueueMutation(async () => {
+    const state = await readRelayQueueState();
+    const journal = markJournalDelivered(state.journal, item, disposition);
+    if (journal === state.journal) return false;
+    return (await writeRelayQueueState({
+      pending: state.pending,
+      deadLetters: state.deadLetters,
+      journal,
+    })) === "persistent";
+  });
+}
+
+async function recoverDeliveredJournal(): Promise<void> {
+  await serializeQueueMutation(async () => {
+    const state = await readRelayQueueState();
+    const journal = commitDeliveredJournal(state.journal, state.pending);
+    if (journal.every((entry, index) => entry === state.journal[index])) return;
+    await writeRelayQueueState({
+      pending: state.pending,
+      deadLetters: state.deadLetters,
+      journal,
+    });
+  });
 }
 
 async function handleRelayMessage(raw: string): Promise<void> {
@@ -566,7 +746,13 @@ async function handleRelayMessage(raw: string): Promise<void> {
 
 export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqueueResult> {
   const now = Date.now();
-  const item = { id: queueItemId(), report, ts: now, attempts: 0, nextAttemptAt: now } satisfies QueuedRelay;
+  const item = {
+    id: queueItemId(),
+    report: relayReportWithClientGeneratedId(report),
+    ts: now,
+    attempts: 0,
+    nextAttemptAt: now,
+  } satisfies QueuedRelay;
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
     const transition = makeCapacityTransition(state, item, now);
@@ -583,6 +769,7 @@ export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqu
 }
 
 async function flushQueueInternal(): Promise<void> {
+  await recoverDeliveredJournal();
   const now = Date.now();
   const state = await readRelayQueueState();
   if (state.pending.length === 0) return;
@@ -596,16 +783,20 @@ async function flushQueueInternal(): Promise<void> {
       continue;
     }
     if (item.nextAttemptAt > now) continue;
-    if (await submitRelay(item.report)) {
+    const journalItem = { ...item, report: relayReportWithClientGeneratedId(item.report) } satisfies QueuedRelay;
+    if (!(await persistPreparedJournal(journalItem))) continue;
+    const disposition = await submitRelayOutcome(journalItem.report);
+    if (disposition && await persistDeliveredJournal(journalItem, disposition)) {
       processedIds.add(item.id);
       changed = true;
       continue;
     }
-    const attempts = item.attempts + 1;
+    if (disposition) continue;
+    const attempts = journalItem.attempts + 1;
     const deadLetter = attempts >= RELAY_MAX_QUEUE_ATTEMPTS;
     const backoff = Math.min(RELAY_BASE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), RELAY_MAX_RETRY_BACKOFF_MS);
     updatedItems.set(item.id, {
-      ...item,
+      ...journalItem,
       attempts,
       nextAttemptAt: now + backoff,
       deadLetter,
@@ -620,6 +811,7 @@ async function flushQueueInternal(): Promise<void> {
   // Re-read after awaits: enqueueRelay may have appended a newer item while
   // network submissions were in flight. Remove only the IDs from this flush;
   // never overwrite the newer snapshot with the stale pre-await queue.
+  let queueCommitted = false;
   await serializeQueueMutation(async () => {
     const latestState = await readRelayQueueState();
     const deadLetterMoves: QueuedRelay[] = [];
@@ -636,7 +828,12 @@ async function flushQueueInternal(): Promise<void> {
     const storage = await writeRelayQueueState({
       pending: nextPending,
       deadLetters: [...latestState.deadLetters, ...deadLetterMoves],
+      journal: latestState.journal,
     });
+    if (storage === "persistent") {
+      queueCommitted = true;
+      return;
+    }
     if (storage === "failed") {
       // A failed DLQ write must retain the source pending item, but a report
       // already accepted by the server must not be replayed from stale storage.
@@ -648,6 +845,7 @@ async function flushQueueInternal(): Promise<void> {
       console.error("[MeshRelay] Queue reconciliation persistence unavailable; preserving pending source items");
     }
   });
+  if (queueCommitted) await recoverDeliveredJournal();
 }
 
 export function flushQueue(): Promise<void> {
