@@ -290,14 +290,28 @@ async function writeIndexedQueue(
 ): Promise<"written" | "failed" | "timedOut"> {
   return new Promise((resolve) => {
     let settled = false;
+    let transaction: IDBTransaction | null = null;
     const fallbackTimer = globalThis.setTimeout(() => {
-      if (!settled) {
+      if (settled) return;
+      if (!transaction) {
         settled = true;
-        resolve("timedOut");
+        resolve("failed");
+        return;
       }
+      try {
+        transaction.abort();
+      } catch {
+        // If commit has already started, abort is no longer safe. Wait for the
+        // actual request result instead of returning a false failure to callers.
+        return;
+      }
+      if (settled) return;
+      settled = true;
+      resolve("timedOut");
     }, 100);
     try {
-      const request = db.transaction(RELAY_STORE_NAME, "readwrite").objectStore(RELAY_STORE_NAME).put(state, "state");
+      transaction = db.transaction(RELAY_STORE_NAME, "readwrite");
+      const request = transaction.objectStore(RELAY_STORE_NAME).put(state, "state");
       request.onsuccess = () => {
         if (settled) return;
         settled = true;

@@ -23,30 +23,41 @@ function storedSnapshot(): Snapshot {
 function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot) {
   let stored: unknown = initialSnapshot;
   let writeCount = 0;
+  let abortCount = 0;
   const objectStoreNames = { contains: () => true };
-  const objectStore = {
-    get: () => {
-      const request: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
-      queueMicrotask(() => {
-        request.result = stored;
-        request.onsuccess?.();
-      });
-      return request;
-    },
-    put: (value: unknown) => {
-      const request: { onsuccess?: () => void; onerror?: () => void } = {};
-      writeCount += 1;
-      globalThis.setTimeout(() => {
-        stored = value;
-        request.onsuccess?.();
-      }, writeDelayMs);
-      return request;
-    },
-  };
   const db = {
     objectStoreNames,
-    createObjectStore: () => objectStore,
-    transaction: () => ({ objectStore: () => objectStore }),
+    createObjectStore: () => ({}),
+    transaction: () => {
+      let aborted = false;
+      const objectStore = {
+        get: () => {
+          const request: { result?: unknown; onsuccess?: () => void; onerror?: () => void } = {};
+          queueMicrotask(() => {
+            request.result = stored;
+            request.onsuccess?.();
+          });
+          return request;
+        },
+        put: (value: unknown) => {
+          const request: { onsuccess?: () => void; onerror?: () => void } = {};
+          writeCount += 1;
+          globalThis.setTimeout(() => {
+            if (aborted) return;
+            stored = value;
+            request.onsuccess?.();
+          }, writeDelayMs);
+          return request;
+        },
+      };
+      return {
+        objectStore: () => objectStore,
+        abort: () => {
+          aborted = true;
+          abortCount += 1;
+        },
+      };
+    },
   };
   return {
     factory: {
@@ -64,6 +75,7 @@ function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot
     } as unknown as IDBFactory,
     getStored: () => stored as Snapshot | undefined,
     getWriteCount: () => writeCount,
+    getAbortCount: () => abortCount,
   };
 }
 
@@ -95,7 +107,8 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId)).toEqual(["late-a", "late-b"]);
 
     await vi.advanceTimersByTimeAsync(100);
-    expect(indexed.getStored()?.revision).toBe(1);
+    expect(indexed.getStored()).toBeUndefined();
+    expect(indexed.getAbortCount()).toBe(1);
 
     vi.resetModules();
     const afterReload = await import("../src/lib/meshRelay.js");
@@ -130,5 +143,31 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
       .toEqual(["indexed-revision-12", "after-reload"]);
     expect(storedSnapshot().revision).toBe(13);
+  });
+
+  it("aborts a timed-out DLQ transition before returning dead_letter_unavailable", async () => {
+    const pending = Array.from({ length: 50 }, (_, index) => ({
+      report: { clientGeneratedId: `source-${index}` },
+      id: `source-${index}`,
+      ts: index,
+      attempts: 0,
+      nextAttemptAt: 0,
+    }));
+    const indexed = createDelayedIndexedDb(200, { revision: 10, pending, deadLetters: [] });
+    vi.stubGlobal("indexedDB", indexed.factory);
+    vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const relay = await import("../src/lib/meshRelay.js");
+
+    const enqueue = relay.enqueueRelay({ clientGeneratedId: "rejected-after-timeout" });
+    await vi.advanceTimersByTimeAsync(101);
+    await expect(enqueue).resolves.toEqual({ accepted: false, reason: "dead_letter_unavailable" });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(indexed.getAbortCount()).toBe(1);
+    expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
+      .toEqual(Array.from({ length: 50 }, (_, index) => `source-${index}`));
+    expect(indexed.getStored()?.deadLetters).toEqual([]);
   });
 });
