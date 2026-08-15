@@ -733,11 +733,13 @@ async function handleRelayMessage(raw: string): Promise<void> {
   const powOk = await verifyPoW(powPrefix, powNonce, powDifficulty).catch(() => false);
   if (!powOk) return;
 
-  // Anti-duplicate: the same gossip may arrive from several peers.
-  if (!checkAndRecordRelayHash(raw)) return;
-
   const report = buildRelayedPayload(envelope);
   if (!report) return;
+
+  // Anti-duplicate: only a report that passed every schema gate may consume a
+  // bounded replay-cache slot. Otherwise valid-PoW malformed inputs could
+  // exhaust the cache and deny later valid reports for the retention window.
+  if (!checkAndRecordRelayHash(raw)) return;
 
   // Online ingress shares the same durable lifecycle as deferred retries:
   // enqueue creates the stable clientGeneratedId, then flush persists

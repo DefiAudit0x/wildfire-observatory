@@ -36,14 +36,14 @@ function storedState(): {
   return JSON.parse(storage.get("mesh_relay_queue") || '{"pending":[],"journal":[]}');
 }
 
-function meshReport(clientGeneratedId?: string): string {
+function meshReport(clientGeneratedId?: string, powNonce = 1): string {
   return JSON.stringify({
     type: "report",
     lat: 36.75,
     lng: 3.05,
     ts: Date.now(),
     powPrefix: "00000000",
-    powNonce: 1,
+    powNonce,
     powDifficulty: 8,
     payload: JSON.stringify({
       locationName: "Algiers Forest",
@@ -53,6 +53,19 @@ function meshReport(clientGeneratedId?: string): string {
       reporterType: "citizen",
       ...(clientGeneratedId ? { clientGeneratedId } : {}),
     }),
+  });
+}
+
+function malformedMeshMessage(powNonce: number): string {
+  return JSON.stringify({
+    type: "report",
+    lat: 36.75,
+    lng: 3.05,
+    ts: Date.now(),
+    powPrefix: "00000000",
+    powNonce,
+    powDifficulty: 8,
+    payload: JSON.stringify({ locationName: "x" }),
   });
 }
 
@@ -143,5 +156,22 @@ describe("mesh relay online ingress journal", () => {
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).clientGeneratedId).toBe(firstId);
     expect(storedState().pending).toEqual([]);
     expect(storedState().journal[0]?.state).toBe("committed");
+  });
+
+  it("does not let PoW-valid malformed payloads exhaust replay capacity before a valid report", async () => {
+    const relay = await loadRelay();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    relay.initMeshRelay();
+
+    for (let nonce = 0; nonce < 2000; nonce++) {
+      bridgeMock.handler?.(malformedMeshMessage(nonce));
+    }
+    await vi.waitFor(() => expect(bridgeMock.verifyPoW).toHaveBeenCalledTimes(2000));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    bridgeMock.handler?.(meshReport(undefined, 2001));
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   });
 });
