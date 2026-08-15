@@ -10,10 +10,14 @@ Object.defineProperty(globalThis, "localStorage", {
   },
 });
 
-type Snapshot = { revision: number; items: Array<{ report: { clientGeneratedId: string } }> };
+type Snapshot = {
+  revision: number;
+  pending: Array<{ report: { clientGeneratedId: string } }>;
+  deadLetters: Array<{ report: { clientGeneratedId: string } }>;
+};
 
 function storedSnapshot(): Snapshot {
-  return JSON.parse(storage.get("mesh_relay_queue") || '{"revision":0,"items":[]}') as Snapshot;
+  return JSON.parse(storage.get("mesh_relay_queue") || '{"revision":0,"pending":[],"deadLetters":[]}') as Snapshot;
 }
 
 function createDelayedIndexedDb(writeDelayMs: number, initialSnapshot?: Snapshot) {
@@ -88,7 +92,7 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     await relay.enqueueRelay({ clientGeneratedId: "late-b" });
     expect(indexed.getWriteCount()).toBe(1);
     expect(storedSnapshot().revision).toBe(2);
-    expect(storedSnapshot().items.map((item) => item.report.clientGeneratedId)).toEqual(["late-a", "late-b"]);
+    expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId)).toEqual(["late-a", "late-b"]);
 
     await vi.advanceTimersByTimeAsync(100);
     expect(indexed.getStored()?.revision).toBe(1);
@@ -100,18 +104,20 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     await third;
 
     expect(storedSnapshot().revision).toBe(3);
-    expect(storedSnapshot().items.map((item) => item.report.clientGeneratedId))
+    expect(storedSnapshot().pending.map((item) => item.report.clientGeneratedId))
       .toEqual(["late-a", "late-b", "late-c"]);
   });
 
   it("selects a higher IndexedDB revision than localStorage after reload", async () => {
     const indexed = createDelayedIndexedDb(0, {
       revision: 12,
-      items: [{ report: { clientGeneratedId: "indexed-revision-12" } }],
+      pending: [{ report: { clientGeneratedId: "indexed-revision-12" } }],
+      deadLetters: [],
     });
     storage.set("mesh_relay_queue", JSON.stringify({
       revision: 11,
-      items: [{ report: { clientGeneratedId: "local-revision-11" } }],
+      pending: [{ report: { clientGeneratedId: "local-revision-11" } }],
+      deadLetters: [],
     }));
     vi.stubGlobal("indexedDB", indexed.factory);
 
@@ -121,7 +127,7 @@ describe("mesh relay IndexedDB timeout recovery", () => {
     await enqueue;
 
     expect(indexed.getStored()?.revision).toBe(13);
-    expect(indexed.getStored()?.items.map((item) => item.report.clientGeneratedId))
+    expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
       .toEqual(["indexed-revision-12", "after-reload"]);
     expect(storedSnapshot().revision).toBe(13);
   });

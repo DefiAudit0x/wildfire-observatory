@@ -41,7 +41,6 @@ const RELAY_DB_NAME = "wildfire_observatory_mesh";
 const RELAY_DB_VERSION = 1;
 const RELAY_STORE_NAME = "relay_queue";
 const MAX_QUEUE = 50;
-const MAX_DEAD_LETTERS = 50;
 const MAX_SEEN_HASHES = 2000;
 export const RELAY_REPLAY_RETENTION_MS = MESH_MESSAGE_TTL_MS + MESH_MESSAGE_CLOCK_SKEW_MS;
 export const RELAY_MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000;
@@ -55,7 +54,7 @@ const TERMINAL_DUPLICATE_CODES = new Set([
 const seenRelayHashes = new Map<string, number>();
 let relayDbPromise: Promise<IDBDatabase | null> | null = null;
 let indexedDbDisabledForSession = false;
-let volatileQueue: QueuedRelay[] = [];
+let volatilePending: QueuedRelay[] = [];
 let flushInFlight: Promise<void> | null = null;
 let queueMutationTail: Promise<void> = Promise.resolve();
 let queueRevision = 0;
@@ -77,10 +76,15 @@ interface QueuedRelay {
   lastError?: string;
 }
 
-interface QueueSnapshot {
+interface RelayQueueState {
   revision: number;
-  items: QueuedRelay[];
+  pending: QueuedRelay[];
+  deadLetters: QueuedRelay[];
 }
+
+export type RelayEnqueueResult =
+  | { accepted: true; storage: "persistent" | "volatile" }
+  | { accepted: false; reason: "dead_letter_unavailable" };
 
 function queueItemId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -128,60 +132,53 @@ function normalizeQueue(value: unknown): QueuedRelay[] {
     .map(normalizeQueueItem);
 }
 
-function enforceQueueCapacity(queue: QueuedRelay[], now = Date.now()): QueuedRelay[] {
-  const byAge = (a: QueuedRelay, b: QueuedRelay) => a.ts - b.ts;
-  const byDeadLetteredAt = (a: QueuedRelay, b: QueuedRelay) =>
-    (a.deadLetteredAt ?? a.ts) - (b.deadLetteredAt ?? b.ts);
-  const pending = queue.filter((item) => !item.deadLetter).sort(byAge);
-  const existingDeadLetters = queue.filter((item) => item.deadLetter).sort(byDeadLetteredAt);
-  const overflow = pending.splice(0, Math.max(0, pending.length - MAX_QUEUE)).map((item) => ({
-    ...item,
-    deadLetter: true,
-    deadLetteredAt: now,
-    lastError: "capacity_exceeded",
-  }));
-  const deadLetters = [...existingDeadLetters, ...overflow]
-    .sort(byDeadLetteredAt)
-    .slice(-MAX_DEAD_LETTERS);
-  return [...deadLetters, ...pending];
-}
-
-function normalizeQueueSnapshot(value: unknown): QueueSnapshot {
-  if (Array.isArray(value)) return { revision: 0, items: normalizeQueue(value) };
-  if (!value || typeof value !== "object") return { revision: 0, items: [] };
-  const snapshot = value as { revision?: unknown; items?: unknown };
+function splitLegacyQueue(items: QueuedRelay[]): Pick<RelayQueueState, "pending" | "deadLetters"> {
   return {
-    revision: typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision >= 0
-      ? snapshot.revision
-      : 0,
-    items: normalizeQueue(snapshot.items),
+    pending: items.filter((item) => !item.deadLetter),
+    deadLetters: items.filter((item) => item.deadLetter),
   };
 }
 
-function mergeVolatileQueue(queue: QueuedRelay[]): QueuedRelay[] {
-  const byId = new Map(queue.map((item) => [item.id, item]));
-  for (const item of volatileQueue) {
-    byId.set(item.id, item);
+function normalizeRelayQueueState(value: unknown): RelayQueueState {
+  if (Array.isArray(value)) return { revision: 0, ...splitLegacyQueue(normalizeQueue(value)) };
+  if (!value || typeof value !== "object") return { revision: 0, pending: [], deadLetters: [] };
+  const snapshot = value as { revision?: unknown; items?: unknown; pending?: unknown; deadLetters?: unknown };
+  const revision = typeof snapshot.revision === "number" && Number.isSafeInteger(snapshot.revision) && snapshot.revision >= 0
+    ? snapshot.revision
+    : 0;
+  if (snapshot.pending !== undefined || snapshot.deadLetters !== undefined) {
+    return {
+      revision,
+      pending: normalizeQueue(snapshot.pending),
+      deadLetters: normalizeQueue(snapshot.deadLetters),
+    };
   }
-  return enforceQueueCapacity([...byId.values()]);
+  return { revision, ...splitLegacyQueue(normalizeQueue(snapshot.items)) };
 }
 
-function readLocalQueue(): QueueSnapshot {
+function mergeVolatilePending(pending: QueuedRelay[]): QueuedRelay[] {
+  const byId = new Map(pending.map((item) => [item.id, item]));
+  for (const item of volatilePending) byId.set(item.id, item);
+  return [...byId.values()];
+}
+
+function readLocalQueueState(): RelayQueueState {
   try {
-    if (typeof localStorage === "undefined") return { revision: 0, items: [] };
+    if (typeof localStorage === "undefined") return { revision: 0, pending: [], deadLetters: [] };
     const raw = localStorage.getItem(RELAY_QUEUE_KEY);
-    return normalizeQueueSnapshot(raw ? JSON.parse(raw) : []);
+    return normalizeRelayQueueState(raw ? JSON.parse(raw) : []);
   } catch {
-    return { revision: 0, items: [] };
+    return { revision: 0, pending: [], deadLetters: [] };
   }
 }
 
-function writeLocalQueue(snapshot: QueueSnapshot): boolean {
+function writeLocalQueueState(state: RelayQueueState): boolean {
   try {
     if (typeof localStorage === "undefined") return false;
     localStorage.setItem(RELAY_QUEUE_KEY, JSON.stringify({
-      revision: snapshot.revision,
-      items: snapshot.items,
+      revision: state.revision,
+      pending: state.pending,
+      deadLetters: state.deadLetters,
     }));
     return true;
   } catch {
@@ -237,7 +234,7 @@ function openRelayDb(): Promise<IDBDatabase | null> {
   return relayDbPromise;
 }
 
-async function readIndexedQueue(db: IDBDatabase): Promise<QueueSnapshot | null> {
+async function readIndexedQueueState(db: IDBDatabase): Promise<RelayQueueState | null> {
   return new Promise((resolve) => {
     let settled = false;
     const fallbackTimer = globalThis.setTimeout(() => {
@@ -247,12 +244,29 @@ async function readIndexedQueue(db: IDBDatabase): Promise<QueueSnapshot | null> 
       }
     }, 100);
     try {
-      const request = db.transaction(RELAY_STORE_NAME, "readonly").objectStore(RELAY_STORE_NAME).get("items");
+      const store = db.transaction(RELAY_STORE_NAME, "readonly").objectStore(RELAY_STORE_NAME);
+      const request = store.get("state");
       request.onsuccess = () => {
         if (settled) return;
-        settled = true;
-        globalThis.clearTimeout(fallbackTimer);
-        resolve(normalizeQueueSnapshot(request.result));
+        if (request.result !== undefined) {
+          settled = true;
+          globalThis.clearTimeout(fallbackTimer);
+          resolve(normalizeRelayQueueState(request.result));
+          return;
+        }
+        const legacyRequest = store.get("items");
+        legacyRequest.onsuccess = () => {
+          if (settled) return;
+          settled = true;
+          globalThis.clearTimeout(fallbackTimer);
+          resolve(normalizeRelayQueueState(legacyRequest.result));
+        };
+        legacyRequest.onerror = () => {
+          if (settled) return;
+          settled = true;
+          globalThis.clearTimeout(fallbackTimer);
+          resolve(null);
+        };
       };
       request.onerror = () => {
         if (settled) return;
@@ -272,7 +286,7 @@ async function readIndexedQueue(db: IDBDatabase): Promise<QueueSnapshot | null> 
 
 async function writeIndexedQueue(
   db: IDBDatabase,
-  snapshot: QueueSnapshot
+  state: RelayQueueState
 ): Promise<"written" | "failed" | "timedOut"> {
   return new Promise((resolve) => {
     let settled = false;
@@ -283,10 +297,7 @@ async function writeIndexedQueue(
       }
     }, 100);
     try {
-      const request = db.transaction(RELAY_STORE_NAME, "readwrite").objectStore(RELAY_STORE_NAME).put({
-        revision: snapshot.revision,
-        items: snapshot.items,
-      }, "items");
+      const request = db.transaction(RELAY_STORE_NAME, "readwrite").objectStore(RELAY_STORE_NAME).put(state, "state");
       request.onsuccess = () => {
         if (settled) return;
         settled = true;
@@ -309,43 +320,71 @@ async function writeIndexedQueue(
   });
 }
 
-async function readQueue(): Promise<QueuedRelay[]> {
-  const local = readLocalQueue();
+async function readRelayQueueState(): Promise<RelayQueueState> {
+  const local = readLocalQueueState();
   queueRevision = Math.max(queueRevision, local.revision);
   const db = await openRelayDb();
   if (db) {
-    const indexed = await readIndexedQueue(db);
+    const indexed = await readIndexedQueueState(db);
     if (indexed !== null) {
-      queueRevision = Math.max(queueRevision, indexed.revision);
-      return mergeVolatileQueue(indexed.revision >= local.revision ? indexed.items : local.items);
+      const selected = indexed.revision >= local.revision ? indexed : local;
+      queueRevision = Math.max(queueRevision, selected.revision);
+      return {
+        ...selected,
+        pending: mergeVolatilePending(selected.pending),
+      };
     }
   }
-  return mergeVolatileQueue(local.items);
+  return {
+    ...local,
+    pending: mergeVolatilePending(local.pending),
+  };
 }
 
-async function writeQueue(queue: QueuedRelay[]): Promise<boolean> {
-  const boundedQueue = enforceQueueCapacity(queue);
+async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): Promise<"persistent" | "failed"> {
   const snapshot = {
     revision: queueRevision + 1,
-    items: boundedQueue,
-  } satisfies QueueSnapshot;
-  queueRevision = snapshot.revision;
+    pending: state.pending,
+    deadLetters: state.deadLetters,
+  } satisfies RelayQueueState;
   const db = await openRelayDb();
   if (db) {
     const result = await writeIndexedQueue(db, snapshot);
     if (result === "written") {
-      writeLocalQueue(snapshot);
-      volatileQueue = [];
-      return true;
+      queueRevision = snapshot.revision;
+      writeLocalQueueState(snapshot);
+      volatilePending = [];
+      return "persistent";
     }
     if (result === "timedOut") indexedDbDisabledForSession = true;
   }
-  if (writeLocalQueue(snapshot)) {
-    volatileQueue = [];
-    return true;
+  if (writeLocalQueueState(snapshot)) {
+    queueRevision = snapshot.revision;
+    volatilePending = [];
+    return "persistent";
   }
-  console.error("[MeshRelay] Queue persistence unavailable; retaining item in memory only");
-  return false;
+  return "failed";
+}
+
+function makeCapacityTransition(state: RelayQueueState, item: QueuedRelay, now: number): {
+  pending: QueuedRelay[];
+  deadLetters: QueuedRelay[];
+  requiresDlq: boolean;
+} {
+  if (state.pending.length < MAX_QUEUE) {
+    return { pending: [...state.pending, item], deadLetters: state.deadLetters, requiresDlq: false };
+  }
+  const [oldest, ...remaining] = [...state.pending].sort((a, b) => a.ts - b.ts);
+  return {
+    pending: [...remaining, item],
+    deadLetters: [...state.deadLetters, {
+      ...oldest,
+      deadLetter: true,
+      deadLetteredAt: now,
+      lastError: "capacity_exceeded",
+    }],
+    requiresDlq: true,
+  };
 }
 
 function serializeQueueMutation<T>(operation: () => Promise<T>): Promise<T> {
@@ -497,25 +536,32 @@ async function handleRelayMessage(raw: string): Promise<void> {
   }
 }
 
-export function enqueueRelay(report: Record<string, unknown>): Promise<void> {
+export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqueueResult> {
   const now = Date.now();
   const item = { id: queueItemId(), report, ts: now, attempts: 0, nextAttemptAt: now } satisfies QueuedRelay;
   return serializeQueueMutation(async () => {
-    const queue = await readQueue();
-    queue.push(item);
-    if (!(await writeQueue(queue))) volatileQueue = enforceQueueCapacity([...volatileQueue, item]);
+    const state = await readRelayQueueState();
+    const transition = makeCapacityTransition(state, item, now);
+    const storage = await writeRelayQueueState(transition);
+    if (storage === "persistent") return { accepted: true, storage };
+    if (transition.requiresDlq) {
+      console.error("[MeshRelay] Rejecting relay enqueue: dead-letter persistence unavailable");
+      return { accepted: false, reason: "dead_letter_unavailable" };
+    }
+    volatilePending = [...state.pending, item];
+    console.error("[MeshRelay] Queue persistence unavailable; retaining pending item in memory only");
+    return { accepted: true, storage: "volatile" };
   });
 }
 
 async function flushQueueInternal(): Promise<void> {
   const now = Date.now();
-  const queue = await readQueue();
-  if (queue.length === 0) return;
+  const state = await readRelayQueueState();
+  if (state.pending.length === 0) return;
   const processedIds = new Set<string>();
   const updatedItems = new Map<string, QueuedRelay>();
   let changed = false;
-  for (const item of queue) {
-    if (item.deadLetter) continue;
+  for (const item of state.pending) {
     if (now - item.ts >= RELAY_MAX_QUEUE_AGE_MS) {
       updatedItems.set(item.id, { ...item, deadLetter: true, deadLetteredAt: now, lastError: "expired" });
       changed = true;
@@ -547,11 +593,28 @@ async function flushQueueInternal(): Promise<void> {
   // network submissions were in flight. Remove only the IDs from this flush;
   // never overwrite the newer snapshot with the stale pre-await queue.
   await serializeQueueMutation(async () => {
-    const latestQueue = await readQueue();
-    const nextQueue = latestQueue
+    const latestState = await readRelayQueueState();
+    const deadLetterMoves: QueuedRelay[] = [];
+    const nextPending = latestState.pending
       .filter((item) => !processedIds.has(item.id))
-      .map((item) => updatedItems.get(item.id) ?? item);
-    if (!(await writeQueue(nextQueue))) volatileQueue = enforceQueueCapacity(nextQueue);
+      .flatMap((item) => {
+        const updated = updatedItems.get(item.id) ?? item;
+        if (updated.deadLetter) {
+          deadLetterMoves.push(updated);
+          return [];
+        }
+        return [updated];
+      });
+    const storage = await writeRelayQueueState({
+      pending: nextPending,
+      deadLetters: [...latestState.deadLetters, ...deadLetterMoves],
+    });
+    if (storage === "failed") {
+      // A failed DLQ write must not delete the source pending item. Keep the
+      // pre-transition pending set in volatile memory for a later retry.
+      volatilePending = deadLetterMoves.length > 0 ? latestState.pending : nextPending;
+      console.error("[MeshRelay] Queue reconciliation persistence unavailable; preserving pending source items");
+    }
   });
 }
 

@@ -28,9 +28,16 @@ function storedQueue(): Array<{
 }> {
   const value = JSON.parse(storage.get("mesh_relay_queue") || "[]") as unknown;
   if (Array.isArray(value)) return value;
-  return value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items)
-    ? (value as { items: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean; lastError?: string }> }).items
-    : [];
+  if (!value || typeof value !== "object") return [];
+  const state = value as {
+    items?: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean; lastError?: string }>;
+    pending?: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean; lastError?: string }>;
+    deadLetters?: Array<{ report: { clientGeneratedId?: string }; attempts?: number; nextAttemptAt?: number; deadLetter?: boolean; lastError?: string }>;
+  };
+  if (Array.isArray(state.pending) || Array.isArray(state.deadLetters)) {
+    return [...(state.deadLetters ?? []), ...(state.pending ?? [])];
+  }
+  return Array.isArray(state.items) ? state.items : [];
 }
 
 describe("mesh relay queue concurrency", () => {
@@ -102,21 +109,65 @@ describe("mesh relay queue concurrency", () => {
     expect(pending.some((item) => item.report.clientGeneratedId === "capacity-50")).toBe(true);
   });
 
-  it("bounds volatile pending and dead-letter history when every persistence layer fails", async () => {
+  it("keeps DLQ separate from pending without silently truncating dead-letter history", async () => {
+    for (let i = 0; i < 101; i++) {
+      await enqueueRelay({ clientGeneratedId: `durable-dlq-${i}` });
+    }
+
+    const saved = storedQueue();
+    expect(saved).toHaveLength(101);
+    expect(saved.filter((item) => !item.deadLetter)).toHaveLength(50);
+    expect(saved.filter((item) => item.deadLetter && item.lastError === "capacity_exceeded")).toHaveLength(51);
+    expect(saved.map((item) => item.report.clientGeneratedId).sort())
+      .toEqual(Array.from({ length: 101 }, (_, index) => `durable-dlq-${index}`).sort());
+  });
+
+  it("rejects a capacity overflow when DLQ persistence fails and preserves the pending source", async () => {
     const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
       throw new Error("quota");
     });
-    for (let i = 0; i < 101; i++) {
-      await enqueueRelay({ clientGeneratedId: `volatile-capacity-${i}` });
+    for (let i = 0; i < 50; i++) {
+      await expect(enqueueRelay({ clientGeneratedId: `volatile-capacity-${i}` })).resolves.toMatchObject({
+        accepted: true,
+        storage: "volatile",
+      });
     }
+    await expect(enqueueRelay({ clientGeneratedId: "rejected-capacity" })).resolves.toEqual({
+      accepted: false,
+      reason: "dead_letter_unavailable",
+    });
+
+    setItem.mockRestore();
+    await expect(enqueueRelay({ clientGeneratedId: "recovered-capacity" })).resolves.toMatchObject({ accepted: true });
+    const saved = storedQueue();
+    expect(saved).toHaveLength(51);
+    expect(saved.filter((item) => !item.deadLetter)).toHaveLength(50);
+    expect(saved.filter((item) => item.deadLetter && item.lastError === "capacity_exceeded")).toHaveLength(1);
+    expect(saved.some((item) => item.report.clientGeneratedId === "rejected-capacity")).toBe(false);
+    expect(saved.some((item) => item.report.clientGeneratedId === "volatile-capacity-0" && item.deadLetter)).toBe(true);
+    expect(saved.some((item) => item.report.clientGeneratedId === "recovered-capacity" && !item.deadLetter)).toBe(true);
+  });
+
+  it("preserves a pending source when flush cannot persist its DLQ transition", async () => {
+    await enqueueRelay({ clientGeneratedId: "expired-dlq-source" });
+    const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    persisted.pending[0].ts = Date.now() - RELAY_MAX_QUEUE_AGE_MS - 1;
+    storage.set("mesh_relay_queue", JSON.stringify(persisted));
+
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await flushQueue();
     setItem.mockRestore();
 
-    await enqueueRelay({ clientGeneratedId: "volatile-capacity-final" });
+    await enqueueRelay({ clientGeneratedId: "after-dlq-failure" });
     const saved = storedQueue();
-    expect(saved).toHaveLength(100);
-    expect(saved.filter((item) => !item.deadLetter)).toHaveLength(50);
-    expect(saved.filter((item) => item.deadLetter)).toHaveLength(50);
-    expect(saved.every((item) => !item.deadLetter || item.lastError === "capacity_exceeded")).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved.filter((item) => item.deadLetter)).toHaveLength(0);
+    expect(saved.some((item) => item.report.clientGeneratedId === "expired-dlq-source" && !item.deadLetter)).toBe(true);
+    expect(saved.some((item) => item.report.clientGeneratedId === "after-dlq-failure" && !item.deadLetter)).toBe(true);
   });
 
   it("preserves every report as pending or capacity dead-letter during concurrent overflow", async () => {

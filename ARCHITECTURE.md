@@ -311,6 +311,7 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | **HKDF key derivation** | The current E2EE derivation uses the protocol's existing SHA-256 construction. | Migrating to HKDF would improve domain separation but changes derived keys and requires a versioned migration/handshake; it was intentionally not changed silently. |
 | **BLE capability policy** | `android.hardware.bluetooth_le` is currently declared as required by the Android manifest. | Choosing a graceful no-BLE mode versus keeping BLE mandatory is a product and distribution decision; changing the manifest affects device eligibility and fallback UX. |
 | **Consensus voter identity** | Browser confirmations combine the request IP with a supplied device identifier, while native/storage paths keep their existing voter records. | Strong voter possession proof or a stable authenticated identity is required to make consensus resistant to identity spoofing without breaking anonymous field use. |
+| **Mesh Relay DLQ retention** | Pending relay items are capped at 50. Capacity overflow moves the oldest pending item to an independent DLQ only when that transition persists; if DLQ persistence is unavailable, the new relay item is rejected explicitly and the source pending item remains intact. | DLQ retention duration, storage budget, monitoring, export, and deletion procedure are operational policy decisions. No implicit FIFO trimming is permitted before that policy is configured and reviewed. |
 ---
 
 ## 8. Traffic & Scaling / التحمّل والتوسع
