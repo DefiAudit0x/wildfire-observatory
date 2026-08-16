@@ -94,6 +94,67 @@ describe("mesh relay queue concurrency", () => {
       .toEqual(["concurrent-a", "concurrent-b"]);
   });
 
+  it.each(["prepared", "delivered"] as const)(
+    "does not evict a %s journal-protected pending item on capacity overflow",
+    async (journalState) => {
+      for (let i = 0; i < 50; i++) {
+        await enqueueRelay({ clientGeneratedId: `protected-capacity-${i}` });
+      }
+      const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+      const protectedItem = persisted.pending[0];
+      persisted.journal = [{
+        journalId: `journal-${protectedItem.id}`,
+        queueItemId: protectedItem.id,
+        storageReplica: "co_located",
+        baseQueueRevision: persisted.revision,
+        clientGeneratedId: protectedItem.report.clientGeneratedId,
+        reportFingerprint: "fixture-fingerprint",
+        report: protectedItem.report,
+        state: journalState,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }];
+      storage.set("mesh_relay_queue", JSON.stringify(persisted));
+
+      const result = await enqueueRelay({ clientGeneratedId: "protected-capacity-new" });
+
+      expect(result).toMatchObject({ accepted: true });
+      const saved = storedQueue();
+      expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && !item.deadLetter)).toBe(true);
+      expect(saved.some((item) => item.report.clientGeneratedId === "protected-capacity-new" && !item.deadLetter)).toBe(true);
+      expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && item.deadLetter)).toBe(false);
+    },
+  );
+
+  it("rejects a new item without moving any pending item when all capacity is journal-protected", async () => {
+    for (let i = 0; i < 50; i++) {
+      await enqueueRelay({ clientGeneratedId: `fully-protected-${i}` });
+    }
+    const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    persisted.journal = persisted.pending.map((item: { id: string; report: Record<string, unknown> }) => ({
+      journalId: `journal-${item.id}`,
+      queueItemId: item.id,
+      storageReplica: "co_located",
+      baseQueueRevision: persisted.revision,
+      clientGeneratedId: item.report.clientGeneratedId,
+      reportFingerprint: "fixture-fingerprint",
+      report: item.report,
+      state: "prepared",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }));
+    storage.set("mesh_relay_queue", JSON.stringify(persisted));
+
+    await expect(enqueueRelay({ clientGeneratedId: "fully-protected-new" })).resolves.toEqual({
+      accepted: false,
+      reason: "queue_capacity_protected",
+    });
+    const saved = storedQueue();
+    expect(saved).toHaveLength(50);
+    expect(saved.some((item) => item.report.clientGeneratedId === "fully-protected-new")).toBe(false);
+    expect(saved.some((item) => item.deadLetter)).toBe(false);
+  });
+
   it("moves the oldest pending item to capacity dead-letter instead of silently dropping item 51", async () => {
     for (let i = 0; i < 51; i++) {
       await enqueueRelay({ clientGeneratedId: `capacity-${i}` });

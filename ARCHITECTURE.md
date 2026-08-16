@@ -311,7 +311,7 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | **HKDF key derivation** | The current E2EE derivation uses the protocol's existing SHA-256 construction. | Migrating to HKDF would improve domain separation but changes derived keys and requires a versioned migration/handshake; it was intentionally not changed silently. |
 | **BLE capability policy** | `android.hardware.bluetooth_le` is currently declared as required by the Android manifest. | Choosing a graceful no-BLE mode versus keeping BLE mandatory is a product and distribution decision; changing the manifest affects device eligibility and fallback UX. |
 | **Consensus voter identity** | Browser confirmations combine the request IP with a supplied device identifier, while native/storage paths keep their existing voter records. | Strong voter possession proof or a stable authenticated identity is required to make consensus resistant to identity spoofing without breaking anonymous field use. |
-| **Mesh Relay DLQ retention** | Pending relay items are capped at 50. Capacity overflow moves the oldest pending item to an independent DLQ only when that transition persists; if DLQ persistence is unavailable, the new relay item is rejected explicitly and the source pending item remains intact. | DLQ retention duration, storage budget, monitoring, export, and deletion procedure are operational policy decisions. No implicit FIFO trimming is permitted before that policy is configured and reviewed. |
+| **Mesh Relay DLQ retention** | Pending relay items are capped at 50. Capacity overflow moves the oldest *unprotected* pending item to an independent DLQ only when that transition persists; items with co-located journal state `prepared` or `delivered` are protected from eviction. If no evictable item exists, the new relay item is rejected as `queue_capacity_protected`; if the DLQ transition cannot persist, it is rejected as `dead_letter_unavailable`. | DLQ retention duration, storage budget, monitoring, export, and deletion procedure are operational policy decisions. No implicit FIFO trimming is permitted before that policy is configured and reviewed. |
 
 ### 7.c Durable Reconciliation Journal for Mesh Relay / سجل مصالحة التسليم الدائم
 
@@ -357,6 +357,7 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | لا تضيع نتيجة `delivered` قبل أن تصبح queue transition durable. | نجاح HTTP ثم فشل queue persistence ثم reset module يعيد بناء queue من دون إعادة إرسال التقرير. |
 | `prepared` يعالج النتيجة الغامضة بأمان. | crash بعد dispatch وقبل `delivered` يعيد المحاولة بنفس `clientGeneratedId` فقط. |
 | DLQ source لا يحذف إذا لم يثبت انتقاله، وdelivered IDs لا تعود pending. | flush مختلط (success + dead-letter) مع فشل persistence ثم reload يعيد مصدر DLQ وحده ولا يعيد delivered ID. |
+| journal-protected pending لا يُنقل إلى DLQ بسبب capacity overflow. | overflow مع `prepared` أو `delivered` يحمي العنصر؛ وإذا كانت كل pending محمية يعيد الإدخال `queue_capacity_protected` دون تعديل queue أو DLQ. |
 | recovery لا يخلط نسخ التخزين. | IndexedDB/localStorage يحملان revisions مختلفة وسجلين مختلفين؛ يعاد بناء كل replica مع سجلها ثم تطبق precedence. |
 | `committed` لا يمسح ضمنيًا. | crash بعد queue commit وقبل journal finalization لا يعيد إرسال العنصر ولا يحذف السجل تلقائيًا. |
 

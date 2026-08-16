@@ -104,7 +104,7 @@ interface RelayQueueState {
 
 export type RelayEnqueueResult =
   | { accepted: true; storage: "persistent" | "volatile" }
-  | { accepted: false; reason: "dead_letter_unavailable" };
+  | { accepted: false; reason: "dead_letter_unavailable" | "queue_capacity_protected" };
 
 function queueItemId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -527,21 +527,47 @@ function makeCapacityTransition(state: RelayQueueState, item: QueuedRelay, now: 
   deadLetters: QueuedRelay[];
   journal: RelayJournalEntry[];
   requiresDlq: boolean;
+  capacityProtected: boolean;
 } {
   if (state.pending.length < MAX_QUEUE) {
-    return { pending: [...state.pending, item], deadLetters: state.deadLetters, journal: state.journal, requiresDlq: false };
+    return {
+      pending: [...state.pending, item],
+      deadLetters: state.deadLetters,
+      journal: state.journal,
+      requiresDlq: false,
+      capacityProtected: false,
+    };
   }
-  const [oldest, ...remaining] = [...state.pending].sort((a, b) => a.ts - b.ts);
+
+  const protectedIds = new Set(
+    state.journal
+      .filter((entry) => entry.state === "prepared" || entry.state === "delivered")
+      .map((entry) => entry.queueItemId),
+  );
+  const oldestEvictable = [...state.pending]
+    .filter((candidate) => !protectedIds.has(candidate.id))
+    .sort((a, b) => a.ts - b.ts)[0];
+  if (!oldestEvictable) {
+    return {
+      pending: state.pending,
+      deadLetters: state.deadLetters,
+      journal: state.journal,
+      requiresDlq: false,
+      capacityProtected: true,
+    };
+  }
+
   return {
-    pending: [...remaining, item],
+    pending: state.pending.filter((candidate) => candidate.id !== oldestEvictable.id).concat(item),
     deadLetters: [...state.deadLetters, {
-      ...oldest,
+      ...oldestEvictable,
       deadLetter: true,
       deadLetteredAt: now,
       lastError: "capacity_exceeded",
     }],
     journal: state.journal,
     requiresDlq: true,
+    capacityProtected: false,
   };
 }
 
@@ -760,6 +786,10 @@ export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqu
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
     const transition = makeCapacityTransition(state, item, now);
+    if (transition.capacityProtected) {
+      console.error("[MeshRelay] Rejecting relay enqueue: all pending items are journal-protected");
+      return { accepted: false, reason: "queue_capacity_protected" };
+    }
     const storage = await writeRelayQueueState(transition);
     if (storage === "persistent") return { accepted: true, storage };
     if (transition.requiresDlq) {
