@@ -51,7 +51,9 @@ const TERMINAL_DUPLICATE_CODES = new Set([
   "DUPLICATE_CLIENT_GENERATED_ID",
   "DUPLICATE_SPATIAL_REPORT",
 ]);
-const seenRelayHashes = new Map<string, number>();
+type ReplayReservation = { hash: string; token: string };
+const seenRelayHashes = new Map<string, { recordedAt: number; token: string }>();
+let replayReservationSequence = 0;
 let relayDbPromise: Promise<IDBDatabase | null> | null = null;
 let indexedDbDisabledForSession = false;
 let volatilePending: QueuedRelay[] = [];
@@ -579,21 +581,32 @@ function serializeQueueMutation<T>(operation: () => Promise<T>): Promise<T> {
 
 function pruneSeenRelayHashes(now: number): void {
   const cutoff = now - RELAY_REPLAY_RETENTION_MS;
-  for (const [hash, recordedAt] of seenRelayHashes) {
-    if (recordedAt <= cutoff) seenRelayHashes.delete(hash);
+  for (const [hash, reservation] of seenRelayHashes) {
+    if (reservation.recordedAt <= cutoff) seenRelayHashes.delete(hash);
+  }
+}
+
+export function reserveRelayHash(raw: string, now = Date.now()): ReplayReservation | null {
+  pruneSeenRelayHashes(now);
+  const hash = hashString(raw);
+  const existing = seenRelayHashes.get(hash);
+  if (existing !== undefined && now - existing.recordedAt <= RELAY_REPLAY_RETENTION_MS) return null;
+  // Fail closed while the freshness window is still populated. Evicting a
+  // fresh entry would turn bounded memory into a replay bypass under flooding.
+  if (seenRelayHashes.size >= MAX_SEEN_HASHES) return null;
+  const reservation = { hash, token: `${now}-${++replayReservationSequence}` };
+  seenRelayHashes.set(hash, { recordedAt: now, token: reservation.token });
+  return reservation;
+}
+
+export function releaseRelayHash(reservation: ReplayReservation): void {
+  if (seenRelayHashes.get(reservation.hash)?.token === reservation.token) {
+    seenRelayHashes.delete(reservation.hash);
   }
 }
 
 export function checkAndRecordRelayHash(raw: string, now = Date.now()): boolean {
-  pruneSeenRelayHashes(now);
-  const hash = hashString(raw);
-  const recordedAt = seenRelayHashes.get(hash);
-  if (recordedAt !== undefined && now - recordedAt <= RELAY_REPLAY_RETENTION_MS) return false;
-  // Fail closed while the freshness window is still populated. Evicting a
-  // fresh entry would turn bounded memory into a replay bypass under flooding.
-  if (seenRelayHashes.size >= MAX_SEEN_HASHES) return false;
-  seenRelayHashes.set(hash, now);
-  return true;
+  return reserveRelayHash(raw, now) !== null;
 }
 
 export function isRelayEnvelopeAdmissible(envelope: MeshEnvelope, now = Date.now()): boolean {
@@ -765,13 +778,18 @@ async function handleRelayMessage(raw: string): Promise<void> {
   // Anti-duplicate: only a report that passed every schema gate may consume a
   // bounded replay-cache slot. Otherwise valid-PoW malformed inputs could
   // exhaust the cache and deny later valid reports for the retention window.
-  if (!checkAndRecordRelayHash(raw)) return;
+  const replayReservation = reserveRelayHash(raw);
+  if (!replayReservation) return;
 
   // Online ingress shares the same durable lifecycle as deferred retries:
   // enqueue creates the stable clientGeneratedId, then flush persists
   // `prepared` before any HTTP submission is allowed.
   const enqueued = await enqueueRelay(report);
-  if (enqueued.accepted) await flushQueue();
+  if (!enqueued.accepted) {
+    releaseRelayHash(replayReservation);
+    return;
+  }
+  await flushQueue();
 }
 
 export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqueueResult> {

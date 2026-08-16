@@ -362,6 +362,22 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | `committed` لا يمسح ضمنيًا. | crash بعد queue commit وقبل journal finalization لا يعيد إرسال العنصر ولا يحذف السجل تلقائيًا. |
 
 **حد العقد:** journal يمنع فقدان knowledge المحلي عن استجابة نجاح ويحوّل إعادة المحاولة الغامضة إلى retry ثابت المعرف. لا يدّعي distributed exactly-once بين المتصفح والخادم؛ سلامة retry بعد failure غامض تعتمد على idempotency الحالية لـ`clientGeneratedId`. أي تغيير لاحق في مدة idempotency الخادم أو retention/deletion للـjournal يحتاج قرار policy منفصل.
+
+### 7.d Replay Admission Reservation for Mesh Relay / حجز قبول replay
+
+> **قرار معتمد قبل التنفيذ:** replay admission حجز مؤقت داخل الجلسة يمنع نسخ الـraw envelope المتزامنة من دخول queue معًا. لا يصبح هذا الحجز نتيجة تسليم ولا جزءًا من Durable Reconciliation Journal؛ لا بد أن يُفرج عنه إذا رفضت queue admission التقرير قبل أن يصبح عنصر queue مقبولًا.
+
+بعد PoW وpayload validation، ينشئ الـrelay reservation للـhash مع ownership token فريد. إذا أعادت `enqueueRelay()` قبولًا (`accepted: true`) يبقى الحجز حتى انتهاء نافذة replay المعتادة، لأن التقرير صار داخل queue/journal lifecycle. إذا أعادت رفضًا (`accepted: false`، مثل `queue_capacity_protected` أو `dead_letter_unavailable`) يحرر الـrelay الحجز **فقط** عند مطابقة hash وownership token نفسهما. لا يحرر أي فشل يقع بعد queue admission، بما في ذلك فشل HTTP أو `prepared` أو `delivered` أو retry.
+
+| Invariant | اختبار implementation المطلوب |
+|---|---|
+| الحجز يمنع duplicate متزامن أثناء admission. | المحاولة الثانية لنفس raw خلال حجز A تُرفض قبل enqueue. |
+| rejection لا يحرم raw من retry لاحق. | `queue_capacity_protected` و`dead_letter_unavailable` يحرران حجز A ثم تقبل محاولة C لاحقة بعد recovery. |
+| stale release لا يمسح reservation أحدث. | بعد فشل A وحجز B للـhash ذاته، `release(H, tokenA)` لا يحرر `tokenB`. |
+| القبول volatile يبقي الحجز. | enqueue بقبول volatile لا يحرر hash، لأن التقرير أصبح ضمن delivery lifecycle. |
+| أخطاء delivery لا تغير admission reservation. | فشل HTTP أو `prepared` بعد قبول queue يبقي الحجز طوال retention window. |
+
+**حد العقد:** الحجز الحالي in-memory ولا يدوم عبر reload/crash؛ reset للجلسة يزيله كما يزيل cache replay الحالي. لا يضيف هذا القرار retention دائمًا أو بروتوكول Mesh جديدًا أو API جديدًا أو حلًا لفجوة origin `clientGeneratedId`.
 ---
 
 ## 8. Traffic & Scaling / التحمّل والتوسع
