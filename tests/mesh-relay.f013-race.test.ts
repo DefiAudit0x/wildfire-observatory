@@ -11,15 +11,29 @@ const report = (id: string) => ({
   reporterType: "citizen",
 });
 
+function createMemoryStorage() {
+  const values = new Map<string, string>();
+  return {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+    clear: () => { values.clear(); },
+  };
+}
+
 describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
   beforeEach(() => {
-    localStorage.clear();
+    const storage = createMemoryStorage();
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: storage,
+    });
     vi.restoreAllMocks();
     vi.resetModules();
   });
 
   afterEach(() => {
-    localStorage.clear();
+    delete (globalThis as { localStorage?: unknown }).localStorage;
   });
 
   it("preserves an enqueue that races an in-flight flush when final reconciliation persistence fails", async () => {
@@ -38,8 +52,9 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
       return { status: 200, json: async () => ({}) } as Response;
     });
 
-    const originalSetItem = Storage.prototype.setItem;
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+    const storage = globalThis.localStorage as ReturnType<typeof createMemoryStorage>;
+    const originalSetItem = storage.setItem;
+    const setItem = vi.spyOn(storage, "setItem").mockImplementation(function (key: string, value: string) {
       if (key === "mesh_relay_queue") {
         try {
           const state = JSON.parse(value);
@@ -53,7 +68,7 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
           if (error instanceof Error && error.message === "F-013 simulated localStorage failure") throw error;
         }
       }
-      return originalSetItem.call(this, key, value);
+      return originalSetItem(key, value);
     });
 
     await expect(enqueueRelay(first)).resolves.toMatchObject({ accepted: true });
@@ -80,7 +95,8 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
 
   it("does not claim persistence when localStorage is unavailable during enqueue", async () => {
     const { enqueueRelay, flushQueue } = await import("../src/lib/meshRelay.js");
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage) {
+    const storage = globalThis.localStorage as ReturnType<typeof createMemoryStorage>;
+    vi.spyOn(storage, "setItem").mockImplementation(function () {
       throw new Error("F-013 simulated localStorage outage");
     });
 
