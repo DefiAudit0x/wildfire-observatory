@@ -19,17 +19,34 @@ describe("notification unsubscribe contract", () => {
     expect(res.status).toBe(400);
   });
 
-  it("rejects a one-click unsubscribe link with an invalid token", async () => {
+  it("renders confirmation instead of mutating state on a valid-shaped GET link", async () => {
     const res = await supertest(createApp())
       .get("/api/notifications/unsubscribe")
       .query({ email: "citizen@example.com", token: "0".repeat(64) });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.text).toContain("method=\"post\"");
+  });
+
+  it("rejects an invalid unsubscribe token on the POST action", async () => {
+    const res = await supertest(createApp())
+      .post("/api/notifications/unsubscribe")
+      .send({ email: "citizen@example.com", token: "0".repeat(64) });
+
+    expect(res.status).toBe(503);
   });
 
   it("requires the token on the POST unsubscribe endpoint", async () => {
     const res = await supertest(createApp())
       .post("/api/notifications/unsubscribe")
+      .send({ email: "citizen@example.com" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("requires a valid verification token on POST", async () => {
+    const res = await supertest(createApp())
+      .post("/api/notifications/verify")
       .send({ email: "citizen@example.com" });
 
     expect(res.status).toBe(400);

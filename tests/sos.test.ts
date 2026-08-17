@@ -1,7 +1,20 @@
 import { describe, it, expect } from "vitest";
+import { beforeEach, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import cookieParser from "cookie-parser";
+import { generateAdminToken } from "../server/middleware.js";
+
+const fsMock = vi.hoisted(() => ({
+  collectionGet: vi.fn(async () => []),
+  docGet: vi.fn(async () => null),
+  docSet: vi.fn(async () => true),
+  docUpdate: vi.fn(async () => true),
+  createSosWithAdmission: vi.fn(async () => "created"),
+}));
+
+vi.mock("../server/fs.js", () => fsMock);
+
 import sosRouter from "../server/routes/sos.js";
 
 function createApp() {
@@ -27,6 +40,19 @@ function validBody() {
     phone: "0610000000",
   };
 }
+
+beforeEach(() => {
+  fsMock.collectionGet.mockReset();
+  fsMock.collectionGet.mockResolvedValue([]);
+  fsMock.docGet.mockReset();
+  fsMock.docGet.mockResolvedValue(null);
+  fsMock.docSet.mockReset();
+  fsMock.docSet.mockResolvedValue(true);
+  fsMock.docUpdate.mockReset();
+  fsMock.docUpdate.mockResolvedValue(true);
+  fsMock.createSosWithAdmission.mockReset();
+  fsMock.createSosWithAdmission.mockResolvedValue("created");
+});
 
 describe("POST /api/sos", () => {
   it("accepts a valid SOS", async () => {
@@ -58,10 +84,25 @@ describe("POST /api/sos", () => {
   it("rejects duplicate SOS from the same device within the guard window", async () => {
     const app = createApp();
     const body = validBody();
+    fsMock.createSosWithAdmission.mockResolvedValueOnce("created").mockResolvedValueOnce("duplicate");
     const first = await supertest(app).post("/api/sos").send(body);
     expect(first.status).toBe(200);
     const second = await supertest(app).post("/api/sos").send(body);
     expect(second.status).toBe(409);
+  });
+
+  it("does not claim success or consume duplicate capacity when durable SOS storage fails", async () => {
+    const app = createApp();
+    const body = validBody();
+    fsMock.createSosWithAdmission.mockResolvedValueOnce("unavailable").mockResolvedValueOnce("created");
+
+    const failed = await supertest(app).post("/api/sos").send(body);
+    expect(failed.status).toBe(503);
+    expect(failed.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
+
+    const retry = await supertest(app).post("/api/sos").send(body);
+    expect(retry.status).toBe(200);
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(2);
   });
 
   it("clamps audioDuration to the configured maximum", async () => {
@@ -119,6 +160,16 @@ describe("POST /api/sos", () => {
       expect(item.deviceId).toBeUndefined();
     }
   });
+
+  it("labels a public SOS list as a memory fallback when Firestore is unavailable", async () => {
+    const app = createApp();
+    await supertest(app).post("/api/sos").send(validBody());
+    fsMock.collectionGet.mockResolvedValueOnce(null as any);
+
+    const list = await supertest(app).get("/api/sos");
+    expect(list.status).toBe(200);
+    expect(list.headers["x-sos-source"]).toBe("memory_fallback");
+  });
 });
 
 describe("POST /api/sos rate limiting", () => {
@@ -131,6 +182,38 @@ describe("POST /api/sos rate limiting", () => {
       if (res.status === 429) got429 = true;
     }
     expect(got429).toBe(true);
+  });
+});
+
+describe("SOS durable lifecycle mutations", () => {
+  const adminAuth = () => ({ authorization: `Bearer ${generateAdminToken()}` });
+
+  it("does not claim resolve success when durable update fails", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docUpdate.mockResolvedValueOnce(false);
+
+    const resolve = await supertest(app)
+      .post(`/api/sos/${created.body.id}/resolve`)
+      .set(adminAuth());
+
+    expect(resolve.status).toBe(503);
+    expect(resolve.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
+  });
+
+  it("does not claim dispatch success when durable update fails", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.collectionGet.mockResolvedValueOnce([{ id: created.body.id, dispatchedTeams: [] }] as any);
+    fsMock.docUpdate.mockResolvedValueOnce(false);
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ type: "protection_civile", teamNameAr: "فريق تجريبي", teamNameFr: "Équipe test" });
+
+    expect(dispatch.status).toBe(503);
+    expect(dispatch.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
   });
 });
 
@@ -154,6 +237,19 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
     expect(got.status).toBe(200);
     expect(got.body.name).toBe("علي");
     expect(got.body.phone).toBe("0550123456");
+  });
+
+  it("does not report successful profile storage when the durable write fails", async () => {
+    const app = createApp();
+    const deviceId = uniqueDevice();
+    fsMock.docSet.mockResolvedValueOnce(false);
+    const put = await supertest(app)
+      .put(`/api/sos/profile/${deviceId}`)
+      .send({ name: "علي", phone: "0550123456" });
+    expect(put.status).toBe(503);
+
+    const got = await supertest(app).get(`/api/sos/profile/${deviceId}`);
+    expect(got.body).toEqual({ name: "", phone: "" });
   });
 
   it("validates profile inputs", async () => {

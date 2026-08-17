@@ -10,7 +10,8 @@ import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../ge
 import {
   getReportsDbResult,
   seedReportsToFirestore,
-  saveReportToFirestore,
+  saveReportWithIdempotency,
+  lookupReportIdempotency,
   confirmReportInFirestore,
 } from "../db.js";
 import logger from "../logger.js";
@@ -43,7 +44,7 @@ const recentReports: { lat: number; lng: number; timestamp: number }[] = [];
 // (offline draft sync, double tap, tab reopened after a crash) must return the
 // already-stored report instead of a duplicate or a false 409.
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const recentClientIds: { id: string; timestamp: number }[] = [];
+const recentClientIds: { id: string; timestamp: number; fingerprint?: string }[] = [];
 
 function pruneClientIds(): void {
   const cutoff = Date.now() - IDEMPOTENCY_WINDOW_MS;
@@ -242,7 +243,7 @@ const createReportSchema = z.object({
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
   reporterBadgeCode: z.string().trim().max(20).optional(),
   deviceId: z.string().max(128).optional(),
-  clientGeneratedId: z.string().min(8).max(64).optional(),
+  clientGeneratedId: z.string().min(8).max(64),
   image: z
     .string()
     .max(500000, "Image must be under 500KB")
@@ -252,6 +253,31 @@ const createReportSchema = z.object({
     .nullable()
     .optional(),
 });
+
+function canonicalReportFingerprint(input: {
+  lat: number;
+  lng: number;
+  locationName: string;
+  wilaya: string;
+  description: string;
+  severity: "low" | "medium" | "high" | "critical";
+  reporterType: "citizen" | "volunteer" | "official";
+}): string {
+  // Only fields that survive the Mesh transport define the idempotency body.
+  // The representation is normalized before hashing; raw HTTP serialization is
+  // deliberately not part of the contract.
+  const canonical = {
+    version: 1,
+    lat: input.lat,
+    lng: input.lng,
+    locationName: input.locationName.trim(),
+    wilaya: input.wilaya.trim(),
+    description: input.description.trim(),
+    severity: input.severity,
+    reporterType: input.reporterType,
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
+}
 
 let initialReportsSeeded = false;
 
@@ -313,13 +339,37 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
 
   const { lat, lng, locationName, wilaya, description, severity, reporterName, reporterPhone, reporterType, reporterBadgeCode, deviceId, clientGeneratedId } = parsed.data;
 
-  // Idempotent retry: same client key within 24h resolves to the stored report
-  // (no new row, no duplicate-conflict 409) — checked before any validation or
-  // async work so a sync retry after a mid-flight crash is safe.
+  const requestFingerprint = canonicalReportFingerprint({
+    lat,
+    lng,
+    locationName,
+    wilaya,
+    description,
+    severity,
+    reporterType,
+  });
+
+  // Durable idempotency is checked before expensive work when Firestore is
+  // available. The transaction below remains authoritative if two first
+  // submissions pass this read concurrently.
   if (clientGeneratedId) {
-    const existing = await findReportByClientId(clientGeneratedId);
-    if (existing) {
-      res.json(sanitizePublicReport(existing));
+    const lookup = await lookupReportIdempotency(clientGeneratedId);
+    if (lookup.status === "admin_required" || lookup.status === "no-db" || lookup.status === "error") {
+      res.status(503).json({
+        code: "DURABLE_IDEMPOTENCY_UNAVAILABLE",
+        error: "Admin Firestore durable idempotency is required for report submission",
+      });
+      return;
+    }
+    if (lookup.status === "found") {
+      if (lookup.fingerprint !== requestFingerprint) {
+        res.status(409).json({
+          code: "IDEMPOTENCY_KEY_REUSE",
+          error: "clientGeneratedId is already bound to a different report",
+        });
+        return;
+      }
+      res.json(sanitizePublicReport(lookup.report));
       return;
     }
   }
@@ -352,7 +402,10 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   }
 
   if (isDuplicateReport(lat, lng)) {
-    res.status(409).json({ error: "يوجد بلاغ مشابه قريب من هذا الموقع خلال الساعة الماضية. يرجى تأكيد البلاغ الموجود بدلاً من إنشاء بلاغ جديد." });
+    res.status(409).json({
+      code: "DUPLICATE_SPATIAL_REPORT",
+      error: "يوجد بلاغ مشابه قريب من هذا الموقع خلال الساعة الماضية. يرجى تأكيد البلاغ الموجود بدلاً من إنشاء بلاغ جديد.",
+    });
     return;
   }
 
@@ -361,7 +414,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   // submissions must not both pass the check before either reserves.
   recentReports.push({ lat, lng, timestamp: Date.now() });
   if (clientGeneratedId) {
-    recentClientIds.push({ id: clientGeneratedId, timestamp: Date.now() });
+    recentClientIds.push({ id: clientGeneratedId, timestamp: Date.now(), fingerprint: requestFingerprint });
   }
 
   let isTrusted = false;
@@ -472,19 +525,36 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     };
   }
 
-  const saved = await saveReportToFirestore(newReport);
-  if (saved === "error") {
+  const saved = await saveReportWithIdempotency(newReport, requestFingerprint, canonicalReportFingerprint);
+  if (saved.status === "integrity_failure") {
     releaseReservations(clientGeneratedId, lat, lng);
-    res.status(503).json({ error: "Report persistence is temporarily unavailable; retry with the same clientGeneratedId" });
+    res.status(500).json({
+      code: "IDEMPOTENCY_DATA_INTEGRITY_FAILURE",
+      error: "Multiple legacy reports share this clientGeneratedId; no new report was created",
+    });
     return;
   }
-  if (saved === "no-db") {
-    citizenReports.unshift(newReport);
-    if (citizenReports.length > MAX_IN_MEMORY_REPORTS) {
-      citizenReports.length = MAX_IN_MEMORY_REPORTS;
-    }
+  if (saved.status === "admin_required" || saved.status === "no-db" || saved.status === "error") {
+    releaseReservations(clientGeneratedId, lat, lng);
+    res.status(503).json({
+      code: "DURABLE_IDEMPOTENCY_UNAVAILABLE",
+      error: "Admin Firestore durable idempotency is required for report submission",
+    });
+    return;
   }
-
+  if (saved.status === "same_id_different_body") {
+    releaseReservations(clientGeneratedId, lat, lng);
+    res.status(409).json({
+      code: "IDEMPOTENCY_KEY_REUSE",
+      error: "clientGeneratedId is already bound to a different report",
+    });
+    return;
+  }
+  if (saved.status === "existing") {
+    releaseReservations(clientGeneratedId, lat, lng);
+    res.json(sanitizePublicReport(saved.report));
+    return;
+  }
   const safeReport = sanitizePublicReport(newReport);
   if (safeReport.severity === "critical" || safeReport.severity === "high") {
     sendFireAlert(safeReport).catch((err) =>

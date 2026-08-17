@@ -34,7 +34,7 @@ export async function collectionGet(
   const db = getDb();
   if (!db) return null;
   try {
-    let data: any[] | null = null;
+    let data: any[] = [];
     if (isAdminDb(db)) {
       let ref: any = db.collection(collectionName);
       if (orderByField) ref = ref.orderBy(orderByField, "desc");
@@ -101,6 +101,62 @@ export async function docSet(collectionName: string, id: string, data: any): Pro
   } catch (err) {
     logger.error({ err, collectionName, id }, "Firestore doc set failed");
     return false;
+  }
+}
+
+export type SosAdmissionResult = "created" | "duplicate" | "unavailable";
+
+/**
+ * Atomically creates an SOS and records its per-device admission window.
+ * The two documents share one Firestore transaction, preventing concurrent
+ * requests from passing a process-local check-then-write gap.
+ */
+export async function createSosWithAdmission(
+  sosId: string,
+  sosData: Record<string, any>,
+  admissionId: string,
+  acceptedAt: number,
+  windowMs: number
+): Promise<SosAdmissionResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const admissionRef = db.collection("sosAdmissions").doc(admissionId);
+        const existing = await tx.get(admissionRef);
+        const lastAcceptedAt = Number(existing.exists ? existing.data()?.acceptedAt : 0);
+        if (lastAcceptedAt > 0 && acceptedAt - lastAcceptedAt < windowMs) return "duplicate";
+
+        tx.set(db.collection("trappedSos").doc(sosId), sosData);
+        tx.set(admissionRef, {
+          acceptedAt,
+          expiresAt: acceptedAt + windowMs,
+          sosId,
+        });
+        return "created";
+      });
+    }
+
+    const { doc, runTransaction } = await loadClientSdk();
+    return await runTransaction(db, async (tx: any) => {
+      const admissionRef = doc(db, "sosAdmissions", admissionId);
+      const existing = await tx.get(admissionRef);
+      const lastAcceptedAt = Number(existing.exists() ? existing.data()?.acceptedAt : 0);
+      if (lastAcceptedAt > 0 && acceptedAt - lastAcceptedAt < windowMs) return "duplicate";
+
+      tx.set(doc(db, "trappedSos", sosId), sosData);
+      tx.set(admissionRef, {
+        acceptedAt,
+        expiresAt: acceptedAt + windowMs,
+        sosId,
+      });
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, sosId }, "Firestore SOS admission transaction failed");
+    return "unavailable";
   }
 }
 

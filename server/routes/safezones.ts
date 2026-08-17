@@ -23,7 +23,8 @@ async function loadZones(): Promise<any[]> {
   if (cachedZones) return cachedZones;
   try {
     const fromDb = await collectionGet("safeZones", "createdAt", 1000);
-    cachedZones = fromDb || [];
+    if (fromDb === null) throw new Error("safe-zone database read unavailable");
+    cachedZones = fromDb;
     return cachedZones;
   } catch (err) {
     logger.error({ err }, "Safe zones read failed");
@@ -64,30 +65,45 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
     return;
   }
   const { id } = req.params;
-  const existing = cachedZones?.find((z: any) => z.id === id) || await docGet("safeZones", id);
-  if (!existing) {
-    res.status(404).json({ error: "Safe zone not found" });
-    return;
-  }
-  const zone = { ...existing, id, ...parsed.data, createdAt: existing.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
-  if (!(await docSet("safeZones", id, zone))) {
+  try {
+    const existing = (await loadZones()).find((z: any) => z.id === id);
+    if (!existing) {
+      res.status(404).json({ error: "Safe zone not found" });
+      return;
+    }
+    const zone = { ...existing, id, ...parsed.data, createdAt: existing.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (!(await docSet("safeZones", id, zone))) {
+      res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+      return;
+    }
+    cachedZones = null;
+    liveHub.broadcast("safezones:changed", { id });
+    res.json(zone);
+  } catch (err) {
+    logger.error({ err, id }, "Safe zone update failed");
     res.status(503).json({ error: "Safe-zone data is currently unavailable" });
-    return;
   }
-  cachedZones = null;
-  liveHub.broadcast("safezones:changed", { id });
-  res.json(zone);
 });
 
 router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  if (!(await docDelete("safeZones", id))) {
+  try {
+    const existing = (await loadZones()).find((z: any) => z.id === id);
+    if (!existing) {
+      res.status(404).json({ error: "Safe zone not found" });
+      return;
+    }
+    if (!(await docDelete("safeZones", id))) {
+      res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+      return;
+    }
+    cachedZones = null;
+    liveHub.broadcast("safezones:changed", { id });
+    res.json({ success: true });
+  } catch (err) {
+    logger.error({ err, id }, "Safe zone deletion failed");
     res.status(503).json({ error: "Safe-zone data is currently unavailable" });
-    return;
   }
-  cachedZones = null;
-  liveHub.broadcast("safezones:changed", { id });
-  res.json({ success: true });
 });
 
 export default router;

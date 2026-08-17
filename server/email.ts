@@ -63,7 +63,8 @@ async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
 
     logger.info({ to, provider }, "Verification email sent");
   } catch (err) {
-    logger.error({ err, to, provider }, "Failed to send verification email");
+    logger.error({ err, to, provider }, "Failed to send email");
+    throw err;
   }
 }
 

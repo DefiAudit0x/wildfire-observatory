@@ -2,6 +2,7 @@
   "name": "north-african-wildfire-observatory",
   "private": true,
   "version": "1.0.0",
+  "packageManager": "pnpm@11.21.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server/server.ts",
@@ -11,7 +12,7 @@
     "lint": "tsc --noEmit",
     "test:server": "vitest run --config vitest.server.config.ts",
     "test:react": "vitest run --config vitest.config.ts",
-    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e": "E2E_DURABLE_ASSERTION=true firebase emulators:exec --only firestore --project demo-wildfire-observatory-e2e --config firebase.json \"playwright test --config playwright.config.ts\"",
     "test": "npm run test:server && npm run test:react",
     "prepare": "husky"
   },
@@ -20,6 +21,7 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
+    "@noble/hashes": "1.8.0",
     "@sentry/node": "^10.69.0",
     "@sentry/react": "^10.69.0",
     "bcryptjs": "^3.0.3",
@@ -44,6 +46,7 @@
     "react-markdown": "^10.1.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
+    "workbox-window": "7.4.1",
     "ws": "^8.21.1",
     "zod": "^3.24.0"
   },
@@ -70,6 +73,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "firebase-tools": "^15.27.0",
     "husky": "^9.1.0",
     "jsdom": "^30.0.1",
     "supertest": "^7.0.0",

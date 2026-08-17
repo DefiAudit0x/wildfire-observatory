@@ -21,12 +21,14 @@ describe("meshBridge anti-replay TTL", () => {
     expect(checkAndRecordMessageHash(key)).toBe(false);
   });
 
-  it("hash is admitted again AFTER the 5-minute TTL", async () => {
+  it("hash stays rejected through the full freshness retention window", async () => {
     const { checkAndRecordMessageHash } = await import("../src/utils/meshBridge");
     const key = `gossip-after-${Date.now()}`;
     const recordedAt = Date.now();
     expect(checkAndRecordMessageHash(key)).toBe(true);
-    vi.setSystemTime(recordedAt + 5 * 60 * 1000 + 1);
+    vi.setSystemTime(recordedAt + 10 * 60 * 1000);
+    expect(checkAndRecordMessageHash(key)).toBe(false);
+    vi.setSystemTime(recordedAt + 12 * 60 * 1000 + 1);
     expect(checkAndRecordMessageHash(key)).toBe(true);
   });
 
@@ -36,11 +38,11 @@ describe("meshBridge anti-replay TTL", () => {
     expect(checkAndRecordNonce(424242)).toBe(false);
   });
 
-  it("nonce is admitted again AFTER the 5-minute TTL", async () => {
+  it("nonce stays rejected through the full freshness retention window", async () => {
     const { checkAndRecordNonce } = await import("../src/utils/meshBridge");
     const recordedAt = Date.now();
     expect(checkAndRecordNonce(434343)).toBe(true);
-    vi.setSystemTime(recordedAt + 5 * 60 * 1000 + 1);
+    vi.setSystemTime(recordedAt + 12 * 60 * 1000 + 1);
     expect(checkAndRecordNonce(434343)).toBe(true);
   });
 

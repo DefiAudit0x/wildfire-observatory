@@ -27,6 +27,21 @@ type Step =
 
 const MAX_AUDIO_DURATION_SEC = 20;
 
+export function toUserFacingSosError(message: string | undefined, isArabic: boolean): string {
+  const normalized = message?.toLowerCase() || "";
+  if (normalized.includes("sos_storage_unavailable") || normalized.includes("sos storage unavailable")) {
+    return isArabic
+      ? "لم يتم حفظ نداء الاستغاثة على الخادم بعد. أعد المحاولة أو اتصل مباشرةً بالحماية المدنية."
+      : "L'appel SOS n'a pas encore été enregistré sur le serveur. Réessayez ou appelez directement la protection civile.";
+  }
+  if (normalized.includes("already received recently")) {
+    return isArabic
+      ? "يوجد نداء استغاثة حديث من هذا الجهاز. إذا لم تحصل على مساعدة، اتصل مباشرةً بالحماية المدنية."
+      : "Un SOS récent existe déjà pour cet appareil. Si vous n'avez pas d'aide, appelez directement la protection civile.";
+  }
+  return isArabic ? "تعذّر إرسال نداء الاستغاثة. أعد المحاولة أو اتصل مباشرةً بالحماية المدنية." : "Impossible d'envoyer le SOS. Réessayez ou appelez directement la protection civile.";
+}
+
 export default function TrappedSOSModal({ lang, onClose, userLocation, nearestThreat }: TrappedSOSModalProps) {
   const isArabic = lang === "ar";
   const [step, setStep] = useState<Step>("verifying");
@@ -405,7 +420,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       setStep("sent");
     } catch (err: any) {
       console.error("Failed to post SOS:", err);
-      setSendError(err?.message || (isArabic ? "تعذّر الاتصال بالخادم" : "Erreur de connexion"));
+      setSendError(toUserFacingSosError(err?.message, isArabic));
       setStep("send_failed");
     } finally {
       setIsSending(false);
@@ -441,8 +456,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
               </h3>
               <p className="text-sm text-slate-400">
                 {isArabic
-                  ? "نقوم بمقاطعة إحداثياتك مع بؤر النيران النشطة لتأكيد حالة الخطر الداهم."
-                  : "Analyse de vos coordonnées par rapport aux feux actifs."}
+                  ? "نقارن موقعك ببؤر النيران النشطة لدعم تقييم الخطر؛ قرب الحريق لا يؤكد وحده أنك محاصر."
+                  : "Votre position est comparée aux feux actifs pour contextualiser le risque ; la proximité seule ne confirme pas que vous êtes piégé."}
               </p>
             </div>
           )}
@@ -462,12 +477,37 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                     : "Impossible d'identifier votre position. Activez le GPS pour transmettre votre localisation."}
                 </p>
               </div>
-              <button
-                onClick={onClose}
-                className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold transition-colors cursor-pointer"
-              >
-                {isArabic ? "إغلاق" : "Fermer"}
-              </button>
+              <div className="w-full space-y-2">
+                <p className="text-xs font-bold text-amber-200">
+                  {isArabic ? "إذا كنت في خطر مباشر، اتصل الآن:" : "En danger immédiat, appelez maintenant :"}
+                </p>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <a
+                    href="tel:14"
+                    className="py-2.5 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "النجدة والحريق 14" : "Urgence incendie 14"}
+                  </a>
+                  <a
+                    href="tel:1021"
+                    className="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "الحماية المدنية 1021" : "Protection civile 1021"}
+                  </a>
+                  <a
+                    href="tel:1070"
+                    className="py-2.5 rounded-xl bg-red-950 border border-red-500/50 hover:bg-red-900 text-red-100 text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "الغابات 1070" : "Forêts 1070"}
+                  </a>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-colors cursor-pointer"
+                >
+                  {isArabic ? "إغلاق" : "Fermer"}
+                </button>
+              </div>
             </div>
           )}
 

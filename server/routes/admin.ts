@@ -95,7 +95,7 @@ const adminActionLimiter = rateLimit({
   message: { error: "Too many admin actions. Slow down." },
 });
 
-function buildStatusNotification(report: any, status?: string) {
+async function buildStatusNotification(report: any, status?: string): Promise<void> {
   if (!report.deviceId) return;
   let msgAr = "";
   let msgFr = "";
@@ -104,14 +104,18 @@ function buildStatusNotification(report: any, status?: string) {
   else if (status === "rejected") { msgAr = "تم رفض تبليغك لعدم صحته."; msgFr = "Votre signalement a été rejeté car il n'est pas valide."; type = "warning"; }
   else if (status === "resolved") { msgAr = "تم التدخل بنجاح وإخماد الحريق."; msgFr = "Intervention réussie, l'incendie a été maîtrisé."; type = "success"; }
   else { msgAr = "تم تحديث حالة تبليغك."; msgFr = "Le statut de votre signalement a été mis à jour."; }
-  createNotification({
-    deviceId: report.deviceId,
-    titleAr: "تحديث بخصوص تبليغك",
-    titleFr: "Mise à jour de votre signalement",
-    bodyAr: `تبليغك عن (${report.locationName}): ${msgAr}`,
-    bodyFr: `Votre signalement à (${report.locationName}): ${msgFr}`,
-    type,
-  }).catch(() => {});
+  try {
+    await createNotification({
+      deviceId: report.deviceId,
+      titleAr: "تحديث بخصوص تبليغك",
+      titleFr: "Mise à jour de votre signalement",
+      bodyAr: `تبليغك عن (${report.locationName}): ${msgAr}`,
+      bodyFr: `Votre signalement à (${report.locationName}): ${msgFr}`,
+      type,
+    });
+  } catch (err) {
+    logger.error({ err, deviceId: report.deviceId }, "Failed to persist status notification");
+  }
 }
 
 router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
@@ -130,7 +134,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
   const updated = await updateReportInFirestore(id, updateData);
   if (updated) {
     const report = citizenReports.find((r: any) => r.id === id);
-    buildStatusNotification(report || updateData, status);
+    await buildStatusNotification(report || updateData, status);
     logAdminAction("report.update-status", { id, status, severity }).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
     res.json({ success: true });
@@ -141,7 +145,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
   if (report) {
     if (status) report.status = status;
     if (severity) report.severity = severity;
-    buildStatusNotification(report, status);
+    await buildStatusNotification(report, status);
     logAdminAction("report.update-status", { id, status, severity }).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
     res.json({ success: true });

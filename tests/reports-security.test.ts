@@ -4,6 +4,34 @@ import supertest from "supertest";
 import { vi } from "vitest";
 import { validateImageDataUrl, hasImageMagicBytes } from "../server/imageValidate.js";
 
+const mockReports = vi.hoisted(() => ({
+  list: [{ id: "security-seed", lat: 36.75, lng: 7.6, severity: "medium", status: "pending", timestamp: new Date().toISOString(), consensusCount: 1 }] as any[],
+  idempotency: new Map<string, { report: any; fingerprint: string }>(),
+}));
+
+vi.mock("../server/db.js", () => ({
+  getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: mockReports.list })),
+  seedReportsToFirestore: vi.fn(async () => true),
+  lookupReportIdempotency: vi.fn(async (id: string) => {
+    const entry = mockReports.idempotency.get(id);
+    return entry ? { status: "found", report: entry.report, fingerprint: entry.fingerprint } : { status: "missing" };
+  }),
+  saveReportWithIdempotency: vi.fn(async (report: any, fingerprint: string) => {
+    const existing = mockReports.idempotency.get(report.clientGeneratedId);
+    if (existing) {
+      return existing.fingerprint === fingerprint
+        ? { status: "existing", report: existing.report }
+        : { status: "same_id_different_body", report: existing.report };
+    }
+    mockReports.idempotency.set(report.clientGeneratedId, { report, fingerprint });
+    mockReports.list.unshift(report);
+    return { status: "saved", report };
+  }),
+  confirmReportInFirestore: vi.fn(async () => null),
+  updateReportInFirestore: vi.fn(async () => true),
+  deleteReportFromFirestore: vi.fn(async () => true),
+}));
+
 const mockDocs = vi.hoisted(() => new Map<string, any>());
 
 vi.mock("express-rate-limit", () => ({
@@ -49,12 +77,15 @@ function baseReport() {
     wilaya: "الجزائر - عنابة (Algérie - Annaba)",
     description: "حريق غابة اختبار للتحقق من نظام التصديق بالبطاقات",
     severity: "medium",
+    clientGeneratedId: `cg-security-${coordsCounter.toString().padStart(4, "0")}`,
   };
 }
 
 describe("POST /api/reports — badge trust hardening", () => {
   beforeEach(() => {
     mockDocs.clear();
+    mockReports.list.length = 0;
+    mockReports.idempotency.clear();
   });
 
   it("rejects an inactive badge (isActive=false) — no trust elevation", async () => {

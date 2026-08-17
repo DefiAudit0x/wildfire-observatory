@@ -2,6 +2,17 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Citizen report full pipeline", () => {
   test("submit via UI → persisted → confirm via map popup → consensus grows", async ({ page, request }) => {
+    expect(process.env.E2E_DURABLE_ASSERTION).toBe("true");
+    const healthResponse = await request.get("/api/health");
+    expect(healthResponse.ok()).toBe(true);
+    await expect(healthResponse.json()).resolves.toMatchObject({
+      status: "ok",
+      durableIdempotency: "admin",
+    });
+    const resetResponse = await request.delete(
+      "http://127.0.0.1:8080/emulator/v1/projects/demo-wildfire-observatory-e2e/databases/(default)/documents",
+    );
+    expect(resetResponse.ok()).toBe(true);
     const before = await (await request.get("/api/reports")).json();
     const beforeCount = Array.isArray(before) ? before.length : 0;
     const locationName = `غابة اختبار نظام الإنذار المبكر ${Date.now()}`;

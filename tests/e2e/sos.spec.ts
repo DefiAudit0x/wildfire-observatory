@@ -1,6 +1,18 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("SOS emergency flow", () => {
+  test("concurrent SOS requests for one device produce one durable admission", async ({ request }) => {
+    const deviceId = `e2e-sos-race-${Date.now()}`;
+    const payload = { deviceId, lat: 36.75, lng: 7.6, name: "E2E", phone: "0610000000" };
+
+    const [first, second] = await Promise.all([
+      request.post("/api/sos", { data: payload }),
+      request.post("/api/sos", { data: payload }),
+    ]);
+
+    expect([first.status(), second.status()].sort()).toEqual([200, 409]);
+  });
+
   test("SOS floating button opens the emergency modal", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: "أنا محاصر — نداء استغاثة", exact: true }).click();
@@ -13,6 +25,14 @@ test.describe("SOS emergency flow", () => {
     await expect(page.getByText(/تعذّر تحديد موقعك|Position indéterminée/i)).toBeVisible({ timeout: 5000 });
     await page.getByRole("button", { name: /إغلاق|Fermer/i }).click();
     await expect(page.getByText(/نداء استغاثة طارئ/i)).toHaveCount(0);
+  });
+
+  test("no-location SOS exposes all verified direct emergency fallbacks", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "أنا محاصر — نداء استغاثة", exact: true }).click();
+    await expect(page.locator('a[href="tel:14"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('a[href="tel:1021"]').last()).toBeVisible();
+    await expect(page.locator('a[href="tel:1070"]').last()).toBeVisible();
   });
 
   test("national emergency numbers are reachable from the report tab", async ({ page }) => {

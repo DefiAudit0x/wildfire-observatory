@@ -47,6 +47,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const [confirmResolve, setConfirmResolve] = useState<TrappedSOS | null>(null);
   const { toasts, push } = useToasts();
   const reportedErrorRef = useRef(false);
+  const reportedFallbackRef = useRef(false);
 
   const fetchFullSos = useCallback(async () => {
     if (!unlocked) return;
@@ -55,6 +56,16 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       if (res.ok) {
         setFullSos(await res.json());
         reportedErrorRef.current = false;
+        const source = res.headers.get("X-SOS-Source");
+        if (source === "memory_fallback" && !reportedFallbackRef.current) {
+          reportedFallbackRef.current = true;
+          push(
+            isArabic ? "قاعدة بيانات الاستغاثات غير متاحة؛ المعروض حاليًا بيانات محلية مؤقتة." : "Base SOS indisponible : affichage local temporaire.",
+            "error"
+          );
+        } else if (source === "firestore") {
+          reportedFallbackRef.current = false;
+        }
       } else if (!reportedErrorRef.current) {
         reportedErrorRef.current = true;
         push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");

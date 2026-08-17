@@ -127,8 +127,8 @@ class WebAppInterface(
      * @param lng Longitude of the sender
      */
     @JavascriptInterface
-    fun broadcastMessage(plaintext: String, type: String, lat: Double, lng: Double) {
-        if (!isTrustedOrigin()) return
+    fun broadcastMessage(plaintext: String, type: String, lat: Double, lng: Double): Boolean {
+        if (!isTrustedOrigin()) return false
         // Type whitelist (audit round 11): the type travels pipe-joined on the
         // wire; arbitrary strings could corrupt framing (defense-in-depth —
         // parseFrame now rejects pipes too) and would muddy relay routing.
@@ -136,12 +136,12 @@ class WebAppInterface(
         // the protocol has no reputation-message handling, so advertising the
         // type was a dead branch. Reputation is scored from report/echo
         // traffic only.)
-        if (type !in ALLOWED_MESSAGE_TYPES) return
+        if (type !in ALLOWED_MESSAGE_TYPES) return false
         if (!lat.isFinite() || !lng.isFinite() || lat !in -90.0..90.0 || lng !in -180.0..180.0) {
             Log.w(TAG, "Rejecting broadcast with invalid coordinates")
-            return
+            return false
         }
-        meshService?.broadcastMessage(plaintext, type, lat, lng)
+        return meshService?.broadcastMessage(plaintext, type, lat, lng) == true
     }
 
     /**
@@ -196,6 +196,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun decryptFromPeer(jsonMessage: String, peerPublicKey: String?): String {
         if (!isTrustedOrigin()) return ""
+        if (jsonMessage.toByteArray(Charsets.UTF_8).size > MeshService.MAX_BRIDGE_JSON_BYTES) return ""
         return try {
             val json = JSONObject(jsonMessage)
             if (!json.has("lat") || !json.has("lng") || !json.has("type")) return ""
@@ -219,7 +220,8 @@ class WebAppInterface(
                 hopCount = json.getInt("hopCount")
             )
             val decrypted = CryptoEngine.decryptFromPeer(msg, peerPublicKey)
-            if (decrypted != null) String(decrypted, Charsets.UTF_8) else ""
+            if (decrypted == null || decrypted.size > MeshService.MAX_PLAINTEXT_BYTES) ""
+            else String(decrypted, Charsets.UTF_8)
         } catch (e: Exception) {
             ""
         }
@@ -269,6 +271,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun solvePoW(prefix: String, difficulty: Int): Int {
         if (!isTrustedOrigin()) return -1
+        if (difficulty != MeshService.PO_W_DIFFICULTY) return -1
         // -1 on budget exhaustion: mesh broadcast handles it without crashing.
         return MeshWire.ProofOfWork.solve(prefix, difficulty) ?: -1
     }
@@ -279,6 +282,7 @@ class WebAppInterface(
     @JavascriptInterface
     fun verifyPoW(prefix: String, nonce: Int, difficulty: Int): Boolean {
         if (!isTrustedOrigin()) return false
+        if (difficulty != MeshService.PO_W_DIFFICULTY) return false
         return MeshWire.ProofOfWork.verify(prefix, nonce, difficulty)
     }
 }

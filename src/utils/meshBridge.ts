@@ -27,10 +27,11 @@ export interface PeerInfo {
 // Anti-replay cache with a REAL time-to-live: entries are purged by age
 // (5 minutes, matching the native service), never "when the set got big" —
 // a burst of traffic must not wipe the whole replay window at once.
-const ANTI_REPLAY_TTL_MS = 5 * 60 * 1000;
 const MAX_REPLAY_ENTRIES = 4096;
-const MESSAGE_TTL_MS = 10 * 60 * 1000;
-const MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000;
+export const NETWORK_POW_DIFFICULTY = 8;
+export const MESH_MESSAGE_TTL_MS = 10 * 60 * 1000;
+export const MESH_MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000;
+const REPLAY_RETENTION_MS = MESH_MESSAGE_TTL_MS + MESH_MESSAGE_CLOCK_SKEW_MS;
 const ALLOWED_MESSAGE_TYPES = new Set(["report", "echo"]);
 const seenNonces = new Map<number, number>();
 const seenMessageHashes = new Map<string, number>();
@@ -193,7 +194,7 @@ interface AndroidBridge {
   getDeviceId(): string;
   getPublicKey(): string;
   getIdentityKey(): string;
-  broadcastMessage(plaintext: string, type: string, lat: number, lng: number): void;
+  broadcastMessage(plaintext: string, type: string, lat: number, lng: number): boolean;
   encryptForPeer(peerPublicKey: string, plaintext: string, lat: number, lng: number): string;
   decryptFromPeer(jsonMessage: string, peerPublicKey?: string): string;
   getConnectedPeers(): string;
@@ -218,7 +219,7 @@ export function broadcastMessage(
     try {
       // Solve Proof-of-Work first (anti-spam)
       const prefix = `${Date.now()}-${bridge.getDeviceId()}`;
-      const nonce = bridge.solvePoW(prefix, 8);
+      const nonce = bridge.solvePoW(prefix, NETWORK_POW_DIFFICULTY);
 
     // Audit A9/B6: -1 means the solver gave up (out-of-band difficulty or
     // iteration budget). Broadcasting anyway would enqueue a frame every
@@ -240,11 +241,10 @@ export function broadcastMessage(
       ts: Date.now(),
       powNonce: nonce,
       powPrefix: prefix,
-      powDifficulty: 8,
+      powDifficulty: NETWORK_POW_DIFFICULTY,
     });
 
-      bridge.broadcastMessage(enrichedMsg, type, lat, lng);
-      return true;
+      return bridge.broadcastMessage(enrichedMsg, type, lat, lng) === true;
     } catch (err) {
       console.error("[MeshBridge] Native broadcast failed:", err);
       return false;
@@ -288,6 +288,7 @@ export function decryptFromPeer(
   encrypted: EncryptedMessage,
   peerPublicKey?: string
 ): Promise<string | null> {
+  if (!isEncryptedMessageShape(encrypted)) return Promise.resolve(null);
   const bridge = getAndroidBridge();
 
   if (bridge) {
@@ -302,7 +303,7 @@ export function decryptFromPeer(
   return browserDecrypt(encrypted, peerPublicKey);
 }
 
-interface EncryptedMessage {
+export interface EncryptedMessage {
   ciphertext: string;
   iv: string;
   signature: string;
@@ -312,9 +313,9 @@ interface EncryptedMessage {
   lat: number;
   lng: number;
   nonce: number;
-  messageId?: string;
-  type?: string;
-  hopCount?: number;
+  messageId: string;
+  type: string;
+  hopCount: number;
   /** ECDSA public key (SPKI) — browser fallback only; see the keypairs note. */
   signatureKey?: string;
 }
@@ -714,9 +715,9 @@ export function onMeshReady(handler: (deviceId: string) => void): () => void {
 // LIGHTWEIGHT PROOF-OF-WORK (browser fallback)
 // ========================
 
-export async function solvePoW(prefix: string, difficulty: number = 8): Promise<number> {
+export async function solvePoW(prefix: string, difficulty: number = NETWORK_POW_DIFFICULTY): Promise<number> {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.solvePoW(prefix, difficulty);
+  if (bridge) return difficulty === NETWORK_POW_DIFFICULTY ? bridge.solvePoW(prefix, difficulty) : -1;
 
   // Browser fallback — MUST match CryptoEngine.kt / MeshWire.ProofOfWork
   // semantics exactly: length-prefixed challenge framing (the naive
@@ -747,10 +748,10 @@ export async function solvePoW(prefix: string, difficulty: number = 8): Promise<
 export async function verifyPoW(
   prefix: string,
   nonce: number,
-  difficulty: number = 8
+  difficulty: number = NETWORK_POW_DIFFICULTY
 ): Promise<boolean> {
   const bridge = getAndroidBridge();
-  if (bridge) return bridge.verifyPoW(prefix, nonce, difficulty);
+  if (bridge) return difficulty === NETWORK_POW_DIFFICULTY && bridge.verifyPoW(prefix, nonce, difficulty);
 
   const target = difficultyTarget(difficulty);
   if (target === null) return false;
@@ -787,6 +788,7 @@ function difficultyTarget(difficulty: number): bigint | null {
 function hasRequiredEncryptedMetadata(message: EncryptedMessage): boolean {
   return typeof message.messageId === "string" && message.messageId.length > 0 &&
     typeof message.type === "string" && message.type.length > 0 && ALLOWED_MESSAGE_TYPES.has(message.type) &&
+    typeof message.hopCount === "number" && Number.isInteger(message.hopCount) && message.hopCount === 0 &&
     typeof message.timestamp === "number" && Number.isSafeInteger(message.timestamp) &&
     typeof message.nonce === "number" && Number.isInteger(message.nonce) &&
     message.nonce >= -2147483648 && message.nonce <= 2147483647 &&
@@ -797,15 +799,19 @@ function hasRequiredEncryptedMetadata(message: EncryptedMessage): boolean {
 export function isFreshMeshTimestamp(timestamp: number, now = Date.now()): boolean {
   if (!Number.isSafeInteger(timestamp) || !Number.isSafeInteger(now)) return false;
   const age = now - timestamp;
-  return age <= MESSAGE_TTL_MS && age >= -MESSAGE_CLOCK_SKEW_MS;
+  return age <= MESH_MESSAGE_TTL_MS && age >= -MESH_MESSAGE_CLOCK_SKEW_MS;
 }
 
-function isEncryptedMessageShape(value: unknown): value is EncryptedMessage {
+export function isEncryptedMessageShape(value: unknown): value is EncryptedMessage {
   if (!value || typeof value !== "object") return false;
   const message = value as Partial<EncryptedMessage>;
-  return typeof message.ciphertext === "string" && typeof message.iv === "string" &&
-    typeof message.signature === "string" && typeof message.ephemeralId === "string" &&
-    typeof message.senderPublicKey === "string" && hasRequiredEncryptedMetadata(message as EncryptedMessage);
+  return typeof message.ciphertext === "string" && message.ciphertext.length > 0 &&
+    typeof message.iv === "string" && message.iv.length > 0 &&
+    typeof message.signature === "string" && message.signature.length > 0 &&
+    typeof message.ephemeralId === "string" && message.ephemeralId.length > 0 &&
+    typeof message.senderPublicKey === "string" && message.senderPublicKey.length > 0 &&
+    (message.signatureKey === undefined || (typeof message.signatureKey === "string" && message.signatureKey.length > 0)) &&
+    hasRequiredEncryptedMetadata(message as EncryptedMessage);
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -922,7 +928,7 @@ function isNativeInt32(value: number): boolean {
 }
 
 function pruneReplayCache(cache: Map<unknown, number>, now: number): void {
-  const cutoff = now - ANTI_REPLAY_TTL_MS;
+  const cutoff = now - REPLAY_RETENTION_MS;
   for (const [key, timestamp] of cache) {
     if (timestamp <= cutoff) cache.delete(key);
   }
@@ -946,7 +952,7 @@ export function checkAndRecordNonce(nonce: number): boolean {
   // weaker than the native messageId+nonce scheme.
   if (!isNativeInt32(nonce)) return false;
   const now = Date.now();
-  if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenNonces.has(nonce) && seenNonces.get(nonce)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenNonces.set(nonce, now);
@@ -965,7 +971,7 @@ export function checkAndRecordMessageNonce(messageId: string, nonce: number): bo
   // Match MeshWire.seenMessageHash framing: length-prefix both fields so
   // distinct (messageId, nonce) pairs cannot collide by concatenation.
   const key = `nonce:${messageId.length}:${messageId}:${String(nonce).length}:${nonce}`;
-  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenMessageHashes.set(key, now);
@@ -977,7 +983,7 @@ export function checkAndRecordMessageHash(hash: string): boolean {
   if (typeof hash !== "string" || hash.length === 0) return false;
   const now = Date.now();
   const key = `hash:${hash}`;
-  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - ANTI_REPLAY_TTL_MS) {
+  if (seenMessageHashes.has(key) && seenMessageHashes.get(key)! > now - REPLAY_RETENTION_MS) {
     return false;
   }
   seenMessageHashes.set(key, now);

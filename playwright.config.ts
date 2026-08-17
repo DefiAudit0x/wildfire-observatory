@@ -25,13 +25,15 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 120000,
     env: {
-      SKIP_FIREBASE: "true",
       NODE_ENV: "production",
       COOKIE_SECURE: "false",
       GENERAL_LIMIT_MAX: "10000",
       ENABLE_SWAGGER: "true",
       JWT_SECRET: "e2e-secret",
       ADMIN_PASSWORD: "test-admin",
+      FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+      GCLOUD_PROJECT: "demo-wildfire-observatory-e2e",
+      E2E_DURABLE_ASSERTION: "true",
     },
   },
 });

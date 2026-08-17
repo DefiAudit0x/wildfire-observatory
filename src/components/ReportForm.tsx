@@ -5,6 +5,7 @@ import { geoErrorMessage } from "../hooks/useGeolocation";
 import { setReporterBadge } from "../utils/badgeStore";
 import { isFreshThreatTimestamp } from "../utils/threats";
 import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
+import type { SyncState } from "../utils/datasetHealth";
 
 interface SubmissionResultView {
   responseValid: boolean;
@@ -21,6 +22,45 @@ interface SubmissionResultView {
     isVerified?: boolean;
     suggestedSeverity?: string;
   };
+}
+
+export function toUserFacingSubmitError(message: string | undefined, isArabic: boolean): string {
+  const normalized = message?.toLowerCase() || "";
+  if (normalized.includes("durable idempotency") || normalized.includes("durable_idempotency") || normalized.includes("admin firestore") || normalized.includes("report data is currently unavailable")) {
+    return isArabic
+      ? "تعذر إرسال البلاغ الآن لأن خادم المرصد غير جاهز. بقيت بياناتك في النموذج؛ حاول مجددًا عند توفر الخدمة."
+      : "Le serveur de l'observatoire n'est pas prêt. Vos données restent dans le formulaire ; réessayez lorsque le service sera disponible.";
+  }
+  if (normalized.includes("coordinates do not fall within") || normalized.includes("outside the monitoring coverage") || normalized.includes("خارج نطاق المراقبة")) {
+    return isArabic
+      ? "الموقع لا يطابق الولاية المحددة أو يقع خارج نطاق المراقبة. صحّح الموقع أو الولاية ثم أعد المحاولة."
+      : "La position ne correspond pas à la wilaya sélectionnée ou se trouve hors de la zone surveillée. Corrigez-la puis réessayez.";
+  }
+  if (normalized.includes("idempotency_key_reuse") || normalized.includes("already bound to a different report")) {
+    return isArabic
+      ? "تعذر إعادة استخدام هذا البلاغ بأمان. أنشئ بلاغًا جديدًا بدل إعادة إرسال بيانات مختلفة."
+      : "Ce signalement ne peut pas être réutilisé en toute sécurité. Créez un nouveau signalement au lieu de renvoyer des données différentes.";
+  }
+  if (normalized.includes("idempotency_data_integrity_failure") || normalized.includes("multiple legacy reports")) {
+    return isArabic
+      ? "تعذر معالجة البلاغ بأمان بسبب تعارض في السجل. لم يُنشأ بلاغ جديد؛ حاول لاحقًا أو تواصل مع فريق التشغيل."
+      : "Le signalement ne peut pas être traité en toute sécurité à cause d'un conflit de registre. Aucun nouveau signalement n'a été créé ; réessayez plus tard.";
+  }
+  if (normalized.includes("validation failed") || normalized.includes("missing required fields")) {
+    return isArabic
+      ? "بعض بيانات البلاغ غير مكتملة أو غير صالحة. راجع الحقول المعلّمة ثم أعد المحاولة."
+      : "Certaines données du signalement sont incomplètes ou invalides. Vérifiez les champs puis réessayez.";
+  }
+  if (normalized.includes("too many reports")) {
+    return isArabic
+      ? "تم إرسال محاولات كثيرة خلال فترة قصيرة. انتظر قليلًا ثم أعد المحاولة."
+      : "Trop de tentatives ont été envoyées en peu de temps. Attendez un instant puis réessayez.";
+  }
+  return isArabic ? "تعذر إرسال البلاغ الآن. بقيت بياناتك في النموذج؛ تحقق من الاتصال ثم أعد المحاولة." : "Impossible d'envoyer le signalement pour le moment. Vos données restent dans le formulaire ; vérifiez la connexion puis réessayez.";
+}
+
+export function isResolvedWilayaMismatch(selectedWilaya: string, resolvedWilaya: string): boolean {
+  return Boolean(selectedWilaya && resolvedWilaya && selectedWilaya !== resolvedWilaya);
 }
 
 export function normalizeSubmissionResult(value: unknown): SubmissionResultView {
@@ -71,6 +111,7 @@ interface ReportFormProps {
   /** Live wilaya list from the observatory API (single source of truth).
       Falls back to the static list below until the API responds. */
   wilayas?: { nameAr: string; nameFr: string }[];
+  syncState?: SyncState;
 }
 
 const FALLBACK_WILAYAS = [
@@ -199,7 +240,7 @@ const FALLBACK_WILAYAS = [
   { nameAr: "ليبيا - المرقب", nameFr: "Libye - Al Murgub" }
 ];
 
-export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas }: ReportFormProps) {
+export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas, syncState = "never" }: ReportFormProps) {
   // The server owns the wilaya geofence; the static copy only covers the
   // first-load/offline window before the API list arrives.
   const wilayaOptions = wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS;
@@ -281,11 +322,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         })));
       })
       .catch((error: unknown) => console.error("Failed to load drafts", error));
-    const handleMeshOnline = () => setIsOffline(false);
-    window.addEventListener("mesh:online", handleMeshOnline);
-    return () => {
-      window.removeEventListener("mesh:online", handleMeshOnline);
-    };
+    return undefined;
   }, []);
 
   // Sync clicked coordinates from the parent map component
@@ -297,7 +334,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   }, [mapClickedCoords]);
 
   // Bind the selected region to the coordinates (mirror of the server's
-  // geofence): suggest the wilaya on GPS fix, warn on country mismatch so the
+  // geofence): suggest the wilaya on GPS fix, warn on wilaya mismatch so the
   // submission is not silently rejected by the server after the fact.
   useEffect(() => {
     const parsedLat = Number(lat);
@@ -321,17 +358,20 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
     const resolvedOption = wilayaOptions.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
     if (!wilaya && resolvedOption) {
+      // The geofence result is authoritative for this coordinate. Selecting it
+      // here prevents a visible suggestion from remaining an unsubmitted form
+      // value while keeping the user free to choose another matching option.
+      setWilaya(`${resolvedOption.nameAr} (${resolvedOption.nameFr})`);
       setWilayaNote({
         kind: "suggest",
         option: `${resolvedOption.nameAr} (${resolvedOption.nameFr})`,
-        textAr: `حدّدنا المكان من إحداثياتك: ${resolvedOption.nameAr}`,
-        textFr: `Wilaya déduite de vos coordonnées : ${resolvedOption.nameFr}`,
+        textAr: `تم اعتماد الولاية تلقائيًا حسب الإحداثيات: ${resolvedOption.nameAr}`,
+        textFr: `Wilaya automatiquement confirmée par les coordonnées : ${resolvedOption.nameFr}`,
       });
       return;
     }
     if (wilaya) {
-      const selectedCountry = wilaya.split(" - ")[0];
-      if (selectedCountry && selectedCountry !== resolved.split(" - ")[0]) {
+      if (isResolvedWilayaMismatch(wilaya, resolved)) {
         setWilayaNote({
           kind: "mismatch",
           textAr: `⚠️ إحداثياتك تقع في «${resolved.split(" (")[0]}» بينما اخترت ولاية مختلفة — سيرفض الخادم البلاغ ما لم تصحّح الاختيار.`,
@@ -440,20 +480,22 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   };
 
   // Automatic sync: the moment connectivity returns, stored drafts are pushed
-  // without any manual action (previously only the UI flag flipped — the
-  // promised auto-sync never happened).
+  // through either browser Internet or the active Mesh gateway. A failed retry
+  // preserves its draft and surfaces the existing recovery state.
   useEffect(() => {
-    const handleOnlineStatus = () => {
+    const handleConnectivityReturn = () => {
       setIsOffline(false);
       if (offlineDrafts.length > 0 && !syncingDrafts.current) {
         void syncOfflineDrafts();
       }
     };
     const handleOfflineStatus = () => setIsOffline(true);
-    window.addEventListener("online", handleOnlineStatus);
+    window.addEventListener("online", handleConnectivityReturn);
+    window.addEventListener("mesh:online", handleConnectivityReturn);
     window.addEventListener("offline", handleOfflineStatus);
     return () => {
-      window.removeEventListener("online", handleOnlineStatus);
+      window.removeEventListener("online", handleConnectivityReturn);
+      window.removeEventListener("mesh:online", handleConnectivityReturn);
       window.removeEventListener("offline", handleOfflineStatus);
     };
   }, [offlineDrafts.length]);
@@ -1079,10 +1121,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         ? (errorRecord.data as Record<string, unknown>).error
         : responseData.error;
       const serverMsg = typeof serverMsgCandidate === "string" ? serverMsgCandidate : undefined;
-      setErrorMsg(
-        serverMsg ||
-        (isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.")
-      );
+      setErrorMsg(toUserFacingSubmitError(serverMsg, isArabic));
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -1107,10 +1146,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <span className={`h-2.5 w-2.5 rounded-full ${isOffline || isOfflineSimulation ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-pulse"}`}></span>
             <span className="text-[11px] font-bold text-slate-200">
               {isOfflineSimulation
-                ? (isArabic ? "محاكاة انقطاع الشبكة — للتطوير فقط" : "Simulation hors-ligne — développement uniquement")
+                ? (isArabic ? "محاكاة انقطاع الشبكة — تُحفظ المسودات محليًا" : "Simulation hors-ligne — brouillons enregistrés localement")
                 : isOffline
-                  ? (isArabic ? "انقطاع الشبكة — تُحفظ المسودات محليًا" : "Hors-ligne — brouillons enregistrés localement")
-                  : (isArabic ? "متصل مباشر بالشبكة الوطنية" : "Connecté en direct au réseau national")}
+                  ? (isArabic ? "الاتصال غير متاح — تُحفظ المسودات محليًا" : "Connexion indisponible — brouillons enregistrés localement")
+                  : syncState === "live"
+                    ? (isArabic ? "الخادم متاح — البلاغات تُرسل مباشرة" : "Serveur disponible — envoi direct")
+                    : syncState === "partial" || syncState === "degraded" || syncState === "stale"
+                      ? (isArabic ? "الخادم متاح جزئيًا — تحقق من حالة المزامنة" : "Serveur partiellement disponible — vérifiez la synchronisation")
+                      : (isArabic ? "لم تُؤكّد جاهزية الخادم — ستظهر النتيجة بعد الإرسال" : "La disponibilité du serveur n'est pas confirmée — le résultat apparaîtra après l'envoi")}
             </span>
           </div>
           

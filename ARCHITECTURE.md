@@ -303,7 +303,98 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 | **OSRM privacy proxy** | The client sends route coordinates directly to the public OSRM endpoint when the user requests a calculation. | A server-side proxy requires a deployment/privacy decision and operational ownership; it was not introduced as an unreviewed data-flow change. |
 | **Polygon geofences** | Request-time wilaya validation uses available bounding-box data and rejects unknown declared wilayas. | Authoritative GeoJSON boundaries are required before replacing the current dataset contract. |
 
+| **Badge `maxUses` atomicity** | The report path validates `usedCount < maxUses` and schedules the usage increment separately. | Enforcing the cap under concurrent submissions requires a Firestore transaction or server-side counter reservation, plus a compatibility and failure-recovery plan. It was not silently redesigned in this pass. |
+| **Firestore read/error semantics across all callers** | Collection reads now distinguish an empty result (`[]`) from an unavailable/error result (`null`); report reads use a discriminated result. | Remaining route-specific helpers still expose boolean/null outcomes. A repository-wide result contract is needed before changing every fallback and HTTP status consistently. |
+| **Admin Firestore fallback to RAM** | Admin report update/delete can fall back to the in-memory dataset when Firestore returns `false`, preserving the existing no-Firestore development mode. | Treating a persistence failure as a successful RAM-only mutation can diverge from production state. Replacing it requires a discriminated write result and an explicit operational policy. |
+| **Confirmation Firestore fallback to RAM** | Report confirmation falls back to the in-memory voter ledger when `confirmReportInFirestore` returns `null`. | A transient Firestore failure can make a confirmation appear successful locally without durable consensus. A strict fail-closed mode or an explicit offline policy requires product and deployment decisions. |
+| **Central Command password policy** | Central Command routes currently share the `requireAdmin` token and the admin verifier accepts the configured bcrypt hash, with a legacy password compatibility path. | Whether Central Command must be restricted to a separate super-admin role is an authorization-policy decision, not a safe compatibility fix. |
+| **HKDF key derivation** | The current E2EE derivation uses the protocol's existing SHA-256 construction. | Migrating to HKDF would improve domain separation but changes derived keys and requires a versioned migration/handshake; it was intentionally not changed silently. |
+| **BLE capability policy** | `android.hardware.bluetooth_le` is currently declared as required by the Android manifest. | Choosing a graceful no-BLE mode versus keeping BLE mandatory is a product and distribution decision; changing the manifest affects device eligibility and fallback UX. |
+| **Consensus voter identity** | Browser confirmations combine the request IP with a supplied device identifier, while native/storage paths keep their existing voter records. | Strong voter possession proof or a stable authenticated identity is required to make consensus resistant to identity spoofing without breaking anonymous field use. |
+| **Mesh Relay DLQ retention** | Pending relay items are capped at 50. Capacity overflow moves the oldest *unprotected* pending item to an independent DLQ only when that transition persists; items with co-located journal state `prepared` or `delivered` are protected from eviction. If no evictable item exists, the new relay item is rejected as `queue_capacity_protected`; if the DLQ transition cannot persist, it is rejected as `dead_letter_unavailable`. | DLQ retention duration, storage budget, monitoring, export, and deletion procedure are operational policy decisions. No implicit FIFO trimming is permitted before that policy is configured and reviewed. |
+
+### 7.c Durable Reconciliation Journal for Mesh Relay / سجل مصالحة التسليم الدائم
+
+> **قرار معتمد قبل التنفيذ:** Relay delivery لا يعتمد على RAM لتقرير مصير بلاغ استلم الخادم له استجابة نجاح. إذا فشل حفظ queue بعد استجابة نجاح ثم حدث reload أو crash، يجب أن تسمح البيانات الدائمة بإعادة بناء queue من دون إعادة إدخال البلاغ المسلَّم إلى pending.
+
+هذا العقد محصور في `src/lib/meshRelay.ts` وطبقة التخزين المحلية للـrelay. لا يغيّر badge `maxUses` أو Firestore consensus أو بروتوكول Mesh أو API الخادم. يعتمد recovery على `clientGeneratedId` الموجود أصلًا في API كمعرّف idempotency؛ لذلك يجب أن يحمل كل `QueuedRelay` قابل للإرسال معرّفًا ثابتًا صالحًا. يحتفظ الـrelay بالمعرّف الوارد كما هو، وإذا غاب يُنشئه مرة واحدة قبل أول journal `prepared` ويخزنه مع التقرير لإعادة استخدامه في كل محاولة لاحقة. هذا استعمال لحقل API اختياري قائم، لا عقد endpoint جديد.
+
+#### Journal record / سجل journal
+
+كل سجل يمثل **عنصر queue واحدًا** لا batch كاملًا، ويُخزّن بجوار نسخة الـqueue التي يحميها؛ لا يجوز تطبيق journal من IndexedDB على snapshot من localStorage أو العكس. يضم السجل، كحد أدنى، `journalId` و`queueItemId` و`storageReplica` و`baseQueueRevision` و`clientGeneratedId` و`reportFingerprint` ونسخة التقرير اللازمة لإعادة المحاولة ووقت الإنشاء والتحديث وبيانات المحاولة. عند تسجيل التسليم يضاف `deliveredAt` و`deliveryDisposition` (`http_200` أو duplicate terminal مصنّف) ووصف transition المتوقع: إزالة `queueItemId` من pending مع بقاء بقية pending وDLQ كما هي أو وفق الانتقالات المسجلة لها.
+
+| حالة السجل | المعنى | أثر recovery |
+|---|---|---|
+| `prepared` | intent دائم كُتب قبل استدعاء `submitRelay()`؛ النتيجة الشبكية غير مؤكدة بعد. | يبقى المصدر pending ويعاد الإرسال بالـ`clientGeneratedId` نفسه وفق backoff؛ لا يجوز إنشاء ID جديد. |
+| `delivered` | وردت استجابة نجاح أو duplicate terminal ثم حُفظ outcome بشكل دائم؛ queue transition قد لا يكون حُفظ بعد. | يعاد بناء queue مع إزالة العنصر المسلَّم حتى لو كانت snapshot الدائمة قديمة. |
+| `committed` | أصبحت queue المعاد بناؤها durable وتثبت إزالة delivered IDs وأي انتقال DLQ مرتبط. | لا يشارك السجل في الإرسال أو reconstruction بعد التحقق من commit؛ يحتفظ به إلى أن توجد سياسة حذف صريحة. |
+
+#### Write and recovery lifecycle / دورة الكتابة والاسترداد
+
+يكتب الـrelay سجل `prepared` durable **قبل** أي طلب HTTP. إذا نجحت الكتابة فقط، يستدعي `submitRelay()`؛ وبذلك لا يمكن أن تنجح الشبكة بلا أثر دائم لخطة التسليم. عند استجابة نجاح أو duplicate terminal، يرقّي السجل إلى `delivered` durable قبل محاولة إزالة العنصر من queue. عند فشل HTTP أو غموض النتيجة، يبقى `prepared` وتستمر queue/backoff؛ إعادة المحاولة تستخدم الـ`clientGeneratedId` نفسه وتستفيد من idempotency الخادم القائمة بدل افتراض أن الطلب لم يصل.
+
+عند إعادة تحميل الصفحة أو استئناف التطبيق، يعاد بناء كل نسخة durable بصورة مستقلة: queue snapshot مع journal co-located معها، ثم تطبق سجلات `delivered` بصورة idempotent بإزالة `queueItemId` المطابق و`reportFingerprint` المطابق من pending. لا يمزج recovery journal من replica مع queue replica أخرى. بعد reconstruction تختار آلية revision النسخة المعاد بناؤها ذات revision الأعلى كما تفعل queue حاليًا؛ ثم تكتب queue الناتجة durable وتحوّل سجلاتها المنطبقة إلى `committed`.
+
+لـIndexedDB، يكون تحديث queue+journal ضمن transaction واحدة حين يتاح ذلك. ولـlocalStorage fallback، يكون الترتيب recoverable: `prepared/delivered` أولًا، ثم queue snapshot، ثم `committed`. إذا وقع crash بين هذه الخطوات، يعيد recovery تطبيق journal بدل إعادة التقرير المسلَّم. لا يحذف journal قبل تحقق هذه العلاقة الدائمة.
+
+#### Commit, deletion, and failure handling / الالتزام والحذف والفشل
+
+السجل `delivered` لا يتحول إلى `committed` إلا إذا أثبتت نسخة queue الدائمة أن `queueItemId` أزيل من pending وأن انتقالات DLQ الأخرى ما زالت ممثلة. إذا نجحت كتابة queue وفشل تعليم السجل `committed`، يبقى السجل ويكون recovery idempotent؛ لا تعود الرسالة إلى pending. لا يجوز حذف سجل `committed` إلا بعد تحقق commit الدائم **وبموجب retention/deletion policy تشغيلية صريحة لاحقة**. لا تضيف هذه المرحلة أي مدة أو حد حجم أو FIFO trimming للـjournal أو DLQ.
+
+| موضع الفشل | السلوك الإلزامي |
+|---|---|
+| تعذّر حفظ `prepared` | لا يستدعى `submitRelay()`؛ يبقى pending وDLQ بدون تغيير ويسجل failure قابل للرصد. |
+| فشل/غموض HTTP بعد `prepared` | يبقى `prepared` وpending؛ يعاد الإرسال بالـ`clientGeneratedId` نفسه، لا بمعرّف جديد. |
+| نجاح HTTP وتعذّر حفظ `delivered` | لا يزال `prepared` قائمًا ولا تزال queue غير محذوفة؛ لا يدّعي العميل التسليم الدائم. recovery يعيد المحاولة idempotently. |
+| `delivered` محفوظ وتعذّر حفظ queue transition | يبقى `delivered` durable؛ recovery يزيل العنصر من reconstruction ولا يعيد إرساله. |
+| queue محفوظ وتعذّر تعليم/تنظيف `committed` | يبقى السجل؛ recovery يتحقق من queue commit ولا يعيد إدخال العنصر أو إرساله. |
+
+#### Required invariants and implementation tests / الثوابت والاختبارات المطلوبة
+
+| Invariant | اختبار implementation المطلوب |
+|---|---|
+| لا يبدأ HTTP dispatch بلا `prepared` durable. | فشل journal قبل الإرسال يمنع استدعاء `fetch` ويحافظ على pending. |
+| لا تضيع نتيجة `delivered` قبل أن تصبح queue transition durable. | نجاح HTTP ثم فشل queue persistence ثم reset module يعيد بناء queue من دون إعادة إرسال التقرير. |
+| `prepared` يعالج النتيجة الغامضة بأمان. | crash بعد dispatch وقبل `delivered` يعيد المحاولة بنفس `clientGeneratedId` فقط. |
+| DLQ source لا يحذف إذا لم يثبت انتقاله، وdelivered IDs لا تعود pending. | flush مختلط (success + dead-letter) مع فشل persistence ثم reload يعيد مصدر DLQ وحده ولا يعيد delivered ID. |
+| journal-protected pending لا يُنقل إلى DLQ بسبب capacity overflow. | overflow مع `prepared` أو `delivered` يحمي العنصر؛ وإذا كانت كل pending محمية يعيد الإدخال `queue_capacity_protected` دون تعديل queue أو DLQ. |
+| recovery لا يخلط نسخ التخزين. | IndexedDB/localStorage يحملان revisions مختلفة وسجلين مختلفين؛ يعاد بناء كل replica مع سجلها ثم تطبق precedence. |
+| `committed` لا يمسح ضمنيًا. | crash بعد queue commit وقبل journal finalization لا يعيد إرسال العنصر ولا يحذف السجل تلقائيًا. |
+
+**حد العقد:** journal يمنع فقدان knowledge المحلي عن استجابة نجاح ويحوّل إعادة المحاولة الغامضة إلى retry ثابت المعرف. لا يدّعي distributed exactly-once بين المتصفح والخادم؛ سلامة retry بعد failure غامض تعتمد على idempotency الحالية لـ`clientGeneratedId`. أي تغيير لاحق في مدة idempotency الخادم أو retention/deletion للـjournal يحتاج قرار policy منفصل.
+
+### 7.d Replay Admission Reservation for Mesh Relay / حجز قبول replay
+
+> **قرار معتمد قبل التنفيذ:** replay admission حجز مؤقت داخل الجلسة يمنع نسخ الـraw envelope المتزامنة من دخول queue معًا. لا يصبح هذا الحجز نتيجة تسليم ولا جزءًا من Durable Reconciliation Journal؛ لا بد أن يُفرج عنه إذا رفضت queue admission التقرير قبل أن يصبح عنصر queue مقبولًا.
+
+بعد PoW وpayload validation، ينشئ الـrelay reservation للـhash مع ownership token فريد. إذا أعادت `enqueueRelay()` قبولًا (`accepted: true`) يبقى الحجز حتى انتهاء نافذة replay المعتادة، لأن التقرير صار داخل queue/journal lifecycle. إذا أعادت رفضًا (`accepted: false`، مثل `queue_capacity_protected` أو `dead_letter_unavailable`) يحرر الـrelay الحجز **فقط** عند مطابقة hash وownership token نفسهما. لا يحرر أي فشل يقع بعد queue admission، بما في ذلك فشل HTTP أو `prepared` أو `delivered` أو retry.
+
+| Invariant | اختبار implementation المطلوب |
+|---|---|
+| الحجز يمنع duplicate متزامن أثناء admission. | المحاولة الثانية لنفس raw خلال حجز A تُرفض قبل enqueue. |
+| rejection لا يحرم raw من retry لاحق. | `queue_capacity_protected` و`dead_letter_unavailable` يحرران حجز A ثم تقبل محاولة C لاحقة بعد recovery. |
+| stale release لا يمسح reservation أحدث. | بعد فشل A وحجز B للـhash ذاته، `release(H, tokenA)` لا يحرر `tokenB`. |
+| القبول volatile يبقي الحجز. | enqueue بقبول volatile لا يحرر hash، لأن التقرير أصبح ضمن delivery lifecycle. |
+| أخطاء delivery لا تغير admission reservation. | فشل HTTP أو `prepared` بعد قبول queue يبقي الحجز طوال retention window. |
+
+**حد العقد:** الحجز الحالي in-memory ولا يدوم عبر reload/crash؛ reset للجلسة يزيله كما يزيل cache replay الحالي. لا يضيف هذا القرار retention دائمًا أو بروتوكول Mesh جديدًا أو API جديدًا أو حلًا لفجوة origin `clientGeneratedId`.
 ---
+
+### 7.e Strict Origin `clientGeneratedId` / هوية المنشأ الصارمة
+
+> **قرار معتمد:** `clientGeneratedId` هو هوية التقرير عبر كامل delivery lifecycle، وليس هوية relay أو queue أو journal. كل report Mesh جديد يجب أن يحمل هذا المعرّف قبل دخوله إلى relay.
+
+يُنشئ المصدر المعرّف مرة واحدة قبل أول POST أو broadcast ويحافظ عليه عبر كل Mesh hop وretry. يمرره relay والخادم دون تعديل. إذا غاب المعرّف أو كان غير صالح، يرفض relay الرسالة قبل replay reservation وقبل queue وjournal وHTTP، مع سبب قابل للرصد؛ لا ينشئ relay معرّفًا بديلًا.
+
+على الخادم، تكون idempotency keyed by `clientGeneratedId` دائمة وذرية مع إنشاء التقرير: transaction تقرأ سجل المفتاح، فإن وجدته تعيد التقرير الأصلي؛ وإن لم تجده تكتب report وسجل idempotency معًا. لا يجوز تنفيذ check ثم create في عمليتين منفصلتين. طلبان متزامنان بالمعرّف نفسه يجب أن ينتجا report دائمًا واحدًا فقط، ويعيد الطلب الخاسر النتيجة الملتزم بها.
+
+لا يدّعي هذا القرار exactly-once أو durable idempotency عند تعذر Firestore؛ semantics ذلك الفشل مؤجلة إلى قرار مستقل. كما أن Same ID مع body مختلف يُكتشف ويُصنف بواسطة fingerprint، لكن response semantics ليست جزءًا من هذا القرار. replay cache المحلي يبقى طبقة anti-replay مستقلة، وDurable Reconciliation Journal يبقى مسؤولًا عن recovery المحلي ولا يستبدل هوية المنشأ.
+
+هذا القرار لا يغير badge `maxUses` أو consensus أو DLQ أو journal lifecycle أو replay retention أو Mesh cryptography. أي دعم لرسائل legacy بلا origin ID خارج strict A1 يحتاج قرار توافق مستقل، وليس fallbackًا صامتًا.
+
+#### A1 execution decision: canonical fingerprint reuse
+
+نفس `clientGeneratedId` مع نفس canonical fingerprint يعيد النتيجة الأصلية، ونفس المعرّف مع fingerprint مختلف يعيد `409 IDEMPOTENCY_KEY_REUSE` دون report جديد أو overwrite لسجل المفتاح. يُحسب fingerprint من canonical normalized request representation ثابتة الإصدار، ثم SHA-256؛ لا يُستخدم raw HTTP body. التمثيل الحالي يشمل الحقول التي تعبر Mesh: `lat` و`lng` و`locationName` و`wilaya` و`description` و`severity` و`reporterType` بعد normalization، ويُحفظ digest الأصلي مع سجل idempotency. Firestore unavailable semantics تبقى خارج هذا القرار.
 
 ## 8. Traffic & Scaling / التحمّل والتوسع
 
@@ -318,3 +409,22 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 ---
 
 *Maintained by Nova DZ · Last updated: July 2026*
+
+
+#### A1 execution decision: Q1 legacy pending quarantine
+
+بعد تفعيل strict origin boundary، قد تبقى في مخزن relay عناصر `pending` محفوظة من نسخة سابقة وتفتقد `clientGeneratedId` صالحًا. هذه العناصر غير قابلة للإرسال ضمن A1 ولا يجوز أن تبقى عالقة أو أن يُخترع لها معرّف بديل.
+
+عند `flush`، يُنقل العنصر legacy إلى **DLQ الموجود حاليًا** مع `deadLetter: true` و`lastError: "missing_origin_client_generated_id"` و`deadLetteredAt`، ثم يُزال من `pending`. لا يحدث له HTTP submission أو journal preparation أو retry جديد، ويُسجّل الحدث عبر structured/error logging. هذا استخدام quarantine لأثر legacy فقط، ولا يغيّر DLQ lifecycle أو retention أو capacity policy العامة.
+
+إذا تعذرت persistence لانتقال DLQ، لا يُحذف العنصر صامتًا؛ ترث العملية semantics فشل DLQ الحالية، أي يبقى المصدر محفوظًا pending/volatile وفق مسار reconciliation الحالي إلى أن تصبح persistence ممكنة. لا استعادة ولا توليد لـ`clientGeneratedId`، ولا fallback إلى cache أو limited scan.
+
+يبقى العنصر legacy الذي يملك origin ID صالحًا ضمن المسار الطبيعي. أما أي enqueue جديد بلا ID أو بـID غير صالح فيُرفض قبل replay reservation وqueue وjournal وHTTP بسبب `missing_origin_client_generated_id`.
+
+#### A1 execution boundary: Admin-only durable path
+يدعم L1 lazy transactional backfill خادم Firestore Admin فقط، لأن query داخل transaction جزء من read-set في Admin SDK. لا يدّعي Client Web SDK دعم L1، ولا تستخدم query خارج transaction ثم create داخلها كبديل. عند غياب Admin durable path، يعيد route failure صريحًا `DURABLE_IDEMPOTENCY_UNAVAILABLE` ولا يدعي exactly-once أو durable idempotency.
+
+#### SOS identity binding boundary
+القيمة `deviceId` في SOS هي UUID مولدة محليًا، وcookie `sos_device_id` تربط الجلسة بهذه القيمة لمنع تبديل المعرّف العرضي داخل المتصفح. هذه **ليست مصادقة جهاز أو إثبات ملكية cryptographic**، ولا يجوز استخدامها لإسناد هوية قانونية للمستخدم أو منح صلاحيات حساسة. حماية profile الحالية هي session binding وخصوصية تخزين مشفر فقط.
+
+أي ترقية إلى مصادقة حقيقية تتطلب قرارًا معماريًا منفصلًا يحدد نموذج الهوية والتعافي وتبديل الأجهزة، مثل حساب موثق أو مفتاح جهاز محفوظ مع إثبات توقيع وتدفق استرداد صريح. لا يغيّر هذا التوثيق مسار SOS الطارئ الحالي، ولا يدّعي إصلاح F-008 دون ذلك القرار.

@@ -2,7 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
-import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
+import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { getHaversineDistance } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
@@ -101,20 +101,7 @@ const sosPostLimiter = rateLimit({
   message: { error: "Too many SOS requests. Try again shortly." },
 });
 
-const sosDuplicates = new Map<string, number>();
 const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
-
-function isDuplicateSos(deviceId: string): boolean {
-  const now = Date.now();
-  const last = sosDuplicates.get(deviceId);
-  if (last && now - last < DUPLICATE_WINDOW_MS) return true;
-  sosDuplicates.set(deviceId, now);
-  if (sosDuplicates.size > 10000) {
-    const cutoff = now - DUPLICATE_WINDOW_MS;
-    for (const [k, v] of sosDuplicates) if (v < cutoff) sosDuplicates.delete(k);
-  }
-  return false;
-}
 
 // ── Encrypted profile store (AES-256-GCM, key derived from SOS_ENCRYPTION_KEY) ─
 const PROFILE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -174,27 +161,33 @@ function anonymizeSos(sos: any) {
   };
 }
 
-async function getAllSos(): Promise<any[]> {
+type SosReadSource = "firestore" | "memory_fallback";
+
+async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   const fromDb = await collectionGet("trappedSos", "timestamp", 100);
+  if (fromDb === null) return { items: memorySos, source: "memory_fallback" };
+
   let merged: any[];
-  if (fromDb && fromDb.length > 0) {
+  if (fromDb.length > 0) {
     const dbIds = new Set(fromDb.map((s: any) => s.id));
     const extra = memorySos.filter((s: any) => !dbIds.has(s.id));
     merged = [...extra, ...fromDb];
   } else {
     merged = memorySos;
   }
-  return merged;
+  return { items: merged, source: "firestore" };
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const merged = await getAllSos();
-  res.json(merged.map(stripAudio).map(anonymizeSos));
+  const { items, source } = await getAllSos();
+  res.setHeader("X-SOS-Source", source);
+  res.json(items.map(stripAudio).map(anonymizeSos));
 });
 
 router.get("/full", requireAdmin, async (_req: Request, res: Response) => {
-  const merged = await getAllSos();
-  res.json(merged.map(stripAudio));
+  const { items, source } = await getAllSos();
+  res.setHeader("X-SOS-Source", source);
+  res.json(items.map(stripAudio));
 });
 
 router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
@@ -255,11 +248,15 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
     updatedAt: new Date().toISOString(),
     deviceId,
   };
+  const persisted = await docSet("sosProfiles", deviceId, record);
+  if (!persisted) {
+    res.status(503).json({ error: "Profile storage unavailable" });
+    return;
+  }
   memoryProfiles.set(deviceId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
   if (memoryProfiles.size > 20000) {
     for (const [k, v] of memoryProfiles) if (Date.now() > v.expiresAt) memoryProfiles.delete(k);
   }
-  await docSet("sosProfiles", deviceId, record);
   res.json({ success: true });
 });
 
@@ -278,12 +275,6 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
       lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat ||
       lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
     res.status(400).json({ error: "Location is outside the monitoring coverage area" });
-    return;
-  }
-
-  // Duplicate protection: one active SOS per device within 5 minutes
-  if (isDuplicateSos(data.deviceId)) {
-    res.status(409).json({ error: "An SOS from this device was already received recently" });
     return;
   }
 
@@ -347,7 +338,17 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     Object.entries(cleanForDb).filter(([, v]) => v !== undefined)
   );
   if (newSos.audioUrl) clean.hasAudio = true;
-  await docSet("trappedSos", newSos.id, clean);
+  const acceptedAt = Date.now();
+  const admissionId = createHash("sha256").update(data.deviceId).digest("hex");
+  const admission = await createSosWithAdmission(newSos.id, clean, admissionId, acceptedAt, DUPLICATE_WINDOW_MS);
+  if (admission === "duplicate") {
+    res.status(409).json({ error: "An SOS from this device was already received recently" });
+    return;
+  }
+  if (admission !== "created") {
+    res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
+    return;
+  }
   memorySos.unshift(newSos);
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
@@ -358,7 +359,11 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
 
 router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) => {
   const { id } = req.params;
-  await docUpdate("trappedSos", id, { status: "resolved" });
+  const persisted = await docUpdate("trappedSos", id, { status: "resolved" });
+  if (!persisted) {
+    res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
+    return;
+  }
   const sos = memorySos.find((s: any) => s.id === id);
   if (sos) sos.status = "resolved";
   res.json({ success: true });
@@ -381,21 +386,39 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
   };
 
   const sos = memorySos.find((s: any) => s.id === id);
-  if (sos) {
-    if (!sos.dispatchedTeams) sos.dispatchedTeams = [];
-    sos.dispatchedTeams.push(dispatchItem);
-  }
+  let persisted = false;
   try {
     const existing = await collectionGet("trappedSos");
+    if (existing === null) {
+      res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
+      return;
+    }
     const current = existing?.find((d: any) => d.id === id);
     if (current) {
       const teams = current.dispatchedTeams || [];
-      await docUpdate("trappedSos", id, { dispatchedTeams: [...teams, dispatchItem] });
+      persisted = await docUpdate("trappedSos", id, { dispatchedTeams: [...teams, dispatchItem] });
     } else if (sos) {
-      await docSet("trappedSos", id, sos);
+      const teams = sos.dispatchedTeams || [];
+      const { audioUrl: _audioUrl, ...sosWithoutAudio } = sos;
+      persisted = await docSet("trappedSos", id, {
+        ...sosWithoutAudio,
+        dispatchedTeams: [...teams, dispatchItem],
+        ...(sos.audioUrl ? { hasAudio: true } : {}),
+      });
+    } else {
+      res.status(404).json({ error: "SOS not found" });
+      return;
     }
   } catch (err) {
     logger.error({ err, id }, "Firestore dispatch error");
+  }
+  if (!persisted) {
+    res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
+    return;
+  }
+  if (sos) {
+    if (!sos.dispatchedTeams) sos.dispatchedTeams = [];
+    sos.dispatchedTeams.push(dispatchItem);
   }
   res.json({ success: true, dispatch: dispatchItem });
 });

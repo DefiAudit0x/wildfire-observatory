@@ -15,8 +15,9 @@ const {
   getLocalPublicKeyBase64,
   encryptForPeer,
   decryptFromPeer,
+  isEncryptedMessageShape,
 } = await import("../src/utils/meshBridge.js");
-const { buildRelayedPayload } = await import("../src/lib/meshRelay.js");
+const { buildRelayedPayload, isRelayEnvelopeAdmissible } = await import("../src/lib/meshRelay.js");
 
 const bytesToHex = (b: Uint8Array): string =>
   Array.from(b)
@@ -43,6 +44,16 @@ describe("mesh PoW (browser fallback) — 32-bit window semantics", () => {
     await expect(solvePoW("pow-test-prefix-4", 0)).resolves.toBe(-1);
     await expect(solvePoW("pow-test-prefix-4", 32)).resolves.toBe(-1);
     await expect(verifyPoW("pow-test-prefix-4", 123, 0)).resolves.toBe(false);
+  });
+});
+
+describe("relay admission policy", () => {
+  it("requires exact network difficulty and fresh timestamp", () => {
+    const now = 1_700_000_000_000;
+    const base = { type: "report", powPrefix: "prefix", powNonce: 1, powDifficulty: 8, ts: now };
+    expect(isRelayEnvelopeAdmissible(base, now)).toBe(true);
+    expect(isRelayEnvelopeAdmissible({ ...base, powDifficulty: 7 }, now)).toBe(false);
+    expect(isRelayEnvelopeAdmissible({ ...base, ts: now - 10 * 60 * 1000 - 1 }, now)).toBe(false);
   });
 });
 
@@ -89,6 +100,25 @@ describe("canonical signed metadata — cross-runtime byte contract (audit round
   });
 });
 
+describe("EncryptedMessage runtime contract", () => {
+  it("rejects missing wire-required metadata", () => {
+    const incomplete = {
+      ciphertext: "YQ==",
+      iv: "YQ==",
+      signature: "YQ==",
+      ephemeralId: "ephemeral",
+      senderPublicKey: "public-key",
+      signatureKey: "signature-key",
+      timestamp: Date.now(),
+      lat: 36.5,
+      lng: 8.1,
+      nonce: 1,
+    };
+    expect(isEncryptedMessageShape(incomplete)).toBe(false);
+    expect(isEncryptedMessageShape({ ...incomplete, signatureKey: undefined, messageId: "message", type: "report", hopCount: 0 })).toBe(true);
+  });
+});
+
 describe("recipient-side key rotation (audit round 12)", () => {
   it("decrypts a message encrypted BEFORE our ephemeral key rotated", async () => {
     // A encrypts for B(K1); B rotates to K2; B must still decrypt the old
@@ -121,6 +151,7 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
       description: "حريق محدود في الأحراش قرب مسالك الغابة — اختبار ترحيل",
       severity: "medium",
       reporterType: "citizen",
+      clientGeneratedId: "cg-mesh-payload-0001",
     }),
     type: "report",
     lat: 36.55,

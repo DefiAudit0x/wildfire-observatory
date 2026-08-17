@@ -38,6 +38,9 @@ object MeshWire {
     /** Propagation budget: origin sets hopsLeft = MAX_HOPS; each relay decrements and stops at 0. */
     const val MAX_HOPS = 5
 
+    /** Network-wide PoW difficulty. TypeScript mirrors this protocol constant. */
+    const val NETWORK_POW_DIFFICULTY = 8
+
     /** Allowed message types on the wire (audit: inbound whitelist). */
     const val MESSAGE_TYPE_REPORT = "report"
     const val MESSAGE_TYPE_ECHO = "echo"
@@ -450,7 +453,7 @@ object MeshWire {
          * return lets the caller handle the failure explicitly instead of
          * catching a thrown SecurityException mid-broadcast.
          */
-        fun solve(prefix: String, difficulty: Int = 8): Int? {
+        fun solve(prefix: String, difficulty: Int = NETWORK_POW_DIFFICULTY): Int? {
             val t = try {
                 target(difficulty)
             } catch (e: IllegalArgumentException) {
@@ -465,7 +468,7 @@ object MeshWire {
             return null
         }
 
-        fun verify(prefix: String, nonce: Int, difficulty: Int = 8): Boolean {
+        fun verify(prefix: String, nonce: Int, difficulty: Int = NETWORK_POW_DIFFICULTY): Boolean {
             val t = try {
                 target(difficulty)
             } catch (e: IllegalArgumentException) {

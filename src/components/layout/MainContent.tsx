@@ -158,6 +158,7 @@ export default function MainContent({
             lang={lang}
             reports={reports}
             wilayas={wilayas}
+            syncState={syncState}
           />
           <EmergencyContactsCard isArabic={isArabic} compact />
         </div>
