@@ -570,3 +570,21 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] إضافة JDK 21 في job الـE2E قبل تشغيل Firebase Emulator.
 - [ ] التحقق من workflow و`git diff --check` قبل commit التصحيحي.
 - [ ] دفع التصحيح ومراقبة CI حتى تنجح job الـE2E فعليًا.
+
+## SOS lifecycle follow-up — F-009 to F-013
+
+- [x] F-009: إعادة إنتاج سباق duplicate المتزامن وتحديد admission durable/atomic محدود.
+- [x] F-010: إثبات ومعالجة false success في resolve وdispatch عند فشل persistence.
+- [x] F-011: تمييز authoritative SOS read عن memory fallback وDB unavailable في HTTP contract.
+- [x] F-012: مواءمة لغة UI حول قرب الحريق مع معنى corroboration وليس confirmation.
+- [ ] F-013: تسجيل race بين flush/enqueue/persistence كفجوة اختبار مستقلة دون تغيير Mesh protocol.
+- [x] إضافة regressions محددة ثم تشغيل validation كامل.
+- [ ] لا commit أو push قبل عرض diff ونتائج الاختبارات للمستخدم.
+
+## Approved SOS lifecycle commit and push
+
+- [x] المستخدم وافق صراحة على commit وpush لدفعة F-009 إلى F-012.
+- [ ] فحص الملفات و`git diff --check` قبل staging.
+- [ ] إنشاء commit مستقل للإصلاحات والـregressions المقصودة.
+- [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
+- [ ] التحقق من SHA المنشور ومراقبة CI النهائي.

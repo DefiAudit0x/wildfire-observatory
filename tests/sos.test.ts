@@ -3,12 +3,14 @@ import { beforeEach, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import cookieParser from "cookie-parser";
+import { generateAdminToken } from "../server/middleware.js";
 
 const fsMock = vi.hoisted(() => ({
   collectionGet: vi.fn(async () => []),
   docGet: vi.fn(async () => null),
   docSet: vi.fn(async () => true),
   docUpdate: vi.fn(async () => true),
+  createSosWithAdmission: vi.fn(async () => "created"),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -48,6 +50,8 @@ beforeEach(() => {
   fsMock.docSet.mockResolvedValue(true);
   fsMock.docUpdate.mockReset();
   fsMock.docUpdate.mockResolvedValue(true);
+  fsMock.createSosWithAdmission.mockReset();
+  fsMock.createSosWithAdmission.mockResolvedValue("created");
 });
 
 describe("POST /api/sos", () => {
@@ -80,6 +84,7 @@ describe("POST /api/sos", () => {
   it("rejects duplicate SOS from the same device within the guard window", async () => {
     const app = createApp();
     const body = validBody();
+    fsMock.createSosWithAdmission.mockResolvedValueOnce("created").mockResolvedValueOnce("duplicate");
     const first = await supertest(app).post("/api/sos").send(body);
     expect(first.status).toBe(200);
     const second = await supertest(app).post("/api/sos").send(body);
@@ -89,7 +94,7 @@ describe("POST /api/sos", () => {
   it("does not claim success or consume duplicate capacity when durable SOS storage fails", async () => {
     const app = createApp();
     const body = validBody();
-    fsMock.docSet.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    fsMock.createSosWithAdmission.mockResolvedValueOnce("unavailable").mockResolvedValueOnce("created");
 
     const failed = await supertest(app).post("/api/sos").send(body);
     expect(failed.status).toBe(503);
@@ -97,7 +102,7 @@ describe("POST /api/sos", () => {
 
     const retry = await supertest(app).post("/api/sos").send(body);
     expect(retry.status).toBe(200);
-    expect(fsMock.docSet).toHaveBeenCalledTimes(2);
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(2);
   });
 
   it("clamps audioDuration to the configured maximum", async () => {
@@ -155,6 +160,16 @@ describe("POST /api/sos", () => {
       expect(item.deviceId).toBeUndefined();
     }
   });
+
+  it("labels a public SOS list as a memory fallback when Firestore is unavailable", async () => {
+    const app = createApp();
+    await supertest(app).post("/api/sos").send(validBody());
+    fsMock.collectionGet.mockResolvedValueOnce(null as any);
+
+    const list = await supertest(app).get("/api/sos");
+    expect(list.status).toBe(200);
+    expect(list.headers["x-sos-source"]).toBe("memory_fallback");
+  });
 });
 
 describe("POST /api/sos rate limiting", () => {
@@ -167,6 +182,38 @@ describe("POST /api/sos rate limiting", () => {
       if (res.status === 429) got429 = true;
     }
     expect(got429).toBe(true);
+  });
+});
+
+describe("SOS durable lifecycle mutations", () => {
+  const adminAuth = () => ({ authorization: `Bearer ${generateAdminToken()}` });
+
+  it("does not claim resolve success when durable update fails", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docUpdate.mockResolvedValueOnce(false);
+
+    const resolve = await supertest(app)
+      .post(`/api/sos/${created.body.id}/resolve`)
+      .set(adminAuth());
+
+    expect(resolve.status).toBe(503);
+    expect(resolve.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
+  });
+
+  it("does not claim dispatch success when durable update fails", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.collectionGet.mockResolvedValueOnce([{ id: created.body.id, dispatchedTeams: [] }] as any);
+    fsMock.docUpdate.mockResolvedValueOnce(false);
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ type: "protection_civile", teamNameAr: "فريق تجريبي", teamNameFr: "Équipe test" });
+
+    expect(dispatch.status).toBe(503);
+    expect(dispatch.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
   });
 });
 

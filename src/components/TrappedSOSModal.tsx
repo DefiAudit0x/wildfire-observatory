@@ -456,8 +456,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
               </h3>
               <p className="text-sm text-slate-400">
                 {isArabic
-                  ? "نقوم بمقاطعة إحداثياتك مع بؤر النيران النشطة لتأكيد حالة الخطر الداهم."
-                  : "Analyse de vos coordonnées par rapport aux feux actifs."}
+                  ? "نقارن موقعك ببؤر النيران النشطة لدعم تقييم الخطر؛ قرب الحريق لا يؤكد وحده أنك محاصر."
+                  : "Votre position est comparée aux feux actifs pour contextualiser le risque ; la proximité seule ne confirme pas que vous êtes piégé."}
               </p>
             </div>
           )}

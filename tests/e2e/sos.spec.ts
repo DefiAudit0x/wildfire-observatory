@@ -1,6 +1,18 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("SOS emergency flow", () => {
+  test("concurrent SOS requests for one device produce one durable admission", async ({ request }) => {
+    const deviceId = `e2e-sos-race-${Date.now()}`;
+    const payload = { deviceId, lat: 36.75, lng: 7.6, name: "E2E", phone: "0610000000" };
+
+    const [first, second] = await Promise.all([
+      request.post("/api/sos", { data: payload }),
+      request.post("/api/sos", { data: payload }),
+    ]);
+
+    expect([first.status(), second.status()].sort()).toEqual([200, 409]);
+  });
+
   test("SOS floating button opens the emergency modal", async ({ page }) => {
     await page.goto("/");
     await page.getByRole("button", { name: "أنا محاصر — نداء استغاثة", exact: true }).click();
