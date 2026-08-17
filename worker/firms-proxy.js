@@ -40,7 +40,8 @@ export default {
           detail: text.slice(0, 500),
         }, resp.ok ? 200 : resp.status);
       } catch (err) {
-        return json({ ok: false, error: String(err) }, 502);
+        console.error("FIRMS MAP_KEY request failed", err);
+        return json({ ok: false, error: "Unable to request a new MAP_KEY" }, 502);
       }
     }
 
@@ -69,7 +70,8 @@ export default {
         },
       });
     } catch (err) {
-      return new Response("Upstream error: " + err.message, { status: 502 });
+      console.error("FIRMS upstream request failed", err);
+      return new Response("Upstream error", { status: 502 });
     }
   },
 };

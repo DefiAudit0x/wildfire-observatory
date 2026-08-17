@@ -2,7 +2,6 @@ import "./sentry-init.js";
 import * as Sentry from "@sentry/node";
 import express from "express";
 import path from "path";
-import fs from "fs";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
@@ -105,28 +104,41 @@ app.use((req, _res, next) => {
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-function isSameOriginRequest(req: express.Request): boolean {
-  const origin = req.headers.origin;
-  if (!origin) return true;
-  if (config.corsOrigins.includes(origin)) return true;
-  const forwardedProto = req.headers["x-forwarded-proto"] || "http";
-  const host = req.headers.host;
-  if (host) {
-    const expected = `${forwardedProto}://${host}`;
-    if (origin === expected) return true;
-    const wsOrigin = `${forwardedProto === "https" ? "https" : "http"}://${host}`;
-    if (origin === wsOrigin) return true;
-  }
-  return false;
+function hasSessionCookie(req: express.Request): boolean {
+  const cookieHeader = req.headers.cookie || "";
+  return cookieHeader.split(";").some((cookie) => {
+    const name = cookie.trim().split("=", 1)[0];
+    return name === "admin_token" || name === "staff_token";
+  });
 }
 
-app.use((req, res, next) => {
-  if (MUTATING_METHODS.has(req.method) && !isSameOriginRequest(req) && !req.headers.authorization) {
+function isTrustedOrigin(req: express.Request): boolean {
+  const origin = req.headers.origin;
+  if (origin) return config.corsOrigins.includes(origin) || origin === `${req.protocol}://${req.get("host")}`;
+
+  const fetchSite = req.headers["sec-fetch-site"];
+  return fetchSite === "same-origin" || fetchSite === "same-site";
+}
+
+/**
+ * Cookie-authenticated state changes are protected by same-origin validation.
+ * Public mutations without an ambient auth cookie remain usable by API clients.
+ * Requests carrying an explicit Bearer token are API-style requests and do not
+ * rely on ambient browser cookies for authentication.
+ */
+function csrfProtection(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!MUTATING_METHODS.has(req.method) || req.headers.authorization || !hasSessionCookie(req)) {
+    next();
+    return;
+  }
+  if (!isTrustedOrigin(req)) {
     res.status(403).json({ error: "Forbidden: cross-origin state change rejected" });
     return;
   }
   next();
-});
+}
+
+app.use(csrfProtection);
 
 app.use((req, _res, next) => {
   logger.info({ req }, "Request");
@@ -185,15 +197,13 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
 
-    app.get("/assets/*", async (req, res) => {
-      const filePath = path.join(distPath, req.path);
-      try {
-        await fs.promises.access(filePath, fs.constants.R_OK);
-        res.sendFile(filePath);
-      } catch {
-        logger.warn({ path: req.path }, "Asset not found");
+    app.get("/assets/*", (req, res) => {
+      const assetPath = req.path.slice("/assets/".length);
+      res.sendFile(assetPath, { root: distPath }, (err) => {
+        if (!err || res.headersSent) return;
+        logger.warn({ path: req.path, err: err.message }, "Asset not found");
         res.status(404).json({ error: "Asset not found" });
-      }
+      });
     });
 
     app.get("*", (req, res) => {
@@ -201,7 +211,7 @@ async function startServer() {
         res.status(404).json({ error: "Not found" });
         return;
       }
-      res.sendFile(path.join(distPath, "index.html"));
+      res.sendFile("index.html", { root: distPath });
     });
   }
 

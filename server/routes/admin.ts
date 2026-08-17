@@ -2,7 +2,6 @@ import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import { createHash, timingSafeEqual } from "crypto";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
@@ -14,24 +13,54 @@ import config from "../config.js";
 
 const router = Router();
 
-function safePasswordMatch(candidate: string, expected: string): boolean {
-  const candidateHash = createHash("sha256").update(candidate).digest();
-  const expectedHash = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(candidateHash, expectedHash);
+let legacyAdminHashPromise: Promise<string> | null = null;
+let legacySuperAdminHashPromise: Promise<string> | null = null;
+
+async function configuredPasswordHash(
+  configuredHash: string | undefined,
+  legacyPassword: string | undefined,
+  cache: "admin" | "superadmin"
+): Promise<string> {
+  if (configuredHash?.startsWith("$2")) return configuredHash;
+  if (!legacyPassword) return "";
+
+  if (cache === "admin") {
+    legacyAdminHashPromise ??= bcrypt.hash(legacyPassword, 12);
+    return legacyAdminHashPromise;
+  }
+
+  legacySuperAdminHashPromise ??= bcrypt.hash(legacyPassword, 12);
+  return legacySuperAdminHashPromise;
 }
 
 export async function verifyAdminPassword(candidate: string): Promise<boolean> {
-  const passwordHash = process.env.ADMIN_PASSWORD_HASH;
-  if (passwordHash && passwordHash.startsWith("$2")) {
-    try {
-      if (await bcrypt.compare(candidate, passwordHash)) return true;
-    } catch (err) {
-      logger.error({ err }, "bcrypt comparison error");
-    }
+  const passwordHash = await configuredPasswordHash(
+    process.env.ADMIN_PASSWORD_HASH,
+    process.env.ADMIN_PASSWORD,
+    "admin"
+  );
+  if (!passwordHash) return false;
+  try {
+    return await bcrypt.compare(candidate, passwordHash);
+  } catch (err) {
+    logger.error({ err }, "bcrypt comparison error");
+    return false;
   }
-  const legacyPassword = process.env.ADMIN_PASSWORD;
-  if (!legacyPassword) return false;
-  return safePasswordMatch(candidate, legacyPassword);
+}
+
+export async function verifySuperAdminPassword(candidate: string): Promise<boolean> {
+  const passwordHash = await configuredPasswordHash(
+    process.env.SUPER_ADMIN_PASSWORD_HASH,
+    process.env.SUPER_ADMIN_PASSWORD,
+    "superadmin"
+  );
+  if (!passwordHash) return verifyAdminPassword(candidate);
+  try {
+    return await bcrypt.compare(candidate, passwordHash);
+  } catch (err) {
+    logger.error({ err }, "bcrypt super-admin comparison error");
+    return false;
+  }
 }
 
 const loginLimiter = rateLimit({

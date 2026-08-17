@@ -1,10 +1,9 @@
-import { createHash, timingSafeEqual } from "crypto";
 import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import config from "../config.js";
 import { collectionGet } from "../fs.js";
-import { verifyAdminPassword } from "./admin.js";
+import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
 
 const router = Router();
@@ -60,15 +59,8 @@ const heartbeatSchema = z.object({
   badgeCode: z.string().trim().max(64).optional(),
 });
 
-function safePasswordMatch(candidate: string, expected: string): boolean {
-  const candidateHash = createHash("sha256").update(candidate).digest();
-  const expectedHash = createHash("sha256").update(expected).digest();
-  return timingSafeEqual(candidateHash, expectedHash);
-}
-
 async function checkSuperAdminPassword(candidate: string): Promise<boolean> {
-  if (config.superAdminPassword && safePasswordMatch(candidate, config.superAdminPassword)) return true;
-  return verifyAdminPassword(candidate);
+  return verifySuperAdminPassword(candidate);
 }
 
 router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: Response) => {
