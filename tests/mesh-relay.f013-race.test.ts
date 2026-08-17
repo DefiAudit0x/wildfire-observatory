@@ -12,9 +12,10 @@ const report = (id: string) => ({
 });
 
 describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     localStorage.clear();
     vi.restoreAllMocks();
+    vi.resetModules();
   });
 
   afterEach(() => {
@@ -79,7 +80,6 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
 
   it("does not claim persistence when localStorage is unavailable during enqueue", async () => {
     const { enqueueRelay, flushQueue } = await import("../src/lib/meshRelay.js");
-    const originalSetItem = Storage.prototype.setItem;
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(function () {
       throw new Error("F-013 simulated localStorage outage");
     });
@@ -93,9 +93,5 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
     // Without durable storage the journal cannot become prepared, so no HTTP
     // delivery is claimed. The item remains volatile rather than being discarded.
     expect(fetchMock).not.toHaveBeenCalled();
-
-    // Restore the storage primitive for test cleanup; the module retains the
-    // volatile item and can retry once persistence becomes available.
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(originalSetItem);
   });
 });
