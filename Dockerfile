@@ -1,20 +1,25 @@
 # ---- Build stage ----
 FROM node:20-alpine AS builder
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
+
+# The repository is pinned to pnpm 11.21.0 in package.json.
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
 COPY . .
-RUN npm run build
+RUN pnpm run build
 
 # ---- Runtime stage ----
 FROM node:20-alpine
 WORKDIR /app
 RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 ENV NODE_ENV=production
-COPY package.json package-lock.json ./
-# --ignore-scripts: avoid running "prepare: husky" during production install
-# (husky is a devDependency not present here; the app is already built in the builder stage)
-RUN npm ci --omit=dev --ignore-scripts
+
+RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
+COPY package.json pnpm-lock.yaml ./
+# --prod: install only runtime dependencies from the committed lockfile.
+RUN pnpm install --prod --frozen-lockfile
+
 COPY --from=builder /app/dist ./dist
 # firebase-applet-config.json is ignored in .dockerignore (contains credentials),
 # so it cannot be COPYed here without failing the build when absent.
