@@ -104,6 +104,14 @@ app.use((req, _res, next) => {
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
+function hasSessionCookie(req: express.Request): boolean {
+  const cookieHeader = req.headers.cookie || "";
+  return cookieHeader.split(";").some((cookie) => {
+    const name = cookie.trim().split("=", 1)[0];
+    return name === "admin_token" || name === "staff_token";
+  });
+}
+
 function isTrustedOrigin(req: express.Request): boolean {
   const origin = req.headers.origin;
   if (origin) return config.corsOrigins.includes(origin) || origin === `${req.protocol}://${req.get("host")}`;
@@ -114,11 +122,12 @@ function isTrustedOrigin(req: express.Request): boolean {
 
 /**
  * Cookie-authenticated state changes are protected by same-origin validation.
+ * Public mutations without an ambient auth cookie remain usable by API clients.
  * Requests carrying an explicit Bearer token are API-style requests and do not
  * rely on ambient browser cookies for authentication.
  */
 function csrfProtection(req: express.Request, res: express.Response, next: express.NextFunction): void {
-  if (!MUTATING_METHODS.has(req.method) || req.headers.authorization) {
+  if (!MUTATING_METHODS.has(req.method) || req.headers.authorization || !hasSessionCookie(req)) {
     next();
     return;
   }
