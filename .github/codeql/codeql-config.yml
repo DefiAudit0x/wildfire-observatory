@@ -1,0 +1,6 @@
+name: wildfire-observatory-codeql
+
+paths-ignore:
+  - tests/**
+  - '**/*.test.ts'
+  - '**/*.spec.ts'
