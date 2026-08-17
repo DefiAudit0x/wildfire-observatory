@@ -557,3 +557,10 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] التحقق من `pnpm install --frozen-lockfile` في CI-like local environment.
 - [ ] إنشاء ودفع commit تصحيحي لمشكلة CI بعد validation.
 - [ ] مراقبة workflow الجديد وتسجيل النتيجة الفعلية على GitHub.
+
+## GitHub Actions PWA dependency follow-up
+
+- [ ] معالجة فشل build في CI بسبب عدم حل `workbox-window` مع pnpm المعزول.
+- [ ] تثبيت `workbox-window` مباشرةً بالإصدار المتوافق مع `vite-plugin-pwa`.
+- [ ] التحقق من frozen install وproduction build قبل commit تصحيحي جديد.
+- [ ] دفع التصحيح ومراقبة CI حتى تكتمل jobا lint-and-test وe2e.
