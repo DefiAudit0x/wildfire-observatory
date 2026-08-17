@@ -448,3 +448,84 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] إضافة الدفعة وإنشاء commit بالرسالة المعتمدة.
 - [ ] عرض `git status` و`git log -1 --oneline` بعد commit.
 - [ ] عدم تنفيذ push؛ يلزم قرار منفصل.
+
+## Approved baseline push
+
+- [x] المستخدم وافق صراحة على دفع commit `1fcc4c1`.
+- [ ] التحقق من remote واسم الفرع المستهدف قبل الدفع.
+- [ ] دفع commit `1fcc4c1` فقط إلى `origin/audit/fix-remaining-findings`.
+- [ ] التحقق من SHA المنشور عبر remote بعد نجاح الدفع.
+
+## Findings imported from attached audit report
+
+- [ ] تحقق من workflow CI وإزالة `SKIP_FIREBASE=true` من job الخاص بـE2E إذا كان موجودًا.
+- [ ] توحيد package manager في CI مع `pnpm-lock.yaml` باستخدام تثبيت frozen lockfile.
+- [ ] تشغيل اختبارات CI-like بعد إصلاح workflow، مع فصل ما يمكن التحقق منه محليًا عما يحتاج GitHub Actions.
+- [ ] تصنيف asymmetry لمسار Client SDK في `confirmReportInFirestore()` قبل أي إصلاح.
+- [ ] إبقاء badge `maxUses` على audit board وعدم تعديلها قبل قرار معماري مستقل.
+- [ ] إبقاء Mesh identity/cryptography/any-to-any relay وdistributed dedup على audit board.
+- [ ] مزامنة هذا السجل مع HEAD وremote HEAD والـfindings المغلقة والمفتوحة بعد انتهاء إصلاحات CI.
+- [ ] تنفيذ UX/UI audit للرحلات الحرجة: البلاغ، SOS، الخريطة، offline، accessibility/mobile.
+- [ ] عدم اعتبار المشروع release-ready قبل إغلاق بوابات CI وUX والـsystem-wide audit اللاحقة.
+- [ ] لا push إضافي قبل مراجعة المستخدم للـdiff والـvalidation الخاص بهذه الدفعة.
+
+## CI repair gate
+
+- [ ] لا تعديل على Badge أو Mesh أو Client confirmation semantics قبل تصنيفها وعرض القرار.
+- [ ] لا commit لإصلاحات CI قبل مراجعة نطاق الملفات ونتائج الاختبارات.
+- [ ] لا push لإصلاحات CI قبل موافقة صريحة منفصلة.
+
+## Audit ledger reconciliation gate
+
+- [ ] تحديث current local HEAD وremote HEAD.
+- [ ] تحديث حالات A1/S1/cache/E2E وCI findings.
+- [ ] توثيق findings المفتوحة والقرارات المؤجلة وخطواتها التالية.
+
+## Current execution order — CI then UX/UI audit
+
+- [x] عدم تعديل Badge أو Mesh أو أي finding جديد أثناء هذه المرحلة.
+- [x] التحقق من CI: إزالة `SKIP_FIREBASE=true` واعتماد pnpm في workflow فقط.
+- [x] تشغيل lint/typecheck.
+- [x] تشغيل unit/integration tests.
+- [x] تشغيل production build.
+- [x] تشغيل E2E عبر Firestore Emulator.
+- [x] عدم إنشاء commit قبل اكتمال validation ونجاح جميع البوابات.
+- [x] اختبار التطبيق يدويًا على شاشة هاتف وفق الرحلات العشر المحددة.
+- [x] تسجيل UX findings والأدلة فقط دون اقتراح أو تنفيذ حلول.
+- [ ] إرسال نتيجة CI وUX/UI للمستخدم قبل أي تعديل لاحق.
+
+## Merged text deliverable
+
+- [ ] دمج `wildfire-ux-audit-report.md` و`wildfire-ux-audit-notes.md` وسجل console في ملف نصي واحد.
+- [ ] وضع اسم كل ملف وفواصل واضحة مع الحفاظ على المحتوى كاملًا.
+- [ ] تسليم الملف المدمج كنص قابل للنسخ دون commit أو push.
+
+## Round 2 failure-state audit from attached report
+
+- [ ] مقارنة UX-001 إلى UX-008 مع الأدلة الحالية وتصنيفها Confirmed/Candidate/Unverified.
+- [x] اختبار الشبكة البطيئة والانقطاع الكامل وعودة الشبكة والخادم غير المتاح.
+- [x] اختبار GPS مرفوض وGPS timeout وGPS متاح بلا ولاية مؤكدة.
+- [x] اختبار الإرسال البطيء وفشل الإرسال بعد الضغط.
+- [x] اختبار SOS مع GPS وبدون GPS.
+- [x] اختبار رفض الصورة/الكاميرا وrefresh أثناء draft وإغلاق الهاتف أثناء المزامنة والعودة بعد فترة.
+- [x] لكل حالة تسجيل: ماذا حدث، هل البلاغ محفوظ، وما الإجراء التالي الظاهر خلال ثانيتين.
+- [x] عدم تعديل UX code أو إضافة features قبل تصنيف الأدلة وعرضها.
+- [x] تطبيق الإصلاحات فقط بعد قرار صريح على findings المؤكدة.
+
+## Approved UX fixes to implement after verification
+
+- [x] توحيد حالة الاتصال في ReportForm باستخدام SyncState المشترك مع HeaderBar.
+- [x] تحويل اقتراح الولاية المطابق للإحداثيات إلى قيمة نموذج معتمدة تلقائيًا مع توضيح ذلك للمستخدم.
+- [x] استبدال رسائل backend التقنية برسالة عربية/فرنسية مفهومة مع إبقاء التفاصيل في console فقط.
+- [x] إضافة مسار طوارئ مباشر داخل SOS عند فشل GPS، باستخدام أرقام الطوارئ الرسمية الحالية فقط.
+- [x] إضافة regression tests للسلوكيات الثلاثة السابقة قبل اعتبارها مكتملة.
+- [x] عدم تغيير Badge أو Mesh أو Journal أو API semantics ضمن هذه الدفعة.
+
+## Approved UX/CI commit and push
+
+- [ ] إعادة قراءة إرشادات Git audit وKarpathy قبل staging.
+- [ ] التحقق من نطاق الملفات الحالية وعدم إدراج أدلة أو ملفات مؤقتة.
+- [ ] تشغيل diff check وvalidation النهائي أو الاعتماد على النتائج الأخيرة مع إعادة فحص الحالة.
+- [ ] إنشاء commit للدفعة الحالية برسالة واضحة.
+- [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
+- [ ] التحقق من SHA المنشور وعرض الملفات والحالة النهائية.

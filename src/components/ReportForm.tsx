@@ -5,6 +5,7 @@ import { geoErrorMessage } from "../hooks/useGeolocation";
 import { setReporterBadge } from "../utils/badgeStore";
 import { isFreshThreatTimestamp } from "../utils/threats";
 import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
+import type { SyncState } from "../utils/datasetHealth";
 
 interface SubmissionResultView {
   responseValid: boolean;
@@ -21,6 +22,16 @@ interface SubmissionResultView {
     isVerified?: boolean;
     suggestedSeverity?: string;
   };
+}
+
+export function toUserFacingSubmitError(message: string | undefined, isArabic: boolean): string {
+  const normalized = message?.toLowerCase() || "";
+  if (normalized.includes("durable idempotency") || normalized.includes("durable_idempotency") || normalized.includes("admin firestore")) {
+    return isArabic
+      ? "تعذر إرسال البلاغ الآن لأن خادم المرصد غير جاهز. بقيت بياناتك في النموذج؛ حاول مجددًا عند توفر الخدمة."
+      : "Le serveur de l'observatoire n'est pas prêt. Vos données restent dans le formulaire ; réessayez lorsque le service sera disponible.";
+  }
+  return message || (isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.");
 }
 
 export function normalizeSubmissionResult(value: unknown): SubmissionResultView {
@@ -71,6 +82,7 @@ interface ReportFormProps {
   /** Live wilaya list from the observatory API (single source of truth).
       Falls back to the static list below until the API responds. */
   wilayas?: { nameAr: string; nameFr: string }[];
+  syncState?: SyncState;
 }
 
 const FALLBACK_WILAYAS = [
@@ -199,7 +211,7 @@ const FALLBACK_WILAYAS = [
   { nameAr: "ليبيا - المرقب", nameFr: "Libye - Al Murgub" }
 ];
 
-export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas }: ReportFormProps) {
+export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas, syncState = "never" }: ReportFormProps) {
   // The server owns the wilaya geofence; the static copy only covers the
   // first-load/offline window before the API list arrives.
   const wilayaOptions = wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS;
@@ -321,11 +333,15 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
     const resolvedOption = wilayaOptions.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
     if (!wilaya && resolvedOption) {
+      // The geofence result is authoritative for this coordinate. Selecting it
+      // here prevents a visible suggestion from remaining an unsubmitted form
+      // value while keeping the user free to choose another matching option.
+      setWilaya(`${resolvedOption.nameAr} (${resolvedOption.nameFr})`);
       setWilayaNote({
         kind: "suggest",
         option: `${resolvedOption.nameAr} (${resolvedOption.nameFr})`,
-        textAr: `حدّدنا المكان من إحداثياتك: ${resolvedOption.nameAr}`,
-        textFr: `Wilaya déduite de vos coordonnées : ${resolvedOption.nameFr}`,
+        textAr: `تم اعتماد الولاية تلقائيًا حسب الإحداثيات: ${resolvedOption.nameAr}`,
+        textFr: `Wilaya automatiquement confirmée par les coordonnées : ${resolvedOption.nameFr}`,
       });
       return;
     }
@@ -1079,10 +1095,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         ? (errorRecord.data as Record<string, unknown>).error
         : responseData.error;
       const serverMsg = typeof serverMsgCandidate === "string" ? serverMsgCandidate : undefined;
-      setErrorMsg(
-        serverMsg ||
-        (isArabic ? "عذراً، فشل إرسال البلاغ الميداني." : "Échec de l'envoi du signalement.")
-      );
+      setErrorMsg(toUserFacingSubmitError(serverMsg, isArabic));
     } finally {
       submittingRef.current = false;
       setIsSubmitting(false);
@@ -1107,10 +1120,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <span className={`h-2.5 w-2.5 rounded-full ${isOffline || isOfflineSimulation ? "bg-amber-500 animate-pulse" : "bg-emerald-500 animate-pulse"}`}></span>
             <span className="text-[11px] font-bold text-slate-200">
               {isOfflineSimulation
-                ? (isArabic ? "محاكاة انقطاع الشبكة — للتطوير فقط" : "Simulation hors-ligne — développement uniquement")
+                ? (isArabic ? "محاكاة انقطاع الشبكة — تُحفظ المسودات محليًا" : "Simulation hors-ligne — brouillons enregistrés localement")
                 : isOffline
-                  ? (isArabic ? "انقطاع الشبكة — تُحفظ المسودات محليًا" : "Hors-ligne — brouillons enregistrés localement")
-                  : (isArabic ? "متصل مباشر بالشبكة الوطنية" : "Connecté en direct au réseau national")}
+                  ? (isArabic ? "الاتصال غير متاح — تُحفظ المسودات محليًا" : "Connexion indisponible — brouillons enregistrés localement")
+                  : syncState === "live"
+                    ? (isArabic ? "الخادم متاح — البلاغات تُرسل مباشرة" : "Serveur disponible — envoi direct")
+                    : syncState === "partial" || syncState === "degraded" || syncState === "stale"
+                      ? (isArabic ? "الخادم متاح جزئيًا — تحقق من حالة المزامنة" : "Serveur partiellement disponible — vérifiez la synchronisation")
+                      : (isArabic ? "لم تُؤكّد جاهزية الخادم — ستظهر النتيجة بعد الإرسال" : "La disponibilité du serveur n'est pas confirmée — le résultat apparaîtra après l'envoi")}
             </span>
           </div>
           

@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSubmissionResult } from "../src/components/ReportForm";
+import { normalizeSubmissionResult, toUserFacingSubmitError } from "../src/components/ReportForm";
 
 describe("ReportForm submission result contract", () => {
+  it("hides durable backend details behind an Arabic user-facing error", () => {
+    const message = toUserFacingSubmitError("Admin Firestore durable idempotency is required for report submission", true);
+    expect(message).toContain("خادم المرصد غير جاهز");
+    expect(message).not.toContain("Admin Firestore");
+  });
+
+  it("keeps generic server errors visible when they are already user-facing", () => {
+    expect(toUserFacingSubmitError("تعذر الاتصال بالخادم", true)).toBe("تعذر الاتصال بالخادم");
+    expect(toUserFacingSubmitError(undefined, false)).toContain("Échec");
+  });
+
   it("rejects an undefined server result", () => {
     expect(normalizeSubmissionResult(undefined)).toEqual({
       responseValid: false,

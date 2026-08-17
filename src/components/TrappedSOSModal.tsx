@@ -462,12 +462,31 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                     : "Impossible d'identifier votre position. Activez le GPS pour transmettre votre localisation."}
                 </p>
               </div>
-              <button
-                onClick={onClose}
-                className="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold transition-colors cursor-pointer"
-              >
-                {isArabic ? "إغلاق" : "Fermer"}
-              </button>
+              <div className="w-full space-y-2">
+                <p className="text-xs font-bold text-amber-200">
+                  {isArabic ? "إذا كنت في خطر مباشر، اتصل الآن:" : "En danger immédiat, appelez maintenant :"}
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <a
+                    href="tel:1021"
+                    className="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "الحماية المدنية 1021" : "Protection civile 1021"}
+                  </a>
+                  <a
+                    href="tel:1070"
+                    className="py-2.5 rounded-xl bg-red-950 border border-red-500/50 hover:bg-red-900 text-red-100 text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "الغابات 1070" : "Forêts 1070"}
+                  </a>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl font-bold transition-colors cursor-pointer"
+                >
+                  {isArabic ? "إغلاق" : "Fermer"}
+                </button>
+              </div>
             </div>
           )}
 
