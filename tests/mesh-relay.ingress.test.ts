@@ -104,7 +104,7 @@ describe("mesh relay online ingress journal", () => {
     vi.resetModules();
   });
 
-  it("persists prepared before the first online HTTP dispatch and generates a stable clientGeneratedId", async () => {
+  it("persists prepared before the first online HTTP dispatch and preserves the origin clientGeneratedId", async () => {
     const relay = await loadRelay();
     const fetchMock = vi.fn().mockImplementation(async () => {
       expect(storedState().journal[0]).toMatchObject({ state: "prepared" });
@@ -113,13 +113,12 @@ describe("mesh relay online ingress journal", () => {
     vi.stubGlobal("fetch", fetchMock);
     relay.initMeshRelay();
 
-    bridgeMock.handler?.(meshReport());
+    bridgeMock.handler?.(meshReport("origin-ingress-0001"));
 
     await vi.waitFor(() => expect(storedState().journal[0]?.state).toBe("committed"));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const firstId = JSON.parse(fetchMock.mock.calls[0][1].body).clientGeneratedId;
-    expect(firstId).toEqual(expect.any(String));
-    expect(firstId.length).toBeGreaterThanOrEqual(8);
+    expect(firstId).toBe("origin-ingress-0001");
     expect(storedState().journal[0]?.clientGeneratedId).toBe(firstId);
 
     vi.resetModules();
@@ -127,6 +126,20 @@ describe("mesh relay online ingress journal", () => {
     fetchMock.mockClear();
     await afterReload.flushQueue();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a legacy Mesh envelope without origin ID before queue or HTTP", async () => {
+    const relay = await loadRelay();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    relay.initMeshRelay();
+
+    bridgeMock.handler?.(meshReport());
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(storedState().pending).toEqual([]);
+    expect(storedState().journal).toEqual([]);
   });
 
   it("retries the same online relay id after HTTP success but crash before delivered persistence", async () => {
@@ -141,7 +154,7 @@ describe("mesh relay online ingress journal", () => {
     const setItem = failWriteAt(3); // enqueue → prepared → delivered
     relay.initMeshRelay();
 
-    bridgeMock.handler?.(meshReport());
+    bridgeMock.handler?.(meshReport("origin-retry-0001"));
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(storedState().journal[0]?.state).toBe("prepared"));
@@ -170,7 +183,7 @@ describe("mesh relay online ingress journal", () => {
     await vi.waitFor(() => expect(bridgeMock.verifyPoW).toHaveBeenCalledTimes(2000));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    bridgeMock.handler?.(meshReport(undefined, 2001));
+    bridgeMock.handler?.(meshReport("origin-valid-after-poison-0001", 2001));
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   });

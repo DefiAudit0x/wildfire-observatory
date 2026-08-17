@@ -151,6 +151,7 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
       description: "حريق محدود في الأحراش قرب مسالك الغابة — اختبار ترحيل",
       severity: "medium",
       reporterType: "citizen",
+      clientGeneratedId: "cg-mesh-payload-0001",
     }),
     type: "report",
     lat: 36.55,

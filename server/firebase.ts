@@ -31,6 +31,28 @@ export function getDb(): Firestore | AdminFirestore | null {
   if (process.env.SKIP_FIREBASE === "true") return null;
 
   const databaseId = resolveDatabaseId();
+  const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST?.trim();
+  if (emulatorHost) {
+    const projectId = process.env.GCLOUD_PROJECT?.trim();
+    if (!projectId) {
+      logger.error("FIRESTORE_EMULATOR_HOST requires GCLOUD_PROJECT for Admin initialization");
+      return null;
+    }
+    try {
+      if (getAdminApps().length === 0) {
+        initializeAdminApp({ projectId });
+      }
+      adminDb = databaseId
+        ? getAdminFirestore(getAdminApps()[0], databaseId)
+        : getAdminFirestore(getAdminApps()[0]);
+      _isAdmin = true;
+      logger.info({ databaseId: databaseId || "(default)", emulatorHost, projectId }, "Firebase Admin initialized against Firestore Emulator");
+      return adminDb;
+    } catch (err) {
+      logger.error({ err }, "Failed to initialize Firebase Admin against Firestore Emulator");
+      return null;
+    }
+  }
 
   let serviceAccount: any = null;
 

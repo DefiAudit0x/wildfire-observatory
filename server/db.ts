@@ -90,6 +90,157 @@ export async function seedReportsToFirestore(): Promise<boolean> {
 
 export type ReportSaveResult = "saved" | "no-db" | "error";
 
+export type IdempotentReportSaveResult =
+  | { status: "saved"; report: any }
+  | { status: "existing"; report: any }
+  | { status: "same_id_different_body"; report: any }
+  | { status: "integrity_failure" }
+  | { status: "admin_required" }
+  | { status: "no-db" }
+  | { status: "error" };
+
+const REPORT_IDEMPOTENCY_COLLECTION = "reportIdempotency";
+
+/**
+ * Produces a Firestore-safe persistence copy without changing the API/report
+ * model used for canonical identity, responses, or in-memory behavior.
+ * Undefined array members are rejected instead of silently changing order.
+ */
+function removeUndefinedDeepForFirestore<T>(value: T, path = "$"): T {
+  if (Array.isArray(value)) {
+    return value.map((item, index) => {
+      if (item === undefined) {
+        throw new Error(`Firestore persistence contains undefined array item at ${path}[${index}]`);
+      }
+      return removeUndefinedDeepForFirestore(item, `${path}[${index}]`);
+    }) as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      const normalized: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+        if (child !== undefined) {
+          normalized[key] = removeUndefinedDeepForFirestore(child, `${path}.${key}`);
+        }
+      }
+      return normalized as T;
+    }
+  }
+  return value;
+}
+
+/**
+ * Atomically creates a report and its durable origin-id record. The existing
+ * report is returned for a retry; a fingerprint mismatch is classified for the
+ * route as IDEMPOTENCY_KEY_REUSE. Legacy lookup is part of the Admin transaction
+ * read-set and requires the canonicalizer supplied by the route.
+ */
+export type IdempotencyLookupResult =
+  | { status: "found"; report: any; fingerprint: string }
+  | { status: "missing" }
+  | { status: "admin_required" }
+  | { status: "no-db" }
+  | { status: "error" };
+
+export async function lookupReportIdempotency(clientGeneratedId: string): Promise<IdempotencyLookupResult> {
+  const db = getDb();
+  if (!db) return { status: "no-db" };
+  try {
+    if (isAdminDb(db)) {
+      const keySnapshot = await db.collection(REPORT_IDEMPOTENCY_COLLECTION).doc(clientGeneratedId).get();
+      if (!keySnapshot.exists) return { status: "missing" };
+      const keyData = keySnapshot.data() as { reportId?: string; fingerprint?: string };
+      if (!keyData.reportId || typeof keyData.fingerprint !== "string") return { status: "error" };
+      const reportSnapshot = await db.collection("reports").doc(keyData.reportId).get();
+      if (!reportSnapshot.exists) return { status: "error" };
+      return {
+        status: "found",
+        report: { id: reportSnapshot.id, ...reportSnapshot.data() },
+        fingerprint: keyData.fingerprint,
+      };
+    }
+
+    return { status: "admin_required" };
+  } catch (err) {
+    logger.error({ err }, "[Firestore] Failed idempotency lookup");
+    return { status: "error" };
+  }
+}
+
+export async function saveReportWithIdempotency(
+  report: any,
+  requestFingerprint: string,
+  canonicalizeLegacyReport: (legacyReport: any) => string,
+): Promise<IdempotentReportSaveResult> {
+  const db = getDb();
+  if (!db) return { status: "no-db" };
+
+  try {
+    if (isAdminDb(db)) {
+      const idempotencyRef = db.collection(REPORT_IDEMPOTENCY_COLLECTION).doc(report.clientGeneratedId);
+      const reportRef = db.collection("reports").doc(report.id);
+      const result = await db.runTransaction(async (tx) => {
+        const keySnapshot = await tx.get(idempotencyRef);
+        if (keySnapshot.exists) {
+          const keyData = keySnapshot.data() as { reportId?: string; fingerprint?: string };
+          if (!keyData.reportId) throw new Error("Idempotency record is missing reportId");
+          const existingSnapshot = await tx.get(db.collection("reports").doc(keyData.reportId));
+          if (!existingSnapshot.exists) throw new Error("Idempotency record points to missing report");
+          const existing = { id: existingSnapshot.id, ...existingSnapshot.data() };
+          return {
+            status: keyData.fingerprint === requestFingerprint ? "existing" as const : "same_id_different_body" as const,
+            report: existing,
+          };
+        }
+
+        const legacySnapshot = await tx.get(
+          db.collection("reports")
+            .where("clientGeneratedId", "==", report.clientGeneratedId)
+            .limit(2),
+        );
+        if (legacySnapshot.size > 1) return { status: "integrity_failure" as const };
+        if (legacySnapshot.size === 1) {
+          const legacyDoc = legacySnapshot.docs[0];
+          const legacyData = legacyDoc.data() as Record<string, unknown>;
+          const legacy = { id: legacyDoc.id, ...legacyData };
+          const storedLegacyFingerprint = legacyData.idempotencyFingerprint as string | undefined;
+          const legacyFingerprint = typeof storedLegacyFingerprint === "string"
+            ? storedLegacyFingerprint
+            : canonicalizeLegacyReport?.(legacy);
+          if (typeof legacyFingerprint === "string" && legacyFingerprint !== requestFingerprint) {
+            return { status: "same_id_different_body" as const, report: legacy };
+          }
+          tx.create(idempotencyRef, {
+            reportId: legacyDoc.id,
+            clientGeneratedId: report.clientGeneratedId,
+            fingerprint: requestFingerprint,
+            createdAt: report.timestamp,
+            backfilledAt: report.timestamp,
+          });
+          return { status: "existing" as const, report: legacy };
+        }
+
+        tx.create(reportRef, removeUndefinedDeepForFirestore(report));
+        tx.create(idempotencyRef, {
+          reportId: report.id,
+          clientGeneratedId: report.clientGeneratedId,
+          fingerprint: requestFingerprint,
+          createdAt: report.timestamp,
+        });
+        return { status: "saved" as const, report };
+      });
+      invalidateReportsCache();
+      return result;
+    }
+
+    return { status: "admin_required" };
+  } catch (err) {
+    logger.error({ err }, "[Firestore] Failed atomic report/idempotency transaction");
+    return { status: "error" };
+  }
+}
+
 export async function saveReportToFirestore(report: any): Promise<ReportSaveResult> {
   const db = getDb();
   if (!db) return "no-db";
@@ -138,6 +289,9 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
         tx.update(docRef, update);
         return { consensusCount: newConsensus, status: newStatus };
       });
+      if (result && !("error" in result)) {
+        invalidateReportsCache();
+      }
       return result;
     } else {
       const { doc, runTransaction } = await loadClientSdk();

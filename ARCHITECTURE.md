@@ -380,6 +380,22 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 **حد العقد:** الحجز الحالي in-memory ولا يدوم عبر reload/crash؛ reset للجلسة يزيله كما يزيل cache replay الحالي. لا يضيف هذا القرار retention دائمًا أو بروتوكول Mesh جديدًا أو API جديدًا أو حلًا لفجوة origin `clientGeneratedId`.
 ---
 
+### 7.e Strict Origin `clientGeneratedId` / هوية المنشأ الصارمة
+
+> **قرار معتمد:** `clientGeneratedId` هو هوية التقرير عبر كامل delivery lifecycle، وليس هوية relay أو queue أو journal. كل report Mesh جديد يجب أن يحمل هذا المعرّف قبل دخوله إلى relay.
+
+يُنشئ المصدر المعرّف مرة واحدة قبل أول POST أو broadcast ويحافظ عليه عبر كل Mesh hop وretry. يمرره relay والخادم دون تعديل. إذا غاب المعرّف أو كان غير صالح، يرفض relay الرسالة قبل replay reservation وقبل queue وjournal وHTTP، مع سبب قابل للرصد؛ لا ينشئ relay معرّفًا بديلًا.
+
+على الخادم، تكون idempotency keyed by `clientGeneratedId` دائمة وذرية مع إنشاء التقرير: transaction تقرأ سجل المفتاح، فإن وجدته تعيد التقرير الأصلي؛ وإن لم تجده تكتب report وسجل idempotency معًا. لا يجوز تنفيذ check ثم create في عمليتين منفصلتين. طلبان متزامنان بالمعرّف نفسه يجب أن ينتجا report دائمًا واحدًا فقط، ويعيد الطلب الخاسر النتيجة الملتزم بها.
+
+لا يدّعي هذا القرار exactly-once أو durable idempotency عند تعذر Firestore؛ semantics ذلك الفشل مؤجلة إلى قرار مستقل. كما أن Same ID مع body مختلف يُكتشف ويُصنف بواسطة fingerprint، لكن response semantics ليست جزءًا من هذا القرار. replay cache المحلي يبقى طبقة anti-replay مستقلة، وDurable Reconciliation Journal يبقى مسؤولًا عن recovery المحلي ولا يستبدل هوية المنشأ.
+
+هذا القرار لا يغير badge `maxUses` أو consensus أو DLQ أو journal lifecycle أو replay retention أو Mesh cryptography. أي دعم لرسائل legacy بلا origin ID خارج strict A1 يحتاج قرار توافق مستقل، وليس fallbackًا صامتًا.
+
+#### A1 execution decision: canonical fingerprint reuse
+
+نفس `clientGeneratedId` مع نفس canonical fingerprint يعيد النتيجة الأصلية، ونفس المعرّف مع fingerprint مختلف يعيد `409 IDEMPOTENCY_KEY_REUSE` دون report جديد أو overwrite لسجل المفتاح. يُحسب fingerprint من canonical normalized request representation ثابتة الإصدار، ثم SHA-256؛ لا يُستخدم raw HTTP body. التمثيل الحالي يشمل الحقول التي تعبر Mesh: `lat` و`lng` و`locationName` و`wilaya` و`description` و`severity` و`reporterType` بعد normalization، ويُحفظ digest الأصلي مع سجل idempotency. Firestore unavailable semantics تبقى خارج هذا القرار.
+
 ## 8. Traffic & Scaling / التحمّل والتوسع
 
 | Metric | Current (Monolith) | Phase 3 (Microservices) |
@@ -393,3 +409,18 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 ---
 
 *Maintained by Nova DZ · Last updated: July 2026*
+
+
+#### A1 execution decision: Q1 legacy pending quarantine
+
+بعد تفعيل strict origin boundary، قد تبقى في مخزن relay عناصر `pending` محفوظة من نسخة سابقة وتفتقد `clientGeneratedId` صالحًا. هذه العناصر غير قابلة للإرسال ضمن A1 ولا يجوز أن تبقى عالقة أو أن يُخترع لها معرّف بديل.
+
+عند `flush`، يُنقل العنصر legacy إلى **DLQ الموجود حاليًا** مع `deadLetter: true` و`lastError: "missing_origin_client_generated_id"` و`deadLetteredAt`، ثم يُزال من `pending`. لا يحدث له HTTP submission أو journal preparation أو retry جديد، ويُسجّل الحدث عبر structured/error logging. هذا استخدام quarantine لأثر legacy فقط، ولا يغيّر DLQ lifecycle أو retention أو capacity policy العامة.
+
+إذا تعذرت persistence لانتقال DLQ، لا يُحذف العنصر صامتًا؛ ترث العملية semantics فشل DLQ الحالية، أي يبقى المصدر محفوظًا pending/volatile وفق مسار reconciliation الحالي إلى أن تصبح persistence ممكنة. لا استعادة ولا توليد لـ`clientGeneratedId`، ولا fallback إلى cache أو limited scan.
+
+يبقى العنصر legacy الذي يملك origin ID صالحًا ضمن المسار الطبيعي. أما أي enqueue جديد بلا ID أو بـID غير صالح فيُرفض قبل replay reservation وqueue وjournal وHTTP بسبب `missing_origin_client_generated_id`.
+
+#### A1 execution boundary: Admin-only durable path
+
+يدعم L1 lazy transactional backfill خادم Firestore Admin فقط، لأن query داخل transaction جزء من read-set في Admin SDK. لا يدّعي Client Web SDK دعم L1، ولا تستخدم query خارج transaction ثم create داخلها كبديل. عند غياب Admin durable path، يعيد route failure صريحًا `DURABLE_IDEMPOTENCY_UNAVAILABLE` ولا يدعي exactly-once أو durable idempotency.

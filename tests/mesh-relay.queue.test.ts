@@ -434,6 +434,104 @@ describe("mesh relay queue concurrency", () => {
     expect(expired[0].deadLetter).toBe(true);
   });
 
+  it("quarantines legacy pending items without HTTP or journal preparation", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storage.set("mesh_relay_queue", JSON.stringify([{
+      id: "legacy-no-origin",
+      report: { description: "legacy report without origin id" },
+      ts: Date.now(),
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    }]));
+
+    await flushQueue();
+
+    const saved = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved.pending).toHaveLength(0);
+    expect(saved.journal).toHaveLength(0);
+    expect(saved.deadLetters).toHaveLength(1);
+    expect(saved.deadLetters[0].lastError).toBe("missing_origin_client_generated_id");
+  });
+
+  it("does not retry a quarantined legacy item after reload", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storage.set("mesh_relay_queue", JSON.stringify([{
+      id: "legacy-reload-no-origin",
+      report: {},
+      ts: Date.now(),
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    }]));
+
+    await flushQueue();
+    await vi.resetModules();
+    const { flushQueue: reloadedFlushQueue } = await import("../src/lib/meshRelay.js");
+    await reloadedFlushQueue();
+
+    const saved = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved.pending).toHaveLength(0);
+    expect(saved.deadLetters[0].lastError).toBe("missing_origin_client_generated_id");
+  });
+
+  it("sends a legacy pending item normally when it has a valid origin ID", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    storage.set("mesh_relay_queue", JSON.stringify([{
+      id: "legacy-valid-origin",
+      report: { clientGeneratedId: "legacy-valid-origin" },
+      ts: Date.now(),
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    }]));
+
+    await flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const saved = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    expect(saved.pending).toHaveLength(0);
+    expect(saved.deadLetters).toHaveLength(0);
+  });
+
+  it("rejects new enqueue with a missing or invalid origin ID before queue admission", async () => {
+    await expect(enqueueRelay({})).resolves.toEqual({
+      accepted: false,
+      reason: "missing_origin_client_generated_id",
+    });
+    await expect(enqueueRelay({ clientGeneratedId: "short" })).resolves.toEqual({
+      accepted: false,
+      reason: "missing_origin_client_generated_id",
+    });
+    expect(storage.has("mesh_relay_queue")).toBe(false);
+  });
+
+  it("preserves a legacy item when its Q1 DLQ transition cannot persist", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    storage.set("mesh_relay_queue", JSON.stringify([{
+      id: "legacy-dlq-failure",
+      report: {},
+      ts: Date.now(),
+      attempts: 0,
+      nextAttemptAt: Date.now(),
+    }]));
+    const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+
+    await flushQueue();
+    setItem.mockRestore();
+
+    const saved = storedQueue();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(saved).toHaveLength(1);
+    expect(saved[0].report.clientGeneratedId).toBeUndefined();
+    expect(saved[0].deadLetter).not.toBe(true);
+  });
+
   it("fails closed when relay replay capacity is full before retention expires", () => {
     const now = Date.now();
     expect(checkAndRecordRelayHash(`relay-capacity-first-${now}`, now)).toBe(true);

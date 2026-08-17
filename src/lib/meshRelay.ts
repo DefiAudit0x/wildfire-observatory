@@ -106,7 +106,7 @@ interface RelayQueueState {
 
 export type RelayEnqueueResult =
   | { accepted: true; storage: "persistent" | "volatile" }
-  | { accepted: false; reason: "dead_letter_unavailable" | "queue_capacity_protected" };
+  | { accepted: false; reason: "dead_letter_unavailable" | "queue_capacity_protected" | "missing_origin_client_generated_id" };
 
 function queueItemId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -218,10 +218,8 @@ function normalizeRelayQueueState(value: unknown): RelayQueueState {
   return { revision, ...splitLegacyQueue(normalizeQueue(snapshot.items)), journal: normalizeJournal(snapshot.journal) };
 }
 
-function relayReportWithClientGeneratedId(report: Record<string, unknown>): Record<string, unknown> {
-  const current = report.clientGeneratedId;
-  if (typeof current === "string" && current.length >= 8 && current.length <= 64) return report;
-  return { ...report, clientGeneratedId: queueItemId() };
+function isValidClientGeneratedId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 8 && value.length <= 64;
 }
 
 function journalMatchesItem(entry: RelayJournalEntry, item: QueuedRelay): boolean {
@@ -664,18 +662,11 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
     reporterType: payload.reporterType ?? "citizen",
   };
 
-  // The origin's client-generated id travels VERBATIM through the relay: the
-  // server deduplicates on it, so a report that an online origin already
-  // posted (or posts later) is never double-committed. Dropping it here would
-  // break that idempotency contract.
-  if (payload.clientGeneratedId !== undefined &&
-      (typeof payload.clientGeneratedId !== "string" ||
-       payload.clientGeneratedId.length < 8 || payload.clientGeneratedId.length > 64)) {
-    return null;
-  }
-  if (typeof payload.clientGeneratedId === "string") {
-    report.clientGeneratedId = payload.clientGeneratedId;
-  }
+  // A Mesh report must carry the origin's stable id. The relay is not allowed
+  // to invent a replacement id because that would break end-to-end idempotency
+  // after reloads, relay handoffs, or server restarts.
+  if (!isValidClientGeneratedId(payload.clientGeneratedId)) return null;
+  report.clientGeneratedId = payload.clientGeneratedId;
 
   // The length and enum gates above mirror the server schema exactly.
   if (
@@ -793,10 +784,14 @@ async function handleRelayMessage(raw: string): Promise<void> {
 }
 
 export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqueueResult> {
+  if (!isValidClientGeneratedId(report.clientGeneratedId)) {
+    console.error("[MeshRelay] Rejecting relay enqueue: missing origin clientGeneratedId");
+    return Promise.resolve({ accepted: false, reason: "missing_origin_client_generated_id" });
+  }
   const now = Date.now();
   const item = {
     id: queueItemId(),
-    report: relayReportWithClientGeneratedId(report),
+    report,
     ts: now,
     attempts: 0,
     nextAttemptAt: now,
@@ -835,7 +830,18 @@ async function flushQueueInternal(): Promise<void> {
       continue;
     }
     if (item.nextAttemptAt > now) continue;
-    const journalItem = { ...item, report: relayReportWithClientGeneratedId(item.report) } satisfies QueuedRelay;
+    if (!isValidClientGeneratedId(item.report.clientGeneratedId)) {
+      updatedItems.set(item.id, {
+        ...item,
+        deadLetter: true,
+        deadLetteredAt: now,
+        lastError: "missing_origin_client_generated_id",
+      });
+      console.error("[MeshRelay] Quarantining legacy pending item without origin clientGeneratedId");
+      changed = true;
+      continue;
+    }
+    const journalItem = item;
     if (!(await persistPreparedJournal(journalItem))) continue;
     const disposition = await submitRelayOutcome(journalItem.report);
     if (disposition && await persistDeliveredJournal(journalItem, disposition)) {

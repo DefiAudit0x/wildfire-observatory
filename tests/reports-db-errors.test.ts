@@ -10,6 +10,10 @@ vi.mock("../server/db.js", () => ({
   getReportsDbResult: vi.fn(async () => dbState.result),
   seedReportsToFirestore: vi.fn(async () => undefined),
   saveReportToFirestore: vi.fn(async () => "saved"),
+  saveReportWithIdempotency: vi.fn(async (report: any) => report.clientGeneratedId === "cg-durable-0001"
+    ? { status: "existing", report: { ...report, id: "rep-durable-1" } }
+    : { status: "saved", report }),
+  lookupReportIdempotency: vi.fn(async () => ({ status: "missing" })),
   confirmReportInFirestore: vi.fn(async () => null),
 }));
 

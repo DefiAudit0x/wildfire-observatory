@@ -3,6 +3,35 @@ import express from "express";
 import reportsRouter from "../server/routes/reports.js";
 import { healthHandler } from "../server/routes/health.js";
 import supertest from "supertest";
+import { vi } from "vitest";
+
+const mockState = vi.hoisted(() => ({
+  reports: [{ id: "seed-report", lat: 36.75, lng: 7.6, severity: "medium", status: "pending", timestamp: new Date().toISOString(), consensusCount: 1 }],
+  idempotency: new Map<string, { report: any; fingerprint: string }>(),
+}));
+
+vi.mock("../server/db.js", () => ({
+  getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: mockState.reports })),
+  seedReportsToFirestore: vi.fn(async () => true),
+  lookupReportIdempotency: vi.fn(async (id: string) => {
+    const entry = mockState.idempotency.get(id);
+    return entry ? { status: "found", report: entry.report, fingerprint: entry.fingerprint } : { status: "missing" };
+  }),
+  saveReportWithIdempotency: vi.fn(async (report: any, fingerprint: string) => {
+    const existing = mockState.idempotency.get(report.clientGeneratedId);
+    if (existing) {
+      return existing.fingerprint === fingerprint
+        ? { status: "existing", report: existing.report }
+        : { status: "same_id_different_body", report: existing.report };
+    }
+    mockState.idempotency.set(report.clientGeneratedId, { report, fingerprint });
+    mockState.reports.unshift(report);
+    return { status: "saved", report };
+  }),
+  confirmReportInFirestore: vi.fn(async () => null),
+  updateReportInFirestore: vi.fn(async () => true),
+  deleteReportFromFirestore: vi.fn(async () => true),
+}));
 
 function createTestApp() {
   const app = express();
@@ -50,6 +79,19 @@ describe("POST /api/reports", () => {
     expect(res.status).toBe(400);
   });
 
+  it("rejects an otherwise valid report without an origin clientGeneratedId", async () => {
+    const app = createTestApp();
+    const res = await supertest(app).post("/api/reports").send({
+      lat: 36.8,
+      lng: 7.6,
+      locationName: "Missing origin ID",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغ صحيح الشكل لكنه بلا هوية منشأ ثابتة",
+      severity: "medium",
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("creates a new report with valid data", async () => {
     const app = createTestApp();
     const res = await supertest(app).post("/api/reports").send({
@@ -59,6 +101,7 @@ describe("POST /api/reports", () => {
       wilaya: "الجزائر - عنابة (Algérie - Annaba)",
       description: "حريق اختبار للتحقق من النظام",
       severity: "medium",
+      clientGeneratedId: "cg-valid-report-0001",
     });
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("id");
@@ -75,6 +118,7 @@ describe("POST /api/reports", () => {
       wilaya: "الجزائر - عنابة (Algérie - Annaba)",
       description: "بلاغ نصي بدون صورة يجب أن يمر",
       severity: "low",
+      clientGeneratedId: "cg-no-image-report-0001",
       image: null,
     });
     expect(res.status).toBe(200);
@@ -120,6 +164,27 @@ describe("POST /api/reports", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(409);
     expect(second.body.code).toBe("DUPLICATE_SPATIAL_REPORT");
+  });
+
+  it("rejects same clientGeneratedId when the canonical request fingerprint differs", async () => {
+    const app = createTestApp();
+    const payload = {
+      lat: 36.82,
+      lng: 7.61,
+      locationName: "Fingerprint Location",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "بلاغ أصلي لاختبار إعادة استخدام مفتاح الهوية",
+      severity: "medium",
+      clientGeneratedId: "cg-fingerprint-reuse-0001",
+    };
+    const first = await supertest(app).post("/api/reports").send(payload);
+    const second = await supertest(app).post("/api/reports").send({
+      ...payload,
+      description: "بلاغ مختلف بنفس مفتاح الهوية يجب رفضه",
+    });
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(second.body.code).toBe("IDEMPOTENCY_KEY_REUSE");
   });
 
   it("does not deduplicate distinct clientGeneratedIds at the same location too eagerly past the retry rule", async () => {

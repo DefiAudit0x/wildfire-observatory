@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit",
     "test:server": "vitest run --config vitest.server.config.ts",
     "test:react": "vitest run --config vitest.config.ts",
-    "test:e2e": "playwright test --config playwright.config.ts",
+    "test:e2e": "E2E_DURABLE_ASSERTION=true firebase emulators:exec --only firestore --project demo-wildfire-observatory-e2e --config firebase.json \"playwright test --config playwright.config.ts\"",
     "test": "npm run test:server && npm run test:react",
     "prepare": "husky"
   },
@@ -70,6 +70,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "firebase-tools": "^15.27.0",
     "husky": "^9.1.0",
     "jsdom": "^30.0.1",
     "supertest": "^7.0.0",
