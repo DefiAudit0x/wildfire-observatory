@@ -564,3 +564,9 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] تثبيت `workbox-window` مباشرةً بالإصدار المتوافق مع `vite-plugin-pwa`.
 - [ ] التحقق من frozen install وproduction build قبل commit تصحيحي جديد.
 - [ ] دفع التصحيح ومراقبة CI حتى تكتمل jobا lint-and-test وe2e.
+
+## GitHub Actions Firebase Emulator JDK follow-up
+
+- [ ] إضافة JDK 21 في job الـE2E قبل تشغيل Firebase Emulator.
+- [ ] التحقق من workflow و`git diff --check` قبل commit التصحيحي.
+- [ ] دفع التصحيح ومراقبة CI حتى تنجح job الـE2E فعليًا.
