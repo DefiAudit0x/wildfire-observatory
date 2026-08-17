@@ -549,3 +549,11 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] إنشاء commit محدود للإصلاحات المتحققة.
 - [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
 - [ ] التحقق من SHA المنشور وحالة working tree.
+
+## GitHub Actions build-approval follow-up
+
+- [ ] تحديد packages التي يمنع pnpm 11 build scripts الخاصة بها في GitHub Actions.
+- [ ] إضافة allowBuilds صريحة بالحد الأدنى في إعداد مشروع pnpm.
+- [ ] التحقق من `pnpm install --frozen-lockfile` في CI-like local environment.
+- [ ] إنشاء ودفع commit تصحيحي لمشكلة CI بعد validation.
+- [ ] مراقبة workflow الجديد وتسجيل النتيجة الفعلية على GitHub.
