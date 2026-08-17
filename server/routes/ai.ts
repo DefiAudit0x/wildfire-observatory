@@ -76,13 +76,49 @@ function aiBudgetAvailable(): boolean {
   return true;
 }
 
-/** Removes HTML and dangerous markdown from AI output before it reaches the client. */
-function sanitizeAiOutput(text: string): string {
-  return text
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<[^>]*>/g, "")
-    .replace(/\b(javascript|vbscript):/gi, "blocked:")
-    .slice(0, 4000);
+/**
+ * Sanitizes AI output without regex-based HTML parsing. HTML delimiters are
+ * escaped, and dangerous URL schemes are neutralized case-insensitively.
+ * This keeps Markdown text intact while preventing raw HTML from reaching
+ * the Markdown renderer.
+ */
+export function sanitizeAiOutput(text: string): string {
+  let output = "";
+  let tagDepth = 0;
+
+  for (const char of text) {
+    if (char === "<") {
+      tagDepth += 1;
+      output += "&lt;";
+      continue;
+    }
+    if (char === ">" && tagDepth > 0) {
+      tagDepth -= 1;
+      output += "&gt;";
+      continue;
+    }
+    output += char === ">" ? "&gt;" : char;
+  }
+
+  const dangerousSchemes = ["javascript:", "vbscript:", "data:text/html"];
+  let normalized = output;
+  for (const scheme of dangerousSchemes) {
+    const lower = normalized.toLowerCase();
+    let cursor = 0;
+    let rebuilt = "";
+    while (cursor < normalized.length) {
+      const index = lower.indexOf(scheme, cursor);
+      if (index === -1) {
+        rebuilt += normalized.slice(cursor);
+        break;
+      }
+      rebuilt += normalized.slice(cursor, index) + "blocked:";
+      cursor = index + scheme.length;
+    }
+    normalized = rebuilt;
+  }
+
+  return normalized.slice(0, 4000);
 }
 
 router.post("/", aiLimiter, async (req: Request, res: Response) => {
