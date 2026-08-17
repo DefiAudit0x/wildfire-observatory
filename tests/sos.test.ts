@@ -1,7 +1,18 @@
 import { describe, it, expect } from "vitest";
+import { beforeEach, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import cookieParser from "cookie-parser";
+
+const fsMock = vi.hoisted(() => ({
+  collectionGet: vi.fn(async () => []),
+  docGet: vi.fn(async () => null),
+  docSet: vi.fn(async () => true),
+  docUpdate: vi.fn(async () => true),
+}));
+
+vi.mock("../server/fs.js", () => fsMock);
+
 import sosRouter from "../server/routes/sos.js";
 
 function createApp() {
@@ -27,6 +38,17 @@ function validBody() {
     phone: "0610000000",
   };
 }
+
+beforeEach(() => {
+  fsMock.collectionGet.mockReset();
+  fsMock.collectionGet.mockResolvedValue([]);
+  fsMock.docGet.mockReset();
+  fsMock.docGet.mockResolvedValue(null);
+  fsMock.docSet.mockReset();
+  fsMock.docSet.mockResolvedValue(true);
+  fsMock.docUpdate.mockReset();
+  fsMock.docUpdate.mockResolvedValue(true);
+});
 
 describe("POST /api/sos", () => {
   it("accepts a valid SOS", async () => {
@@ -62,6 +84,20 @@ describe("POST /api/sos", () => {
     expect(first.status).toBe(200);
     const second = await supertest(app).post("/api/sos").send(body);
     expect(second.status).toBe(409);
+  });
+
+  it("does not claim success or consume duplicate capacity when durable SOS storage fails", async () => {
+    const app = createApp();
+    const body = validBody();
+    fsMock.docSet.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const failed = await supertest(app).post("/api/sos").send(body);
+    expect(failed.status).toBe(503);
+    expect(failed.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
+
+    const retry = await supertest(app).post("/api/sos").send(body);
+    expect(retry.status).toBe(200);
+    expect(fsMock.docSet).toHaveBeenCalledTimes(2);
   });
 
   it("clamps audioDuration to the configured maximum", async () => {
@@ -154,6 +190,19 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
     expect(got.status).toBe(200);
     expect(got.body.name).toBe("علي");
     expect(got.body.phone).toBe("0550123456");
+  });
+
+  it("does not report successful profile storage when the durable write fails", async () => {
+    const app = createApp();
+    const deviceId = uniqueDevice();
+    fsMock.docSet.mockResolvedValueOnce(false);
+    const put = await supertest(app)
+      .put(`/api/sos/profile/${deviceId}`)
+      .send({ name: "علي", phone: "0550123456" });
+    expect(put.status).toBe(503);
+
+    const got = await supertest(app).get(`/api/sos/profile/${deviceId}`);
+    expect(got.body).toEqual({ name: "", phone: "" });
   });
 
   it("validates profile inputs", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSubmissionResult, toUserFacingSubmitError } from "../src/components/ReportForm";
+import { isResolvedWilayaMismatch, normalizeSubmissionResult, toUserFacingSubmitError } from "../src/components/ReportForm";
 
 describe("ReportForm submission result contract", () => {
   it("hides durable backend details behind an Arabic user-facing error", () => {
@@ -9,8 +9,17 @@ describe("ReportForm submission result contract", () => {
   });
 
   it("keeps generic server errors visible when they are already user-facing", () => {
-    expect(toUserFacingSubmitError("تعذر الاتصال بالخادم", true)).toBe("تعذر الاتصال بالخادم");
-    expect(toUserFacingSubmitError(undefined, false)).toContain("Échec");
+    expect(toUserFacingSubmitError("Coordinates do not fall within the bounds of الجزائر - الطارف", true)).toContain("لا يطابق الولاية");
+    expect(toUserFacingSubmitError("IDEMPOTENCY_KEY_REUSE", true)).toContain("إعادة استخدام");
+    expect(toUserFacingSubmitError("IDEMPOTENCY_DATA_INTEGRITY_FAILURE", true)).toContain("تعارض");
+    expect(toUserFacingSubmitError("Validation failed", true)).toContain("غير مكتملة");
+    expect(toUserFacingSubmitError("internal future backend detail", true)).not.toContain("backend detail");
+    expect(toUserFacingSubmitError(undefined, false)).toContain("Impossible d'envoyer");
+  });
+
+  it("flags a selected wilaya that differs from the resolved wilaya even inside the same country", () => {
+    expect(isResolvedWilayaMismatch("الجزائر - عنابة (Algérie - Annaba)", "الجزائر - الطارف (Algérie - El Tarf)")).toBe(true);
+    expect(isResolvedWilayaMismatch("الجزائر - الطارف (Algérie - El Tarf)", "الجزائر - الطارف (Algérie - El Tarf)")).toBe(false);
   });
 
   it("rejects an undefined server result", () => {

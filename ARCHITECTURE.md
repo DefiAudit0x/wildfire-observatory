@@ -422,5 +422,9 @@ Fuel for the ongoing security/protocol audit — nothing here is hidden.
 يبقى العنصر legacy الذي يملك origin ID صالحًا ضمن المسار الطبيعي. أما أي enqueue جديد بلا ID أو بـID غير صالح فيُرفض قبل replay reservation وqueue وjournal وHTTP بسبب `missing_origin_client_generated_id`.
 
 #### A1 execution boundary: Admin-only durable path
-
 يدعم L1 lazy transactional backfill خادم Firestore Admin فقط، لأن query داخل transaction جزء من read-set في Admin SDK. لا يدّعي Client Web SDK دعم L1، ولا تستخدم query خارج transaction ثم create داخلها كبديل. عند غياب Admin durable path، يعيد route failure صريحًا `DURABLE_IDEMPOTENCY_UNAVAILABLE` ولا يدعي exactly-once أو durable idempotency.
+
+#### SOS identity binding boundary
+القيمة `deviceId` في SOS هي UUID مولدة محليًا، وcookie `sos_device_id` تربط الجلسة بهذه القيمة لمنع تبديل المعرّف العرضي داخل المتصفح. هذه **ليست مصادقة جهاز أو إثبات ملكية cryptographic**، ولا يجوز استخدامها لإسناد هوية قانونية للمستخدم أو منح صلاحيات حساسة. حماية profile الحالية هي session binding وخصوصية تخزين مشفر فقط.
+
+أي ترقية إلى مصادقة حقيقية تتطلب قرارًا معماريًا منفصلًا يحدد نموذج الهوية والتعافي وتبديل الأجهزة، مثل حساب موثق أو مفتاح جهاز محفوظ مع إثبات توقيع وتدفق استرداد صريح. لا يغيّر هذا التوثيق مسار SOS الطارئ الحالي، ولا يدّعي إصلاح F-008 دون ذلك القرار.

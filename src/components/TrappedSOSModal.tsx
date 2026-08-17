@@ -27,6 +27,21 @@ type Step =
 
 const MAX_AUDIO_DURATION_SEC = 20;
 
+export function toUserFacingSosError(message: string | undefined, isArabic: boolean): string {
+  const normalized = message?.toLowerCase() || "";
+  if (normalized.includes("sos_storage_unavailable") || normalized.includes("sos storage unavailable")) {
+    return isArabic
+      ? "لم يتم حفظ نداء الاستغاثة على الخادم بعد. أعد المحاولة أو اتصل مباشرةً بالحماية المدنية."
+      : "L'appel SOS n'a pas encore été enregistré sur le serveur. Réessayez ou appelez directement la protection civile.";
+  }
+  if (normalized.includes("already received recently")) {
+    return isArabic
+      ? "يوجد نداء استغاثة حديث من هذا الجهاز. إذا لم تحصل على مساعدة، اتصل مباشرةً بالحماية المدنية."
+      : "Un SOS récent existe déjà pour cet appareil. Si vous n'avez pas d'aide, appelez directement la protection civile.";
+  }
+  return isArabic ? "تعذّر إرسال نداء الاستغاثة. أعد المحاولة أو اتصل مباشرةً بالحماية المدنية." : "Impossible d'envoyer le SOS. Réessayez ou appelez directement la protection civile.";
+}
+
 export default function TrappedSOSModal({ lang, onClose, userLocation, nearestThreat }: TrappedSOSModalProps) {
   const isArabic = lang === "ar";
   const [step, setStep] = useState<Step>("verifying");
@@ -405,7 +420,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       setStep("sent");
     } catch (err: any) {
       console.error("Failed to post SOS:", err);
-      setSendError(err?.message || (isArabic ? "تعذّر الاتصال بالخادم" : "Erreur de connexion"));
+      setSendError(toUserFacingSosError(err?.message, isArabic));
       setStep("send_failed");
     } finally {
       setIsSending(false);
@@ -466,7 +481,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                 <p className="text-xs font-bold text-amber-200">
                   {isArabic ? "إذا كنت في خطر مباشر، اتصل الآن:" : "En danger immédiat, appelez maintenant :"}
                 </p>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <a
+                    href="tel:14"
+                    className="py-2.5 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-black text-center transition-colors"
+                  >
+                    {isArabic ? "النجدة والحريق 14" : "Urgence incendie 14"}
+                  </a>
                   <a
                     href="tel:1021"
                     className="py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black text-center transition-colors"

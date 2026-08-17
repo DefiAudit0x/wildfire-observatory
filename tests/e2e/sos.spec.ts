@@ -15,6 +15,14 @@ test.describe("SOS emergency flow", () => {
     await expect(page.getByText(/نداء استغاثة طارئ/i)).toHaveCount(0);
   });
 
+  test("no-location SOS exposes all verified direct emergency fallbacks", async ({ page }) => {
+    await page.goto("/");
+    await page.getByRole("button", { name: "أنا محاصر — نداء استغاثة", exact: true }).click();
+    await expect(page.locator('a[href="tel:14"]')).toBeVisible({ timeout: 5000 });
+    await expect(page.locator('a[href="tel:1021"]').last()).toBeVisible();
+    await expect(page.locator('a[href="tel:1070"]').last()).toBeVisible();
+  });
+
   test("national emergency numbers are reachable from the report tab", async ({ page }) => {
     await page.goto("/");
     await page.click('button:has-text("إرسال بلاغ حريق")');

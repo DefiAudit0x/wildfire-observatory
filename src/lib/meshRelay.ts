@@ -24,6 +24,8 @@ import {
   onMeshMessage,
   verifyPoW,
 } from "../utils/meshBridge";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 
 export interface MeshEnvelope {
   payload?: unknown;
@@ -62,10 +64,16 @@ let flushInFlight: Promise<void> | null = null;
 let queueMutationTail: Promise<void> = Promise.resolve();
 let queueRevision = 0;
 
-function hashString(input: string): string {
+function legacyContentFingerprint(input: string): string {
   let h = 5381;
   for (let i = 0; i < input.length; i++) h = ((h << 5) + h + input.charCodeAt(i)) | 0;
   return String(h >>> 0);
+}
+
+/** Replay reservations are a security boundary and use SHA-256. Queue/journal
+ * fingerprints retain their legacy form to preserve recovery of old snapshots. */
+export function relayReplayDigest(raw: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(raw)));
 }
 
 interface QueuedRelay {
@@ -127,7 +135,7 @@ function normalizeQueueItem(item: {
 }): QueuedRelay {
   const now = Date.now();
   return {
-    id: typeof item.id === "string" && item.id.length > 0 ? item.id : hashString(JSON.stringify(item)),
+    id: typeof item.id === "string" && item.id.length > 0 ? item.id : legacyContentFingerprint(JSON.stringify(item)),
     report: item.report,
     ts: typeof item.ts === "number" && Number.isFinite(item.ts) ? item.ts : now,
     attempts: typeof item.attempts === "number" && Number.isInteger(item.attempts) && item.attempts >= 0 ? item.attempts : 0,
@@ -225,7 +233,7 @@ function isValidClientGeneratedId(value: unknown): value is string {
 function journalMatchesItem(entry: RelayJournalEntry, item: QueuedRelay): boolean {
   return entry.queueItemId === item.id &&
     entry.clientGeneratedId === item.report.clientGeneratedId &&
-    entry.reportFingerprint === hashString(JSON.stringify(item.report));
+    entry.reportFingerprint === legacyContentFingerprint(JSON.stringify(item.report));
 }
 
 function rebuildPendingFromJournal(state: RelayQueueState): RelayQueueState {
@@ -250,7 +258,7 @@ function prepareJournalEntry(item: QueuedRelay, baseQueueRevision: number): Rela
     storageReplica: "co_located",
     baseQueueRevision,
     clientGeneratedId,
-    reportFingerprint: hashString(JSON.stringify(item.report)),
+    reportFingerprint: legacyContentFingerprint(JSON.stringify(item.report)),
     report: item.report,
     state: "prepared",
     createdAt: now,
@@ -586,7 +594,7 @@ function pruneSeenRelayHashes(now: number): void {
 
 export function reserveRelayHash(raw: string, now = Date.now()): ReplayReservation | null {
   pruneSeenRelayHashes(now);
-  const hash = hashString(raw);
+  const hash = relayReplayDigest(raw);
   const existing = seenRelayHashes.get(hash);
   if (existing !== undefined && now - existing.recordedAt <= RELAY_REPLAY_RETENTION_MS) return null;
   // Fail closed while the freshness window is still populated. Evicting a

@@ -107,13 +107,16 @@ const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 function isDuplicateSos(deviceId: string): boolean {
   const now = Date.now();
   const last = sosDuplicates.get(deviceId);
-  if (last && now - last < DUPLICATE_WINDOW_MS) return true;
+  return Boolean(last && now - last < DUPLICATE_WINDOW_MS);
+}
+
+function recordAcceptedSos(deviceId: string): void {
+  const now = Date.now();
   sosDuplicates.set(deviceId, now);
   if (sosDuplicates.size > 10000) {
     const cutoff = now - DUPLICATE_WINDOW_MS;
     for (const [k, v] of sosDuplicates) if (v < cutoff) sosDuplicates.delete(k);
   }
-  return false;
 }
 
 // ── Encrypted profile store (AES-256-GCM, key derived from SOS_ENCRYPTION_KEY) ─
@@ -255,11 +258,15 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
     updatedAt: new Date().toISOString(),
     deviceId,
   };
+  const persisted = await docSet("sosProfiles", deviceId, record);
+  if (!persisted) {
+    res.status(503).json({ error: "Profile storage unavailable" });
+    return;
+  }
   memoryProfiles.set(deviceId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
   if (memoryProfiles.size > 20000) {
     for (const [k, v] of memoryProfiles) if (Date.now() > v.expiresAt) memoryProfiles.delete(k);
   }
-  await docSet("sosProfiles", deviceId, record);
   res.json({ success: true });
 });
 
@@ -347,7 +354,12 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     Object.entries(cleanForDb).filter(([, v]) => v !== undefined)
   );
   if (newSos.audioUrl) clean.hasAudio = true;
-  await docSet("trappedSos", newSos.id, clean);
+  const persisted = await docSet("trappedSos", newSos.id, clean);
+  if (!persisted) {
+    res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
+    return;
+  }
+  recordAcceptedSos(data.deviceId);
   memorySos.unshift(newSos);
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;

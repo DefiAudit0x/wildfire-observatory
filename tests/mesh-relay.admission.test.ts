@@ -50,6 +50,18 @@ async function loadRelay() {
   return import("../src/lib/meshRelay.js");
 }
 
+describe("replay digest hardening", () => {
+  it("uses a stable full SHA-256 digest rather than a 32-bit replay key", async () => {
+    const relay = await loadRelay();
+    const first = relay.relayReplayDigest("replay-envelope-a");
+    const second = relay.relayReplayDigest("replay-envelope-b");
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(second).toMatch(/^[a-f0-9]{64}$/);
+    expect(first).not.toBe(second);
+    expect(relay.relayReplayDigest("replay-envelope-a")).toBe(first);
+  });
+});
+
 async function fillPending(relay: typeof import("../src/lib/meshRelay.js")) {
   for (let index = 0; index < 50; index++) {
     await relay.enqueueRelay({ clientGeneratedId: `admission-fill-${index}` });

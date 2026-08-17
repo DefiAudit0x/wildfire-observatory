@@ -529,3 +529,23 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] إنشاء commit للدفعة الحالية برسالة واضحة.
 - [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
 - [ ] التحقق من SHA المنشور وعرض الملفات والحالة النهائية.
+
+## Findings from post-push audit report
+
+- [x] F-001: توسيع GitHub Actions ليغطي فرع التدقيق؛ check run فعلي ينتظر commit/push جديد.
+- [x] F-002: اعتماد mapping مغلق لرسائل أخطاء التقارير ومنع عرض تفاصيل backend غير المعروفة.
+- [x] F-003: جعل نجاح SOS وprofile persistence مشروطًا بالتخزين الدائم ومعالجة duplicate فقط بعد النجاح.
+- [x] F-004: مقارنة الولاية المحددة بالولاية المحلولة كاملةً، لا باسم الدولة فقط.
+- [x] F-005: التحقق من الرقم 14 وإضافته كخيار طوارئ مباشر إلى جانب 1021 و1070.
+- [x] F-006: تشغيل محاولة مزامنة المسودات عند `mesh:online` مع احتفاظ الطابور بالمسودة عند الفشل.
+- [x] F-007: استبدال مفتاح replay ذي 32-bit ببصمة SHA-256 مع الحفاظ على توافق queue/journal القديم.
+- [x] F-008: توثيق SOS profile/device binding كحد privacy/auth معماري؛ لا يدّعي مصادقة حقيقية.
+- [ ] لا commit أو push قبل التحقق الكامل وعرض diff ونتائج validation.
+
+## Approved F-001 to F-008 commit and push
+
+- [x] المستخدم وافق صراحة على إنشاء commit ودفع الدفعة الحالية.
+- [ ] مراجعة قائمة الملفات و`git diff --check` قبل staging.
+- [ ] إنشاء commit محدود للإصلاحات المتحققة.
+- [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
+- [ ] التحقق من SHA المنشور وحالة working tree.
