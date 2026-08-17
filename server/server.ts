@@ -193,7 +193,7 @@ async function startServer() {
       res.sendFile(assetPath, { root: distPath }, (err) => {
         if (!err || res.headersSent) return;
         logger.warn({ path: req.path, err: err.message }, "Asset not found");
-        res.status(err.statusCode === 404 ? 404 : 500).json({ error: "Asset not found" });
+        res.status(404).json({ error: "Asset not found" });
       });
     });
 
@@ -231,7 +231,4 @@ async function startServer() {
   logger.info(`Live hub listening on ${LIVE_PATH}`);
 }
 
-startServer().catch((err) => {
-  logger.fatal({ err }, "Failed to start server");
-  process.exit(1);
-});
+startServer();
