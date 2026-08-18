@@ -580,21 +580,31 @@ router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) 
   const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
 
   const result = await confirmReportInFirestore(id, voterKey);
-  if (result) {
-    if ("error" in result && result.error === "ALREADY_VOTED") {
-      res.status(409).json({ error: "Already confirmed" });
-      return;
-    }
+  if (result.status === "confirmed") {
     meshHub.broadcast({
       type: "report:confirm",
       id,
       consensusCount: result.consensusCount,
-      status: result.status,
+      status: result.statusValue,
     });
-    res.json({ success: true, consensusCount: result.consensusCount, status: result.status });
+    res.json({ success: true, consensusCount: result.consensusCount, status: result.statusValue });
+    return;
+  }
+  if (result.status === "already_voted") {
+    res.status(409).json({ error: "Already confirmed" });
+    return;
+  }
+  if (result.status === "error") {
+    res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
+    return;
+  }
+  if (result.status === "not_found") {
+    res.status(404).json({ error: "Report not found" });
     return;
   }
 
+  // No Firestore is the intentional local development mode. It is the only
+  // state in which the process-local confirmation ledger may be used.
   const report = citizenReports.find((r) => r.id === id);
   if (!report) {
     res.status(404).json({ error: "Report not found" });
