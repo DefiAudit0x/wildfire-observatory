@@ -2,7 +2,6 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate, docDelete } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
-import { invalidateBadgeCache } from "./reports.js";
 import { logAdminAction } from "./audit.js";
 
 const router = Router();
@@ -133,7 +132,6 @@ router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
     return;
   }
   Object.assign(current, update);
-  invalidateBadgeCache(code);
   logAdminAction("badge.update", { code, fields: Object.keys(update) }).catch(() => {});
   res.json(current);
 });
@@ -147,7 +145,6 @@ router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
   }
   const idx = memoryBadges.findIndex((b: any) => b.code === code);
   if (idx !== -1) memoryBadges.splice(idx, 1);
-  invalidateBadgeCache(code);
   logAdminAction("badge.delete", { code }).catch(() => {});
   res.json({ success: true });
 });
@@ -167,7 +164,6 @@ router.post("/:code/toggle", requireAdmin, async (req: Request, res: Response) =
     return;
   }
   badge.isActive = nextActive;
-  invalidateBadgeCache(code);
   logAdminAction("badge.toggle", { code, isActive: nextActive }).catch(() => {});
   res.json({ success: true, isActive: nextActive });
 });

@@ -18,7 +18,6 @@ import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
-import { docGet, incrementDocField } from "../fs.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 import type { Report } from "../../src/types.js";
 
@@ -143,24 +142,6 @@ const BADGE_ATTEMPT_WINDOW_MS = 60 * 1000;
 const MAX_BADGE_ATTEMPTS_PER_WINDOW = 10;
 const badgeAttempts = new Map<string, { count: number; expiresAt: number }>();
 
-const BADGE_CACHE_TTL_MS = 5 * 60 * 1000;
-const badgeCache = new Map<string, { valid: boolean; expiresAt: number }>();
-
-/**
- * Cache key must include every input that shapes the badge decision:
- * reporterType and wilaya both change the outcome, so a plain badgeCode key
- * could serve a stale verdict for a different context.
- */
-function badgeCacheKey(badgeCode: string, reporterType: string, wilaya: string): string {
-  return `${badgeCode}::${reporterType}::${wilaya}`;
-}
-
-export function invalidateBadgeCache(badgeCode: string): void {
-  for (const key of badgeCache.keys()) {
-    if (key.startsWith(`${badgeCode}::`)) badgeCache.delete(key);
-  }
-}
-
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 const cleanupTimers: NodeJS.Timeout[] = [];
 function scheduleBadgeCacheCleanup(): void {
@@ -170,52 +151,11 @@ function scheduleBadgeCacheCleanup(): void {
     for (const [code, entry] of badgeAttempts) {
       if (now > entry.expiresAt) badgeAttempts.delete(code);
     }
-    for (const [code, entry] of badgeCache) {
-      if (now > entry.expiresAt) badgeCache.delete(code);
-    }
   }, CLEANUP_INTERVAL_MS);
   timer.unref();
   cleanupTimers.push(timer);
 }
 scheduleBadgeCacheCleanup();
-
-async function isBadgeApprovedInFirestore(badgeCode: string, reporterType: string, wilaya: string): Promise<boolean> {
-  const cacheKey = badgeCacheKey(badgeCode, reporterType, wilaya);
-  const cached = badgeCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.valid;
-  let valid = false;
-  try {
-    const doc = await docGet("badgeCodes", badgeCode);
-    if (doc) {
-      // Require an explicitly-active badge. A badge whose isActive is unset or
-      // false is never trusted, regardless of the collection's contents.
-      const active = doc.isActive === true;
-      // The badge's role must match the reporter type claimed.
-      const typeOk = !doc.type || doc.type === reporterType;
-      // Optional expiry gate (ISO string or epoch millis).
-      let notExpired = true;
-      if (doc.expiresAt) {
-        const exp = typeof doc.expiresAt === "number"
-          ? doc.expiresAt
-          : new Date(doc.expiresAt).getTime();
-        if (Number.isFinite(exp)) notExpired = Date.now() < exp;
-      }
-      // Optional per-badge usage cap.
-      let underUsage = true;
-      if (typeof doc.maxUses === "number" && doc.maxUses > 0) {
-        underUsage = Number(doc.usedCount || 0) < doc.maxUses;
-      }
-      // Optional wilaya restriction.
-      let wilayaOk = true;
-      if (doc.wilaya && wilaya && doc.wilaya !== wilaya) wilayaOk = false;
-      valid = active && typeOk && notExpired && underUsage && wilayaOk;
-    }
-  } catch (err) {
-    logger.warn({ err, badgeLogId: badgeLogId(badgeCode) }, "badgeCodes Firestore lookup failed — falling back to env-only");
-  }
-  badgeCache.set(cacheKey, { valid, expiresAt: Date.now() + BADGE_CACHE_TTL_MS });
-  return valid;
-}
 
 function badgeRateLimited(badgeCode: string): boolean {
   const now = Date.now();
@@ -418,6 +358,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   }
 
   let isTrusted = false;
+  let transactionalBadgeCode: string | undefined;
   let finalStatus: "pending" | "verified" = "pending";
   let initialConsensus = 1;
 
@@ -425,16 +366,13 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     const code = reporterBadgeCode?.trim();
     const rateLimited = !!code && badgeRateLimited(code);
     const envTrusted = !!code && !rateLimited && VALID_BADGE_CODES.has(code);
-    const firestoreTrusted = !!code && !rateLimited && (await isBadgeApprovedInFirestore(code, reporterType, wilaya));
-    if (envTrusted || firestoreTrusted) {
+    if (envTrusted) {
       isTrusted = true;
       finalStatus = "verified";
       initialConsensus = 10;
-      // Bump the per-badge usage counter so maxUses constraints take effect.
-      if (!envTrusted && code) {
-        incrementDocField("badgeCodes", code, "usedCount", 1).catch(() => {});
-      }
       logger.info({ reporterType, badgeLogId: badgeLogId(code) }, "Trusted report accepted");
+    } else if (code && !rateLimited) {
+      transactionalBadgeCode = code;
     } else {
       logger.warn({ reporterType, badgeLogId: code ? badgeLogId(code) : undefined }, "Invalid badge code attempt");
     }
@@ -525,7 +463,30 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     };
   }
 
-  const saved = await saveReportWithIdempotency(newReport, requestFingerprint, canonicalReportFingerprint);
+  const trustedReport = transactionalBadgeCode
+    ? {
+        ...newReport,
+        status: "verified",
+        consensusCount: 10,
+        aiVerification: newReport.aiVerification ?? {
+          isVerified: true,
+          confidence: 100,
+          detectedSigns: reporterType === "official" ? ["هيئة رسمية معتمدة", "سجل الدفاع المدني"] : ["متطوع ميداني مصدق"],
+          aiComments: reporterType === "official"
+            ? "بلاغ رسمي موثق ومصدق مباشرة من الحماية المدنية الجزائرية."
+            : "تم التحقق والمطابقة ميدانياً من طرف متطوع معتمد في شبكة الإغاثة.",
+          suggestedSeverity: severity.toUpperCase(),
+        },
+      }
+    : undefined;
+  const saved = await saveReportWithIdempotency(
+    newReport,
+    requestFingerprint,
+    canonicalReportFingerprint,
+    transactionalBadgeCode && trustedReport
+      ? { code: transactionalBadgeCode, reporterType: reporterType as "volunteer" | "official", wilaya, trustedReport }
+      : undefined,
+  );
   if (saved.status === "integrity_failure") {
     releaseReservations(clientGeneratedId, lat, lng);
     res.status(500).json({
@@ -555,7 +516,12 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     res.json(sanitizePublicReport(saved.report));
     return;
   }
-  const safeReport = sanitizePublicReport(newReport);
+  if (transactionalBadgeCode && saved.report.status === "verified") {
+    logger.info({ reporterType, badgeLogId: badgeLogId(transactionalBadgeCode) }, "Trusted report accepted");
+  } else if (transactionalBadgeCode) {
+    logger.warn({ reporterType, badgeLogId: badgeLogId(transactionalBadgeCode) }, "Invalid badge code attempt");
+  }
+  const safeReport = sanitizePublicReport(saved.report);
   if (safeReport.severity === "critical" || safeReport.severity === "high") {
     sendFireAlert(safeReport).catch((err) =>
       logger.error({ err }, "Failed to send fire alert email")

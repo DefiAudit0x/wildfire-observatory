@@ -99,6 +99,13 @@ export type IdempotentReportSaveResult =
   | { status: "no-db" }
   | { status: "error" };
 
+export interface AtomicBadgeTrust {
+  code: string;
+  reporterType: "volunteer" | "official";
+  wilaya: string;
+  trustedReport: Record<string, unknown>;
+}
+
 const REPORT_IDEMPOTENCY_COLLECTION = "reportIdempotency";
 
 /**
@@ -172,6 +179,7 @@ export async function saveReportWithIdempotency(
   report: any,
   requestFingerprint: string,
   canonicalizeLegacyReport: (legacyReport: any) => string,
+  badgeTrust?: AtomicBadgeTrust,
 ): Promise<IdempotentReportSaveResult> {
   const db = getDb();
   if (!db) return { status: "no-db" };
@@ -221,14 +229,39 @@ export async function saveReportWithIdempotency(
           return { status: "existing" as const, report: legacy };
         }
 
-        tx.create(reportRef, removeUndefinedDeepForFirestore(report));
+        let reportToSave = report;
+        if (badgeTrust) {
+          const badgeRef = db.collection("badgeCodes").doc(badgeTrust.code);
+          const badgeSnapshot = await tx.get(badgeRef);
+          if (badgeSnapshot.exists) {
+            const badge = badgeSnapshot.data() as Record<string, unknown>;
+            const expiresAt = typeof badge.expiresAt === "number"
+              ? badge.expiresAt
+              : typeof badge.expiresAt === "string"
+                ? new Date(badge.expiresAt).getTime()
+                : null;
+            const notExpired = expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+            const maxUses = typeof badge.maxUses === "number" && badge.maxUses > 0 ? badge.maxUses : null;
+            const usedCount = Number(badge.usedCount || 0);
+            const underUsageCap = maxUses === null || usedCount < maxUses;
+            const typeMatches = typeof badge.type !== "string" || badge.type === badgeTrust.reporterType;
+            const wilayaMatches = typeof badge.wilaya !== "string" || !badge.wilaya || badge.wilaya === badgeTrust.wilaya;
+
+            if (badge.isActive === true && typeMatches && notExpired && underUsageCap && wilayaMatches) {
+              reportToSave = badgeTrust.trustedReport;
+              tx.update(badgeRef, { usedCount: usedCount + 1 });
+            }
+          }
+        }
+
+        tx.create(reportRef, removeUndefinedDeepForFirestore(reportToSave));
         tx.create(idempotencyRef, {
           reportId: report.id,
           clientGeneratedId: report.clientGeneratedId,
           fingerprint: requestFingerprint,
           createdAt: report.timestamp,
         });
-        return { status: "saved" as const, report };
+        return { status: "saved" as const, report: reportToSave };
       });
       invalidateReportsCache();
       return result;

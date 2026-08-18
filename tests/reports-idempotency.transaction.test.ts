@@ -54,7 +54,7 @@ function createAdminDb() {
       let release!: () => void;
       state.queue = new Promise<void>((resolve) => { release = resolve; });
       await previous;
-      const writes: Array<{ path: string; data: StoredDoc }> = [];
+      const writes: Array<{ kind: "create" | "update"; path: string; data: StoredDoc }> = [];
       if (state.failNextTransaction) {
         state.failNextTransaction = false;
         throw new Error("simulated transaction failure before commit");
@@ -70,11 +70,16 @@ function createAdminDb() {
           }
           return snapshotFor(ref.path!);
         },
-        create: (ref: { path: string }, data: StoredDoc) => writes.push({ path: ref.path, data }),
+        create: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "create", path: ref.path, data }),
+        update: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "update", path: ref.path, data }),
       };
       try {
         const result = await callback(tx);
-        for (const write of writes) state.docs.set(write.path, write.data);
+        for (const write of writes) {
+          state.docs.set(write.path, write.kind === "update"
+            ? { ...state.docs.get(write.path), ...write.data }
+            : write.data);
+        }
         return result;
       } finally {
         release();
@@ -97,6 +102,15 @@ function report(clientGeneratedId: string, id: string) {
     severity: "medium",
     reporterType: "citizen",
     timestamp: new Date().toISOString(),
+  };
+}
+
+function badgeTrust(code: string, baseReport: ReturnType<typeof report>) {
+  return {
+    code,
+    reporterType: "official" as const,
+    wilaya: baseReport.wilaya,
+    trustedReport: { ...baseReport, status: "verified", consensusCount: 10 },
   };
 }
 
@@ -235,5 +249,79 @@ describe("durable report idempotency transaction", () => {
 
     expect(state.docs.get(`reports/${original.id}`)).toEqual(original);
     expect(state.docs.has(`reports/rep-atomic-replacement`)).toBe(false);
+  });
+
+  it("grants the final badge use to only one concurrent new report", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("badgeCodes/OFFICIAL-LAST-USE", {
+      isActive: true,
+      type: "official",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      usedCount: 0,
+      maxUses: 1,
+    });
+    const firstReport = { ...report("cg-badge-concurrent-0001", "rep-badge-concurrent-a"), reporterType: "official", status: "pending", consensusCount: 1 };
+    const secondReport = { ...report("cg-badge-concurrent-0002", "rep-badge-concurrent-b"), reporterType: "official", status: "pending", consensusCount: 1 };
+
+    const [first, second] = await Promise.all([
+      saveReportWithIdempotency(firstReport, "badge-fingerprint-a", () => "", badgeTrust("OFFICIAL-LAST-USE", firstReport)),
+      saveReportWithIdempotency(secondReport, "badge-fingerprint-b", () => "", badgeTrust("OFFICIAL-LAST-USE", secondReport)),
+    ]);
+
+    expect(first.status).toBe("saved");
+    expect(second.status).toBe("saved");
+    if (first.status !== "saved" || second.status !== "saved") throw new Error("expected both reports to be saved");
+    expect([first.report.status, second.report.status].sort()).toEqual(["pending", "verified"]);
+    expect([first.report.consensusCount, second.report.consensusCount].sort()).toEqual([1, 10]);
+    expect(state.docs.get("badgeCodes/OFFICIAL-LAST-USE")?.usedCount).toBe(1);
+  });
+
+  it("does not consume another badge use for an idempotent retry", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("badgeCodes/OFFICIAL-IDEMPOTENT", {
+      isActive: true,
+      type: "official",
+      usedCount: 0,
+      maxUses: 2,
+    });
+    const original = report("cg-badge-idempotent-0001", "rep-badge-idempotent-a");
+    const trust = badgeTrust("OFFICIAL-IDEMPOTENT", original);
+
+    const first = await saveReportWithIdempotency(original, "badge-idempotent-fingerprint", () => "", trust);
+    const retry = await saveReportWithIdempotency(
+      report(original.clientGeneratedId, "rep-badge-idempotent-b"),
+      "badge-idempotent-fingerprint",
+      () => "",
+      trust,
+    );
+
+    expect(first.status).toBe("saved");
+    expect(retry.status).toBe("existing");
+    expect(state.docs.get("badgeCodes/OFFICIAL-IDEMPOTENT")?.usedCount).toBe(1);
+  });
+
+  it("does not consume a badge use when the report transaction fails", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.failNextTransaction = true;
+    state.docs.set("badgeCodes/OFFICIAL-TRANSACTION-FAILURE", {
+      isActive: true,
+      type: "official",
+      usedCount: 0,
+      maxUses: 1,
+    });
+    const newReport = report("cg-badge-transaction-failure", "rep-badge-transaction-failure");
+
+    await expect(saveReportWithIdempotency(
+      newReport,
+      "badge-transaction-failure-fingerprint",
+      () => "",
+      badgeTrust("OFFICIAL-TRANSACTION-FAILURE", newReport),
+    )).resolves.toEqual({ status: "error" });
+
+    expect(state.docs.get("badgeCodes/OFFICIAL-TRANSACTION-FAILURE")?.usedCount).toBe(0);
+    expect(state.docs.has(`reports/${newReport.id}`)).toBe(false);
   });
 });
