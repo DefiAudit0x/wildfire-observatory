@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import logger from "../logger.js";
 import { requireAuth, requireRole } from "../middleware.js";
+import { str } from "../params.js";
 import { collectionGet, docGet, docSet, docUpdate, docDelete } from "../fs.js";
 
 const router = Router();
@@ -65,7 +66,7 @@ router.post("/", requireRole("superadmin", "admin"), async (req: Request, res: R
 });
 
 router.put("/:id", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const parsed = unitSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
@@ -102,7 +103,7 @@ router.put("/:id", requireRole("superadmin", "admin"), async (req: Request, res:
 });
 
 router.delete("/:id", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   try {
     const existing = await docGet("units", id);
     if (!existing) {

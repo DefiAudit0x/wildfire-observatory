@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate, docDelete } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
+import { str } from "../params.js";
 import { logAdminAction } from "./audit.js";
 
 const router = Router();
@@ -106,7 +107,7 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
 });
 
 router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
-  const { code } = req.params;
+  const code = str(req.params.code);
   const parsed = updateBadgeSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid fields", details: parsed.error.flatten() });
@@ -137,7 +138,7 @@ router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
 });
 
 router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
-  const { code } = req.params;
+  const code = str(req.params.code);
   const ok = await docDelete("badgeCodes", code);
   if (!ok) {
     res.status(503).json({ error: "Database not available" });
@@ -150,7 +151,7 @@ router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
 });
 
 router.post("/:code/toggle", requireAdmin, async (req: Request, res: Response) => {
-  const { code } = req.params;
+  const code = str(req.params.code);
   const existing = await loadBadges();
   const badge = existing.find((b: any) => b.code === code);
   if (!badge) {

@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
+import { str } from "../params.js";
 import { logAdminAction } from "./audit.js";
 import logger from "../logger.js";
 import config from "../config.js";
@@ -191,7 +192,7 @@ router.get("/pending", requireAdmin, async (_req: Request, res: Response) => {
 });
 
 router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   if (!/^[a-z0-9-]{1,64}$/.test(id)) {
     res.status(400).json({ error: "Invalid registration id" });
     return;

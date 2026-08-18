@@ -4,6 +4,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
+import { str } from "../params.js";
 import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
 import { createNotification } from "./notifications.js";
 import { logAdminAction } from "./audit.js";
@@ -154,7 +155,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
     return;
   }
   const { status, severity } = parsed.data;
-  const { id } = req.params;
+  const id = str(req.params.id);
 
   const updateData: Record<string, any> = {};
   if (status) updateData.status = status;
@@ -184,7 +185,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
 });
 
 router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
 
   const deleted = await deleteReportFromFirestore(id);
   if (deleted) {

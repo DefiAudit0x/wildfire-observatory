@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
+import { str } from "../params.js";
 import { getHaversineDistance } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
 import config from "../config.js";
@@ -191,7 +192,7 @@ router.get("/full", requireAdmin, async (_req: Request, res: Response) => {
 });
 
 router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const memory = memorySos.find((s: any) => s.id === id);
   if (memory) {
     res.json(memory);
@@ -207,7 +208,7 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 
 // ── Developer-friendly profile endpoints (server-side encrypted identity) ────
 router.get("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = req.params.deviceId || "";
+  const deviceId = str(req.params.deviceId) || "";
   if (!deviceId || deviceId.length > 128) {
     res.status(400).json({ error: "Invalid deviceId" });
     return;
@@ -227,7 +228,7 @@ router.get("/profile/:deviceId", async (req: Request, res: Response) => {
 });
 
 router.put("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = req.params.deviceId || "";
+  const deviceId = str(req.params.deviceId) || "";
   if (!deviceId || deviceId.length > 128) {
     res.status(400).json({ error: "Invalid deviceId" });
     return;
@@ -358,7 +359,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
 });
 
 router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const persisted = await docUpdate("trappedSos", id, { status: "resolved" });
   if (!persisted) {
     res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
@@ -370,7 +371,7 @@ router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) =>
 });
 
 router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const parsed = dispatchSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Missing required fields" });

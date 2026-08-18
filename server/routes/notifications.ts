@@ -4,6 +4,7 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
+import { str } from "../params.js";
 import { collectionGet, docSet, docUpdate } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 
@@ -158,7 +159,7 @@ router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
 });
 
 router.get("/:deviceId", async (req: Request, res: Response) => {
-  const { deviceId } = req.params;
+  const deviceId = str(req.params.deviceId);
   const cookieDevice = (req as any).cookies?.deviceId;
   // The deviceId cookie acts as the bearer proof of ownership. A request that
   // claims a DIFFERENT deviceId than the one this browser is bound to is an
@@ -180,7 +181,7 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
 });
 
 router.post("/:id/read", async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const cookieDevice = (req as any).cookies?.deviceId;
   if (!cookieDevice) {
     res.status(403).json({ error: "Forbidden: no device binding" });

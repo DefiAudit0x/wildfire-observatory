@@ -3,6 +3,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
+import { str } from "../params.js";
 import { collectionGet, docGet, docSet, docUpdate, docDelete } from "../fs.js";
 import { toUnitId } from "./units.js";
 
@@ -136,7 +137,7 @@ router.post("/", requireRole("superadmin", "commander"), async (req: Request, re
 });
 
 router.put("/:agentId", requireRole("superadmin", "commander"), async (req: Request, res: Response) => {
-  const { agentId } = req.params;
+  const agentId = str(req.params.agentId);
   const parsed = updateUserSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
@@ -198,7 +199,7 @@ router.put("/:agentId", requireRole("superadmin", "commander"), async (req: Requ
 });
 
 router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
-  const { agentId } = req.params;
+  const agentId = str(req.params.agentId);
   const admin = (req as any).admin;
   if (admin?.agentId === agentId) {
     res.status(400).json({ error: "Cannot delete your own account" });

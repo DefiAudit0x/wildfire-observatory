@@ -4,6 +4,7 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
 import { citizenReports } from "../data.js";
+import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { sanitizeForPrompt } from "./ai.js";
 import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
@@ -574,7 +575,7 @@ function recordVoter(reportId: string, voterIp: string): boolean {
 }
 
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   const voterIp = req.ip || req.socket.remoteAddress || "unknown";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
   const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
