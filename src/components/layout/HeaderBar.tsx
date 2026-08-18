@@ -225,7 +225,7 @@ function HeaderBar({
           <div className="min-w-0 max-w-full">
             <h1 className="min-w-0 font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-tight flex flex-wrap items-center gap-2">
               <span className="min-w-0 break-words">
-                {isArabic ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث" : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes"}
+                {isArabic ? "المرصد الجزائري لحرائق الغابات والكوارث" : "Observatoire algérien des feux de forêt et des catastrophes"}
               </span>
               <span className="relative shrink-0">
                 <button

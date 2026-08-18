@@ -6,9 +6,9 @@ const options: swaggerJsdoc.Options = {
   definition: {
     openapi: "3.0.3",
     info: {
-      title: "North African Wildfire Observatory API",
+      title: "Algerian Wildfire and Disaster Observatory API",
       version: "1.0.0",
-      description: "API for the North African Observatory for Forest Fires and Disasters. Monitors wildfires across Algeria, Tunisia, Morocco, and Libya.",
+      description: "API for the Algerian Wildfire and Disaster Observatory. Monitors wildfires across Algeria, Tunisia, Morocco, and Libya.",
       contact: { name: "Nova DZ" },
     },
     servers: [

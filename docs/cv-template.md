@@ -1,4 +1,4 @@
-# قوالب CV / LinkedIn — جاهزة من مشروع «المرصد الشمال أفريقي»
+# قوالب CV / LinkedIn — جاهزة من مشروع «المرصد الجزائري لحرائق الغابات والكوارث»
 
 > املأ الحقول بين `{{ }}` بمعلوماتك الشخصية. الأرقام تُحدَّث تلقائياً من الاختبارات الفعلية للمشروع.
 
@@ -26,7 +26,7 @@
 
 ## مشروع (Project Display)
 
-**المرصد الشمال أفريقي لحرائق الغابات والكوارث** — [`github.com/DefiAudit0x/wildfire-observatory`](https://github.com/DefiAudit0x/wildfire-observatory)
+**المرصد الجزائري لحرائق الغابات والكوارث** — [`github.com/DefiAudit0x/wildfire-observatory`](https://github.com/DefiAudit0x/wildfire-observatory)
 
 - منصة عربية/فرنسية مفتوحة: خريطة تفاعلية، بلاغات بالصور مع تحقق Gemini، مؤشر خطر 0-100، تصدير CSV/GeoJSON مفتوح، مركز قيادة للمشرفين، SOS صوتي مشفّر، شبكة Mesh.
 - ‏{{N}} اختباراً أتوماتيكياً، E2E أوفلاين عبر Service Worker، وDocker بسطح تشغيل متعدد المراحل.
