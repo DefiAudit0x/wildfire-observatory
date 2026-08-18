@@ -75,7 +75,7 @@
     "esbuild": "^0.25.0",
     "firebase-tools": "^15.27.0",
     "husky": "^9.1.0",
-    "jsdom": "^30.0.0",
+    "jsdom": "^30.0.1",
     "supertest": "^7.0.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
