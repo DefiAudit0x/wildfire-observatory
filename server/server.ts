@@ -197,7 +197,7 @@ async function startServer() {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
 
-    app.get("/assets/*", (req, res) => {
+    app.get("/assets/*splat", (req, res) => {
       const assetPath = req.path.slice("/assets/".length);
       res.sendFile(assetPath, { root: distPath }, (err) => {
         if (!err || res.headersSent) return;
@@ -206,7 +206,7 @@ async function startServer() {
       });
     });
 
-    app.get("*", (req, res) => {
+    app.get("/*splat", (req, res) => {
       if (req.path.startsWith("/api/")) {
         res.status(404).json({ error: "Not found" });
         return;

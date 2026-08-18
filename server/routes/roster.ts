@@ -3,6 +3,7 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { requireAuth } from "../middleware.js";
+import { str } from "../params.js";
 import { docGet, docSet, docDelete } from "../fs.js";
 import { toUnitId } from "./units.js";
 
@@ -101,7 +102,7 @@ function ensurePostIds(posts: any[]): any[] {
 
 // GET /api/roster/:date — read the roster for the caller's unit
 router.get("/:date", requireAuth, async (req: Request, res: Response) => {
-  const { date } = req.params;
+  const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
@@ -136,7 +137,7 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
 
 // PUT /api/roster/:date — replace the whole day roster (commander/superadmin)
 router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
-  const { date } = req.params;
+  const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
@@ -203,7 +204,7 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
 
 // POST /api/roster/:date — append one post to the day (same write rules)
 router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
-  const { date } = req.params;
+  const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
@@ -255,7 +256,7 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
 
 // DELETE /api/roster/:date — clear the day
 router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
-  const { date } = req.params;
+  const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
@@ -294,7 +295,8 @@ router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, re
 
 // POST /api/roster/:date/copy-to/:target — duplicate a day's posts into another date
 router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
-  const { date, target } = req.params;
+  const date = str(req.params.date);
+  const target = str(req.params.target);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(target)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;

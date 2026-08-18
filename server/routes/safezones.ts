@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { collectionGet, docSet, docUpdate, docDelete, docGet } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
+import { str } from "../params.js";
 import { liveHub } from "../live.js";
 import logger from "../logger.js";
 
@@ -64,7 +65,7 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
     return;
   }
-  const { id } = req.params;
+  const id = str(req.params.id);
   try {
     const existing = (await loadZones()).find((z: any) => z.id === id);
     if (!existing) {
@@ -86,7 +87,7 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
 });
 
 router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const id = str(req.params.id);
   try {
     const existing = (await loadZones()).find((z: any) => z.id === id);
     if (!existing) {
