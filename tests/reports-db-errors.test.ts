@@ -4,6 +4,12 @@ import { describe, expect, it, vi } from "vitest";
 
 const dbState = vi.hoisted(() => ({
   result: { status: "empty" as "empty" | "ok" | "error", reports: [] as any[] },
+  confirmation: { status: "no_db" as "no_db" | "error" },
+}));
+const meshBroadcast = vi.hoisted(() => vi.fn());
+
+vi.mock("../server/mesh.js", () => ({
+  meshHub: { broadcast: meshBroadcast },
 }));
 
 vi.mock("../server/db.js", () => ({
@@ -14,7 +20,7 @@ vi.mock("../server/db.js", () => ({
     ? { status: "existing", report: { ...report, id: "rep-durable-1" } }
     : { status: "saved", report }),
   lookupReportIdempotency: vi.fn(async () => ({ status: "missing" })),
-  confirmReportInFirestore: vi.fn(async () => null),
+  confirmReportInFirestore: vi.fn(async () => dbState.confirmation),
 }));
 
 const { default: reportsRouter } = await import("../server/routes/reports.js");
@@ -68,5 +74,24 @@ describe("reports database result semantics", () => {
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(durable.id);
     expect(res.body.clientGeneratedId).toBe(durable.clientGeneratedId);
+  });
+
+  it("returns 503 without RAM mutation or broadcast when durable confirmation fails", async () => {
+    const { citizenReports } = await import("../server/data.js");
+    const seed = citizenReports.find((report) => report.id === "rep-1");
+    if (!seed) throw new Error("expected rep-1 seed fixture");
+    const before = seed.consensusCount;
+    dbState.confirmation = { status: "error" };
+    meshBroadcast.mockClear();
+
+    const res = await supertest(createApp())
+      .post("/api/reports/rep-1/confirm")
+      .send({ deviceId: "consensus-failure-device" });
+
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("CONSENSUS_DURABILITY_UNAVAILABLE");
+    expect(seed.consensusCount).toBe(before);
+    expect(meshBroadcast).not.toHaveBeenCalled();
+    dbState.confirmation = { status: "no_db" };
   });
 });

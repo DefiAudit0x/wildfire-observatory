@@ -65,6 +65,35 @@ describe("mesh relay queue concurrency", () => {
     expect(saved[0].report.clientGeneratedId).toBe("queued-b");
   });
 
+  it("does not submit an item moved to the DLQ while flush is awaiting an earlier item", async () => {
+    let resolveFirst: ((value: Response) => void) | undefined;
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(new Promise<Response>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    for (let index = 0; index < 50; index++) {
+      await enqueueRelay({ clientGeneratedId: `flush-capacity-race-${index}` });
+    }
+
+    const flush = flushQueue();
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await enqueueRelay({ clientGeneratedId: "flush-capacity-race-new" });
+
+    resolveFirst!(new Response(null, { status: 200 }));
+    await flush;
+
+    const submittedIds = fetchMock.mock.calls.map((call) =>
+      JSON.parse(call[1].body as string).clientGeneratedId,
+    );
+    expect(submittedIds).not.toContain("flush-capacity-race-1");
+
+    const state = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    expect(state.deadLetters.some((item: { report: { clientGeneratedId: string } }) =>
+      item.report.clientGeneratedId === "flush-capacity-race-1"
+    )).toBe(true);
+  });
+
   it("shares one in-flight flush when online and interval triggers overlap", async () => {
     let resolveFirst: ((value: Response) => void) | undefined;
     const firstResponse = new Promise<Response>((resolve) => { resolveFirst = resolve; });

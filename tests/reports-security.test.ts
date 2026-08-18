@@ -16,18 +16,41 @@ vi.mock("../server/db.js", () => ({
     const entry = mockReports.idempotency.get(id);
     return entry ? { status: "found", report: entry.report, fingerprint: entry.fingerprint } : { status: "missing" };
   }),
-  saveReportWithIdempotency: vi.fn(async (report: any, fingerprint: string) => {
+  saveReportWithIdempotency: vi.fn(async (report: any, fingerprint: string, _canonicalize: unknown, badgeTrust?: {
+    code: string;
+    reporterType: string;
+    wilaya: string;
+    trustedReport: Record<string, unknown>;
+  }) => {
     const existing = mockReports.idempotency.get(report.clientGeneratedId);
     if (existing) {
       return existing.fingerprint === fingerprint
         ? { status: "existing", report: existing.report }
         : { status: "same_id_different_body", report: existing.report };
     }
-    mockReports.idempotency.set(report.clientGeneratedId, { report, fingerprint });
-    mockReports.list.unshift(report);
-    return { status: "saved", report };
+    let reportToSave = report;
+    if (badgeTrust) {
+      const badge = mockDocs.get(`badgeCodes/${badgeTrust.code}`);
+      const expiresAt = typeof badge?.expiresAt === "number"
+        ? badge.expiresAt
+        : typeof badge?.expiresAt === "string"
+          ? new Date(badge.expiresAt).getTime()
+          : null;
+      const valid = badge?.isActive === true &&
+        (!badge.type || badge.type === badgeTrust.reporterType) &&
+        (!badge.wilaya || badge.wilaya === badgeTrust.wilaya) &&
+        (expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt) &&
+        (!(typeof badge.maxUses === "number" && badge.maxUses > 0) || Number(badge.usedCount || 0) < badge.maxUses);
+      if (valid) {
+        reportToSave = badgeTrust.trustedReport;
+        badge.usedCount = Number(badge.usedCount || 0) + 1;
+      }
+    }
+    mockReports.idempotency.set(report.clientGeneratedId, { report: reportToSave, fingerprint });
+    mockReports.list.unshift(reportToSave);
+    return { status: "saved", report: reportToSave };
   }),
-  confirmReportInFirestore: vi.fn(async () => null),
+  confirmReportInFirestore: vi.fn(async () => ({ status: "no_db" })),
   updateReportInFirestore: vi.fn(async () => true),
   deleteReportFromFirestore: vi.fn(async () => true),
 }));
@@ -39,9 +62,7 @@ vi.mock("express-rate-limit", () => ({
 }));
 
 vi.mock("../server/fs.js", () => ({
-  docGet: async (collection: string, id: string) => mockDocs.get(`${collection}/${id}`) ?? null,
   docUpdate: async () => true,
-  incrementDocField: async () => true,
 }));
 
 // Never hit the real Gemini Vision API from tests: the image magic-bytes

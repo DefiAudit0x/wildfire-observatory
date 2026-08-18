@@ -712,11 +712,15 @@ export async function submitRelay(report: Record<string, unknown>): Promise<bool
 async function persistPreparedJournal(item: QueuedRelay): Promise<RelayJournalEntry | null> {
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
+    const currentItem = state.pending.find((candidate) => candidate.id === item.id);
+    // The flush snapshot may be stale if capacity moved this item to the DLQ
+    // while an earlier submission was waiting on the network.
+    if (!currentItem) return null;
     const existing = state.journal.find((entry) => entry.queueItemId === item.id);
     if (existing?.state === "delivered" || existing?.state === "committed") return null;
-    const prepared = existing ?? prepareJournalEntry(item, state.revision);
+    const prepared = existing ?? prepareJournalEntry(currentItem, state.revision);
     const storage = await writeRelayQueueState({
-      pending: state.pending.map((candidate) => candidate.id === item.id ? item : candidate),
+      pending: state.pending.map((candidate) => candidate.id === currentItem.id ? currentItem : candidate),
       deadLetters: state.deadLetters,
       journal: upsertJournalEntry(state.journal, prepared),
     });

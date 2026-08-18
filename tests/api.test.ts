@@ -28,7 +28,7 @@ vi.mock("../server/db.js", () => ({
     mockState.reports.unshift(report);
     return { status: "saved", report };
   }),
-  confirmReportInFirestore: vi.fn(async () => null),
+  confirmReportInFirestore: vi.fn(async () => ({ status: "no_db" })),
   updateReportInFirestore: vi.fn(async () => true),
   deleteReportFromFirestore: vi.fn(async () => true),
 }));

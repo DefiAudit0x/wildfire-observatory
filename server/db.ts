@@ -99,6 +99,13 @@ export type IdempotentReportSaveResult =
   | { status: "no-db" }
   | { status: "error" };
 
+export interface AtomicBadgeTrust {
+  code: string;
+  reporterType: "volunteer" | "official";
+  wilaya: string;
+  trustedReport: Record<string, unknown>;
+}
+
 const REPORT_IDEMPOTENCY_COLLECTION = "reportIdempotency";
 
 /**
@@ -172,6 +179,7 @@ export async function saveReportWithIdempotency(
   report: any,
   requestFingerprint: string,
   canonicalizeLegacyReport: (legacyReport: any) => string,
+  badgeTrust?: AtomicBadgeTrust,
 ): Promise<IdempotentReportSaveResult> {
   const db = getDb();
   if (!db) return { status: "no-db" };
@@ -221,14 +229,39 @@ export async function saveReportWithIdempotency(
           return { status: "existing" as const, report: legacy };
         }
 
-        tx.create(reportRef, removeUndefinedDeepForFirestore(report));
+        let reportToSave = report;
+        if (badgeTrust) {
+          const badgeRef = db.collection("badgeCodes").doc(badgeTrust.code);
+          const badgeSnapshot = await tx.get(badgeRef);
+          if (badgeSnapshot.exists) {
+            const badge = badgeSnapshot.data() as Record<string, unknown>;
+            const expiresAt = typeof badge.expiresAt === "number"
+              ? badge.expiresAt
+              : typeof badge.expiresAt === "string"
+                ? new Date(badge.expiresAt).getTime()
+                : null;
+            const notExpired = expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+            const maxUses = typeof badge.maxUses === "number" && badge.maxUses > 0 ? badge.maxUses : null;
+            const usedCount = Number(badge.usedCount || 0);
+            const underUsageCap = maxUses === null || usedCount < maxUses;
+            const typeMatches = typeof badge.type !== "string" || badge.type === badgeTrust.reporterType;
+            const wilayaMatches = typeof badge.wilaya !== "string" || !badge.wilaya || badge.wilaya === badgeTrust.wilaya;
+
+            if (badge.isActive === true && typeMatches && notExpired && underUsageCap && wilayaMatches) {
+              reportToSave = badgeTrust.trustedReport;
+              tx.update(badgeRef, { usedCount: usedCount + 1 });
+            }
+          }
+        }
+
+        tx.create(reportRef, removeUndefinedDeepForFirestore(reportToSave));
         tx.create(idempotencyRef, {
           reportId: report.id,
           clientGeneratedId: report.clientGeneratedId,
           fingerprint: requestFingerprint,
           createdAt: report.timestamp,
         });
-        return { status: "saved" as const, report };
+        return { status: "saved" as const, report: reportToSave };
       });
       invalidateReportsCache();
       return result;
@@ -259,19 +292,26 @@ export async function saveReportToFirestore(report: any): Promise<ReportSaveResu
   }
 }
 
-export async function confirmReportInFirestore(id: string, voterId?: string) {
+export type ConfirmReportResult =
+  | { status: "confirmed"; consensusCount: number; statusValue: string }
+  | { status: "already_voted" }
+  | { status: "not_found" }
+  | { status: "no_db" }
+  | { status: "error" };
+
+export async function confirmReportInFirestore(id: string, voterId?: string): Promise<ConfirmReportResult> {
   const db = getDb();
-  if (!db) return null;
+  if (!db) return { status: "no_db" };
   const CONSENSUS_THRESHOLD = 5;
   try {
     if (isAdminDb(db)) {
       const docRef = db.collection("reports").doc(id);
       const result = await db.runTransaction(async (tx) => {
         const snap = await tx.get(docRef);
-        if (!snap.exists) return null;
+        if (!snap.exists) return { status: "not_found" as const };
         const data = snap.data() as any;
         if (voterId && data.voters?.includes(voterId)) {
-          return { error: "ALREADY_VOTED" };
+          return { status: "already_voted" as const };
         }
         const newConsensus = (data.consensusCount || 0) + 1;
         let newStatus = data.status || "pending";
@@ -287,9 +327,9 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
           update.voters = [...existingVoters, voterId];
         }
         tx.update(docRef, update);
-        return { consensusCount: newConsensus, status: newStatus };
+        return { status: "confirmed" as const, consensusCount: newConsensus, statusValue: newStatus };
       });
-      if (result && !("error" in result)) {
+      if (result.status === "confirmed") {
         invalidateReportsCache();
       }
       return result;
@@ -298,10 +338,10 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
       const docRef = doc(db, "reports", id);
       const result = await runTransaction(db, async (tx) => {
         const snap = await tx.get(docRef);
-        if (!snap.exists()) return null;
+        if (!snap.exists()) return { status: "not_found" as const };
         const data = snap.data() as any;
         if (voterId && data.voters?.includes(voterId)) {
-          return { error: "ALREADY_VOTED" };
+          return { status: "already_voted" as const };
         }
         const newConsensus = (data.consensusCount || 0) + 1;
         let newStatus = data.status || "pending";
@@ -317,13 +357,13 @@ export async function confirmReportInFirestore(id: string, voterId?: string) {
           update.voters = [...existingVoters, voterId];
         }
         tx.update(docRef, update);
-        return { consensusCount: newConsensus, status: newStatus };
+        return { status: "confirmed" as const, consensusCount: newConsensus, statusValue: newStatus };
       });
       return result;
     }
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to confirm report");
-    return null;
+    return { status: "error" };
   }
 }
 
