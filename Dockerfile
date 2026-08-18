@@ -4,8 +4,9 @@ WORKDIR /app
 
 # pnpm 11.21.0 requires Node.js >=22.13 and uses node:sqlite.
 RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
-COPY package.json pnpm-lock.yaml ./
-RUN pnpm install --frozen-lockfile
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# Docker builds do not need Git hooks; keep pnpm build-script policy from the workspace file.
+RUN HUSKY=0 pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm run build
 
@@ -16,9 +17,11 @@ RUN addgroup -g 1001 -S nodejs && adduser -S nodejs -u 1001
 ENV NODE_ENV=production
 
 RUN corepack enable && corepack prepare pnpm@11.21.0 --activate
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # --prod: install only runtime dependencies from the committed lockfile.
-RUN pnpm install --prod --frozen-lockfile
+# Lifecycle scripts are not needed in the runtime image (and would invoke Husky,
+# which is a devDependency and is intentionally absent here).
+RUN pnpm install --prod --frozen-lockfile --ignore-scripts
 
 COPY --from=builder /app/dist ./dist
 # firebase-applet-config.json is ignored in .dockerignore (contains credentials),
