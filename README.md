@@ -1,8 +1,8 @@
 <div align="center">
 <img width="120" height="120" alt="Logo" src="https://img.icons8.com/fluency/96/fire-element.png" />
-<h1 align="center">المرصد الشمال الإفريقي لحرائق الغابات والكوارث</h1>
-<p align="center"><strong>Observatoire Nord-Africain des Feux de Forêt et Catastrophes</strong></p>
-<p align="center">North African Wildfire Observatory — Community-Driven Early Warning System</p>
+<h1 align="center">المرصد الجزائري لحرائق الغابات والكوارث</h1>
+<p align="center"><strong>Observatoire algérien des feux de forêt et des catastrophes</strong></p>
+<p align="center">Algerian Wildfire and Disaster Observatory — Community-Driven Early Warning System</p>
 
 [![CI](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml/badge.svg)](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Railway-brightgreen)](https://wildfire-observatory-production.up.railway.app/)

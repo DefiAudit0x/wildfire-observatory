@@ -99,7 +99,7 @@ function buildAlertHtml(report: {
 <body style="margin:0;padding:0;background:#0a0a0a;font-family:sans-serif">
   <table width="100%" style="max-width:600px;margin:auto;padding:20px">
     <tr><td style="text-align:center;padding:20px 0">
-      <h1 style="color:#fbbf24;font-size:20px;margin:0">🔥 North African Wildfire Observatory</h1>
+      <h1 style="color:#fbbf24;font-size:20px;margin:0">🔥 Algerian Wildfire and Disaster Observatory</h1>
       <p style="color:#9ca3af;font-size:12px">تنبيه آني - حرائق الغابات في شمال افريقيا</p>
     </td></tr>
     <tr><td style="background:#1a1a1a;border-radius:12px;padding:24px;border-right:4px solid ${color}">
@@ -117,7 +117,7 @@ function buildAlertHtml(report: {
       <a href="${config.appUrl}" style="display:inline-block;margin-top:16px;padding:10px 24px;background:#dc2626;color:white;text-decoration:none;border-radius:8px;font-size:13px;font-weight:bold">فتح الخريطة التفاعلية</a>
     </td></tr>
     <tr><td style="text-align:center;padding:20px;color:#6b7280;font-size:10px">
-      <p>تم إرسال هذا التنبيه تلقائياً من منصة المرصد الشمال افريقي لحرائق الغابات</p>
+      <p>تم إرسال هذا التنبيه تلقائياً من منصة المرصد الجزائري لحرائق الغابات والكوارث</p>
       <p><a href="${escapeHtml(unsubscribeUrl)}" style="color:#6b7280">إلغاء الاشتراك</a></p>
     </td></tr>
   </table>
@@ -163,7 +163,7 @@ export async function sendVerificationEmail(email: string, token: string): Promi
 <body style="margin:0;padding:0;background:#0a0a0a;font-family:sans-serif">
   <table width="100%" style="max-width:600px;margin:auto;padding:20px">
     <tr><td style="text-align:center;padding:20px 0">
-      <h1 style="color:#fbbf24;font-size:20px;margin:0">🔥 North African Wildfire Observatory</h1>
+      <h1 style="color:#fbbf24;font-size:20px;margin:0">🔥 Algerian Wildfire and Disaster Observatory</h1>
       <p style="color:#9ca3af;font-size:12px">تأكيد الاشتراك في تنبيهات الحرائق</p>
     </td></tr>
     <tr><td style="background:#1a1a1a;border-radius:12px;padding:24px;text-align:center">

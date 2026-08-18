@@ -588,3 +588,20 @@ The decision is approved, but the implementation contract is still under review.
 - [ ] إنشاء commit مستقل للإصلاحات والـregressions المقصودة.
 - [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
 - [ ] التحقق من SHA المنشور ومراقبة CI النهائي.
+
+## Product display-name update
+
+- [x] حصر «مرصد الشمال الأفريقي» واستعمالاته المعروضة للمستخدم.
+- [x] استبدال العلامة المعروضة بـ«المرصد الجزائري لحرائق الغابات والكوارث».
+- [x] تحديث title وmetadata والوثائق المعروضة المرتبطة بالعلامة فقط.
+- [x] إبقاء repository slug وpackage identifiers وAPI namespaces دون تغيير.
+- [x] تشغيل build ومراجعة diff قبل أي commit أو push.
+- [ ] عرض diff وموافقة المستخدم على commit ثم push منفصلين.
+
+## Approved display-name commit and push
+
+- [x] المستخدم وافق صراحة على إنشاء commit ودفع تغيير العلامة المعروضة.
+- [ ] مراجعة الملفات و`git diff --check` قبل staging.
+- [ ] إنشاء commit محدود للعلامة المعروضة والـmetadata والوثائق المرتبطة.
+- [ ] دفع commit إلى `origin/audit/fix-remaining-findings`.
+- [ ] التحقق من SHA المنشور ومراقبة CI.

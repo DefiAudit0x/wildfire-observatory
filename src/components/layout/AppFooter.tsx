@@ -10,8 +10,8 @@ function AppFooter({ isArabic }: AppFooterProps) {
       <div className="max-w-7xl mx-auto px-4 space-y-1.5">
         <p>
           {isArabic
-            ? "المرصد الشمال الإفريقي لحرائق الغابات والكوارث - مبادرة تضامنية لتسريع الاستجابة ومشاركة البيانات بين المواطنين."
-            : "Observatoire Nord-Africain des Feux de Forêt et Catastrophes - Initiative solidaire de réponse rapide."}
+            ? "المرصد الجزائري لحرائق الغابات والكوارث - مبادرة تضامنية لتسريع الاستجابة ومشاركة البيانات بين المواطنين."
+            : "Observatoire algérien des feux de forêt et des catastrophes - Initiative solidaire de réponse rapide."}
         </p>
         <p className="text-[10px] text-gray-650 font-mono">
           {isArabic

@@ -1,6 +1,6 @@
-# North African Wildfire Observatory — Architecture
+# Algerian Wildfire and Disaster Observatory — Architecture
 
-> المعمارية الحالية والمستقبلية لمنصة المرصد الشمال إفريقي لحرائق الغابات
+> المعمارية الحالية والمستقبلية لمنصة المرصد الجزائري لحرائق الغابات والكوارث
 
 ---
 
