@@ -574,7 +574,7 @@ async function readRelayQueueState(): Promise<RelayQueueState> {
   });
 }
 
-async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): Promise<"persistent" | "failed">> {
+async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): Promise<"persistent" | "failed"> {
   const snapshot = {
     revision: queueRevision + 1,
     pending: state.pending,
