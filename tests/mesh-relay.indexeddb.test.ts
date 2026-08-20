@@ -143,7 +143,7 @@ describe("mesh relay IndexedDB timeout recovery", () => {
       .toEqual(["late-a-01", "late-b-01", "late-c-01"]);
   });
 
-  it("merges a higher IndexedDB revision with localStorage after reload instead of discarding the other replica", async () => {
+  it("selects a higher IndexedDB revision than localStorage after reload when no terminal journal exists", async () => {
     const indexed = createDelayedIndexedDb(0, {
       revision: 12,
       pending: [{ report: { clientGeneratedId: "indexed-revision-12" } }],
@@ -163,7 +163,7 @@ describe("mesh relay IndexedDB timeout recovery", () => {
 
     expect(indexed.getStored()?.revision).toBe(13);
     expect(indexed.getStored()?.pending.map((item) => item.report.clientGeneratedId))
-      .toEqual(["local-revision-11", "indexed-revision-12", "after-reload"]);
+      .toEqual(["indexed-revision-12", "after-reload"]);
     expect(storedSnapshot().revision).toBe(13);
   });
 
