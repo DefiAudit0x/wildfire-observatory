@@ -70,8 +70,6 @@ function legacyContentFingerprint(input: string): string {
   return String(h >>> 0);
 }
 
-/** Replay reservations are a security boundary and use SHA-256. Queue/journal
- * fingerprints retain their legacy form to preserve recovery of old snapshots. */
 export function relayReplayDigest(raw: string): string {
   return bytesToHex(sha256(new TextEncoder().encode(raw)));
 }
@@ -257,6 +255,11 @@ function mergeJournalEntries(...states: RelayQueueState[]): RelayJournalEntry[] 
 
 function mergeReplicaQueueStates(local: RelayQueueState, indexed: RelayQueueState): RelayQueueState {
   const mergedJournal = mergeJournalEntries(local, indexed);
+  if (mergedJournal.length === 0) {
+    const selected = indexed.revision >= local.revision ? indexed : local;
+    return rebuildPendingFromJournal(selected);
+  }
+
   const pendingById = new Map<string, { item: QueuedRelay; revision: number }>();
   const deadLetterById = new Map<string, { item: QueuedRelay; revision: number }>();
 
@@ -509,8 +512,6 @@ async function writeIndexedQueue(
       try {
         transaction.abort();
       } catch {
-        // If commit has already started, abort is no longer safe. Wait for the
-        // actual request result instead of returning a false failure to callers.
         return;
       }
       if (settled) return;
@@ -520,14 +521,8 @@ async function writeIndexedQueue(
     try {
       transaction = db.transaction(RELAY_STORE_NAME, "readwrite");
       const request = transaction.objectStore(RELAY_STORE_NAME).put(state, "state");
-      request.onsuccess = () => {
-        // A successful request only means the operation was accepted by this
-        // transaction. Persisted state is confirmed exclusively on complete.
-      };
-      request.onerror = () => {
-        // The transaction's error/abort handler owns the final outcome, so a
-        // request failure cannot race a later transaction completion.
-      };
+      request.onsuccess = () => {};
+      request.onerror = () => {};
       transaction.oncomplete = () => {
         if (settled) return;
         settled = true;
@@ -669,8 +664,6 @@ export function reserveRelayHash(raw: string, now = Date.now()): ReplayReservati
   const hash = relayReplayDigest(raw);
   const existing = seenRelayHashes.get(hash);
   if (existing !== undefined && now - existing.recordedAt <= RELAY_REPLAY_RETENTION_MS) return null;
-  // Fail closed while the freshness window is still populated. Evicting a
-  // fresh entry would turn bounded memory into a replay bypass under flooding.
   if (seenRelayHashes.size >= MAX_SEEN_HASHES) return null;
   const reservation = { hash, token: `${now}-${++replayReservationSequence}` };
   seenRelayHashes.set(hash, { recordedAt: now, token: reservation.token });
@@ -699,63 +692,28 @@ export function isRelayEnvelopeAdmissible(envelope: MeshEnvelope, now = Date.now
     isFreshMeshTimestamp(envelope.ts, now);
 }
 
-/**
- * Shape a received mesh report into a payload the server's report schema
- * accepts. Mirrors the server-side validation gates so garbage never reaches
- * the API.
- */
 export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unknown> | null {
   if (typeof envelope.payload !== "string") return null;
   let payload: any;
-  try {
-    payload = JSON.parse(envelope.payload);
-  } catch {
-    return null;
-  }
+  try { payload = JSON.parse(envelope.payload); } catch { return null; }
   if (!payload || typeof payload !== "object") return null;
-
   const lat = Number(envelope.lat);
   const lng = Number(envelope.lng);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
-
   const locationName = typeof payload.locationName === "string" ? payload.locationName.trim() : "";
   const wilaya = typeof payload.wilaya === "string" ? payload.wilaya.trim() : "";
   const description = typeof payload.description === "string" ? payload.description.trim() : "";
-  if (locationName.length < 3 || locationName.length > 200 ||
-      wilaya.length < 3 || wilaya.length > 200 ||
-      description.length < 10 || description.length > 2000) return null;
-
-  if (payload.severity !== undefined &&
-      !["low", "medium", "high", "critical"].includes(payload.severity)) return null;
-  if (payload.reporterType !== undefined &&
-      !["citizen", "volunteer", "official"].includes(payload.reporterType)) return null;
-
+  if (locationName.length < 3 || locationName.length > 200 || wilaya.length < 3 || wilaya.length > 200 || description.length < 10 || description.length > 2000) return null;
+  if (payload.severity !== undefined && !["low", "medium", "high", "critical"].includes(payload.severity)) return null;
+  if (payload.reporterType !== undefined && !["citizen", "volunteer", "official"].includes(payload.reporterType)) return null;
   const report: Record<string, unknown> = {
-    lat,
-    lng,
-    locationName,
-    wilaya,
-    description,
+    lat, lng, locationName, wilaya, description,
     severity: payload.severity ?? "medium",
     reporterType: payload.reporterType ?? "citizen",
   };
-
-  // A Mesh report must carry the origin's stable id. The relay is not allowed
-  // to invent a replacement id because that would break end-to-end idempotency
-  // after reloads, relay handoffs, or server restarts.
   if (!isValidClientGeneratedId(payload.clientGeneratedId)) return null;
   report.clientGeneratedId = payload.clientGeneratedId;
-
-  // The length and enum gates above mirror the server schema exactly.
-  if (
-    typeof report.locationName !== "string" ||
-    typeof report.wilaya !== "string" ||
-    typeof report.description !== "string"
-  ) {
-    return null;
-  }
   return report;
 }
 
@@ -769,12 +727,8 @@ async function submitRelayOutcome(report: Record<string, unknown>): Promise<Rela
     if (res.status === 200) return "http_200";
     if (res.status !== 409) return null;
     const body = await res.json().catch(() => null) as { code?: unknown } | null;
-    return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code)
-      ? "terminal_duplicate"
-      : null;
-  } catch {
-    return null;
-  }
+    return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code) ? "terminal_duplicate" : null;
+  } catch { return null; }
 }
 
 export async function submitRelay(report: Record<string, unknown>): Promise<boolean> {
@@ -785,8 +739,6 @@ async function persistPreparedJournal(item: QueuedRelay): Promise<RelayJournalEn
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
     const currentItem = state.pending.find((candidate) => candidate.id === item.id);
-    // The flush snapshot may be stale if capacity moved this item to the DLQ
-    // while an earlier submission was waiting on the network.
     if (!currentItem) return null;
     const existing = state.journal.find((entry) => entry.queueItemId === item.id);
     if (existing?.state === "delivered" || existing?.state === "committed") return null;
@@ -800,19 +752,12 @@ async function persistPreparedJournal(item: QueuedRelay): Promise<RelayJournalEn
   });
 }
 
-async function persistDeliveredJournal(
-  item: QueuedRelay,
-  disposition: RelayDeliveryDisposition
-): Promise<boolean> {
+async function persistDeliveredJournal(item: QueuedRelay, disposition: RelayDeliveryDisposition): Promise<boolean> {
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
     const journal = markJournalDelivered(state.journal, item, disposition);
     if (journal === state.journal) return false;
-    return (await writeRelayQueueState({
-      pending: state.pending,
-      deadLetters: state.deadLetters,
-      journal,
-    })) === "persistent";
+    return (await writeRelayQueueState({ pending: state.pending, deadLetters: state.deadLetters, journal })) === "persistent";
   });
 }
 
@@ -821,44 +766,24 @@ async function recoverDeliveredJournal(): Promise<void> {
     const state = await readRelayQueueState();
     const journal = commitDeliveredJournal(state.journal, state.pending);
     if (journal.every((entry, index) => entry === state.journal[index])) return;
-    await writeRelayQueueState({
-      pending: state.pending,
-      deadLetters: state.deadLetters,
-      journal,
-    });
+    await writeRelayQueueState({ pending: state.pending, deadLetters: state.deadLetters, journal });
   });
 }
 
 async function handleRelayMessage(raw: string): Promise<void> {
   let envelope: MeshEnvelope;
-  try {
-    envelope = JSON.parse(raw);
-  } catch {
-    return;
-  }
+  try { envelope = JSON.parse(raw); } catch { return; }
   if (envelope.type !== "report") return;
-
   const powPrefix = typeof envelope.powPrefix === "string" ? envelope.powPrefix : "";
   const powNonce = typeof envelope.powNonce === "number" ? envelope.powNonce : -1;
   const powDifficulty = typeof envelope.powDifficulty === "number" ? envelope.powDifficulty : 0;
   if (!isRelayEnvelopeAdmissible(envelope)) return;
-
-  // Anti-spam: drop messages that fail the attached proof-of-work.
   const powOk = await verifyPoW(powPrefix, powNonce, powDifficulty).catch(() => false);
   if (!powOk) return;
-
   const report = buildRelayedPayload(envelope);
   if (!report) return;
-
-  // Anti-duplicate: only a report that passed every schema gate may consume a
-  // bounded replay-cache slot. Otherwise valid-PoW malformed inputs could
-  // exhaust the cache and deny later valid reports for the retention window.
   const replayReservation = reserveRelayHash(raw);
   if (!replayReservation) return;
-
-  // Online ingress shares the same durable lifecycle as deferred retries:
-  // enqueue creates the stable clientGeneratedId, then flush persists
-  // `prepared` before any HTTP submission is allowed.
   const enqueued = await enqueueRelay(report);
   if (!enqueued.accepted) {
     releaseRelayHash(replayReservation);
@@ -873,13 +798,7 @@ export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqu
     return Promise.resolve({ accepted: false, reason: "missing_origin_client_generated_id" });
   }
   const now = Date.now();
-  const item = {
-    id: queueItemId(),
-    report,
-    ts: now,
-    attempts: 0,
-    nextAttemptAt: now,
-  } satisfies QueuedRelay;
+  const item = { id: queueItemId(), report, ts: now, attempts: 0, nextAttemptAt: now } satisfies QueuedRelay;
   return serializeQueueMutation(async () => {
     const state = await readRelayQueueState();
     const transition = makeCapacityTransition(state, item, now);
@@ -915,44 +834,26 @@ async function flushQueueInternal(): Promise<void> {
     }
     if (item.nextAttemptAt > now) continue;
     if (!isValidClientGeneratedId(item.report.clientGeneratedId)) {
-      updatedItems.set(item.id, {
-        ...item,
-        deadLetter: true,
-        deadLetteredAt: now,
-        lastError: "missing_origin_client_generated_id",
-      });
+      updatedItems.set(item.id, { ...item, deadLetter: true, deadLetteredAt: now, lastError: "missing_origin_client_generated_id" });
       console.error("[MeshRelay] Quarantining legacy pending item without origin clientGeneratedId");
       changed = true;
       continue;
     }
-    const journalItem = item;
-    if (!(await persistPreparedJournal(journalItem))) continue;
-    const disposition = await submitRelayOutcome(journalItem.report);
-    if (disposition && await persistDeliveredJournal(journalItem, disposition)) {
+    if (!(await persistPreparedJournal(item))) continue;
+    const disposition = await submitRelayOutcome(item.report);
+    if (disposition && await persistDeliveredJournal(item, disposition)) {
       processedIds.add(item.id);
       changed = true;
       continue;
     }
     if (disposition) continue;
-    const attempts = journalItem.attempts + 1;
+    const attempts = item.attempts + 1;
     const deadLetter = attempts >= RELAY_MAX_QUEUE_ATTEMPTS;
     const backoff = Math.min(RELAY_BASE_RETRY_BACKOFF_MS * 2 ** Math.max(0, attempts - 1), RELAY_MAX_RETRY_BACKOFF_MS);
-    updatedItems.set(item.id, {
-      ...journalItem,
-      attempts,
-      nextAttemptAt: now + backoff,
-      deadLetter,
-      deadLetteredAt: deadLetter ? now : undefined,
-      lastError: "submission failed",
-    });
+    updatedItems.set(item.id, { ...item, attempts, nextAttemptAt: now + backoff, deadLetter, deadLetteredAt: deadLetter ? now : undefined, lastError: "submission failed" });
     changed = true;
   }
-
   if (!changed) return;
-
-  // Re-read after awaits: enqueueRelay may have appended a newer item while
-  // network submissions were in flight. Remove only the IDs from this flush;
-  // never overwrite the newer snapshot with the stale pre-await queue.
   let queueCommitted = false;
   await serializeQueueMutation(async () => {
     const latestState = await readRelayQueueState();
@@ -977,8 +878,6 @@ async function flushQueueInternal(): Promise<void> {
       return;
     }
     if (storage === "failed") {
-      // A failed DLQ write must retain the source pending item, but a report
-      // already accepted by the server must not be replayed from stale storage.
       const deadLetterMoveIds = new Set(deadLetterMoves.map((item) => item.id));
       volatilePending = latestState.pending
         .filter((item) => !processedIds.has(item.id))
@@ -992,26 +891,16 @@ async function flushQueueInternal(): Promise<void> {
 
 export function flushQueue(): Promise<void> {
   if (flushInFlight) return flushInFlight;
-  flushInFlight = flushQueueInternal().finally(() => {
-    flushInFlight = null;
-  });
+  flushInFlight = flushQueueInternal().finally(() => { flushInFlight = null; });
   return flushInFlight;
 }
 
 let started = false;
-
-/** Wire the relay once for the lifetime of the app (safe as a no-op in plain browsers). */
 export function initMeshRelay(): void {
   if (started) return;
   started = true;
-
-  onMeshMessage((message) => {
-    void handleRelayMessage(message);
-  });
-
-  const flush = () => {
-    void flushQueue();
-  };
+  onMeshMessage((message) => { void handleRelayMessage(message); });
+  const flush = () => { void flushQueue(); };
   window.addEventListener("online", flush);
   window.setInterval(flush, 60_000);
 }
