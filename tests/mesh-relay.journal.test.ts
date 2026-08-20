@@ -118,7 +118,7 @@ function indexedDbWithState(initialState: unknown): IDBFactory {
   } as unknown as IDBFactory;
 }
 
-async function expectSelectedPreparedReplicaDispatches(indexedState: unknown, localState: unknown) {
+async function expectTerminalReplicaSuppressesNewerPending(indexedState: unknown, localState: unknown) {
   storage.set("mesh_relay_queue", JSON.stringify(localState));
   const indexedDb = indexedDbWithState(indexedState);
   const relay = await loadRelay(indexedDb);
@@ -127,14 +127,17 @@ async function expectSelectedPreparedReplicaDispatches(indexedState: unknown, lo
 
   await relay.flushQueue();
 
-  expect(fetchMock).toHaveBeenCalledTimes(1);
-  expect(JSON.parse(fetchMock.mock.calls[0][1].body).clientGeneratedId).toBe("replica-divergence-a");
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(storedState().pending).toEqual([]);
+  expect(storedState().journal[0]?.state).toBe("committed");
 
   vi.resetModules();
   const afterReload = await loadRelay(indexedDb);
   fetchMock.mockClear();
   await afterReload.flushQueue();
   expect(fetchMock).not.toHaveBeenCalled();
+  expect(storedState().pending).toEqual([]);
+  expect(storedState().journal[0]?.state).toBe("committed");
 }
 
 describe("mesh relay durable reconciliation journal", () => {
@@ -238,17 +241,33 @@ describe("mesh relay durable reconciliation journal", () => {
     expect(storedState().journal[0]?.state).toBe("committed");
   });
 
-  it("does not let an older IndexedDB delivered journal suppress newer localStorage pending", async () => {
-    await expectSelectedPreparedReplicaDispatches(
+  it("lets a delivered journal win over a newer pending replica", async () => {
+    await expectTerminalReplicaSuppressesNewerPending(
       replicaState(12, "delivered"),
       replicaState(13, "prepared")
     );
   });
 
-  it("does not let an older localStorage delivered journal suppress newer IndexedDB pending", async () => {
-    await expectSelectedPreparedReplicaDispatches(
+  it("lets a delivered journal win over a newer pending replica in the opposite storage order", async () => {
+    await expectTerminalReplicaSuppressesNewerPending(
       replicaState(13, "prepared"),
       replicaState(12, "delivered")
     );
+  });
+
+  it("does not treat a newer prepared replica as terminal when no replica delivered", async () => {
+    storage.set("mesh_relay_queue", JSON.stringify(replicaState(13, "prepared")));
+    const indexedDb = indexedDbWithState(replicaState(12, "prepared"));
+    const relay = await loadRelay(indexedDb);
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await relay.flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).clientGeneratedId)
+      .toBe("replica-divergence-a");
+    expect(storedState().pending).toEqual([]);
+    expect(storedState().journal[0]?.state).toBe("committed");
   });
 });

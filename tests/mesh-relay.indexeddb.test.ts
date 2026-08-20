@@ -143,7 +143,7 @@ describe("mesh relay IndexedDB timeout recovery", () => {
       .toEqual(["late-a-01", "late-b-01", "late-c-01"]);
   });
 
-  it("selects a higher IndexedDB revision than localStorage after reload", async () => {
+  it("selects a higher IndexedDB revision than localStorage after reload when no terminal journal exists", async () => {
     const indexed = createDelayedIndexedDb(0, {
       revision: 12,
       pending: [{ report: { clientGeneratedId: "indexed-revision-12" } }],

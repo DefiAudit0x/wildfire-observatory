@@ -123,38 +123,66 @@ describe("mesh relay queue concurrency", () => {
       .toEqual(["concurrent-a", "concurrent-b"]);
   });
 
-  it.each(["prepared", "delivered"] as const)(
-    "does not evict a %s journal-protected pending item on capacity overflow",
-    async (journalState) => {
-      for (let i = 0; i < 50; i++) {
-        await enqueueRelay({ clientGeneratedId: `protected-capacity-${i}` });
-      }
-      const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
-      const protectedItem = persisted.pending[0];
-      persisted.journal = [{
-        journalId: `journal-${protectedItem.id}`,
-        queueItemId: protectedItem.id,
-        storageReplica: "co_located",
-        baseQueueRevision: persisted.revision,
-        clientGeneratedId: protectedItem.report.clientGeneratedId,
-        reportFingerprint: "fixture-fingerprint",
-        report: protectedItem.report,
-        state: journalState,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }];
-      storage.set("mesh_relay_queue", JSON.stringify(persisted));
+  it("does not evict a prepared journal-protected pending item on capacity overflow", async () => {
+    for (let i = 0; i < 50; i++) {
+      await enqueueRelay({ clientGeneratedId: `protected-capacity-${i}` });
+    }
+    const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    const protectedItem = persisted.pending[0];
+    persisted.journal = [{
+      journalId: `journal-${protectedItem.id}`,
+      queueItemId: protectedItem.id,
+      storageReplica: "co_located",
+      baseQueueRevision: persisted.revision,
+      clientGeneratedId: protectedItem.report.clientGeneratedId,
+      reportFingerprint: "fixture-fingerprint",
+      report: protectedItem.report,
+      state: "prepared",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }];
+    storage.set("mesh_relay_queue", JSON.stringify(persisted));
 
-      const result = await enqueueRelay({ clientGeneratedId: "protected-capacity-new" });
+    const result = await enqueueRelay({ clientGeneratedId: "protected-capacity-new" });
 
-      expect(result).toMatchObject({ accepted: true });
-      const saved = storedQueue();
-      expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && !item.deadLetter)).toBe(true);
-      expect(saved.some((item) => item.report.clientGeneratedId === "protected-capacity-new" && !item.deadLetter)).toBe(true);
-      expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && item.deadLetter)).toBe(false);
-      expect(saved.some((item) => item.report.clientGeneratedId === `protected-capacity-1` && item.deadLetter)).toBe(true);
-    },
-  );
+    expect(result).toMatchObject({ accepted: true });
+    const saved = storedQueue();
+    expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && !item.deadLetter)).toBe(true);
+    expect(saved.some((item) => item.report.clientGeneratedId === "protected-capacity-new" && !item.deadLetter)).toBe(true);
+    expect(saved.some((item) => item.report.clientGeneratedId === protectedItem.report.clientGeneratedId && item.deadLetter)).toBe(false);
+    expect(saved.some((item) => item.report.clientGeneratedId === `protected-capacity-1` && item.deadLetter)).toBe(true);
+  });
+
+  it("does not keep a delivered journal item as pending during capacity reconciliation", async () => {
+    for (let i = 0; i < 50; i++) {
+      await enqueueRelay({ clientGeneratedId: `delivered-capacity-${i}` });
+    }
+    const persisted = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    const deliveredItem = persisted.pending[0];
+    persisted.journal = [{
+      journalId: `journal-${deliveredItem.id}`,
+      queueItemId: deliveredItem.id,
+      storageReplica: "co_located",
+      baseQueueRevision: persisted.revision,
+      clientGeneratedId: deliveredItem.report.clientGeneratedId,
+      reportFingerprint: "fixture-fingerprint",
+      report: deliveredItem.report,
+      state: "delivered",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      deliveredAt: Date.now(),
+      deliveryDisposition: "http_200",
+    }];
+    storage.set("mesh_relay_queue", JSON.stringify(persisted));
+
+    const result = await enqueueRelay({ clientGeneratedId: "delivered-capacity-new" });
+
+    expect(result).toMatchObject({ accepted: true });
+    const saved = storedQueue();
+    expect(saved.some((item) => item.report.clientGeneratedId === deliveredItem.report.clientGeneratedId && !item.deadLetter)).toBe(false);
+    expect(saved.some((item) => item.report.clientGeneratedId === "delivered-capacity-new" && !item.deadLetter)).toBe(true);
+    expect(saved.some((item) => item.report.clientGeneratedId === deliveredItem.report.clientGeneratedId && item.deadLetter)).toBe(false);
+  });
 
   it("rejects a new item without moving any pending item when all capacity is journal-protected", async () => {
     for (let i = 0; i < 50; i++) {
@@ -496,7 +524,7 @@ describe("mesh relay queue concurrency", () => {
     }]));
 
     await flushQueue();
-    await vi.resetModules();
+    vi.resetModules();
     const { flushQueue: reloadedFlushQueue } = await import("../src/lib/meshRelay.js");
     await reloadedFlushQueue();
 
