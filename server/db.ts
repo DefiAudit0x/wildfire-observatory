@@ -359,6 +359,9 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
         tx.update(docRef, update);
         return { status: "confirmed" as const, consensusCount: newConsensus, statusValue: newStatus };
       });
+      if (result.status === "confirmed") {
+        invalidateReportsCache();
+      }
       return result;
     }
   } catch (err) {
