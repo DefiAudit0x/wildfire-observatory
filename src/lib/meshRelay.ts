@@ -226,6 +226,73 @@ function normalizeRelayQueueState(value: unknown): RelayQueueState {
   return { revision, ...splitLegacyQueue(normalizeQueue(snapshot.items)), journal: normalizeJournal(snapshot.journal) };
 }
 
+function journalStateRank(state: RelayJournalState): number {
+  return state === "committed" ? 3 : state === "delivered" ? 2 : 1;
+}
+
+function mergeJournalEntries(...states: RelayQueueState[]): RelayJournalEntry[] {
+  const merged = new Map<string, RelayJournalEntry>();
+  for (const state of states) {
+    for (const candidate of state.journal) {
+      const existing = merged.get(candidate.queueItemId);
+      if (!existing) {
+        merged.set(candidate.queueItemId, candidate);
+        continue;
+      }
+      const candidateRank = journalStateRank(candidate.state);
+      const existingRank = journalStateRank(existing.state);
+      if (
+        candidateRank > existingRank ||
+        (candidateRank === existingRank && (
+          candidate.updatedAt > existing.updatedAt ||
+          (candidate.updatedAt === existing.updatedAt && candidate.baseQueueRevision > existing.baseQueueRevision)
+        ))
+      ) {
+        merged.set(candidate.queueItemId, candidate);
+      }
+    }
+  }
+  return [...merged.values()];
+}
+
+function mergeReplicaQueueStates(local: RelayQueueState, indexed: RelayQueueState): RelayQueueState {
+  const mergedJournal = mergeJournalEntries(local, indexed);
+  const pendingById = new Map<string, { item: QueuedRelay; revision: number }>();
+  const deadLetterById = new Map<string, { item: QueuedRelay; revision: number }>();
+
+  for (const state of [local, indexed]) {
+    for (const item of state.pending) {
+      const existing = pendingById.get(item.id);
+      if (!existing || state.revision > existing.revision || (state.revision === existing.revision && item.ts > existing.item.ts)) {
+        pendingById.set(item.id, { item, revision: state.revision });
+      }
+    }
+    for (const item of state.deadLetters) {
+      const existing = deadLetterById.get(item.id);
+      if (!existing || state.revision > existing.revision || (state.revision === existing.revision && item.ts > existing.item.ts)) {
+        deadLetterById.set(item.id, { item, revision: state.revision });
+      }
+    }
+  }
+
+  const terminalIds = new Set(
+    mergedJournal
+      .filter((entry) => entry.state === "delivered" || entry.state === "committed")
+      .map((entry) => entry.queueItemId),
+  );
+  const deadLetterIds = new Set(deadLetterById.keys());
+  const pending = [...pendingById.values()]
+    .filter(({ item }) => !terminalIds.has(item.id) && !deadLetterIds.has(item.id))
+    .map(({ item }) => item);
+
+  return {
+    revision: Math.max(local.revision, indexed.revision),
+    pending,
+    deadLetters: [...deadLetterById.values()].map(({ item }) => item),
+    journal: mergedJournal,
+  };
+}
+
 function isValidClientGeneratedId(value: unknown): value is string {
   return typeof value === "string" && value.length >= 8 && value.length <= 64;
 }
@@ -237,11 +304,15 @@ function journalMatchesItem(entry: RelayJournalEntry, item: QueuedRelay): boolea
 }
 
 function rebuildPendingFromJournal(state: RelayQueueState): RelayQueueState {
-  const outcomes = state.journal.filter((entry) => entry.state === "delivered" || entry.state === "committed");
-  if (outcomes.length === 0) return state;
+  const outcomes = new Set(
+    state.journal
+      .filter((entry) => entry.state === "delivered" || entry.state === "committed")
+      .map((entry) => entry.queueItemId),
+  );
+  if (outcomes.size === 0) return state;
   return {
     ...state,
-    pending: state.pending.filter((item) => !outcomes.some((entry) => journalMatchesItem(entry, item))),
+    pending: state.pending.filter((item) => !outcomes.has(item.id)),
   };
 }
 
@@ -488,21 +559,22 @@ async function readRelayQueueState(): Promise<RelayQueueState> {
   if (db) {
     const indexed = await readIndexedQueueState(db);
     if (indexed !== null) {
-      const selected = rebuildPendingFromJournal(indexed.revision >= local.revision ? indexed : local);
+      const merged = mergeReplicaQueueStates(local, indexed);
+      const selected = rebuildPendingFromJournal({
+        ...merged,
+        pending: mergeVolatilePending(merged.pending),
+      });
       queueRevision = Math.max(queueRevision, selected.revision);
-      return {
-        ...selected,
-        pending: mergeVolatilePending(selected.pending),
-      };
+      return selected;
     }
   }
-  return {
+  return rebuildPendingFromJournal({
     ...local,
     pending: mergeVolatilePending(local.pending),
-  };
+  });
 }
 
-async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): Promise<"persistent" | "failed"> {
+async function writeRelayQueueState(state: Omit<RelayQueueState, "revision">): Promise<"persistent" | "failed">> {
   const snapshot = {
     revision: queueRevision + 1,
     pending: state.pending,
