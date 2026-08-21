@@ -35,7 +35,7 @@ vi.mock("firebase/firestore", () => ({
     const tx = {
       get: async (ref: { id: string }) => {
         const report = state.reports.get(ref.id);
-        return { exists: Boolean(report), data: () => report };
+        return { exists: () => Boolean(report), data: () => report };
       },
       update: (ref: { id: string }, update: Partial<StoredReport>) => writes.push({ id: ref.id, update }),
     };
