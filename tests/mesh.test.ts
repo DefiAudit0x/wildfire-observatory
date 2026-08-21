@@ -1,8 +1,17 @@
 import { describe, it, expect, afterAll } from "vitest";
 import http from "http";
 import WebSocket from "ws";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { meshHub, MESH_PATH } from "../server/mesh.js";
 import { createMeshToken } from "../server/mesh-auth.js";
+
+function meshCredentials(deviceId: string) {
+  const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }).toString();
+  const token = createMeshToken(deviceId, publicKeyPem);
+  const signature = sign(null, Buffer.from(token, "utf8"), privateKey).toString("base64");
+  return { token, publicKey: publicKeyPem, signature };
+}
 
 function connectClient(server: http.Server, deviceId: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -13,7 +22,7 @@ function connectClient(server: http.Server, deviceId: string): Promise<WebSocket
     }
     const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
     ws.on("open", () => {
-      ws.send(JSON.stringify({ type: "hello", deviceId, label: `node-${deviceId}`, token: createMeshToken(deviceId) }));
+      ws.send(JSON.stringify({ type: "hello", deviceId, label: `node-${deviceId}`, ...meshCredentials(deviceId) }));
       resolve(ws);
     });
     ws.on("error", reject);
@@ -80,7 +89,11 @@ describe("mesh hub", () => {
     const received = waitForMessage(nodeB, "report:new");
     nodeA.send(JSON.stringify({
       type: "report:new",
-      report: { id: "rep-mesh-1", locationName: "غابة تجريبية" },
+      report: {
+        id: "rep-mesh-1", lat: 36.8, lng: 7.5, locationName: "غابة تجريبية", wilaya: "عنابة",
+        description: "بلاغ حريق تجريبي صالح", severity: "high", status: "pending",
+        timestamp: new Date().toISOString(), consensusCount: 1,
+      },
     }));
 
     const message = await received;
@@ -140,11 +153,12 @@ describe("mesh hub", () => {
     await new Promise<void>((resolve) => ws.on("open", () => resolve()));
 
     const errorMessage = waitForMessage(ws, "error");
+    const credentials = meshCredentials("other-device");
     ws.send(JSON.stringify({
       type: "hello",
       deviceId: "impostor",
       label: "attacker",
-      token: createMeshToken("other-device"),
+      ...credentials,
     }));
     const message = await errorMessage;
     expect(String(message.message)).toContain("Unauthorized");
@@ -163,7 +177,7 @@ describe("mesh hub", () => {
     clients.push(replacement);
     const welcome = waitForMessage(replacement, "welcome");
     await new Promise<void>((resolve) => replacement.on("open", () => resolve()));
-    replacement.send(JSON.stringify({ type: "hello", deviceId: "node-A", label: "replacement", token: createMeshToken("node-A") }));
+    replacement.send(JSON.stringify({ type: "hello", deviceId: "node-A", label: "replacement", ...meshCredentials("node-A") }));
 
     await oldClosed;
     const welcomeMessage = await welcome;

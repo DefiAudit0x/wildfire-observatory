@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
 import config from "./config.js";
 import logger from "./logger.js";
+import { docGet } from "./fs.js";
 
 export type UserRole = "admin" | "superadmin" | "commander" | "agent";
 
@@ -43,7 +44,7 @@ function extractToken(req: Request): string | null {
 }
 
 /** Any valid staff/admin session (role checked by callers when needed). */
-export function requireAuth(req: Request, res: Response, next: NextFunction): void {
+export async function requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (!token) {
     res.status(401).json({ error: "Unauthorized: missing or invalid token" });
@@ -51,7 +52,48 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
   try {
     const decoded = jwt.verify(token, config.jwtSecret) as AuthPayload;
-    (req as any).admin = decoded;
+    if (!ALL_ROLES.includes(decoded.role) || (decoded.role !== "admin" && !decoded.agentId)) {
+      res.status(401).json({ error: "Unauthorized: invalid token claims" });
+      return;
+    }
+
+    if (decoded.role === "admin") {
+      (req as any).admin = decoded;
+      next();
+      return;
+    }
+
+    if (decoded.agentId === "central-command") {
+      (req as any).admin = decoded;
+      next();
+      return;
+    }
+
+    const account = await docGet("users", decoded.agentId!);
+    if (!account) {
+      if (config.nodeEnv === "production") {
+        res.status(401).json({ error: "Unauthorized: inactive account" });
+        return;
+      }
+      (req as any).admin = decoded;
+      next();
+      return;
+    }
+    if (account.isActive === false) {
+      res.status(401).json({ error: "Unauthorized: inactive account" });
+      return;
+    }
+    if (account.role !== decoded.role || account.unitId !== decoded.unitId) {
+      res.status(401).json({ error: "Unauthorized: stale session" });
+      return;
+    }
+
+    (req as any).admin = {
+      role: account.role,
+      unitId: account.unitId,
+      name: account.name,
+      agentId: account.agentId,
+    };
     next();
   } catch {
     res.status(401).json({ error: "Unauthorized: invalid or expired token" });

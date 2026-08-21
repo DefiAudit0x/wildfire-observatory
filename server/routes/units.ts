@@ -20,7 +20,11 @@ export function toUnitId(code: string): string {
 
 router.get("/", requireAuth, async (_req: Request, res: Response) => {
   try {
-    const units = (await collectionGet("units")) || [];
+    const units = await collectionGet("units");
+    if (!units) {
+      res.status(503).json({ code: "UNITS_DATA_UNAVAILABLE", error: "Unit data is currently unavailable" });
+      return;
+    }
     res.json({ units });
   } catch (err) {
     logger.error({ err }, "Failed to list units");
@@ -110,7 +114,12 @@ router.delete("/:id", requireRole("superadmin", "admin"), async (req: Request, r
       res.status(404).json({ error: "Unit not found" });
       return;
     }
-    const linkedUsers = (await collectionGet("users"))?.filter((u: any) => u.unitId === id) || [];
+    const users = await collectionGet("users");
+    if (!users) {
+      res.status(503).json({ code: "USERS_DATA_UNAVAILABLE", error: "Staff data is currently unavailable" });
+      return;
+    }
+    const linkedUsers = users.filter((u: any) => u.unitId === id);
     if (linkedUsers.length > 0) {
       res.status(409).json({ error: "Cannot delete a unit that still has staff accounts" });
       return;

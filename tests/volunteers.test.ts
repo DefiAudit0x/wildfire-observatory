@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
+import { vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
+
+const fsMock = vi.hoisted(() => ({
+  collectionGet: vi.fn(async () => []),
+  docSet: vi.fn(async () => true),
+  docGet: vi.fn(async () => null),
+}));
+vi.mock("../server/fs.js", () => fsMock);
 import volunteersRouter from "../server/routes/volunteers.js";
 import { generateAdminToken } from "../server/middleware.js";
 

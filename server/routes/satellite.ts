@@ -115,13 +115,10 @@ export async function getLiveSatelliteData() {
     return unique;
   }
 
-  const fallback = satelliteHotspots.map((sat) => {
-    const nowD = new Date();
-    const timePart = sat.scanTime.split("T")[1];
-    const [hours, minutes] = timePart.split(":");
-    nowD.setUTCHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-    return { ...sat, scanTime: nowD.toISOString(), isFallback: true };
-  });
+  const fallback = satelliteHotspots.map((sat) => ({
+    ...sat,
+    isFallback: true,
+  }));
   // Cache the fallback too: avoids hammering the upstream on every request
   // when FIRMS is unreachable (same 10-min window as live data).
   cachedHotspots = fallback;

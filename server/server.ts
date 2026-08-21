@@ -36,9 +36,11 @@ import rosterRouter from "./routes/roster.js";
 import historyRouter from "./routes/history.js";
 
 const app = express();
-// Railway runs a single load-balancer hop in front of the app container.
-// "trust proxy 1" lets req.ip resolve to the real client IP (used for vote dedup).
-app.set("trust proxy", 1);
+const trustProxyHops = Number.parseInt(process.env.TRUST_PROXY_HOPS || "0", 10);
+if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 5) {
+  throw new Error("TRUST_PROXY_HOPS must be between 0 and 5");
+}
+app.set("trust proxy", trustProxyHops);
 const PORT = config.port;
 
 const isProduction = config.nodeEnv === "production";
@@ -73,7 +75,7 @@ app.use(cors({
 }));
 
 app.use(compression());
-app.use(cookieParser());
+app.use(cookieParser(config.jwtSecret));
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
@@ -160,12 +162,13 @@ const meshTokenLimiter = rateLimit({
 });
 
 app.get("/api/mesh/token", meshTokenLimiter, (req, res) => {
-  const { deviceId } = req.query;
-  if (typeof deviceId !== "string" || !deviceId || deviceId.length > 128) {
-    res.status(400).json({ error: "Invalid deviceId" });
+  const { deviceId, publicKey } = req.query;
+  if (typeof deviceId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(deviceId) ||
+      typeof publicKey !== "string" || publicKey.length < 64 || publicKey.length > 8192) {
+    res.status(400).json({ error: "A valid deviceId and publicKey are required" });
     return;
   }
-  res.json({ token: createMeshToken(deviceId) });
+  res.json({ token: createMeshToken(deviceId, publicKey) });
 });
 app.use("/api/reports", reportsRouter);
 app.use("/api/admin", adminRouter);

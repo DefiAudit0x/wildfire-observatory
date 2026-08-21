@@ -4,7 +4,8 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { requireAuth } from "../middleware.js";
 import { str } from "../params.js";
-import { docGet, docSet, docDelete } from "../fs.js";
+import { docGet, docSet, docDelete, collectionGet } from "../fs.js";
+import { getDb, isAdminDb } from "../firebase.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -74,6 +75,15 @@ function rosterPath(unitId: string): string {
   return `units/${unitId}/rosterDays`;
 }
 
+function isValidISODate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day;
+}
+
 function todayISO(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -103,7 +113,7 @@ function ensurePostIds(posts: any[]): any[] {
 // GET /api/roster/:date — read the roster for the caller's unit
 router.get("/:date", requireAuth, async (req: Request, res: Response) => {
   const date = str(req.params.date);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidISODate(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
@@ -135,10 +145,29 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
+async function validatePersonnelForUnit(personnel: Array<{ agentId: string; name: string; rank?: string }>, unitId: string) {
+  const users = await collectionGet("users");
+  if (!users) return null;
+
+  const byId = new Map(
+    users
+      .filter((u: any) => u.isActive !== false && u.unitId === unitId && u.role === "agent")
+      .map((u: any) => [u.agentId, { agentId: u.agentId, name: u.name }]),
+  );
+
+  return personnel.map((person) => {
+    const authoritative = byId.get(person.agentId);
+    if (!authoritative) {
+      throw new Error(`Agent ${person.agentId} is not active in unit ${unitId}`);
+    }
+    return { ...authoritative, ...(person.rank ? { rank: person.rank } : {}) };
+  });
+}
+
 // PUT /api/roster/:date — replace the whole day roster (commander/superadmin)
 router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidISODate(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
@@ -175,27 +204,47 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
     }
   }
 
-  const posts = ensurePostIds(parsed.data.posts);
-  const day = { unitId, date, posts, updatedAt: new Date().toISOString() };
   try {
-    const existing = await docGet(rosterPath(unitId), date);
-    const ok = await docSet(rosterPath(unitId), date, day);
-    if (!ok) {
+    const posts = ensurePostIds(parsed.data.posts);
+    for (const post of posts) {
+      const validatedPersonnel = await validatePersonnelForUnit(post.personnel, unitId);
+      if (!validatedPersonnel) {
+        res.status(503).json({ error: "Staff directory unavailable" });
+        return;
+      }
+      post.personnel = validatedPersonnel;
+    }
+
+    const db = getDb();
+    if (!db || !isAdminDb(db)) {
       res.status(503).json({ error: "Database not available" });
       return;
     }
-    const existingPosts: any[] = existing?.posts || [];
-    const existingIds = new Set(existingPosts.map((p: any) => p.id));
-    const newIds = new Set(posts.map((p) => p.id));
-    const diff = {
-      added: posts.filter((p) => !existingIds.has(p.id)).length,
-      removed: existingPosts.filter((p: any) => !newIds.has(p.id)).length,
-      modified: posts.filter(
-        (p) => existingIds.has(p.id) && JSON.stringify(existingPosts.find((e: any) => e.id === p.id)) !== JSON.stringify(p)
-      ).length,
-    };
-    logger.info({ unitId, date, actor: admin?.agentId || "admin", diff }, "Roster saved");
-    res.json(day);
+
+    const docRef = db.collection(rosterPath(unitId)).doc(date);
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(docRef);
+      const existingPosts = snap.exists ? snap.data()?.posts || [] : [];
+
+      const day = { unitId, date, posts, updatedAt: new Date().toISOString() };
+      tx.set(docRef, day);
+
+      const existingIds = new Set(existingPosts.map((p: any) => p.id));
+      const newIds = new Set(posts.map((p) => p.id));
+      return {
+        day,
+        diff: {
+          added: posts.filter((p) => !existingIds.has(p.id)).length,
+          removed: existingPosts.filter((p: any) => !newIds.has(p.id)).length,
+          modified: posts.filter(
+            (p) => existingIds.has(p.id) && JSON.stringify(existingPosts.find((e: any) => e.id === p.id)) !== JSON.stringify(p)
+          ).length,
+        }
+      };
+    });
+
+    logger.info({ unitId, date, actor: admin?.agentId || "admin", diff: result.diff }, "Roster saved");
+    res.json(result.day);
   } catch (err) {
     logger.error({ err }, "Failed to save roster");
     res.status(500).json({ error: "Internal server error" });
@@ -205,7 +254,7 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
 // POST /api/roster/:date — append one post to the day (same write rules)
 router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidISODate(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
@@ -229,26 +278,47 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
     return;
   }
   try {
-    const existing = await docGet(rosterPath(unitId), date);
-    const posts = existing?.posts || [];
-    if (posts.length >= MAX_POSTS_PER_DAY) {
-      res.status(409).json({ error: `Maximum ${MAX_POSTS_PER_DAY} posts per day` });
+    const newPost = ensurePostIds([parsed.data])[0];
+    const validatedPersonnel = await validatePersonnelForUnit(newPost.personnel, unitId);
+    if (!validatedPersonnel) {
+      res.status(503).json({ error: "Staff directory unavailable" });
       return;
     }
-    const newPost = ensurePostIds([parsed.data])[0];
-    const day = {
-      unitId,
-      date,
-      posts: [...posts, newPost],
-      updatedAt: new Date().toISOString(),
-    };
-    const ok = await docSet(rosterPath(unitId), date, day);
-    if (!ok) {
+    newPost.personnel = validatedPersonnel;
+
+    const db = getDb();
+    if (!db || !isAdminDb(db)) {
       res.status(503).json({ error: "Database not available" });
       return;
     }
+
+    const docRef = db.collection(rosterPath(unitId)).doc(date);
+    const ok = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(docRef);
+      const posts = snap.exists ? snap.data()?.posts || [] : [];
+      if (posts.length >= MAX_POSTS_PER_DAY) {
+        return false;
+      }
+      const day = {
+        unitId,
+        date,
+        posts: [...posts, newPost],
+        updatedAt: new Date().toISOString(),
+      };
+      tx.set(docRef, day);
+      return true;
+    });
+
+    if (!ok) {
+      res.status(409).json({ error: `Maximum ${MAX_POSTS_PER_DAY} posts per day` });
+      return;
+    }
     res.status(201).json(newPost);
-  } catch (err) {
+  } catch (err: any) {
+    if (err.message && err.message.startsWith("Agent ")) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
     logger.error({ err }, "Failed to add roster post");
     res.status(500).json({ error: "Internal server error" });
   }
@@ -257,7 +327,7 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
 // DELETE /api/roster/:date — clear the day
 router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+  if (!isValidISODate(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
@@ -297,7 +367,7 @@ router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, re
 router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   const target = str(req.params.target);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{4}-\d{2}-\d{2}$/.test(target)) {
+  if (!isValidISODate(date) || !isValidISODate(target)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
@@ -316,20 +386,34 @@ router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (re
     return;
   }
   try {
-    const source = await docGet(rosterPath(unitId), date);
-    if (!source || !Array.isArray(source.posts) || source.posts.length === 0) {
-      res.status(404).json({ error: `No roster found for ${date} to copy from` });
-      return;
-    }
-    const posts = ensurePostIds(source.posts.map((p: any) => ({ ...p })));
-    const day = { unitId, date: target, posts, updatedAt: new Date().toISOString() };
-    const ok = await docSet(rosterPath(unitId), target, day);
-    if (!ok) {
+    const db = getDb();
+    if (!db || !isAdminDb(db)) {
       res.status(503).json({ error: "Database not available" });
       return;
     }
+
+    const sourceRef = db.collection(rosterPath(unitId)).doc(date);
+    const targetRef = db.collection(rosterPath(unitId)).doc(target);
+
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(sourceRef);
+      if (!snap.exists) return null;
+      const source = snap.data();
+      if (!source || !Array.isArray(source.posts) || source.posts.length === 0) return null;
+
+      const posts = ensurePostIds(source.posts.map((p: any) => ({ ...p })));
+      const day = { unitId, date: target, posts, updatedAt: new Date().toISOString() };
+      tx.set(targetRef, day);
+      return day;
+    });
+
+    if (!result) {
+      res.status(404).json({ error: `No roster found for ${date} to copy from` });
+      return;
+    }
+
     logger.info({ unitId, from: date, to: target, actor: admin?.agentId || "admin" }, "Roster copied");
-    res.status(201).json(day);
+    res.status(201).json(result);
   } catch (err) {
     logger.error({ err }, "Failed to copy roster");
     res.status(500).json({ error: "Internal server error" });

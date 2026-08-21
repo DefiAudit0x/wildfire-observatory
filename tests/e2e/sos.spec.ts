@@ -4,6 +4,9 @@ test.describe("SOS emergency flow", () => {
   test("concurrent SOS requests for one device produce one durable admission", async ({ request }) => {
     const deviceId = `e2e-sos-race-${Date.now()}`;
     const payload = { deviceId, lat: 36.75, lng: 7.6, name: "E2E", phone: "0610000000" };
+    // Establish the server-issued signed owner cookie before racing requests.
+    const bind = await request.get(`/api/sos/profile/${deviceId}`);
+    expect(bind.ok()).toBe(true);
 
     const [first, second] = await Promise.all([
       request.post("/api/sos", { data: payload }),

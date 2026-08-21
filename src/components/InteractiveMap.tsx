@@ -1,17 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { Report, SatelliteHotspot } from "../types";
+import { safeImageSrc } from "../utils/safeImage";
 
 function esc(str: unknown): string {
   const div = document.createElement("div");
   div.textContent = String(str ?? "");
   return div.innerHTML;
-}
-
-function safeImageSrc(src: unknown): string {
-  const value = String(src ?? "");
-  if (value.startsWith("data:image/") || value.startsWith("https://")) return value;
-  return "";
 }
 
 function safeNumber(value: unknown, fallback = 0): number {

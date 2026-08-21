@@ -228,11 +228,11 @@ describe("POST /api/roster/:date/copy-to/:target", () => {
     expect(res.status).toBe(409);
   });
 
-  it("returns 404 when source has no saved roster", async () => {
+  it("returns 503 when roster storage is unavailable", async () => {
     const app = createApp();
     const res = await supertest(app)
       .post(`/api/roster/${futureDateISO(1)}/copy-to/${futureDateISO(2)}`)
       .set("Authorization", `Bearer ${token("commander", "DZ16")}`);
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(503);
   });
 });

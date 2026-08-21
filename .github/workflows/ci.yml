@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, audit/fix-remaining-findings]
+    branches: [main, "audit/**"]
   pull_request:
     branches: [main]
 
@@ -16,7 +16,7 @@ jobs:
           version: 11.21.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "22.13.0"
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
@@ -34,7 +34,7 @@ jobs:
           version: 11.21.0
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "22.13.0"
           cache: "pnpm"
       - uses: actions/setup-java@v5
         with:

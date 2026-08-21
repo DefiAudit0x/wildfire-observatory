@@ -258,7 +258,7 @@ describe("POST /api/reports — image magic-bytes gate", () => {
       .post("/api/reports")
       .send({ ...imageBaseReport(), image: VALID_JPEG });
     expect(res.status).toBe(200);
-    expect(res.body.image).toContain("data:image/jpeg");
+    expect(res.body.image).toBeUndefined();
   });
 
   it("accepts a real PNG data URL", async () => {

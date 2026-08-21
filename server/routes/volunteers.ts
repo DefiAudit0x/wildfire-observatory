@@ -3,7 +3,8 @@ import { z } from "zod";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
+import { collectionGet, docSet, docGet } from "../fs.js";
+import { getDb, isAdminDb } from "../firebase.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { logAdminAction } from "./audit.js";
@@ -168,7 +169,14 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     registrationIp: req.ip || (req.headers["x-forwarded-for"] as string) || "unknown",
     userAgent: (req.headers["user-agent"] as string) || "unknown",
   };
-  await docSet("volunteerRegistrations", registration.id, registration);
+  const persisted = await docSet("volunteerRegistrations", registration.id, registration);
+  if (!persisted) {
+    res.status(503).json({
+      code: "VOLUNTEER_STORAGE_UNAVAILABLE",
+      error: "Registration storage is currently unavailable",
+    });
+    return;
+  }
   memoryRegs.unshift(registration);
   if (memoryRegs.length > MAX_MEMORY_REGS) memoryRegs.length = MAX_MEMORY_REGS;
   logger.info(
@@ -214,36 +222,49 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
     }
   }
 
-  await docUpdate("volunteerRegistrations", id, { status: finalStatus, assignedCode });
-
-  let reg = memoryRegs.find((r: any) => r.id === id);
+  const reg = memoryRegs.find((r: any) => r.id === id) || await docGet("volunteerRegistrations", id);
   if (!reg) {
-    try {
-      reg = await docGet("volunteerRegistrations", id);
-    } catch (err) {
-      logger.error({ err, id }, "Firestore error finding registration for approval");
+    res.status(404).json({ error: "Registration not found" });
+    return;
+  }
+  const readable = toReadable(reg);
+  const newBadge = finalStatus === "approved" && assignedCode ? {
+    code: assignedCode,
+    ownerName: ownerName || readable.fullName || "متطوع",
+    type: finalType || "volunteer",
+    wilaya: wilaya || readable.wilaya || "",
+    phone: phone || readable.phone || undefined,
+    createdAt: new Date().toISOString(),
+    isActive: true,
+  } : undefined;
+
+  const db = getDb();
+  if (!db || !isAdminDb(db)) {
+    res.status(503).json({ code: "VOLUNTEER_STORAGE_UNAVAILABLE" });
+    return;
+  }
+  try {
+    await db.runTransaction(async (tx) => {
+      const registrationRef = db.collection("volunteerRegistrations").doc(id);
+      const registrationSnapshot = await tx.get(registrationRef);
+      if (!registrationSnapshot.exists) throw new Error("REGISTRATION_NOT_FOUND");
+      tx.update(registrationRef, { status: finalStatus, ...(assignedCode ? { assignedCode } : {}) });
+      if (newBadge && assignedCode) {
+        tx.create(db.collection("badgeCodes").doc(assignedCode), newBadge);
+      }
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === "REGISTRATION_NOT_FOUND") {
+      res.status(404).json({ error: "Registration not found" });
+      return;
     }
-  }
-  if (reg) {
-    reg.status = finalStatus;
-    if (assignedCode) reg.assignedCode = assignedCode;
-  }
-
-  const readable = reg ? toReadable(reg) : undefined;
-
-  if (finalStatus === "approved" && assignedCode) {
-    const newBadge = {
-      code: assignedCode,
-      ownerName: ownerName || readable?.fullName || "متطوع",
-      type: finalType || "volunteer",
-      wilaya: wilaya || readable?.wilaya || "",
-      phone: phone || readable?.phone || undefined,
-      createdAt: new Date().toISOString(),
-      isActive: true,
-    };
-    await docSet("badgeCodes", assignedCode, newBadge);
+    logger.error({ err, id }, "Atomic volunteer approval failed");
+    res.status(503).json({ code: "VOLUNTEER_STORAGE_UNAVAILABLE" });
+    return;
   }
 
+  reg.status = finalStatus;
+  if (assignedCode) reg.assignedCode = assignedCode;
   logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }).catch(() => {});
   res.json({ success: true });
 });

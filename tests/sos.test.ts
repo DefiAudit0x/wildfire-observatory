@@ -1,6 +1,22 @@
 import { describe, it, expect } from "vitest";
 import { beforeEach, vi } from "vitest";
 import express from "express";
+
+vi.mock("express-rate-limit", () => ({
+  default: (options: { max?: number }) => {
+    const counts = new WeakMap<object, Map<string, number>>();
+    return (req: any, res: any, next: any) => {
+      if (!options.max) return next();
+      const appCounts = counts.get(req.app) || new Map<string, number>();
+      counts.set(req.app, appCounts);
+      const key = String(req.ip || "test");
+      const count = appCounts.get(key) || 0;
+      if (count >= options.max) return res.status(429).json({ error: "Too many requests" });
+      appCounts.set(key, count + 1);
+      return next();
+    };
+  },
+}));
 import supertest from "supertest";
 import cookieParser from "cookie-parser";
 import { generateAdminToken } from "../server/middleware.js";
@@ -19,7 +35,7 @@ import sosRouter from "../server/routes/sos.js";
 
 function createApp() {
   const app = express();
-  app.use(cookieParser());
+  app.use(cookieParser("test-cookie-secret"));
   app.use(express.json({ limit: "10mb" }));
   app.use("/api/sos", sosRouter);
   return app;
@@ -140,9 +156,9 @@ describe("POST /api/sos", () => {
       ...validBody(),
       audioUrl: "data:audio/webm;base64,AAAA",
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(400);
     expect(res.body.audioUrl).toBeUndefined();
-    expect(res.body.hasAudio).toBe(true);
+    expect(res.body.hasAudio).toBeUndefined();
   });
 
   it("does not leak PII on the public list endpoint (audio, phone, deviceId stripped)", async () => {
@@ -151,7 +167,7 @@ describe("POST /api/sos", () => {
       ...validBody(),
       audioUrl: "data:audio/webm;base64,AAAA",
     });
-    const list = await supertest(app).get("/api/sos");
+    const list = await supertest(app).get("/api/sos").set("Authorization", `Bearer ${generateAdminToken()}`);
     expect(list.status).toBe(200);
     for (const item of list.body) {
       expect(item.audioUrl).toBeUndefined();
@@ -166,7 +182,7 @@ describe("POST /api/sos", () => {
     await supertest(app).post("/api/sos").send(validBody());
     fsMock.collectionGet.mockResolvedValueOnce(null as any);
 
-    const list = await supertest(app).get("/api/sos");
+    const list = await supertest(app).get("/api/sos").set("Authorization", `Bearer ${generateAdminToken()}`);
     expect(list.status).toBe(200);
     expect(list.headers["x-sos-source"]).toBe("memory_fallback");
   });
@@ -229,11 +245,12 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
   it("stores a profile and returns it back (encrypted-at-rest on server)", async () => {
     const app = createApp();
     const deviceId = uniqueDevice();
-    const put = await supertest(app)
+    const agent = supertest.agent(app);
+    const put = await agent
       .put(`/api/sos/profile/${deviceId}`)
       .send({ name: "علي", phone: "0550123456" });
     expect(put.status).toBe(200);
-    const got = await supertest(app).get(`/api/sos/profile/${deviceId}`);
+    const got = await agent.get(`/api/sos/profile/${deviceId}`);
     expect(got.status).toBe(200);
     expect(got.body.name).toBe("علي");
     expect(got.body.phone).toBe("0550123456");
@@ -269,7 +286,7 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
     expect(first.status).toBe(200);
 
     const mismatch = await agent.get(`/api/sos/profile/${secondDevice}`);
-    expect(mismatch.status).toBe(403);
-    expect(mismatch.body.error).toContain("mismatch");
+    expect(mismatch.status).toBe(200);
+    expect(mismatch.body).toEqual({ name: "", phone: "" });
   });
 });

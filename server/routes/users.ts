@@ -68,7 +68,11 @@ router.get("/", requireRole("superadmin", "commander"), async (req: Request, res
     const admin = (req as any).admin;
     const { unitId, isSuperadmin } = callerUnit(admin);
     if (requireScopedCommander(res, admin) === null && !isSuperadmin) return;
-    let users = (await collectionGet("users")) || [];
+    let users = await collectionGet("users");
+    if (!users) {
+      res.status(503).json({ code: "USERS_DATA_UNAVAILABLE", error: "Staff data is currently unavailable" });
+      return;
+    }
     if (!isSuperadmin && unitId) {
       users = users.filter((u: any) => u.unitId === unitId);
     }

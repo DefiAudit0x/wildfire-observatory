@@ -38,15 +38,19 @@ export function hasImageMagicBytes(buffer: Buffer): boolean {
 /** Validates a "data:image/...;base64,...." data URL by decoding it and
  *  checking the magic bytes (plus a decoded-size ceiling). */
 export function validateImageDataUrl(dataUrl: string): boolean {
-  if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/")) return false;
+  if (typeof dataUrl !== "string" || !/^data:image\/[a-z0-9.+-]+;base64,/i.test(dataUrl)) return false;
   const comma = dataUrl.indexOf(",");
   if (comma < 0) return false;
+  const encoded = dataUrl.slice(comma + 1);
+  if (!encoded || !/^[A-Za-z0-9+/]*={0,2}$/.test(encoded) || encoded.length % 4 !== 0) return false;
   let buffer: Buffer;
   try {
-    buffer = Buffer.from(dataUrl.slice(comma + 1), "base64");
+    buffer = Buffer.from(encoded, "base64");
   } catch {
     return false;
   }
+  const normalized = buffer.toString("base64");
+  if (normalized !== encoded) return false;
   if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) return false;
   return hasImageMagicBytes(buffer);
 }

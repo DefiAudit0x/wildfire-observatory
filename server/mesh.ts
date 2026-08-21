@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import logger from "./logger.js";
-import { verifyMeshToken } from "./mesh-auth.js";
+import { fingerprintPublicKey, verifyMeshOwnership, verifyMeshToken } from "./mesh-auth.js";
+import { z } from "zod";
 
 export interface MeshNodeInfo {
   id: string;
@@ -23,6 +24,30 @@ const HEARTBEAT_MS = 30_000;
 const STALE_NODE_MS = 90_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_NODES = 250;
+
+const meshReportSchema = z.object({
+  id: z.string().min(1).max(128),
+  lat: z.number().finite().min(-90).max(90),
+  lng: z.number().finite().min(-180).max(180),
+  locationName: z.string().min(1).max(200),
+  wilaya: z.string().min(1).max(200),
+  description: z.string().max(2000),
+  severity: z.enum(["low", "medium", "high", "critical"]),
+  status: z.enum(["pending", "verified", "rejected", "resolved"]),
+  timestamp: z.string().datetime({ offset: true }),
+  consensusCount: z.number().int().min(0).max(1_000_000),
+  reporterType: z.enum(["citizen", "volunteer", "official"]).optional(),
+  clusterId: z.string().max(128).optional(),
+  clusterSize: z.number().int().min(1).max(1_000_000).optional(),
+  isClusterLeader: z.boolean().optional(),
+  hasImage: z.boolean().optional(),
+}).strict();
+
+const meshConfirmSchema = z.object({
+  id: z.string().min(1).max(128),
+  consensusCount: z.number().int().min(0).max(1_000_000),
+  status: z.enum(["pending", "verified", "rejected", "resolved"]),
+}).strict();
 
 class MeshHub {
   private wss: WebSocketServer | null = null;
@@ -62,8 +87,12 @@ class MeshHub {
           }
 
           const token = String(message.authKey || message.token || "");
+          const publicKey = String(message.publicKey || "");
+          const signature = String(message.signature || "");
           const payload = verifyMeshToken(token);
-          if (!payload || payload.deviceId !== deviceId) {
+          if (!payload || payload.deviceId !== deviceId ||
+              payload.publicKeyFingerprint !== fingerprintPublicKey(publicKey) ||
+              !verifyMeshOwnership(publicKey, token, signature)) {
             logger.warn({ ip }, "Mesh hello rejected — invalid token");
             this.send(ws, { type: "error", message: "Unauthorized" });
             ws.close(4001, "Unauthorized");
@@ -111,18 +140,28 @@ class MeshHub {
           case "ping":
             this.send(ws, { type: "pong", at: Date.now() });
             break;
-          case "report:new":
-            this.broadcast({ type: "report:new", report: message.report, from: nodeId }, nodeId);
+          case "report:new": {
+            const parsed = meshReportSchema.safeParse(message.report);
+            if (!parsed.success) {
+              this.send(ws, { type: "error", message: "Invalid report payload" });
+              break;
+            }
+            this.broadcast({ type: "report:new", report: parsed.data, from: nodeId }, nodeId);
             break;
-          case "report:confirm":
-            this.broadcast({
-              type: "report:confirm",
+          }
+          case "report:confirm": {
+            const parsed = meshConfirmSchema.safeParse({
               id: message.id,
               consensusCount: message.consensusCount,
               status: message.status,
-              from: nodeId,
-            }, nodeId);
+            });
+            if (!parsed.success) {
+              this.send(ws, { type: "error", message: "Invalid confirmation payload" });
+              break;
+            }
+            this.broadcast({ type: "report:confirm", ...parsed.data, from: nodeId }, nodeId);
             break;
+          }
           default:
             this.send(ws, { type: "error", message: `Unknown message type: ${message.type}` });
         }

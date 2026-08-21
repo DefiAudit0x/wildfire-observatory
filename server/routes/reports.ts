@@ -4,8 +4,10 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
 import { citizenReports } from "../data.js";
+import { randomBytes } from "crypto";
 import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
+import config from "../config.js";
 import { sanitizeForPrompt } from "./ai.js";
 import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
@@ -21,6 +23,7 @@ import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 import type { Report } from "../../src/types.js";
+import { validateReports } from "../report-validation.js";
 
 const router = Router();
 
@@ -109,10 +112,28 @@ function releaseReservations(clientGeneratedId: string | undefined, lat: number,
  * admin/command endpoints); the public map, websockets and POST responses
  * only ever see this shape.
  */
-export function sanitizePublicReport(report: any): any {
-  if (!report) return report;
-  const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, ...safe } = report;
-  return safe;
+export function sanitizePublicReport(report: any): Record<string, unknown> {
+  if (!report || typeof report !== "object") return {};
+  return {
+    id: typeof report.id === "string" ? report.id : undefined,
+    lat: report.lat,
+    lng: report.lng,
+    locationName: report.locationName,
+    wilaya: report.wilaya,
+    description: report.description,
+    severity: report.severity,
+    status: report.status,
+    timestamp: report.timestamp,
+    consensusCount: report.consensusCount,
+    reporterType:
+      report.reporterType === "official" || report.reporterType === "volunteer"
+        ? report.reporterType
+        : "citizen",
+    clusterId: report.clusterId,
+    clusterSize: report.clusterSize,
+    isClusterLeader: report.isClusterLeader,
+    hasImage: typeof report.image === "string" && report.image.length > 0,
+  };
 }
 
 const aiVerificationSchema = z.object({
@@ -245,13 +266,14 @@ router.get("/", async (_req: Request, res: Response) => {
       if (!seeded) initialReportsSeeded = false;
     });
   }
-  const currentReports = result.status === "ok" ? result.reports : citizenReports;
-  if (!currentReports.every(isClusterableReport)) {
+  const rawReports = result.status === "ok" ? result.reports : citizenReports;
+  const currentReports = validateReports(rawReports);
+  if (!currentReports) {
     logger.error("Report dataset failed runtime validation before clustering");
     res.status(503).json({ error: "Report data is currently unavailable" });
     return;
   }
-  const clustered = runClustering(currentReports);
+  const clustered = runClustering(currentReports as Report[]);
   res.json(clustered.map(sanitizePublicReport));
 });
 
@@ -523,8 +545,8 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     logger.warn({ reporterType, badgeLogId: badgeLogId(transactionalBadgeCode) }, "Invalid badge code attempt");
   }
   const safeReport = sanitizePublicReport(saved.report);
-  if (safeReport.severity === "critical" || safeReport.severity === "high") {
-    sendFireAlert(safeReport).catch((err) =>
+  if (saved.report.severity === "critical" || saved.report.severity === "high") {
+    sendFireAlert(saved.report).catch((err) =>
       logger.error({ err }, "Failed to send fire alert email")
     );
   }
@@ -574,11 +596,24 @@ function recordVoter(reportId: string, voterIp: string): boolean {
   return true;
 }
 
+function getVoterId(req: Request, res: Response): string {
+  const existing = (req as any).signedCookies?.voter_id;
+  if (existing && /^[a-f0-9]{64}$/.test(existing)) return existing;
+
+  const voterId = randomBytes(32).toString("hex");
+  res.cookie("voter_id", voterId, {
+    signed: true,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.cookieSecure,
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+  });
+  return voterId;
+}
+
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
   const id = str(req.params.id);
-  const voterIp = req.ip || req.socket.remoteAddress || "unknown";
-  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
-  const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
+  const voterKey = getVoterId(req, res);
 
   const result = await confirmReportInFirestore(id, voterKey);
   if (result.status === "confirmed") {

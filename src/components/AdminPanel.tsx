@@ -8,6 +8,7 @@ import BadgeManager from "./admin/BadgeManager";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
+import { safeImageSrc } from "../utils/safeImage";
 
 interface ConfirmState {
   title: string;
@@ -475,9 +476,9 @@ const res = await fetch("/api/admin/verify", {
               >
                 {/* Left Side: Report info */}
                 <div className="flex gap-4 items-start flex-1">
-                  {rep.image ? (
+                  {safeImageSrc(rep.image) ? (
                     <img
-                      src={rep.image}
+                      src={safeImageSrc(rep.image)}
                       className="w-20 h-16 object-cover rounded-lg border border-white/5 shrink-0 mt-1"
                       alt="Report"
                       referrerPolicy="no-referrer"

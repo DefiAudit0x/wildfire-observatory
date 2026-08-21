@@ -6,6 +6,7 @@ import { setReporterBadge } from "../utils/badgeStore";
 import { isFreshThreatTimestamp } from "../utils/threats";
 import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
 import type { SyncState } from "../utils/datasetHealth";
+import { safeImageSrc } from "../utils/safeImage";
 
 interface SubmissionResultView {
   responseValid: boolean;
@@ -1513,7 +1514,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               {image && (
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2 bg-black/60 p-1.5 rounded-lg border border-white/5 w-fit">
-                    <img src={image} className="h-8 w-12 object-cover rounded border border-white/10" alt="Thumbnail" />
+                    <img src={safeImageSrc(image)} className="h-8 w-12 object-cover rounded border border-white/10" alt="Thumbnail" />
                     <div className="text-[9px] text-slate-400 leading-none">
                       <p className="text-red-400 font-bold">{isArabic ? "مضغوطة بنجاح" : "Compressé"}</p>
                       <p className="mt-0.5">{compressedSize} <span className="line-through text-[8px] text-gray-600">({originalSize})</span></p>

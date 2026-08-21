@@ -21,7 +21,9 @@ const guidanceSchema = z.object({
   lang: z.enum(["ar", "fr"]).default("ar"),
 });
 
-const PROMPT_INJECTION_PATTERNS =
+const PROMPT_INJECTION_DETECTOR =
+  /\b(ignore|ignore all|forget|disregard|override|you are|act as|pretend|now respond|system|system prompt|prompt|instructions?|instructions are|return\s+j(?:s)?on|new instructions|previous instructions|do anything now|DAN|out of character|jailbreak)\b|\bsystem:|تجاهل|انسَ|اتبع التعليمات|اتبع التعليمات المذكورة|أوامر النظام|أنت الآن|رد الآن|تعليمات|التعليمات السابقة|الرد على شكل|أعد json|تجاوز|احذف التعليمات/i;
+const PROMPT_INJECTION_REPLACER =
   /\b(ignore|ignore all|forget|disregard|override|you are|act as|pretend|now respond|system|system prompt|prompt|instructions?|instructions are|return\s+j(?:s)?on|new instructions|previous instructions|do anything now|DAN|out of character|jailbreak)\b|\bsystem:|تجاهل|انسَ|اتبع التعليمات|اتبع التعليمات المذكورة|أوامر النظام|أنت الآن|رد الآن|تعليمات|التعليمات السابقة|الرد على شكل|أعد json|تجاوز|احذف التعليمات/gi;
 
 /** Guard against prompt-injection attempts in user input. */
@@ -30,12 +32,12 @@ export function sanitizeForPrompt(value: string | undefined, maxLength: number):
   const raw = value
     .normalize("NFKC")
     .replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g, "");
-  if (PROMPT_INJECTION_PATTERNS.test(raw)) {
+  if (PROMPT_INJECTION_DETECTOR.test(raw)) {
     logger.warn({ input: raw.slice(0, 120) }, "Prompt injection pattern detected");
   }
   let cleaned = raw
     .replace(/[\u0300-\u036F]/gu, "")
-    .replace(PROMPT_INJECTION_PATTERNS, "[بيانات المستخدم]")
+    .replace(PROMPT_INJECTION_REPLACER, "[بيانات المستخدم]")
     .replace(/[^\p{L}\p{N}\s\-(),./@]/gu, "")
     .slice(0, maxLength)
     .trim();
@@ -133,17 +135,17 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
 
   let currentReports: any[] = [];
   try {
-    const { getReportsFromFirestore } = await import("../db.js");
+    const { getReportsDbResult } = await import("../db.js");
     // Audit round 12: the Firestore fetch (best-effort context data only)
     // had NO timeout — a slow/hung DB held the guidance response hostage
     // past even the AI provider's own 15s abort, degrading every guidance
     // request in a degraded-network moment. Context is optional by design
     // (see the catch below), so cap it hard and move on.
     const reports = await Promise.race([
-      getReportsFromFirestore(),
+      getReportsDbResult(),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    if (reports) currentReports = reports;
+    if (reports && reports.status === "ok") currentReports = reports.reports;
   } catch { /* ignore */ }
 
   const NEARBY_KM = 25;

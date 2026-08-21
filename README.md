@@ -94,7 +94,7 @@
 ### Backend
 | Technology | Usage |
 |---|---|
-| Node.js 20+ | Runtime |
+| Node.js 22.13+ | Runtime |
 | Express 4.21 | HTTP server |
 | Firebase Firestore | NoSQL database (optional persistence) |
 | Google GenAI 2.4 | Gemini AI image verification |
@@ -196,8 +196,8 @@ Report Submitted
 
 ### Prerequisites / المتطلبات
 
-- **Node.js** ≥ 20
-- **npm** or **bun**
+- **Node.js** ≥ 22.13
+- **pnpm** 11.21.0
 
 ### Installation / التثبيت
 
@@ -207,7 +207,7 @@ git clone https://github.com/DefiAudit0x/wildfire-observatory.git
 cd wildfire-observatory
 
 # Install dependencies
-npm install
+pnpm install
 
 # Set environment variables
 cp .env.example .env
@@ -218,7 +218,7 @@ cp .env.example .env
 #   JWT_SECRET — change for production
 
 # Run development server
-npm run dev
+pnpm run dev
 ```
 
 Open http://localhost:3000 in your browser.
@@ -275,20 +275,20 @@ http://localhost:3000/api-docs
 
 ```bash
 # Run server unit tests
-npm run test:server
+pnpm run test:server
 
 # Run React component tests
-npm run test:react
+pnpm run test:react
 
 # Type check
-npm run lint     # (tsc --noEmit)
+pnpm run lint     # (tsc --noEmit)
 
 # Full build
-npm run build
+pnpm run build
 
 # End-to-end tests (Playwright + Chromium)
 npx playwright install chromium
-npm run test:e2e
+pnpm run test:e2e
 ```
 
 Current test coverage:
@@ -314,7 +314,7 @@ docker run -p 3000:3000 --env-file .env wildfire-observatory
 
 Multi-stage build:
 1. **Builder stage**: installs dependencies, runs `vite build` + `esbuild`
-2. **Production stage**: `node:20-alpine`, `USER node`, only `dist/` + `node_modules`
+2. **Production stage**: `node:22-alpine`, `USER node`, only `dist/` + `node_modules`
 
 ---
 
@@ -323,11 +323,11 @@ Multi-stage build:
 ## 🔄 CI/CD
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`):
-1. `npm ci`
-2. `npm run lint` (tsc --noEmit)
-3. `npm run test:server` (vitest)
-4. `npm run test:react` (vitest)
-5. `npm run build` (vite + esbuild)
+1. `pnpm install --frozen-lockfile`
+2. `pnpm run lint` (tsc --noEmit)
+3. `pnpm run test:server` (vitest)
+4. `pnpm run test:react` (vitest)
+5. `pnpm run build` (vite + esbuild)
 6. Playwright E2E (Chromium) — artifacts uploaded on failure
 
 Husky pre-commit hook runs `tsc --noEmit` before each commit.

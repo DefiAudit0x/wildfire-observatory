@@ -1,7 +1,8 @@
 import { Request, Response, Router } from "express";
 import { wilayasStatus } from "../data.js";
-import { getReportsFromFirestore } from "../db.js";
+import { getReportsDbResult } from "../db.js";
 import { getLiveSatelliteData } from "./satellite.js";
+import { validateReports } from "../report-validation.js";
 import logger from "../logger.js";
 
 const router = Router();
@@ -54,15 +55,16 @@ router.get("/", async (_req: Request, res: Response) => {
     return res.json(cachedResponse);
   }
 
-  let currentReports: any[] = [];
-  try {
-    const firestoreReports = await getReportsFromFirestore();
-    currentReports = firestoreReports || [];
-  } catch (err) {
-    logger.warn(
-      { msg: err instanceof Error ? err.message : String(err) },
-      "Wilayas route: Firestore reports unavailable — falling back to static baseline"
-    );
+  const dbResult = await getReportsDbResult();
+  const sourceReports = dbResult.status === "ok"
+    ? dbResult.reports
+    : dbResult.status === "no-db" && process.env.NODE_ENV !== "production"
+      ? (await import("../data.js")).citizenReports
+      : null;
+  const currentReports = sourceReports ? validateReports(sourceReports) : null;
+  if (!currentReports) {
+    res.status(503).json({ code: "REPORT_DATA_UNAVAILABLE", error: "Report data is currently unavailable" });
+    return;
   }
 
   let hotspots: any[] = [];

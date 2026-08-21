@@ -21,22 +21,29 @@ const updateBadgeSchema = badgeSchema.partial();
 
 const memoryBadges: any[] = [];
 
-async function loadBadges(): Promise<any[]> {
+async function loadBadges(): Promise<any[] | null> {
   const fromDb = await collectionGet("badgeCodes");
-  if (fromDb) {
-    memoryBadges.length = 0;
-    memoryBadges.push(...fromDb.map((b: any) => ({ code: b.id, ...b })));
-  }
+  if (fromDb === null) return null;
+  memoryBadges.length = 0;
+  memoryBadges.push(...fromDb.map((b: any) => ({ code: b.id, ...b })));
   return memoryBadges;
 }
 
 router.get("/", requireAdmin, async (_req: Request, res: Response) => {
   const codes = await loadBadges();
+  if (!codes) {
+    res.status(503).json({ code: "BADGES_DATA_UNAVAILABLE", error: "Badge data is currently unavailable" });
+    return;
+  }
   res.json(codes);
 });
 
 router.get("/analytics", requireAdmin, async (_req: Request, res: Response) => {
   const badges = await loadBadges();
+  if (!badges) {
+    res.status(503).json({ code: "BADGES_DATA_UNAVAILABLE", error: "Badge data is currently unavailable" });
+    return;
+  }
   const now = Date.now();
   const isExpiredBadge = (b: any) => {
     if (!b.expiresAt) return false;
@@ -80,6 +87,10 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
     return;
   }
   const existing = await loadBadges();
+  if (!existing) {
+    res.status(503).json({ code: "BADGES_DATA_UNAVAILABLE", error: "Badge data is currently unavailable" });
+    return;
+  }
   if (existing.find((b: any) => b.code === parsed.data.code)) {
     res.status(409).json({ error: "Code already exists" });
     return;
@@ -114,6 +125,10 @@ router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
     return;
   }
   const existing = await loadBadges();
+  if (!existing) {
+    res.status(503).json({ code: "BADGES_DATA_UNAVAILABLE", error: "Badge data is currently unavailable" });
+    return;
+  }
   const current = existing.find((b: any) => b.code === code);
   if (!current) {
     res.status(404).json({ error: "Badge not found" });
@@ -153,6 +168,10 @@ router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
 router.post("/:code/toggle", requireAdmin, async (req: Request, res: Response) => {
   const code = str(req.params.code);
   const existing = await loadBadges();
+  if (!existing) {
+    res.status(503).json({ code: "BADGES_DATA_UNAVAILABLE", error: "Badge data is currently unavailable" });
+    return;
+  }
   const badge = existing.find((b: any) => b.code === code);
   if (!badge) {
     res.status(404).json({ error: "Badge not found" });

@@ -1,5 +1,6 @@
 import express from "express";
 import supertest from "supertest";
+import cookieParser from "cookie-parser";
 import { describe, expect, it, vi } from "vitest";
 
 const dbState = vi.hoisted(() => ({
@@ -27,6 +28,7 @@ const { default: reportsRouter } = await import("../server/routes/reports.js");
 
 function createApp() {
   const app = express();
+  app.use(cookieParser("test-cookie-secret"));
   app.use(express.json());
   app.use("/api/reports", reportsRouter);
   return app;
@@ -73,7 +75,7 @@ describe("reports database result semantics", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.id).toBe(durable.id);
-    expect(res.body.clientGeneratedId).toBe(durable.clientGeneratedId);
+    expect(res.body.clientGeneratedId).toBeUndefined();
   });
 
   it("returns 503 without RAM mutation or broadcast when durable confirmation fails", async () => {

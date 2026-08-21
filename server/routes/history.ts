@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getReportsDbResult } from "../db.js";
 import { citizenReports } from "../data.js";
 import { getLiveSatelliteData } from "./satellite.js";
+import { validateReports } from "../report-validation.js";
 import { getSosSummarySnapshot } from "./sos.js";
 
 const router = Router();
@@ -20,7 +21,16 @@ router.get("/", async (_req: Request, res: Response) => {
   const days = reqQuery.success && reqQuery.data.days ? reqQuery.data.days : 30;
 
   const dbResult = await getReportsDbResult();
-  const reports = dbResult.status === "ok" ? dbResult.reports : citizenReports;
+  const sourceReports = dbResult.status === "ok"
+    ? dbResult.reports
+    : dbResult.status === "no-db" && process.env.NODE_ENV !== "production"
+      ? citizenReports
+      : null;
+  const reports = sourceReports ? validateReports(sourceReports) : null;
+  if (!reports) {
+    res.status(503).json({ code: "REPORT_DATA_UNAVAILABLE", error: "Report data is currently unavailable" });
+    return;
+  }
 
   const buckets = new Map<string, { reports: number; verified: number; sos: number; hotspots: number }>();
   const now = new Date();

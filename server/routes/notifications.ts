@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
-import crypto from "crypto";
+import crypto from "node:crypto";
+import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
@@ -25,18 +26,11 @@ async function deleteSubscriberByToken(email: string, token: string): Promise<bo
   const { getDb, isAdminDb } = await import("../firebase.js");
   const db = getDb();
   if (!db) return false;
-  if (isAdminDb(db)) {
-    const existing = await db.collection("subscribers").where("email", "==", email).get();
-    const match = existing.docs.find((doc: any) => doc.data().unsubscribeToken === token);
-    if (!match) return false;
-    await match.ref.delete();
-    return true;
-  }
-  const { collection, getDocs, query, where, deleteDoc, doc } = await import("firebase/firestore");
-  const snap = await getDocs(query(collection(db, "subscribers"), where("email", "==", email)));
-  const match = snap.docs.find((entry) => entry.data().unsubscribeToken === token);
+  if (!isAdminDb(db)) return false;
+  const existing = await db.collection("subscribers").where("email", "==", email).get();
+  const match = existing.docs.find((doc: any) => doc.data().unsubscribeToken === token);
   if (!match) return false;
-  await deleteDoc(doc(db, "subscribers", match.id));
+  await match.ref.delete();
   return true;
 }
 
@@ -124,33 +118,21 @@ router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
       return;
     }
 
-    if (isAdminDb(db)) {
-      const existing = await db.collection("subscribers").where("email", "==", email).get();
-      if (existing.empty) {
-        res.status(404).json({ error: "Subscriber not found" });
-        return;
-      }
-      const sub = existing.docs[0].data() as any;
-      if (!isVerificationTokenValid(sub, token)) {
-        res.status(403).json({ error: "Invalid verification token" });
-        return;
-      }
-      await existing.docs[0].ref.update({ verified: true, verificationToken: null, verificationExpiresAt: null });
-    } else {
-      const { collection, getDocs, query, where, updateDoc, doc } = await import("firebase/firestore");
-      const q = query(collection(db, "subscribers"), where("email", "==", email));
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        res.status(404).json({ error: "Subscriber not found" });
-        return;
-      }
-      const sub = snap.docs[0].data() as any;
-      if (!isVerificationTokenValid(sub, token)) {
-        res.status(403).json({ error: "Invalid verification token" });
-        return;
-      }
-      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null, verificationExpiresAt: null });
+    if (!isAdminDb(db)) {
+      res.status(503).json({ error: "Database not available" });
+      return;
     }
+    const existing = await db.collection("subscribers").where("email", "==", email).get();
+    if (existing.empty) {
+      res.status(404).json({ error: "Subscriber not found" });
+      return;
+    }
+    const sub = existing.docs[0].data() as any;
+    if (!isVerificationTokenValid(sub, token)) {
+      res.status(403).json({ error: "Invalid verification token" });
+      return;
+    }
+    await existing.docs[0].ref.update({ verified: true, verificationToken: null, verificationExpiresAt: null });
     res.send("<h2>✅ اشتراكك مؤكد! سنرسل لك تنبيهات الحرائق.</h2>");
   } catch (err) {
     logger.error({ err }, "Failed to verify");
@@ -158,36 +140,36 @@ router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
   }
 });
 
+const NOTIFICATION_OWNER_COOKIE = "notification_owner_id";
+
+function getNotificationOwnerId(req: Request, res: Response): string {
+  const existing = (req as any).signedCookies?.[NOTIFICATION_OWNER_COOKIE];
+  if (existing && /^[a-f0-9]{64}$/.test(existing)) return existing;
+  const ownerId = randomBytes(32).toString("hex");
+  res.cookie(NOTIFICATION_OWNER_COOKIE, ownerId, {
+    signed: true,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.cookieSecure,
+    maxAge: 365 * 24 * 60 * 60 * 1000,
+  });
+  return ownerId;
+}
+
 router.get("/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = str(req.params.deviceId);
-  const cookieDevice = (req as any).cookies?.deviceId;
-  // The deviceId cookie acts as the bearer proof of ownership. A request that
-  // claims a DIFFERENT deviceId than the one this browser is bound to is an
-  // IDOR probe — refuse instead of silently rebinding to the attacker's value.
-  if (cookieDevice && cookieDevice !== deviceId) {
-    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device." });
-    return;
-  }
-  if (!cookieDevice) {
-    res.cookie("deviceId", deviceId, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      maxAge: 365 * 24 * 60 * 60 * 1000,
-    });
-  }
-  const notifs = await getNotificationsFromDb(deviceId);
+  const ownerId = getNotificationOwnerId(req, res);
+  const notifs = await getNotificationsFromDb(ownerId);
   res.json(notifs);
 });
 
 router.post("/:id/read", async (req: Request, res: Response) => {
   const id = str(req.params.id);
-  const cookieDevice = (req as any).cookies?.deviceId;
-  if (!cookieDevice) {
+  const ownerId = (req as any).signedCookies?.[NOTIFICATION_OWNER_COOKIE];
+  if (!ownerId || !/^[a-f0-9]{64}$/.test(ownerId)) {
     res.status(403).json({ error: "Forbidden: no device binding" });
     return;
   }
-  const owned = (await getNotificationsFromDb(cookieDevice)).some((n: any) => n.id === id);
+  const owned = (await getNotificationsFromDb(ownerId)).some((n: any) => n.id === id);
   if (!owned) {
     res.status(404).json({ error: "Notification not found" });
     return;
@@ -203,7 +185,7 @@ router.post("/:id/read", async (req: Request, res: Response) => {
     res.status(503).json({ error: "Notification persistence unavailable" });
     return;
   }
-  const notif = memoryNotifications.find((n: any) => n.id === id);
+  const notif = memoryNotifications.find((n: any) => n.id === id && n.deviceId === ownerId);
   if (notif) notif.read = true;
   res.json({ success: true });
 });
@@ -266,23 +248,8 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
         verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     } else {
-      const { collection, getDocs, query, where, addDoc, updateDoc, doc } = await import("firebase/firestore");
-      const subsCol = collection(db, "subscribers");
-      const q = query(subsCol, where("email", "==", email));
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        await updateDoc(doc(db, "subscribers", snap.docs[0].id), {
-          wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-          verificationToken, verificationExpiresAt, unsubscribeToken, updatedAt: new Date().toISOString(),
-        });
-        await sendVerificationEmail(email, verificationToken);
-        res.json({ success: true, message: "Subscription updated. Check email to verify." });
-        return;
-      }
-      await addDoc(subsCol, {
-        email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
-      });
+      res.status(503).json({ error: "Database not available" });
+      return;
     }
 
     await sendVerificationEmail(email, verificationToken);

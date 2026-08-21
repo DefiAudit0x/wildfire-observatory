@@ -195,9 +195,9 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           className: "",
           html: `
             <div class="relative flex items-center justify-center" style="width: 32px; height: 32px;">
-              <div class="absolute inset-0 rounded-full ${t.status === 'en_route' ? 'animate-ping' : ''} opacity-25" style="background-color: ${t.color};"></div>
-              <div class="relative z-10 h-8 w-8 rounded-full flex items-center justify-center shadow-lg border-2 bg-zinc-900" style="border-color: ${t.color}; border-style: solid;">
-                <span class="text-sm">${t.emoji}</span>
+              <div class="absolute inset-0 rounded-full ${t.status === 'en_route' ? 'animate-ping' : ''} opacity-25" style="background-color: ${esc(t.color)};"></div>
+              <div class="relative z-10 h-8 w-8 rounded-full flex items-center justify-center shadow-lg border-2 bg-zinc-900" style="border-color: ${esc(t.color)}; border-style: solid;">
+                <span class="text-sm">${esc(t.emoji)}</span>
               </div>
               <div class="absolute -top-1 -right-1 w-3 h-3 rounded-full border border-zinc-950 ${t.status === 'available' ? 'bg-emerald-500' : t.status === 'en_route' ? 'bg-amber-500 animate-pulse' : 'bg-red-500 animate-pulse'}"></div>
             </div>
@@ -208,12 +208,12 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       }).bindPopup(`
         <div class="text-xs font-mono p-1 space-y-1" dir="${isArabic ? "rtl" : "ltr"}">
           <div class="flex items-center gap-1.5 font-bold text-slate-100 bg-slate-800 p-1.5 rounded border border-slate-700">
-            <span>${t.emoji}</span>
-            <span style="color: ${t.color};">${t.type === 'protection_civile' ? (isArabic ? 'الحماية المدنية' : 'Protection Civile') : (isArabic ? 'المتطوعين' : 'Volontaires')}</span>
+            <span>${esc(t.emoji)}</span>
+            <span style="color: ${esc(t.color)};">${t.type === 'protection_civile' ? (isArabic ? 'الحماية المدنية' : 'Protection Civile') : (isArabic ? 'المتطوعين' : 'Volontaires')}</span>
           </div>
           <div class="text-slate-300 space-y-1">
             <p><strong>${isArabic ? "الفرقة:" : "Équipe:"}</strong> ${isArabic ? esc(t.teamNameAr) : esc(t.teamNameFr)}</p>
-            <p><strong>${isArabic ? "الحالة:" : "Statut:"}</strong> ${badge.text}</p>
+            <p><strong>${isArabic ? "الحالة:" : "Statut:"}</strong> ${esc(badge.text)}</p>
             ${t.assistedPerson ? `<p><strong>${isArabic ? "المستغيث:" : "Assiste:"}</strong> ${esc(t.assistedPerson)}</p>` : ""}
             ${t.notes ? `<p><strong>${isArabic ? "ملاحظات:" : "Notes:"}</strong> ${esc(t.notes)}</p>` : ""}
             <p><strong>${isArabic ? "الإحداثيات:" : "GPS:"}</strong> ${t.currentLat.toFixed(4)}, ${t.currentLng.toFixed(4)}</p>

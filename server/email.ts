@@ -133,15 +133,9 @@ async function getVerifiedSubscribers(): Promise<Array<{ email: string; unsubscr
 
     const subscribers: Array<{ email: string; unsubscribeToken?: string }> = [];
 
-    if (isAdminDb(db)) {
-      const snap = await db.collection("subscribers").where("verified", "==", true).get();
-      snap.forEach((doc: any) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
-    } else {
-      const { collection, getDocs, query, where } = await import("firebase/firestore");
-      const q = query(collection(db, "subscribers"), where("verified", "==", true));
-      const snap = await getDocs(q);
-      snap.forEach((doc) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
-    }
+    if (!isAdminDb(db)) return [];
+    const snap = await db.collection("subscribers").where("verified", "==", true).get();
+    snap.forEach((doc: any) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
 
     return subscribers;
   } catch (err) {

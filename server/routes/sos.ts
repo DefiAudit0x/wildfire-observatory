@@ -7,6 +7,7 @@ import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
+import { validateReports } from "../report-validation.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -18,7 +19,7 @@ const MAX_AUDIO_BASE64_LENGTH = 700 * 1024; // ~512KB raw audio, fits comfortabl
 const MAX_AUDIO_DURATION_SEC = 20;
 
 const sosSchema = z.object({
-  deviceId: z.string().min(1).max(128),
+  deviceId: z.string().max(128).optional(),
   lat: z.union([z.number(), z.string()]),
   lng: z.union([z.number(), z.string()]),
   name: z.string().max(120).optional(),
@@ -41,26 +42,39 @@ const profileSchema = z.object({
   phone: z.string().max(30).optional(),
 });
 
-const PROFILE_COOKIE = "sos_device_id";
+const PROFILE_COOKIE = "sos_profile_id";
 
-function bindProfileDevice(req: Request, res: Response, deviceId: string): boolean {
-  const bound = (req as any).cookies?.[PROFILE_COOKIE];
-  if (bound && bound !== deviceId) {
-    res.status(403).json({ error: "Device identity mismatch" });
-    return false;
-  }
-  if (!bound) {
-    res.cookie(PROFILE_COOKIE, deviceId, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      maxAge: PROFILE_TTL_MS,
-    });
-  }
-  return true;
+function getSosOwnerId(req: Request, res: Response): string {
+  const existing = (req as any).signedCookies?.[PROFILE_COOKIE];
+  if (existing && /^[a-f0-9]{64}$/.test(existing)) return existing;
+  const ownerId = randomBytes(32).toString("hex");
+  res.cookie(PROFILE_COOKIE, ownerId, {
+    signed: true,
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.cookieSecure,
+    maxAge: PROFILE_TTL_MS,
+  });
+  return ownerId;
 }
 
 const memorySos: any[] = [];
+
+async function storeSosAudio(sosId: string, dataUrl: string): Promise<{ objectPath: string; contentType: string } | null> {
+  const match = /^data:(audio\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/i.exec(dataUrl);
+  if (!match) return null;
+  const [, contentType, encoded] = match;
+  const { getApps } = await import("firebase-admin/app");
+  const { getStorage } = await import("firebase-admin/storage");
+  const app = getApps()[0];
+  if (!app) return null;
+  const objectPath = `sos-audio/${sosId}.${contentType.split("/")[1]}`;
+  const bucket = getStorage(app).bucket(config.firebaseStorageBucket || undefined);
+  await bucket.file(objectPath).save(Buffer.from(encoded, "base64"), {
+    metadata: { contentType, cacheControl: "private, no-store" },
+  });
+  return { objectPath, contentType };
+}
 
 export interface SosSummary {
   id: string;
@@ -98,7 +112,7 @@ const sosPostLimiter = rateLimit({
   max: 2,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => `sos:${String((req.body as any)?.deviceId || req.ip || "unknown")}`,
+  keyGenerator: (req: Request) => `sos:${String((req as any).signedCookies?.[PROFILE_COOKIE] || req.ip || "unknown")}`,
   message: { error: "Too many SOS requests. Try again shortly." },
 });
 
@@ -147,9 +161,11 @@ function encryptProfile(plain: { name?: string; phone?: string }): string {
 
 function stripAudio(sos: any) {
   if (!sos) return sos;
-  const hasAudio = Boolean(sos.audioUrl);
-  const { audioUrl, ...rest } = sos;
-  return hasAudio ? { ...rest, hasAudio, audioSizeBytes: sos.audioUrl ? Math.round((sos.audioUrl.length * 3) / 4) : 0 } : sos;
+  const hasAudio = Boolean(sos.audioUrl || sos.audioObjectPath || sos.hasAudio);
+  const { audioUrl, audioObjectPath, audioContentType, name, phone, deviceId, ...rest } = sos;
+  const safe = { ...rest };
+  if (hasAudio) safe.hasAudio = true;
+  return safe;
 }
 
 function anonymizeSos(sos: any) {
@@ -179,10 +195,19 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   return { items: merged, source: "firestore" };
 }
 
-router.get("/", async (_req: Request, res: Response) => {
+router.get("/", requireAdmin, async (_req: Request, res: Response) => {
   const { items, source } = await getAllSos();
   res.setHeader("X-SOS-Source", source);
-  res.json(items.map(stripAudio).map(anonymizeSos));
+  res.json(items.map(stripAudio));
+});
+
+router.get("/public-summary", async (_req: Request, res: Response) => {
+  const { items } = await getAllSos();
+  res.json({
+    activeCount: items.filter((item) => item.status === "active").length,
+    hasCritical: items.some((item) => item.priority === "critical"),
+    generatedAt: new Date().toISOString(),
+  });
 });
 
 router.get("/full", requireAdmin, async (_req: Request, res: Response) => {
@@ -203,23 +228,47 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
     res.status(404).json({ error: "SOS not found" });
     return;
   }
+  if (doc.hasAudio) {
+    doc.audioUrl = `/api/sos/${id}/audio`;
+  }
   res.json(doc);
+});
+
+router.get("/:id/audio", requireAdmin, async (req: Request, res: Response) => {
+  const id = str(req.params.id);
+  const memory = memorySos.find((s: any) => s.id === id);
+  const record = memory || await docGet("trappedSos", id);
+  const objectPath = record?.audioObjectPath;
+  const contentType = record?.audioContentType || "audio/webm";
+  if (!objectPath || !/^sos-audio\/[A-Za-z0-9._-]+$/.test(objectPath)) {
+    res.status(404).json({ error: "Audio not found" });
+    return;
+  }
+  try {
+    const { getApps } = await import("firebase-admin/app");
+    const { getStorage } = await import("firebase-admin/storage");
+    const app = getApps()[0];
+    if (!app) {
+      res.status(503).json({ code: "SOS_AUDIO_STORAGE_UNAVAILABLE", error: "SOS audio storage unavailable" });
+      return;
+    }
+    const [audio] = await getStorage(app).bucket(config.firebaseStorageBucket || undefined).file(objectPath).download();
+    res.type(contentType).setHeader("Cache-Control", "private, no-store").send(audio);
+  } catch (err) {
+    logger.error({ err, id }, "Failed to read SOS audio from object storage");
+    res.status(503).json({ code: "SOS_AUDIO_STORAGE_UNAVAILABLE", error: "SOS audio storage unavailable" });
+  }
 });
 
 // ── Developer-friendly profile endpoints (server-side encrypted identity) ────
 router.get("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = str(req.params.deviceId) || "";
-  if (!deviceId || deviceId.length > 128) {
-    res.status(400).json({ error: "Invalid deviceId" });
-    return;
-  }
-  if (!bindProfileDevice(req, res, deviceId)) return;
-  const mem = memoryProfiles.get(deviceId);
+  const ownerId = getSosOwnerId(req, res);
+  const mem = memoryProfiles.get(ownerId);
   let profile: { name?: string; phone?: string } | null = null;
   if (mem && Date.now() < mem.expiresAt) {
     profile = decryptProfile(mem.encrypted);
   } else {
-    const doc = await docGet("sosProfiles", deviceId);
+    const doc = await docGet("sosProfiles", ownerId);
     if (doc && doc.encrypted && doc.expiresAt && Date.now() < doc.expiresAt) {
       profile = decryptProfile(doc.encrypted);
     }
@@ -228,13 +277,8 @@ router.get("/profile/:deviceId", async (req: Request, res: Response) => {
 });
 
 router.put("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = str(req.params.deviceId) || "";
-  if (!deviceId || deviceId.length > 128) {
-    res.status(400).json({ error: "Invalid deviceId" });
-    return;
-  }
-  if (!bindProfileDevice(req, res, deviceId)) return;
-  const parsed = profileSchema.safeParse({ deviceId, ...req.body });
+  const ownerId = getSosOwnerId(req, res);
+  const parsed = profileSchema.safeParse({ deviceId: ownerId, ...req.body });
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid profile data" });
     return;
@@ -247,14 +291,14 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
     encrypted: encryptProfile(profile),
     expiresAt: Date.now() + PROFILE_TTL_MS,
     updatedAt: new Date().toISOString(),
-    deviceId,
+    deviceId: ownerId,
   };
-  const persisted = await docSet("sosProfiles", deviceId, record);
+  const persisted = await docSet("sosProfiles", ownerId, record);
   if (!persisted) {
     res.status(503).json({ error: "Profile storage unavailable" });
     return;
   }
-  memoryProfiles.set(deviceId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
+  memoryProfiles.set(ownerId, { encrypted: record.encrypted, expiresAt: record.expiresAt });
   if (memoryProfiles.size > 20000) {
     for (const [k, v] of memoryProfiles) if (Date.now() > v.expiresAt) memoryProfiles.delete(k);
   }
@@ -268,6 +312,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     return;
   }
   const data = parsed.data;
+  const ownerId = getSosOwnerId(req, res);
   const lat = Number(data.lat);
   const lng = Number(data.lng);
 
@@ -288,8 +333,9 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   let priority: string = "unknown";
   try {
     const dbResult = await getReportsDbResult();
-    const active = dbResult.status === "ok" ? dbResult.reports.filter(
-      (r: any) => r.status !== "resolved" && r.status !== "rejected"
+    const validated = dbResult.status === "ok" ? validateReports(dbResult.reports) : null;
+    const active = validated ? validated.filter(
+      (r) => r.status !== "resolved" && r.status !== "rejected"
     ) : [];
     if (active.length > 0) {
       nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
@@ -313,14 +359,32 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
     : undefined;
 
+  const newSosId = `sos-${Date.now()}-${randomBytes(3).toString("hex")}`;
+  let storedAudio: { objectPath: string; contentType: string } | null = null;
+  if (data.audioUrl) {
+    try {
+      storedAudio = await storeSosAudio(newSosId, data.audioUrl);
+    } catch (err) {
+      logger.error({ err }, "Failed to save SOS audio to object storage");
+      res.status(503).json({ code: "SOS_AUDIO_STORAGE_UNAVAILABLE", error: "SOS audio storage unavailable" });
+      return;
+    }
+    if (!storedAudio) {
+      res.status(400).json({ error: "SOS audio must be a valid audio data URL" });
+      return;
+    }
+  }
+
   const newSos: any = {
-    id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
-    deviceId: data.deviceId,
+    id: newSosId,
+    deviceId: ownerId,
     lat,
     lng,
     name: data.name || "شخص محاصر",
     phone: data.phone || "",
-    audioUrl: data.audioUrl || undefined,
+    audioUrl: storedAudio ? `/api/sos/${newSosId}/audio` : undefined,
+    audioObjectPath: storedAudio?.objectPath,
+    audioContentType: storedAudio?.contentType,
     audioDuration,
     textMessage: data.textMessage || undefined,
     status: "active",
@@ -338,9 +402,9 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   const clean = Object.fromEntries(
     Object.entries(cleanForDb).filter(([, v]) => v !== undefined)
   );
-  if (newSos.audioUrl) clean.hasAudio = true;
+  if (storedAudio) clean.hasAudio = true;
   const acceptedAt = Date.now();
-  const admissionId = createHash("sha256").update(data.deviceId).digest("hex");
+  const admissionId = createHash("sha256").update(ownerId).digest("hex");
   const admission = await createSosWithAdmission(newSos.id, clean, admissionId, acceptedAt, DUPLICATE_WINDOW_MS);
   if (admission === "duplicate") {
     res.status(409).json({ error: "An SOS from this device was already received recently" });
@@ -378,6 +442,7 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
     return;
   }
   const dispatchItem = {
+    id: `disp-${Date.now()}-${randomBytes(2).toString("hex")}`,
     type: parsed.data.type,
     teamNameAr: parsed.data.teamNameAr,
     teamNameFr: parsed.data.teamNameFr,
@@ -389,30 +454,21 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
   const sos = memorySos.find((s: any) => s.id === id);
   let persisted = false;
   try {
-    const existing = await collectionGet("trappedSos");
-    if (existing === null) {
-      res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
-      return;
-    }
-    const current = existing?.find((d: any) => d.id === id);
-    if (current) {
-      const teams = current.dispatchedTeams || [];
-      persisted = await docUpdate("trappedSos", id, { dispatchedTeams: [...teams, dispatchItem] });
-    } else if (sos) {
-      const teams = sos.dispatchedTeams || [];
-      const { audioUrl: _audioUrl, ...sosWithoutAudio } = sos;
-      persisted = await docSet("trappedSos", id, {
-        ...sosWithoutAudio,
-        dispatchedTeams: [...teams, dispatchItem],
-        ...(sos.audioUrl ? { hasAudio: true } : {}),
+    const { getDb, isAdminDb } = await import("../firebase.js");
+    const db = getDb();
+    if (db && isAdminDb(db)) {
+      const { FieldValue } = await import("firebase-admin/firestore");
+      await db.collection("trappedSos").doc(id).update({
+        dispatchedTeams: FieldValue.arrayUnion(dispatchItem)
       });
+      persisted = true;
     } else {
-      res.status(404).json({ error: "SOS not found" });
-      return;
+      persisted = false;
     }
   } catch (err) {
     logger.error({ err, id }, "Firestore dispatch error");
   }
+
   if (!persisted) {
     res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
     return;

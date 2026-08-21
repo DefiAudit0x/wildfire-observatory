@@ -13,6 +13,7 @@ import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
 import EmergencyContactsCard from "./EmergencyContactsCard";
 import { DatasetHealth, SyncState } from "../../utils/datasetHealth";
+import { safeImageSrc } from "../../utils/safeImage";
 
 const CentralCommand = lazy(() => import("../CentralCommand"));
 const InteractiveMap = lazy(() => import("../InteractiveMap"));
@@ -241,7 +242,7 @@ export default function MainContent({
                       >
                         <div className="flex gap-3 items-start">
                           {rep.image && (rep.image.startsWith("data:image/") || rep.image.startsWith("https://")) ? (
-                            <img src={rep.image} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt={isArabic ? `صورة بلاغ: ${rep.locationName}` : `Photo du signalement : ${rep.locationName}`} referrerPolicy="no-referrer" />
+                            <img src={safeImageSrc(rep.image)} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt={isArabic ? `صورة بلاغ: ${rep.locationName}` : `Photo du signalement : ${rep.locationName}`} referrerPolicy="no-referrer" />
                           ) : (
                             <div className="w-16 h-12 bg-black/40 rounded border border-white/5 flex items-center justify-center text-xs text-slate-500">
                               🔥

@@ -2,13 +2,10 @@ import fs from "fs";
 import path from "path";
 import { initializeApp as initializeAdminApp, cert, getApps as getAdminApps } from "firebase-admin/app";
 import { getFirestore as getAdminFirestore, Firestore as AdminFirestore } from "firebase-admin/firestore";
-import { initializeApp } from "firebase/app";
-import { getFirestore, Firestore } from "firebase/firestore";
 import config from "./config.js";
 import logger from "./logger.js";
 
 let adminDb: AdminFirestore | null = null;
-let clientDb: Firestore | null = null;
 let initialized = false;
 let _isAdmin = false;
 
@@ -24,37 +21,14 @@ function resolveDatabaseId(): string {
   }
 }
 
-export function getDb(): Firestore | AdminFirestore | null {
-  if (initialized) return adminDb || clientDb;
+export function getDb(): AdminFirestore | null {
+  if (initialized) return adminDb;
   initialized = true;
-
   if (process.env.SKIP_FIREBASE === "true") return null;
 
   const databaseId = resolveDatabaseId();
   const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST?.trim();
-  if (emulatorHost) {
-    const projectId = process.env.GCLOUD_PROJECT?.trim();
-    if (!projectId) {
-      logger.error("FIRESTORE_EMULATOR_HOST requires GCLOUD_PROJECT for Admin initialization");
-      return null;
-    }
-    try {
-      if (getAdminApps().length === 0) {
-        initializeAdminApp({ projectId });
-      }
-      adminDb = databaseId
-        ? getAdminFirestore(getAdminApps()[0], databaseId)
-        : getAdminFirestore(getAdminApps()[0]);
-      _isAdmin = true;
-      logger.info({ databaseId: databaseId || "(default)", emulatorHost, projectId }, "Firebase Admin initialized against Firestore Emulator");
-      return adminDb;
-    } catch (err) {
-      logger.error({ err }, "Failed to initialize Firebase Admin against Firestore Emulator");
-      return null;
-    }
-  }
-
-  let serviceAccount: any = null;
+  let serviceAccount: unknown = null;
 
   if (config.firebaseServiceAccount) {
     try {
@@ -64,55 +38,40 @@ export function getDb(): Firestore | AdminFirestore | null {
     }
   }
 
-  if (!serviceAccount) {
-    const saPath = config.firebaseServiceAccountPath;
-    if (saPath) {
-      const resolvedPath = path.isAbsolute(saPath) ? saPath : path.join(process.cwd(), saPath);
-      if (fs.existsSync(resolvedPath)) {
-        try {
-          serviceAccount = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
-        } catch (err) {
-          logger.error({ err }, "Failed to parse service account file");
-        }
-      } else {
-        logger.warn({ saPath: resolvedPath }, "Firebase service account not found");
-      }
-    }
-  }
-
-  if (serviceAccount) {
+  if (!serviceAccount && config.firebaseServiceAccountPath) {
+    const resolvedPath = path.isAbsolute(config.firebaseServiceAccountPath)
+      ? config.firebaseServiceAccountPath
+      : path.join(process.cwd(), config.firebaseServiceAccountPath);
     try {
-      if (getAdminApps().length === 0) {
-        initializeAdminApp({ credential: cert(serviceAccount) });
-      }
-      adminDb = databaseId
-        ? getAdminFirestore(getAdminApps()[0], databaseId)
-        : getAdminFirestore(getAdminApps()[0]);
-      _isAdmin = true;
-      logger.info({ databaseId: databaseId || "(default)" }, "Firebase Admin initialized successfully");
-      return adminDb;
+      serviceAccount = JSON.parse(fs.readFileSync(resolvedPath, "utf8"));
     } catch (err) {
-      logger.error({ err }, "Failed to initialize Firebase Admin, falling back to client SDK");
+      logger.error({ err }, "Failed to load Firebase service account");
     }
   }
-
-  const configPath = path.join(process.cwd(), config.firebaseConfigPath);
-  if (!fs.existsSync(configPath)) return null;
 
   try {
-    const fConfig = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    const firebaseApp = initializeApp(fConfig);
-    clientDb = databaseId
-      ? getFirestore(firebaseApp, databaseId)
-      : getFirestore(firebaseApp);
-    logger.info({ databaseId: databaseId || "(default)" }, "Firebase Client SDK initialized successfully");
-  } catch (err) {
-    logger.error({ err }, "Failed to initialize Firebase Client SDK");
-  }
+    if (getAdminApps().length === 0) {
+      if (emulatorHost) {
+        const projectId = process.env.GCLOUD_PROJECT?.trim();
+        if (!projectId) return null;
+        initializeAdminApp({ projectId, ...(config.firebaseStorageBucket ? { storageBucket: config.firebaseStorageBucket } : {}) });
+      } else {
+        if (!serviceAccount || typeof serviceAccount !== "object") return null;
+        initializeAdminApp({ credential: cert(serviceAccount), ...(config.firebaseStorageBucket ? { storageBucket: config.firebaseStorageBucket } : {}) });
+      }
+    }
 
-  return clientDb;
+    adminDb = databaseId
+      ? getAdminFirestore(getAdminApps()[0], databaseId)
+      : getAdminFirestore(getAdminApps()[0]);
+    _isAdmin = true;
+    return adminDb;
+  } catch (err) {
+    logger.error({ err }, "Failed to initialize Firebase Admin");
+    return null;
+  }
 }
 
-export function isAdminDb(_db: Firestore | AdminFirestore | null): _db is AdminFirestore {
+export function isAdminDb(_db: AdminFirestore | null): _db is AdminFirestore {
   return _isAdmin;
 }

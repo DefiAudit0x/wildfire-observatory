@@ -6,7 +6,7 @@ import supertest from "supertest";
 import { vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
-  reports: [{ id: "seed-report", lat: 36.75, lng: 7.6, severity: "medium", status: "pending", timestamp: new Date().toISOString(), consensusCount: 1 }],
+  reports: [{ id: "seed-report", lat: 36.75, lng: 7.6, locationName: "Seed location", wilaya: "عنابة", description: "Seed report", reporterType: "citizen", severity: "medium", status: "pending", timestamp: new Date().toISOString(), consensusCount: 1 }],
   idempotency: new Map<string, { report: any; fingerprint: string }>(),
 }));
 

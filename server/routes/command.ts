@@ -4,7 +4,7 @@ import { z } from "zod";
 import config from "../config.js";
 import { collectionGet } from "../fs.js";
 import { verifySuperAdminPassword } from "./admin.js";
-import { generateAdminToken, requireAdmin } from "../middleware.js";
+import { generateStaffToken, requireAdmin } from "../middleware.js";
 
 const router = Router();
 
@@ -132,18 +132,35 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
   res.json({ success: true, name: finalName, role: finalRole });
 });
 
-router.post("/auth/central-command", async (req: Request, res: Response) => {
-  const { password } = req.body;
-  if (!password || !(await checkSuperAdminPassword(password))) {
+const centralCommandLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const centralCommandSchema = z.object({
+  password: z.string().min(1).max(128),
+});
+
+router.post("/auth/central-command", centralCommandLimiter, async (req: Request, res: Response) => {
+  const parsed = centralCommandSchema.safeParse(req.body);
+  if (!parsed.success || !(await checkSuperAdminPassword(parsed.data.password))) {
     res.status(401).json({ valid: false });
     return;
   }
-  const token = generateAdminToken();
-  res.cookie("admin_token", token, {
+
+  const token = generateStaffToken({
+    role: "superadmin",
+    agentId: "central-command",
+    name: "Central Command",
+  });
+
+  res.cookie("staff_token", token, {
     httpOnly: true,
     sameSite: "lax",
     secure: config.cookieSecure,
-    maxAge: 24 * 60 * 60 * 1000,
+    maxAge: 60 * 60 * 1000,
   });
   res.json({ valid: true });
 });
