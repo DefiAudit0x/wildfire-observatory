@@ -17,7 +17,7 @@ class MeshWireTest {
         protocolVersion = MeshWire.PROTOCOL_VERSION,
         messageId = "msg-42",
         type = "report",
-        payloadB64 = "c2lnaDUtxZXJ5dGV4dA==",
+        payloadB64 = "c2lnbmVkLXRleHQ=",
         iv = "aXZWaXZJdg==",
         hopCount = 0,
         origEphemeralId = "eph1",
