@@ -127,7 +127,9 @@ export default function App() {
   }, [userLocation, reports, satellites]);
 
   return (
-    <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>
+    <div className="atlas-shell min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>
+      <div className="atlas-topology atlas-topology-left" aria-hidden="true" />
+      <div className="atlas-topology atlas-topology-right" aria-hidden="true" />
       <HeaderBar
         isArabic={isArabic}
         lang={lang}

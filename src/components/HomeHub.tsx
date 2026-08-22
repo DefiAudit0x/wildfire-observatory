@@ -126,7 +126,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
   );
 
   return (
-    <div className="w-full space-y-6 animate-fadeIn max-w-4xl mx-auto px-2" dir={isArabic ? "rtl" : "ltr"}>
+    <div className="atlas-home w-full space-y-6 animate-fadeIn max-w-4xl mx-auto px-2" dir={isArabic ? "rtl" : "ltr"}>
 
       {/* Emergency Mode Banner: 2+ distinct fire clusters within 10km */}
       {emergencyMode && userLocation && (
@@ -166,7 +166,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       )}
 
       {/* Reassurance Header */}
-      <div className="relative overflow-hidden bg-zinc-900/60 border border-white/5 rounded-2xl p-5 md:p-6 text-center space-y-3 shadow-xl">
+      <div className="atlas-home-intro relative overflow-hidden bg-zinc-900/60 border border-white/5 rounded-2xl p-5 md:p-6 text-center space-y-3 shadow-xl">
         <div className="absolute top-0 left-1/2 -translate-x-1/2 h-32 w-32 bg-red-600/10 rounded-full blur-3xl"></div>
         
         <h2 className="text-xl md:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-slate-100 via-slate-200 to-gray-400 tracking-tight leading-normal">
@@ -197,13 +197,13 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       </div>
 
       {/* THE 4 PRIMARY BUTTONS IN EXACT ORDER REQUESTED */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="atlas-response-grid grid grid-cols-1 md:grid-cols-2 gap-4">
         
         {/* BUTTON 1: REPORT AN INCIDENT (تبليغ عن خطر أو حريق) */}
         <button
           type="button"
           onClick={() => onNavigate("report")}
-          className="relative group p-6 bg-gradient-to-br from-orange-950/80 via-amber-900/40 to-zinc-950 border-2 border-orange-500/50 hover:border-orange-400 rounded-2xl shadow-[0_10px_30px_rgba(249,115,22,0.2)] hover:shadow-[0_15px_40px_rgba(249,115,22,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
+          className="atlas-response-card atlas-response-orange relative group p-6 bg-gradient-to-br from-orange-950/80 via-amber-900/40 to-zinc-950 border-2 border-orange-500/50 hover:border-orange-400 rounded-2xl shadow-[0_10px_30px_rgba(249,115,22,0.2)] hover:shadow-[0_15px_40px_rgba(249,115,22,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
         >
           <div className="flex items-start justify-between">
             <div className="p-3 bg-orange-500/20 rounded-xl border border-orange-500/40">
@@ -233,7 +233,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
         <button
           type="button"
           onClick={onTriggerSOS}
-          className="relative group p-6 bg-gradient-to-br from-red-950/90 via-red-900/50 to-zinc-950 border-2 border-red-500/60 hover:border-red-400 rounded-2xl shadow-[0_10px_30px_rgba(239,68,68,0.25)] hover:shadow-[0_15px_40px_rgba(239,68,68,0.4)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
+          className="atlas-response-card atlas-response-red relative group p-6 bg-gradient-to-br from-red-950/90 via-red-900/50 to-zinc-950 border-2 border-red-500/60 hover:border-red-400 rounded-2xl shadow-[0_10px_30px_rgba(239,68,68,0.25)] hover:shadow-[0_15px_40px_rgba(239,68,68,0.4)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
         >
           <div className="flex items-start justify-between">
             <div className="p-3 bg-red-600/20 rounded-xl border border-red-500/40">
@@ -263,7 +263,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
         <button
           type="button"
           onClick={() => onNavigate("volunteer")}
-          className="relative group p-6 bg-gradient-to-br from-teal-950/80 via-emerald-900/40 to-zinc-950 border-2 border-teal-500/50 hover:border-teal-400 rounded-2xl shadow-[0_10px_30px_rgba(20,184,166,0.2)] hover:shadow-[0_15px_40px_rgba(20,184,166,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
+          className="atlas-response-card atlas-response-green relative group p-6 bg-gradient-to-br from-teal-950/80 via-emerald-900/40 to-zinc-950 border-2 border-teal-500/50 hover:border-teal-400 rounded-2xl shadow-[0_10px_30px_rgba(20,184,166,0.2)] hover:shadow-[0_15px_40px_rgba(20,184,166,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
         >
           <div className="flex items-start justify-between">
             <div className="p-3 bg-teal-500/20 rounded-xl border border-teal-500/40">
@@ -297,7 +297,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             const el = document.getElementById("all-services-section");
             if (el) el.scrollIntoView({ behavior: "smooth" });
           }}
-          className="relative group p-6 bg-gradient-to-br from-sky-950/80 via-blue-900/40 to-zinc-950 border-2 border-sky-500/50 hover:border-sky-400 rounded-2xl shadow-[0_10px_30px_rgba(14,165,233,0.2)] hover:shadow-[0_15px_40px_rgba(14,165,233,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
+          className="atlas-response-card atlas-response-ink relative group p-6 bg-gradient-to-br from-sky-950/80 via-blue-900/40 to-zinc-950 border-2 border-sky-500/50 hover:border-sky-400 rounded-2xl shadow-[0_10px_30px_rgba(14,165,233,0.2)] hover:shadow-[0_15px_40px_rgba(14,165,233,0.35)] transition-all duration-300 hover:scale-[1.02] active:scale-[0.98] text-start flex flex-col justify-between space-y-4 cursor-pointer"
         >
           <div className="flex items-start justify-between">
             <div className="p-3 bg-sky-500/20 rounded-xl border border-sky-500/40">
@@ -326,7 +326,7 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       </div>
 
       {/* QUICK DIRECT DIAL CARD */}
-      <div className="bg-zinc-900/80 border border-white/5 rounded-2xl p-4 md:p-5 shadow-lg">
+      <div className="atlas-phone-panel bg-zinc-900/80 border border-white/5 rounded-2xl p-4 md:p-5 shadow-lg">
         <h4 className="font-extrabold text-xs md:text-sm text-slate-200 text-center mb-3 flex items-center justify-center gap-2">
           <Phone className="h-4 w-4 text-red-500 animate-pulse" />
           <span>{isArabic ? "الاتصال المباشر بأرقام النجدة الرسمية لكل دولة" : "Numéros d'urgence officiels par pays"}</span>
@@ -406,5 +406,4 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
     </div>
   );
 }
-
 
