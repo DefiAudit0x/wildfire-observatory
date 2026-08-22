@@ -20,6 +20,6 @@ jobs:
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.2.2"
+          gradle-version: "8.5"
       - name: Build and test Android app
         run: gradle -p android test assembleDebug --stacktrace
