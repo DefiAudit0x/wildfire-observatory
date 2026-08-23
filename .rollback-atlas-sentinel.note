@@ -1,3 +1,0 @@
-Revert Atlas Sentinel visual shell.
-
-This commit intentionally restores the pre-PR #26 visual state without changing runtime behavior, APIs, or deployment configuration.
