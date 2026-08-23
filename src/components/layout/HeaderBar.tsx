@@ -215,15 +215,15 @@ function HeaderBar({
   }, [showEmergencies]);
 
   return (
-    <header ref={headerRef} className="atlas-masthead bg-black/60 backdrop-blur-md border-b border-white/5 sticky top-0 z-[1100] px-4 py-3 md:px-8">
-      <div className="atlas-masthead-inner max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
+    <header ref={headerRef} className="bg-black/60 backdrop-blur-md border-b border-white/5 sticky top-0 z-[1100] px-4 py-3 md:px-8">
+      <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
         {/* Platform Title */}
         <div className="flex items-center gap-3">
-          <div className="atlas-brand-mark h-10 w-10 bg-gradient-to-tr from-red-600 via-orange-600 to-amber-500 rounded-xl flex items-center justify-center shadow-[0_4px_15px_rgba(220,38,38,0.3)] border border-red-500/20">
+          <div className="h-10 w-10 bg-gradient-to-tr from-red-600 via-orange-600 to-amber-500 rounded-xl flex items-center justify-center shadow-[0_4px_15px_rgba(220,38,38,0.3)] border border-red-500/20">
             <Flame className="h-6 w-6 text-white animate-pulse" />
           </div>
           <div className="min-w-0 max-w-full">
-            <h1 className="atlas-brand-title min-w-0 font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-tight flex flex-wrap items-center gap-2">
+            <h1 className="min-w-0 font-extrabold text-lg md:text-xl text-slate-100 tracking-tight leading-tight flex flex-wrap items-center gap-2">
               <span className="min-w-0 break-words">
                 {isArabic ? "المرصد الجزائري لحرائق الغابات والكوارث" : "Observatoire algérien des feux de forêt et des catastrophes"}
               </span>
@@ -261,12 +261,12 @@ function HeaderBar({
                 )}
               </span>
             </h1>
-            <p className="atlas-brand-subtitle text-[10px] text-gray-400 mt-1">
+            <p className="text-[10px] text-gray-400 mt-1">
               {isArabic
                 ? "منصة تضامنية لمتابعة الكوارث والتبليغ الميداني الفوري والتأصيل الجغرافي"
                 : "Plateforme citoyenne de suivi cartographique et de signalement d'urgence"}
             </p>
-            <div className="atlas-status-copy mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-semibold" aria-live="polite">
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] font-semibold" aria-live="polite">
               <span className={sync === "live" ? "text-emerald-400" : "text-amber-300"}>
                 {isArabic ? `حالة البيانات: ${isArabic ? badgeMeta[sync].ar : badgeMeta[sync].fr}` : `État des données : ${badgeMeta[sync].fr}`}
               </span>
@@ -277,7 +277,7 @@ function HeaderBar({
         </div>
 
         {/* Quick info and Bilingual selector */}
-        <div className="atlas-header-actions flex items-center gap-4 flex-wrap justify-center">
+        <div className="flex items-center gap-4 flex-wrap justify-center">
           {/* Last refreshed status */}
           <div className="flex items-center gap-1.5 text-xs text-gray-400 font-mono">
             <Clock className="h-3.5 w-3.5 text-gray-500" />
