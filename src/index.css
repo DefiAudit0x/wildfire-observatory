@@ -166,7 +166,9 @@ body {
   color: var(--atlas-ink);
 }
 
-.atlas-shell > :not(.atlas-topology) { position: relative; z-index: 1; }
+/* Keep content positioned above the decorative topology without overriding the
+   explicit sticky-layer z-index values on the masthead and tab bar. */
+.atlas-shell > :not(.atlas-topology) { position: relative; }
 
 .atlas-topology {
   position: absolute;
