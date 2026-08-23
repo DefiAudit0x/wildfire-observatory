@@ -45,7 +45,7 @@ function LocationStatusBar({
   }, []);
 
   return (
-    <div className="atlas-location-strip bg-black/70 border-b border-white/10 text-slate-300 px-4 py-1.5 md:px-8 z-[1000]">
+    <div className="bg-black/70 border-b border-white/10 text-slate-300 px-4 py-1.5 md:px-8 z-[1000]">
       <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-1.5 text-[10px] font-bold">
         {/* GPS status indicator: clicking re-requests a FRESH location fix
             (getCurrentPosition with maximumAge 0) — it does not navigate.
