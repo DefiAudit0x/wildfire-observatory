@@ -9,6 +9,15 @@ vi.mock("express-rate-limit", () => ({
   default: () => (_req: any, _res: any, next: () => void) => next(),
 }));
 
+vi.mock("../server/atomic.js", () => ({
+  createDocIfAbsent: async (collection: string, id: string, data: any) => {
+    const key = `${collection}/${id}`;
+    if (mockDocs.has(key)) return "exists";
+    mockDocs.set(key, { ...data });
+    return "created";
+  },
+}));
+
 vi.mock("../server/fs.js", () => ({
   collectionGet: async (collection: string) =>
     Array.from(mockDocs.entries())
