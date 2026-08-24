@@ -54,9 +54,12 @@ const {
   createDocIfAbsent,
   appendRosterPostAtomic,
   approveVolunteerAtomically,
+  createVolunteerRegistrationAtomically,
 } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
+const registration = (id: string) => ({ id, status: "pending", wilaya: "Bordj Bou Arreridj", createdAt: "2026-08-24T00:00:00.000Z" });
+const uniquenessKeys = { phoneHash: "phone-hash", emailHash: "email-hash", fullNameHash: "name-hash" };
 
 describe("atomic persistence helpers", () => {
   it("allows only one concurrent create for a unique document", async () => {
@@ -90,6 +93,50 @@ describe("atomic persistence helpers", () => {
     ]);
     expect([first, second].filter((x) => x === "created")).toHaveLength(1);
     expect([first, second].filter((x) => x === "limit")).toHaveLength(1);
+  });
+
+  it("atomically creates only one registration for concurrent identical uniqueness keys", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    const [first, second] = await Promise.all([
+      createVolunteerRegistrationAtomically(registration("reg-a"), uniquenessKeys),
+      createVolunteerRegistrationAtomically(registration("reg-b"), uniquenessKeys),
+    ]);
+    expect([first, second].sort()).toEqual(["created", "duplicate-phone"]);
+    expect(state.docs.has("volunteerRegistrations/reg-a")).not.toBe(state.docs.has("volunteerRegistrations/reg-b"));
+    expect(state.docs.get("volunteerRegistrationUniqueness/phone-phone-hash")).toMatchObject({ registrationId: expect.any(String), kind: "phone" });
+  });
+
+  it("releases uniqueness after a rejected registration", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("volunteerRegistrationUniqueness/phone-phone-hash", { registrationId: "reg-rejected", kind: "phone" });
+    state.docs.set("volunteerRegistrationUniqueness/email-email-hash", { registrationId: "reg-rejected", kind: "email" });
+    state.docs.set("volunteerRegistrationUniqueness/name-name-hash:Bordj Bou Arreridj", { registrationId: "reg-rejected", kind: "name" });
+    state.docs.set("volunteerRegistrations/reg-rejected", { ...registration("reg-rejected"), status: "rejected" });
+    const result = await createVolunteerRegistrationAtomically(registration("reg-new"), uniquenessKeys);
+    expect(result).toBe("created");
+    expect(state.docs.get("volunteerRegistrationUniqueness/phone-phone-hash")?.registrationId).toBe("reg-new");
+  });
+
+  it("allows the same name and wilaya after the 30-day window expires", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    const oldCreatedAt = "2026-07-01T00:00:00.000Z";
+    state.docs.set("volunteerRegistrationUniqueness/phone-old-phone", { registrationId: "reg-old-phone", kind: "phone", createdAt: oldCreatedAt });
+    state.docs.set("volunteerRegistrationUniqueness/name-name-hash:Bordj Bou Arreridj", {
+      registrationId: "reg-old-name",
+      kind: "name",
+      createdAt: oldCreatedAt,
+      expiresAt: Date.now() - 1,
+    });
+    state.docs.set("volunteerRegistrations/reg-old-phone", { id: "reg-old-phone", status: "pending" });
+    state.docs.set("volunteerRegistrations/reg-old-name", { id: "reg-old-name", status: "pending", createdAt: oldCreatedAt, wilaya: "Bordj Bou Arreridj" });
+    const result = await createVolunteerRegistrationAtomically(
+      registration("reg-new-window"),
+      { phoneHash: "new-phone", fullNameHash: "name-hash" },
+    );
+    expect(result).toBe("created");
   });
 
   it("atomically approves a volunteer with its badge", async () => {

@@ -3,8 +3,8 @@ import { z } from "zod";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
-import { approveVolunteerAtomically } from "../atomic.js";
+import { collectionGet, docUpdate, docGet } from "../fs.js";
+import { approveVolunteerAtomically, createVolunteerRegistrationAtomically } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { logAdminAction } from "./audit.js";
@@ -74,15 +74,9 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     return;
   }
   const requestedType = type || "volunteer";
-  const existing = await loadRegs();
   const phoneHash = createHash("sha256").update(phone).digest("hex");
-  if (existing && existing.some((r: any) => r.status !== "rejected" && r.phoneHash === phoneHash)) { res.status(409).json({ error: "This phone number is already registered" }); return; }
   const emailHash = email ? hashOf(email.trim().toLowerCase()) : undefined;
-  const normalizedEmail = email ? email.trim().toLowerCase() : "";
-  if (existing && emailHash && existing.some((r: any) => r.status !== "rejected" && (r.emailHash ? r.emailHash === emailHash : r.email && decryptPII(r.email).trim().toLowerCase() === normalizedEmail))) { res.status(409).json({ error: "This email is already registered" }); return; }
   const fullNameHash = hashOf(fullName.trim().toLowerCase());
-  const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  if (existing && existing.some((r: any) => r.status !== "rejected" && (r.fullNameHash ? r.fullNameHash === fullNameHash : decryptPII(r.fullName).trim().toLowerCase() === fullName.trim().toLowerCase()) && r.wilaya === wilaya && new Date(r.createdAt || 0).getTime() > thirtyDaysAgo)) { res.status(409).json({ error: "A similar registration already exists in the last 30 days" }); return; }
   const registration = {
     id: `reg-${crypto.randomBytes(6).toString("hex")}`,
     fullName: encryptPII(fullName), phone: encryptPII(phone), phoneHash, emailHash, fullNameHash,
@@ -91,11 +85,13 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     registrationIp: req.ip || (req.headers["x-forwarded-for"] as string) || "unknown",
     userAgent: (req.headers["user-agent"] as string) || "unknown",
   };
-  const persisted = await docSet("volunteerRegistrations", registration.id, registration);
-  if (!persisted) {
-    res.status(503).json({ error: "Database not available" });
-    return;
-  }
+
+  const result = await createVolunteerRegistrationAtomically(registration, { phoneHash, emailHash, fullNameHash });
+  if (result === "duplicate-phone") { res.status(409).json({ error: "This phone number is already registered" }); return; }
+  if (result === "duplicate-email") { res.status(409).json({ error: "This email is already registered" }); return; }
+  if (result === "duplicate-name") { res.status(409).json({ error: "A similar registration already exists in the last 30 days" }); return; }
+  if (result === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
+
   memoryRegs.unshift(registration);
   if (memoryRegs.length > MAX_MEMORY_REGS) memoryRegs.length = MAX_MEMORY_REGS;
   logger.info({ registrationId: registration.id, ip: registration.registrationIp, wilaya, type: requestedType }, "New volunteer registration");

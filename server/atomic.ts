@@ -154,6 +154,94 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
   }
 }
 
+const VOLUNTEER_NAME_RESERVATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+type VolunteerReservationData = {
+  registrationId?: string;
+  kind?: "phone" | "email" | "name";
+  createdAt?: string;
+  expiresAt?: number;
+};
+
+export type VolunteerRegistrationResult = "created" | "duplicate-phone" | "duplicate-email" | "duplicate-name" | "unavailable";
+
+export async function createVolunteerRegistrationAtomically(
+  registration: Record<string, any>,
+  keys: { phoneHash: string; emailHash?: string; fullNameHash: string },
+): Promise<VolunteerRegistrationResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  const reservationCollection = "volunteerRegistrationUniqueness";
+  const reservationIds = [
+    { kind: "phone" as const, key: keys.phoneHash },
+    ...(keys.emailHash ? [{ kind: "email" as const, key: keys.emailHash }] : []),
+    { kind: "name" as const, key: `${keys.fullNameHash}:${registration.wilaya}` },
+  ];
+  const createdAtMs = Date.parse(typeof registration.createdAt === "string" ? registration.createdAt : "");
+  const nameExpiresAt = Number.isFinite(createdAtMs) ? createdAtMs + VOLUNTEER_NAME_RESERVATION_MS : Date.now() + VOLUNTEER_NAME_RESERVATION_MS;
+
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: db.collection(reservationCollection).doc(`${kind}-${key}`) }));
+        const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
+        for (let i = 0; i < snapshots.length; i++) {
+          if (!snapshots[i].exists) continue;
+          const data = snapshots[i].data() as VolunteerReservationData;
+          if (!data.registrationId) return "unavailable";
+          const existing = await tx.get(db.collection("volunteerRegistrations").doc(data.registrationId));
+          const existingData = existing.exists ? existing.data() : null;
+          const rejected = existing.exists && existingData?.status === "rejected";
+          const nameExpired = refs[i].kind === "name" && typeof data.expiresAt === "number" && data.expiresAt <= Date.now();
+          if (existing.exists && !rejected && !nameExpired) {
+            return refs[i].kind === "phone" ? "duplicate-phone" : refs[i].kind === "email" ? "duplicate-email" : "duplicate-name";
+          }
+        }
+        for (const { kind, ref } of refs) {
+          tx.set(ref, {
+            registrationId: registration.id,
+            kind,
+            createdAt: registration.createdAt,
+            ...(kind === "name" ? { expiresAt: nameExpiresAt } : {}),
+          });
+        }
+        tx.create(db.collection("volunteerRegistrations").doc(registration.id), registration);
+        return "created";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: doc(db, reservationCollection, `${kind}-${key}`) }));
+      const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
+      for (let i = 0; i < snapshots.length; i++) {
+        if (!snapshots[i].exists()) continue;
+        const data = snapshots[i].data() as VolunteerReservationData;
+        if (!data.registrationId) return "unavailable";
+        const existing = await tx.get(doc(db, "volunteerRegistrations", data.registrationId));
+        const existingData = existing.exists() ? existing.data() : null;
+        const rejected = existing.exists() && existingData?.status === "rejected";
+        const nameExpired = refs[i].kind === "name" && typeof data.expiresAt === "number" && data.expiresAt <= Date.now();
+        if (existing.exists() && !rejected && !nameExpired) {
+          return refs[i].kind === "phone" ? "duplicate-phone" : refs[i].kind === "email" ? "duplicate-email" : "duplicate-name";
+        }
+      }
+      for (const { kind, ref } of refs) {
+        tx.set(ref, {
+          registrationId: registration.id,
+          kind,
+          createdAt: registration.createdAt,
+          ...(kind === "name" ? { expiresAt: nameExpiresAt } : {}),
+        });
+      }
+      tx.set(doc(db, "volunteerRegistrations", registration.id), registration);
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, registrationId: registration.id }, "Atomic volunteer registration failed");
+    return "unavailable";
+  }
+}
+
 export type VolunteerApprovalResult = "updated" | "missing" | "badge-exists" | "unavailable";
 
 export async function approveVolunteerAtomically(registrationId: string, registrationUpdate: Record<string, any>, badgeCode: string, badgeData: Record<string, any>): Promise<VolunteerApprovalResult> {
