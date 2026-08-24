@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { str } from "../params.js";
-import { updateReportInFirestore, deleteReportFromFirestore } from "../db.js";
+import { updateReportInFirestore, deleteReportFromFirestore, getReportsFromFirestore } from "../db.js";
 import { createNotification } from "./notifications.js";
 import { logAdminAction } from "./audit.js";
 import { liveHub } from "../live.js";
@@ -163,7 +163,11 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
 
   const updated = await updateReportInFirestore(id, updateData);
   if (updated) {
-    const report = citizenReports.find((r: any) => r.id === id);
+    // Firestore is the source of truth here. The in-memory seed can be stale
+    // or may not contain reports created after startup, so load the persisted
+    // report before building a notification that depends on deviceId/locationName.
+    const persistedReports = await getReportsFromFirestore();
+    const report = persistedReports?.find((r: any) => r.id === id) ?? citizenReports.find((r: any) => r.id === id);
     await buildStatusNotification(report || updateData, status);
     logAdminAction("report.update-status", { id, status, severity }).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
@@ -189,7 +193,7 @@ router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req:
 
   const deleted = await deleteReportFromFirestore(id);
   if (deleted) {
-    logAdminAction("report.delete", { id }).catch(() => {});
+    logAdminAction("report.delete", { id });
     liveHub.broadcast("report:delete", { id });
     res.json({ success: true });
     return;
@@ -198,7 +202,7 @@ router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req:
   const index = citizenReports.findIndex((r: any) => r.id === id);
   if (index !== -1) {
     citizenReports.splice(index, 1);
-    logAdminAction("report.delete", { id }).catch(() => {});
+    logAdminAction("report.delete", { id });
     liveHub.broadcast("report:delete", { id });
     res.json({ success: true });
     return;
