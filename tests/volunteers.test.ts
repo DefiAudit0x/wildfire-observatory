@@ -1,8 +1,9 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import volunteersRouter from "../server/routes/volunteers.js";
 import { generateAdminToken } from "../server/middleware.js";
+import * as fs from "../server/fs.js";
 
 function createVolunteersApp() {
   const app = express();
@@ -18,6 +19,11 @@ const nextIp = () => `198.51.100.${++ipCounter}`;
 
 describe("POST /api/volunteer/register", () => {
   const app = createVolunteersApp();
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(fs, "docSet").mockResolvedValue(true);
+  });
 
   it("rejects an invalid phone number format", async () => {
     const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
@@ -97,6 +103,17 @@ describe("POST /api/volunteer/register", () => {
       wilaya: "الجزائر - وهران",
     });
     expect(res.status).toBe(409);
+  });
+
+  it("fails closed when durable Firestore persistence fails", async () => {
+    vi.mocked(fs.docSet).mockResolvedValue(false);
+    const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "فشل حفظ",
+      phone: "0731315555",
+      wilaya: "الجزائر - الجلفة",
+    });
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "Database not available" });
   });
 });
 

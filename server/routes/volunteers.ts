@@ -91,7 +91,11 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
     registrationIp: req.ip || (req.headers["x-forwarded-for"] as string) || "unknown",
     userAgent: (req.headers["user-agent"] as string) || "unknown",
   };
-  await docSet("volunteerRegistrations", registration.id, registration);
+  const persisted = await docSet("volunteerRegistrations", registration.id, registration);
+  if (!persisted) {
+    res.status(503).json({ error: "Database not available" });
+    return;
+  }
   memoryRegs.unshift(registration);
   if (memoryRegs.length > MAX_MEMORY_REGS) memoryRegs.length = MAX_MEMORY_REGS;
   logger.info({ registrationId: registration.id, ip: registration.registrationIp, wilaya, type: requestedType }, "New volunteer registration");
