@@ -35,7 +35,7 @@ export async function getFreshDoc(collectionName: string, id: string): Promise<a
   if (!db) return null;
   try {
     if (isAdminDb(db)) {
-      const snap = await db.collection(collectionName).doc(id).get({ source: "server" });
+      const snap = await db.collection(collectionName).doc(id).get();
       return snap.exists ? { id: snap.id, ...snap.data() } : null;
     }
     const { doc, getDocFromServer } = await import("firebase/firestore");
