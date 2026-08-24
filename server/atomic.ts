@@ -30,6 +30,74 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
   }
 }
 
+export type UnitUserCreateResult = "created" | "exists" | "unit-missing" | "unavailable";
+
+export async function createUserIfUnitExists(userId: string, unitId: string, data: Record<string, any>): Promise<UnitUserCreateResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const unitRef = db.collection("units").doc(unitId);
+        const userRef = db.collection("users").doc(userId);
+        const unit = await tx.get(unitRef);
+        if (!unit.exists) return "unit-missing";
+        const existing = await tx.get(userRef);
+        if (existing.exists) return "exists";
+        tx.create(userRef, data);
+        return "created";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const unitRef = doc(db, "units", unitId);
+      const userRef = doc(db, "users", userId);
+      const unit = await tx.get(unitRef);
+      if (!unit.exists()) return "unit-missing";
+      const existing = await tx.get(userRef);
+      if (existing.exists()) return "exists";
+      tx.set(userRef, data);
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, userId, unitId }, "Atomic user creation failed");
+    return "unavailable";
+  }
+}
+
+export type UnitDeleteResult = "deleted" | "missing" | "has-users" | "unavailable";
+
+export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const unitRef = db.collection("units").doc(unitId);
+        const unit = await tx.get(unitRef);
+        if (!unit.exists) return "missing";
+        const users = await tx.get(db.collection("users").where("unitId", "==", unitId).limit(1));
+        if (!users.empty) return "has-users";
+        tx.delete(unitRef);
+        return "deleted";
+      });
+    }
+    const { collection, doc, limit, query, runTransaction, where } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const unitRef = doc(db, "units", unitId);
+      const unit = await tx.get(unitRef);
+      if (!unit.exists()) return "missing";
+      const users = await tx.get(query(collection(db, "users"), where("unitId", "==", unitId), limit(1)));
+      if (!users.empty) return "has-users";
+      tx.delete(unitRef);
+      return "deleted";
+    });
+  } catch (err) {
+    logger.error({ err, unitId }, "Atomic unit deletion failed");
+    return "unavailable";
+  }
+}
+
 export async function getFreshDoc(collectionName: string, id: string): Promise<any | null> {
   const db = getDb();
   if (!db) return null;
