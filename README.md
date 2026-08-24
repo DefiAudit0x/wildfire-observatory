@@ -8,7 +8,7 @@
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Railway-brightgreen)](https://wildfire-observatory-production.up.railway.app/)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
-![Express](https://img.shields.io/badge/Express-4.21-green)
+![Express](https://img.shields.io/badge/Express-5-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-1.0.0-orange)
 
@@ -79,6 +79,8 @@
 
 ## 🛠️ Tech Stack / التقنيات
 
+> Verified version references for runtime, Docker, and CI are maintained in [`docs/RUNTIME_BASELINE.md`](docs/RUNTIME_BASELINE.md).
+
 ### Frontend
 | Technology | Usage |
 |---|---|
@@ -94,8 +96,8 @@
 ### Backend
 | Technology | Usage |
 |---|---|
-| Node.js 20+ | Runtime |
-| Express 4.21 | HTTP server |
+| Node.js ≥22.13 | Runtime |
+| Express 5 | HTTP server |
 | Firebase Firestore | NoSQL database (optional persistence) |
 | Google GenAI 2.4 | Gemini AI image verification |
 | Helmet | HTTP security headers |
@@ -103,15 +105,16 @@
 | express-rate-limit | API rate limiting (100 req/min) |
 | jsonwebtoken | JWT-based admin authentication |
 | Pino 10 | Structured logging |
-| Zod 3.24 | Input validation (schemas) |
+| Zod 4 | Input validation (schemas) |
 | Swagger/OpenAPI | API documentation |
 | Sentry Node | Error monitoring |
 
 ### DevOps
 | Technology | Usage |
 |---|---|
-| Docker | Multi-stage container build |
-| GitHub Actions | CI/CD pipeline (lint → test → build) |
+| Docker | Multi-stage container build (Node 22) |
+| pnpm 11.21.0 | Dependency installation and scripts |
+| GitHub Actions | CI/CD pipeline (Node 24: lint → test → build → E2E) |
 | Husky | Pre-commit hooks (tsc --noEmit) |
 
 ---
@@ -136,7 +139,7 @@
 ```
 observatory/
 ├── server/                    # Express backend
-│   ├── server.ts              # Entry point (84 lines)
+│   ├── server.ts              # Entry point
 │   ├── config.ts              # Environment configuration
 │   ├── logger.ts              # Pino logger
 │   ├── firebase.ts            # Firebase lazy initialization
@@ -148,9 +151,9 @@ observatory/
 │   └── routes/
 │       ├── health.ts          # GET /api/health
 │       ├── reports.ts         # GET/POST /api/reports, POST confirm
-│       ├── admin.ts           # POST /api/admin/verify, update, delete
-│       ├── satellite.ts       # GET /api/satellite-data
-│       ├── wilayas.ts         # GET /api/wilayas (dynamic stats)
+│       ├── admin.ts            # POST /api/admin/verify, update, delete
+│       ├── satellite.ts        # GET /api/satellite-data
+│       ├── wilayas.ts          # GET /api/wilayas (dynamic stats)
 │       └── ai.ts              # POST /api/ai/guidance
 ├── src/                       # React frontend
 │   ├── App.tsx                # Main app with citizen, operational, and admin navigation tabs
@@ -164,11 +167,9 @@ observatory/
 │       ├── EvacuationRadar.tsx # Evacuation radar view
 │       ├── SafetyGuides.tsx    # Safety guides
 │       ├── StatisticsPanel.tsx # Live stats, fire risk, history & export
-│       └── WilayaList.tsx      # Region status list
-├── tests/                     # Unit + API + Playwright E2E tests (see Testing ↓)
-├── public/
-│   ├── manifest.json          # PWA manifest
-│   └── favicon.svg            # App icon (precached by the generated SW)
+│       └── WilayaList.tsx       # Region status list
+├── tests/                     # Unit + API + Playwright E2E tests
+├── public/                    # PWA assets
 ├── .github/workflows/ci.yml   # CI/CD pipeline
 ├── Dockerfile                 # Multi-stage production build
 └── vitest.server.config.ts    # Vitest config
@@ -196,8 +197,8 @@ Report Submitted
 
 ### Prerequisites / المتطلبات
 
-- **Node.js** ≥ 20
-- **npm** or **bun**
+- **Node.js** ≥ 22.13
+- **pnpm** 11.21.0
 
 ### Installation / التثبيت
 
@@ -207,7 +208,7 @@ git clone https://github.com/DefiAudit0x/wildfire-observatory.git
 cd wildfire-observatory
 
 # Install dependencies
-npm install
+pnpm install --frozen-lockfile
 
 # Set environment variables
 cp .env.example .env
@@ -218,7 +219,7 @@ cp .env.example .env
 #   JWT_SECRET — change for production
 
 # Run development server
-npm run dev
+pnpm run dev
 ```
 
 Open http://localhost:3000 in your browser.
@@ -275,28 +276,23 @@ http://localhost:3000/api-docs
 
 ```bash
 # Run server unit tests
-npm run test:server
+pnpm run test:server
 
 # Run React component tests
-npm run test:react
+pnpm run test:react
 
 # Type check
-npm run lint     # (tsc --noEmit)
+pnpm run lint
 
 # Full build
-npm run build
+pnpm run build
 
 # End-to-end tests (Playwright + Chromium)
-npx playwright install chromium
-npm run test:e2e
+pnpm exec playwright install chromium
+pnpm run test:e2e
 ```
 
-Current test coverage:
-- **Server unit/API tests**: 19 suites / 166 tests covering reports (incl. PII-safe public DTO + badge trust + idempotent submission via clientGeneratedId with duplicate suppression), SOS (incl. encryption + rate limits + anonymization), badges, AI guidance (sanitization + provider failure/timeout paths), mesh PoW & relay envelope, volunteers, roster, mesh, geo, wilayas, history, fire-risk, client threat clustering (unified report+satellite threat helper) & export utilities
-- **React component tests**: 3 (admin panel)
-- **Playwright E2E**: 18 passed — smoke API, admin login flow, PWA offline shell, SOS flow, full citizen report pipeline (submit → persisted → confirm via map popup → consensus grows)
-- **0 errors** on `tsc --noEmit`
-- **CI pipeline** runs lint → tests → build → E2E on every push/PR
+See `docs/RUNTIME_BASELINE.md` for the verified runtime matrix. Test counts are intentionally not hardcoded here; CI is the authoritative source for current pass/fail state and test totals.
 
 ---
 
@@ -313,8 +309,8 @@ docker run -p 3000:3000 --env-file .env wildfire-observatory
 ```
 
 Multi-stage build:
-1. **Builder stage**: installs dependencies, runs `vite build` + `esbuild`
-2. **Production stage**: `node:20-alpine`, `USER node`, only `dist/` + `node_modules`
+1. **Builder stage**: `node:22-alpine`, pnpm `11.21.0`, installs dependencies and runs `vite build` + `esbuild`
+2. **Production stage**: `node:22-alpine`, non-root `nodejs` user, production dependencies only, lifecycle scripts disabled
 
 ---
 
@@ -323,12 +319,14 @@ Multi-stage build:
 ## 🔄 CI/CD
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`):
-1. `npm ci`
-2. `npm run lint` (tsc --noEmit)
-3. `npm run test:server` (vitest)
-4. `npm run test:react` (vitest)
-5. `npm run build` (vite + esbuild)
+1. `pnpm install --frozen-lockfile`
+2. `pnpm run lint` (tsc --noEmit)
+3. `pnpm run test:server` (vitest)
+4. `pnpm run test:react` (vitest)
+5. `pnpm run build` (vite + esbuild)
 6. Playwright E2E (Chromium) — artifacts uploaded on failure
+
+CI uses Node.js 24 and pnpm 11.21.0. Production Docker remains on Node 22. See [`docs/RUNTIME_BASELINE.md`](docs/RUNTIME_BASELINE.md).
 
 Husky pre-commit hook runs `tsc --noEmit` before each commit.
 
@@ -342,7 +340,7 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 |---|---|
 | JWT admin auth, rate limiting, Helmet headers, CORS, Zod validation | ✅ Implemented |
 | Modular backend with Pino structured logging & centralized error handling | ✅ Implemented |
-| Automated tests (19 server suites + React + Playwright E2E) & CI pipeline | ✅ Implemented |
+| Automated tests & CI pipeline | ✅ Implemented |
 | Swagger/OpenAPI docs + bilingual README | ✅ Implemented |
 | Multi-stage Docker build + GitHub Actions + Husky | ✅ Implemented |
 | Sentry monitoring (server + React) | ✅ Implemented |
@@ -354,18 +352,16 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 ### What was improved / التحسينات المنجزة
 
 - ✅ **Security**: Replaced hardcoded `nova2026` password with JWT authentication, added Helmet, CORS, rate limiting
-- ✅ **Architecture**: Monolithic 1082-line `server.ts` split into 15 modular files
+- ✅ **Architecture**: Monolithic backend split into modular files
 - ✅ **Logging**: `console.log` replaced with Pino structured logger
 - ✅ **Error Handling**: Centralized error handler middleware
-- ✅ **Testing**: 19 Vitest server suites (166 tests) + React tests + 18 Playwright E2E
+- ✅ **Testing**: Unit/API + React + Playwright E2E coverage
 - ✅ **CI/CD**: GitHub Actions pipeline + Husky pre-commit hooks
 - ✅ **API Docs**: Swagger UI at `/api-docs`
-- ✅ **Docker**: Multi-stage production build
+- ✅ **Docker**: Multi-stage production build on Node 22
 - ✅ **Monitoring**: Sentry integration (server + React)
 - ✅ **PWA**: Service worker with offline API caching
 - ✅ **Geo Fixes**: Corrected Tunisia/Libya region boundaries
-
----
 
 <div align="center">
 <p>
