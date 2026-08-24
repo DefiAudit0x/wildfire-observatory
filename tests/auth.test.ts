@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import express from "express";
 import supertest from "supertest";
-import { generateStaffToken, generateAdminToken, requireAuth, requireRole } from "../server/middleware.js";
+import { generateStaffToken, generateAdminToken, requireAuth, requireRole, isCurrentStaffSession } from "../server/middleware.js";
 import authRouter from "../server/routes/auth.js";
 
 function createAuthTestApp() {
@@ -33,6 +33,50 @@ describe("requireAuth", () => {
     app.get("/protected", requireAuth, (_req, res) => res.json({ ok: true }));
     const res = await supertest(app).get("/protected").set("Authorization", "Bearer not-a-real-token");
     expect(res.status).toBe(401);
+  });
+});
+
+describe("isCurrentStaffSession", () => {
+  const token = { role: "agent" as const, unitId: "unit-dz16", agentId: "a1" };
+
+  it("accepts an active user whose role and unit still match the token", () => {
+    expect(isCurrentStaffSession(token, {
+      agentId: "a1",
+      role: "agent",
+      unitId: "unit-dz16",
+      isActive: true,
+    })).toBe(true);
+  });
+
+  it("rejects a token after the account is deactivated", () => {
+    expect(isCurrentStaffSession(token, {
+      agentId: "a1",
+      role: "agent",
+      unitId: "unit-dz16",
+      isActive: false,
+    })).toBe(false);
+  });
+
+  it("rejects a token after the account role changes", () => {
+    expect(isCurrentStaffSession(token, {
+      agentId: "a1",
+      role: "commander",
+      unitId: "unit-dz16",
+      isActive: true,
+    })).toBe(false);
+  });
+
+  it("rejects a token after the account moves to another unit", () => {
+    expect(isCurrentStaffSession(token, {
+      agentId: "a1",
+      role: "agent",
+      unitId: "unit-dz17",
+      isActive: true,
+    })).toBe(false);
+  });
+
+  it("rejects a token whose staff account no longer exists", () => {
+    expect(isCurrentStaffSession(token, null)).toBe(false);
   });
 });
 
