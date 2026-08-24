@@ -22,6 +22,7 @@ describe("POST /api/volunteer/register", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.spyOn(fs, "docSet").mockResolvedValue(true);
   });
 
   it("rejects an invalid phone number format", async () => {
@@ -105,7 +106,7 @@ describe("POST /api/volunteer/register", () => {
   });
 
   it("fails closed when durable Firestore persistence fails", async () => {
-    vi.spyOn(fs, "docSet").mockResolvedValue(false);
+    vi.mocked(fs.docSet).mockResolvedValue(false);
     const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
       fullName: "فشل حفظ",
       phone: "0731315555",
