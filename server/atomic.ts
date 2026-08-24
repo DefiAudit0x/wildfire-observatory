@@ -3,11 +3,7 @@ import logger from "./logger.js";
 
 export type AtomicCreateResult = "created" | "exists" | "unavailable";
 
-export async function createDocIfAbsent(
-  collectionName: string,
-  id: string,
-  data: Record<string, any>
-): Promise<AtomicCreateResult> {
+export async function createDocIfAbsent(collectionName: string, id: string, data: Record<string, any>): Promise<AtomicCreateResult> {
   const db = getDb();
   if (!db) return "unavailable";
   try {
@@ -25,7 +21,7 @@ export async function createDocIfAbsent(
       const ref = doc(db, collectionName, id);
       const existing = await tx.get(ref);
       if (existing.exists()) return "exists";
-      tx.create(ref, data);
+      tx.set(ref, data);
       return "created";
     });
   } catch (err) {
@@ -53,13 +49,7 @@ export async function getFreshDoc(collectionName: string, id: string): Promise<a
 
 export type RosterAppendResult = "created" | "limit" | "duplicate-agent" | "unavailable";
 
-export async function appendRosterPostAtomic(
-  collectionName: string,
-  date: string,
-  unitId: string,
-  post: Record<string, any>,
-  maxPosts: number
-): Promise<RosterAppendResult> {
+export async function appendRosterPostAtomic(collectionName: string, date: string, unitId: string, post: Record<string, any>, maxPosts: number): Promise<RosterAppendResult> {
   const db = getDb();
   if (!db) return "unavailable";
   try {
@@ -70,18 +60,10 @@ export async function appendRosterPostAtomic(
         const existing = snap.exists ? snap.data() : null;
         const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
         if (posts.length >= maxPosts) return "limit";
-        const existingAgents = new Set(
-          posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : [])
-        );
+        const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
         const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
-        if (incomingAgents.some((agentId: string) => existingAgents.has(agentId))) return "duplicate-agent";
-        if (new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
-        tx.set(ref, {
-          unitId,
-          date,
-          posts: [...posts, post],
-          updatedAt: new Date().toISOString(),
-        });
+        if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
+        tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
         return "created";
       });
     }
@@ -92,17 +74,10 @@ export async function appendRosterPostAtomic(
       const existing = snap.exists() ? snap.data() : null;
       const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
       if (posts.length >= maxPosts) return "limit";
-      const existingAgents = new Set(
-        posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : [])
-      );
+      const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
       const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
-      if (incomingAgents.some((agentId: string) => existingAgents.has(agentId))) return "duplicate-agent";
-      if (new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
-      if (existing) {
-        tx.update(ref, { posts: [...posts, post], updatedAt: new Date().toISOString() });
-      } else {
-        tx.set(ref, { unitId, date, posts: [post], updatedAt: new Date().toISOString() });
-      }
+      if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
+      tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
       return "created";
     });
   } catch (err) {
@@ -113,12 +88,7 @@ export async function appendRosterPostAtomic(
 
 export type VolunteerApprovalResult = "updated" | "missing" | "badge-exists" | "unavailable";
 
-export async function approveVolunteerAtomically(
-  registrationId: string,
-  registrationUpdate: Record<string, any>,
-  badgeCode: string,
-  badgeData: Record<string, any>
-): Promise<VolunteerApprovalResult> {
+export async function approveVolunteerAtomically(registrationId: string, registrationUpdate: Record<string, any>, badgeCode: string, badgeData: Record<string, any>): Promise<VolunteerApprovalResult> {
   const db = getDb();
   if (!db) return "unavailable";
   try {
@@ -144,7 +114,7 @@ export async function approveVolunteerAtomically(
       const badge = await tx.get(badgeRef);
       if (badge.exists()) return "badge-exists";
       tx.update(registrationRef, registrationUpdate);
-      tx.create(badgeRef, badgeData);
+      tx.set(badgeRef, badgeData);
       return "updated";
     });
   } catch (err) {
