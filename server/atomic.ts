@@ -1,0 +1,124 @@
+import { getDb, isAdminDb } from "./firebase.js";
+import logger from "./logger.js";
+
+export type AtomicCreateResult = "created" | "exists" | "unavailable";
+
+export async function createDocIfAbsent(collectionName: string, id: string, data: Record<string, any>): Promise<AtomicCreateResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const ref = db.collection(collectionName).doc(id);
+        const existing = await tx.get(ref);
+        if (existing.exists) return "exists";
+        tx.create(ref, data);
+        return "created";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const ref = doc(db, collectionName, id);
+      const existing = await tx.get(ref);
+      if (existing.exists()) return "exists";
+      tx.set(ref, data);
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, collectionName, id }, "Atomic create failed");
+    return "unavailable";
+  }
+}
+
+export async function getFreshDoc(collectionName: string, id: string): Promise<any | null> {
+  const db = getDb();
+  if (!db) return null;
+  try {
+    if (isAdminDb(db)) {
+      const snap = await db.collection(collectionName).doc(id).get();
+      return snap.exists ? { id: snap.id, ...snap.data() } : null;
+    }
+    const { doc, getDocFromServer } = await import("firebase/firestore");
+    const snap = await getDocFromServer(doc(db, collectionName, id));
+    return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+  } catch (err) {
+    logger.error({ err, collectionName, id }, "Fresh Firestore doc read failed");
+    return null;
+  }
+}
+
+export type RosterAppendResult = "created" | "limit" | "duplicate-agent" | "unavailable";
+
+export async function appendRosterPostAtomic(collectionName: string, date: string, unitId: string, post: Record<string, any>, maxPosts: number): Promise<RosterAppendResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const ref = db.collection(collectionName).doc(date);
+        const snap = await tx.get(ref);
+        const existing = snap.exists ? snap.data() : null;
+        const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
+        if (posts.length >= maxPosts) return "limit";
+        const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
+        const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
+        if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
+        tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
+        return "created";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const ref = doc(db, collectionName, date);
+      const snap = await tx.get(ref);
+      const existing = snap.exists() ? snap.data() : null;
+      const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
+      if (posts.length >= maxPosts) return "limit";
+      const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
+      const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
+      if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
+      tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, collectionName, date }, "Atomic roster append failed");
+    return "unavailable";
+  }
+}
+
+export type VolunteerApprovalResult = "updated" | "missing" | "badge-exists" | "unavailable";
+
+export async function approveVolunteerAtomically(registrationId: string, registrationUpdate: Record<string, any>, badgeCode: string, badgeData: Record<string, any>): Promise<VolunteerApprovalResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const registrationRef = db.collection("volunteerRegistrations").doc(registrationId);
+        const registration = await tx.get(registrationRef);
+        if (!registration.exists) return "missing";
+        const badgeRef = db.collection("badgeCodes").doc(badgeCode);
+        const badge = await tx.get(badgeRef);
+        if (badge.exists) return "badge-exists";
+        tx.update(registrationRef, registrationUpdate);
+        tx.create(badgeRef, badgeData);
+        return "updated";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const registrationRef = doc(db, "volunteerRegistrations", registrationId);
+      const registration = await tx.get(registrationRef);
+      if (!registration.exists()) return "missing";
+      const badgeRef = doc(db, "badgeCodes", badgeCode);
+      const badge = await tx.get(badgeRef);
+      if (badge.exists()) return "badge-exists";
+      tx.update(registrationRef, registrationUpdate);
+      tx.set(badgeRef, badgeData);
+      return "updated";
+    });
+  } catch (err) {
+    logger.error({ err, registrationId, badgeCode }, "Atomic volunteer approval failed");
+    return "unavailable";
+  }
+}
