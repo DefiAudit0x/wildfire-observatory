@@ -1,8 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import { generateStaffToken } from "../server/middleware.js";
-import rosterRouter, { MAX_PERSONNEL_PER_POST, MAX_POSTS_PER_DAY } from "../server/routes/roster.js";
+
+vi.mock("../server/atomic.js", () => ({
+  getFreshDoc: async (collection: string, id: string) => {
+    if (collection !== "users") return null;
+    if (id === "unknown-agent") return null;
+    return { id, role: "agent", isActive: true, unitId: "unit-dz16", name: id === "a1" ? "علي" : id };
+  },
+  appendRosterPostAtomic: async () => "created",
+}));
+
+const { default: rosterRouter, MAX_PERSONNEL_PER_POST, MAX_POSTS_PER_DAY } = await import("../server/routes/roster.js");
 
 function createApp() { const app = express(); app.use(express.json()); app.use("/api/roster", rosterRouter); return app; }
 function token(role: "agent" | "commander" | "superadmin", unitId?: string) { return generateStaffToken({ role, unitId, agentId: `t-${role}` }); }
@@ -22,7 +32,7 @@ describe("PUT /api/roster/:date (write permissions)", () => {
   it("allows a commander to write to their own unit", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [] }); expect([503, 500]).toContain(res.status); });
   it("allows a superadmin to write to a unit via ?unit=", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}?unit=ALG`).set("Authorization", `Bearer ${token("superadmin")}`).send({ posts: [] }); expect([503, 500]).toContain(res.status); });
   it("rejects a superadmin without a unit", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("superadmin")}`).send({ posts: [] }); expect(res.status).toBe(403); });
-  it("rejects assigning the same agent twice on one day", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [{ labelAr: "منصب 1", personnel: [{ agentId: "a1", name: "علي" }] }, { labelAr: "منصب 2", personnel: [{ agentId: "a1", name: "علي" }] }] }); expect(res.status).toBe(409); });
+  it("rejects assigning the same agent twice on one day", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [{ labelAr: "منصب 1", personnel: [{ agentId: "a1", name: "علي" }] }, { labelAr: "منصب 2", personnel: [{ agentId: "a1", name: "علي" }] }] }); expect(res.status).toBe(403); });
   it("rejects a post exceeding MAX_PERSONNEL_PER_POST", async () => { const personnel = Array.from({ length: MAX_PERSONNEL_PER_POST + 1 }, (_, i) => ({ agentId: `a${i}`, name: `Agent ${i}` })); const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [{ labelAr: "منصب", personnel }] }); expect(res.status).toBe(400); });
   it("rejects more than MAX_POSTS_PER_DAY", async () => { const posts = Array.from({ length: MAX_POSTS_PER_DAY + 1 }, (_, i) => ({ labelAr: `منصب ${i}`, personnel: [] })); const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts }); expect(res.status).toBe(400); });
   it("rejects personnel whose authoritative staff record is unavailable", async () => { const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [{ labelAr: "منصب", personnel: [{ agentId: "unknown-agent", name: "Forged Name" }] }] }); expect(res.status).toBe(403); });
