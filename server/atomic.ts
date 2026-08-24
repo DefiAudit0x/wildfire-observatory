@@ -20,7 +20,7 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
     return await runTransaction(db, async (tx: any) => {
       const ref = doc(db, collectionName, id);
       const existing = await tx.get(ref);
-      if (existing.exists()) return "exists";
+      if (existing.exists) return "exists";
       tx.set(ref, data);
       return "created";
     });
@@ -150,6 +150,62 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
     });
   } catch (err) {
     logger.error({ err, collectionName, date }, "Atomic roster append failed");
+    return "unavailable";
+  }
+}
+
+export type VolunteerRegistrationResult = "created" | "duplicate-phone" | "duplicate-email" | "duplicate-name" | "unavailable";
+
+export async function createVolunteerRegistrationAtomically(
+  registration: Record<string, any>,
+  keys: { phoneHash: string; emailHash?: string; fullNameHash: string },
+): Promise<VolunteerRegistrationResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  const reservationCollection = "volunteerRegistrationUniqueness";
+  const reservationIds = [
+    { kind: "phone", key: keys.phoneHash },
+    ...(keys.emailHash ? [{ kind: "email", key: keys.emailHash }] : []),
+    { kind: "name", key: `${keys.fullNameHash}:${registration.wilaya}` },
+  ];
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any) => {
+        const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: db.collection(reservationCollection).doc(`${kind}-${key}`) }));
+        const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
+        for (let i = 0; i < snapshots.length; i++) {
+          if (!snapshots[i].exists) continue;
+          const data = snapshots[i].data() as { registrationId?: string };
+          if (!data.registrationId) return "unavailable";
+          const existing = await tx.get(db.collection("volunteerRegistrations").doc(data.registrationId));
+          if (existing.exists && existing.data()?.status !== "rejected") {
+            return refs[i].kind === "phone" ? "duplicate-phone" : refs[i].kind === "email" ? "duplicate-email" : "duplicate-name";
+          }
+        }
+        for (const { kind, ref } of refs) tx.set(ref, { registrationId: registration.id, kind, createdAt: registration.createdAt });
+        tx.create(db.collection("volunteerRegistrations").doc(registration.id), registration);
+        return "created";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any) => {
+      const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: doc(db, reservationCollection, `${kind}-${key}`) }));
+      const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
+      for (let i = 0; i < snapshots.length; i++) {
+        if (!snapshots[i].exists()) continue;
+        const data = snapshots[i].data() as { registrationId?: string };
+        if (!data.registrationId) return "unavailable";
+        const existing = await tx.get(doc(db, "volunteerRegistrations", data.registrationId));
+        if (existing.exists() && existing.data()?.status !== "rejected") {
+          return refs[i].kind === "phone" ? "duplicate-phone" : refs[i].kind === "email" ? "duplicate-email" : "duplicate-name";
+        }
+      }
+      for (const { kind, ref } of refs) tx.set(ref, { registrationId: registration.id, kind, createdAt: registration.createdAt });
+      tx.set(doc(db, "volunteerRegistrations", registration.id), registration);
+      return "created";
+    });
+  } catch (err) {
+    logger.error({ err, registrationId: registration.id }, "Atomic volunteer registration failed");
     return "unavailable";
   }
 }
