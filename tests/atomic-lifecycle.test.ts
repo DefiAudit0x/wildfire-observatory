@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const state = vi.hoisted(() => ({
   units: new Set<string>(),
-  users: new Set<string>(),
+  users: new Map<string, string>(),
 }));
 
 const db = vi.hoisted(() => ({
@@ -19,13 +19,13 @@ const db = vi.hoisted(() => ({
     get: async (target: any) => {
       if (target.kind === "doc") {
         const exists = target.collection === "units" ? state.units.has(target.id) : state.users.has(target.id);
-        return { exists, id: target.id, data: () => ({ unitId: target.id }) };
+        return { exists, id: target.id, data: () => ({ unitId: state.users.get(target.id) ?? target.id }) };
       }
-      const hasUser = [...state.users].some((id) => id === target.unitId);
+      const hasUser = [...state.users.values()].some((unitId) => unitId === target.unitId);
       return { empty: !hasUser };
     },
-    create: (ref: any) => {
-      if (ref.collection === "users") state.users.add(ref.id);
+    create: (ref: any, data: any) => {
+      if (ref.collection === "users") state.users.set(ref.id, data.unitId);
       if (ref.collection === "units") state.units.add(ref.id);
     },
     delete: (ref: any) => state.units.delete(ref.id),
@@ -56,12 +56,12 @@ describe("unit/user lifecycle atomicity", () => {
     state.units.add("unit-a");
     const result = await createUserIfUnitExists("agent-1", "unit-a", { agentId: "agent-1", unitId: "unit-a" });
     expect(result).toBe("created");
-    expect(state.users.has("agent-1")).toBe(true);
+    expect(state.users.get("agent-1")).toBe("unit-a");
   });
 
   it("refuses unit deletion while a user references it", async () => {
     state.units.add("unit-a");
-    state.users.add("agent-1");
+    state.users.set("agent-1", "unit-a");
     const result = await deleteUnitIfUnlinked("unit-a");
     expect(result).toBe("has-users");
     expect(state.units.has("unit-a")).toBe(true);
