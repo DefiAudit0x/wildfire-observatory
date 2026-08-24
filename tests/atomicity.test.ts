@@ -119,6 +119,26 @@ describe("atomic persistence helpers", () => {
     expect(state.docs.get("volunteerRegistrationUniqueness/phone-phone-hash")?.registrationId).toBe("reg-new");
   });
 
+  it("allows the same name and wilaya after the 30-day window expires", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    const oldCreatedAt = "2026-07-01T00:00:00.000Z";
+    state.docs.set("volunteerRegistrationUniqueness/phone-old-phone", { registrationId: "reg-old-phone", kind: "phone", createdAt: oldCreatedAt });
+    state.docs.set("volunteerRegistrationUniqueness/name-name-hash:Bordj Bou Arreridj", {
+      registrationId: "reg-old-name",
+      kind: "name",
+      createdAt: oldCreatedAt,
+      expiresAt: Date.now() - 1,
+    });
+    state.docs.set("volunteerRegistrations/reg-old-phone", { id: "reg-old-phone", status: "pending" });
+    state.docs.set("volunteerRegistrations/reg-old-name", { id: "reg-old-name", status: "pending", createdAt: oldCreatedAt, wilaya: "Bordj Bou Arreridj" });
+    const result = await createVolunteerRegistrationAtomically(
+      registration("reg-new-window"),
+      { phoneHash: "new-phone", fullNameHash: "name-hash" },
+    );
+    expect(result).toBe("created");
+  });
+
   it("atomically approves a volunteer with its badge", async () => {
     state.docs.clear();
     state.queue = Promise.resolve();
