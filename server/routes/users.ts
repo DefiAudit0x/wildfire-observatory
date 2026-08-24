@@ -5,7 +5,7 @@ import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
 import { collectionGet, docGet, docUpdate, docDelete } from "../fs.js";
-import { createDocIfAbsent } from "../atomic.js";
+import { createUserIfUnitExists, createDocIfAbsent } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -33,15 +33,12 @@ router.post("/", requireRole("superadmin", "commander"), async (req: Request, re
     if (parsed.data.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only add staff to their own unit" }); return; }
   }
   try {
-    const existing = await docGet("users", parsed.data.agentId);
-    if (existing) { res.status(409).json({ error: "agentId already exists" }); return; }
-    const unit = await docGet("units", toUnitId(parsed.data.unitId));
-    if (!unit) { res.status(404).json({ error: "Unit not found" }); return; }
     const passwordHash = await bcrypt.hash(parsed.data.password, 10);
     const now = new Date().toISOString();
     const user = { agentId: parsed.data.agentId, name: parsed.data.name, role: parsed.data.role, unitId: parsed.data.unitId, passwordHash, isActive: true, createdAt: now, createdBy: admin?.agentId || "admin" };
-    const result = await createDocIfAbsent("users", user.agentId, user);
+    const result = await createUserIfUnitExists(user.agentId, toUnitId(user.unitId), user);
     if (result === "exists") { res.status(409).json({ error: "agentId already exists" }); return; }
+    if (result === "unit-missing") { res.status(404).json({ error: "Unit not found" }); return; }
     if (result === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
     res.status(201).json(sanitizeUser(user));
   } catch (err) { logger.error({ err }, "Failed to create user"); res.status(500).json({ error: "Internal server error" }); }

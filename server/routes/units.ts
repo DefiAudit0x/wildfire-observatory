@@ -3,8 +3,8 @@ import { z } from "zod";
 import logger from "../logger.js";
 import { requireAuth, requireRole } from "../middleware.js";
 import { str } from "../params.js";
-import { collectionGet, docGet, docSet, docUpdate, docDelete } from "../fs.js";
-import { createDocIfAbsent } from "../atomic.js";
+import { collectionGet, docGet, docSet, docUpdate } from "../fs.js";
+import { createDocIfAbsent, deleteUnitIfUnlinked } from "../atomic.js";
 
 const router = Router();
 const unitSchema = z.object({ code: z.string().min(1).max(12).regex(/^[A-Za-z0-9_-]+$/), nameAr: z.string().min(2).max(200), nameFr: z.string().min(2).max(200), wilaya: z.string().min(1).max(100) });
@@ -41,7 +41,13 @@ router.put("/:id", requireRole("superadmin", "admin"), async (req: Request, res:
 
 router.delete("/:id", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
   const id = str(req.params.id);
-  try { const existing = await docGet("units", id); if (!existing) { res.status(404).json({ error: "Unit not found" }); return; } const linkedUsers = (await collectionGet("users"))?.filter((u: any) => u.unitId === id) || []; if (linkedUsers.length > 0) { res.status(409).json({ error: "Cannot delete a unit that still has staff accounts" }); return; } const ok = await docDelete("units", id); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } res.json({ success: true }); }
+  try {
+    const result = await deleteUnitIfUnlinked(id);
+    if (result === "missing") { res.status(404).json({ error: "Unit not found" }); return; }
+    if (result === "has-users") { res.status(409).json({ error: "Cannot delete a unit that still has staff accounts" }); return; }
+    if (result === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
+    res.json({ success: true });
+  }
   catch (err) { logger.error({ err }, "Failed to delete unit"); res.status(500).json({ error: "Internal server error" }); }
 });
 
