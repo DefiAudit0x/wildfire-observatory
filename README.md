@@ -8,7 +8,7 @@
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Railway-brightgreen)](https://wildfire-observatory-production.up.railway.app/)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
-![Express](https://img.shields.io/badge/Express-4.21-green)
+![Express](https://img.shields.io/badge/Express-5.2-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-1.0.0-orange)
 
@@ -88,14 +88,14 @@
 | TailwindCSS 4.1 | Utility-first CSS |
 | Leaflet 1.9 | Interactive maps |
 | Lucide React | Icons |
-| Motion 12 | Animations |
+| Motion 13.1 | Animations |
 | Sentry React | Error monitoring |
 
 ### Backend
 | Technology | Usage |
 |---|---|
-| Node.js 20+ | Runtime |
-| Express 4.21 | HTTP server |
+| Node.js >= 22.13.0 | Runtime |
+| Express 5.2.1 | HTTP server |
 | Firebase Firestore | NoSQL database (optional persistence) |
 | Google GenAI 2.4 | Gemini AI image verification |
 | Helmet | HTTP security headers |
@@ -103,15 +103,16 @@
 | express-rate-limit | API rate limiting (100 req/min) |
 | jsonwebtoken | JWT-based admin authentication |
 | Pino 10 | Structured logging |
-| Zod 3.24 | Input validation (schemas) |
+| Zod 4.4.3 | Input validation (schemas) |
 | Swagger/OpenAPI | API documentation |
 | Sentry Node | Error monitoring |
 
 ### DevOps
 | Technology | Usage |
 |---|---|
-| Docker | Multi-stage container build |
-| GitHub Actions | CI/CD pipeline (lint → test → build) |
+| Docker | Multi-stage container build (Node 22 Alpine) |
+| pnpm 11.21.0 | Package manager and workspace install |
+| GitHub Actions | CI/CD pipeline (Node 24 + pnpm: lint → test → build → E2E) |
 | Husky | Pre-commit hooks (tsc --noEmit) |
 
 ---
@@ -196,8 +197,8 @@ Report Submitted
 
 ### Prerequisites / المتطلبات
 
-- **Node.js** ≥ 20
-- **npm** or **bun**
+- **Node.js** ≥ 22.13.0
+- **pnpm** 11.21.0
 
 ### Installation / التثبيت
 
@@ -207,7 +208,9 @@ git clone https://github.com/DefiAudit0x/wildfire-observatory.git
 cd wildfire-observatory
 
 # Install dependencies
-npm install
+corepack enable
+corepack prepare pnpm@11.21.0 --activate
+pnpm install
 
 # Set environment variables
 cp .env.example .env
@@ -218,7 +221,7 @@ cp .env.example .env
 #   JWT_SECRET — change for production
 
 # Run development server
-npm run dev
+pnpm run dev
 ```
 
 Open http://localhost:3000 in your browser.
@@ -275,20 +278,20 @@ http://localhost:3000/api-docs
 
 ```bash
 # Run server unit tests
-npm run test:server
+pnpm run test:server
 
 # Run React component tests
-npm run test:react
+pnpm run test:react
 
 # Type check
-npm run lint     # (tsc --noEmit)
+pnpm run lint     # (tsc --noEmit)
 
 # Full build
-npm run build
+pnpm run build
 
 # End-to-end tests (Playwright + Chromium)
-npx playwright install chromium
-npm run test:e2e
+pnpm exec playwright install chromium
+pnpm run test:e2e
 ```
 
 Current test coverage:
@@ -313,8 +316,8 @@ docker run -p 3000:3000 --env-file .env wildfire-observatory
 ```
 
 Multi-stage build:
-1. **Builder stage**: installs dependencies, runs `vite build` + `esbuild`
-2. **Production stage**: `node:20-alpine`, `USER node`, only `dist/` + `node_modules`
+1. **Builder stage**: Node 22 Alpine, pnpm 11.21.0, installs dependencies and runs `vite build` + `esbuild`
+2. **Production stage**: Node 22 Alpine, non-root `nodejs` user, installs production dependencies with `--ignore-scripts`, and runs `dist/server.cjs`
 
 ---
 
@@ -323,12 +326,14 @@ Multi-stage build:
 ## 🔄 CI/CD
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`):
-1. `npm ci`
-2. `npm run lint` (tsc --noEmit)
-3. `npm run test:server` (vitest)
-4. `npm run test:react` (vitest)
-5. `npm run build` (vite + esbuild)
+1. `pnpm install --frozen-lockfile`
+2. `pnpm run lint` (tsc --noEmit)
+3. `pnpm run test:server` (vitest)
+4. `pnpm run test:react` (vitest)
+5. `pnpm run build` (vite + esbuild)
 6. Playwright E2E (Chromium) — artifacts uploaded on failure
+
+The CI jobs use **Node 24** with **pnpm 11.21.0**. The production Docker image uses **Node 22** with the same pnpm release.
 
 Husky pre-commit hook runs `tsc --noEmit` before each commit.
 
