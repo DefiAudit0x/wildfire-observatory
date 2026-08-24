@@ -5,6 +5,7 @@ import logger from "../logger.js";
 import { requireAuth } from "../middleware.js";
 import { str } from "../params.js";
 import { docGet, docSet, docDelete } from "../fs.js";
+import { appendRosterPostAtomic, getFreshDoc } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -16,16 +17,6 @@ const rosterWriteLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Too many roster updates, please slow down" },
 });
-
-/**
- * Daily duty roster (جدول المناوبة).
- *
- * Storage: units/{unitId}/rosterDays/{YYYY-MM-DD}
- *   doc = { unitId, date, posts: [ Post ] }
- *   Post = { id, labelAr, labelFr?, vehicle?, status: active|standby|maintenance, personnel: [ {agentId, name, rank?} ] }
- *
- * A "post" (منصب) may hold MULTIPLE staff at the same time (personnel array).
- */
 
 export const MAX_PERSONNEL_PER_POST = 10;
 export const MAX_POSTS_PER_DAY = 50;
@@ -49,10 +40,6 @@ const daySchema = z.object({
   posts: z.array(postSchema).max(MAX_POSTS_PER_DAY),
 });
 
-// Resolve which unit the caller acts on.
-// - superadmin/admin: may pass ?unit=<code>, otherwise use their own unitId
-// - commander: always their own unit; can write.
-// - agent: read-only.
 function resolveUnitForWrite(admin: any, queryUnit: any): { unitId: string | null; error?: string } {
   const role = admin?.role;
   if (role !== "superadmin" && role !== "admin" && role !== "commander") {
@@ -62,7 +49,6 @@ function resolveUnitForWrite(admin: any, queryUnit: any): { unitId: string | nul
     if (!admin?.unitId) return { unitId: null, error: "Forbidden: missing unit on account" };
     return { unitId: toUnitId(admin.unitId) };
   }
-  // superadmin/admin may override unit via ?unit=code
   if (typeof queryUnit === "string" && queryUnit.trim()) {
     return { unitId: toUnitId(queryUnit.trim()) };
   }
@@ -80,14 +66,12 @@ function todayISO(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-/** Archived days (strictly before today) are read-only. */
 function isArchivedDate(date: string): boolean {
   return date < todayISO();
 }
 
 const MAX_FUTURE_DAYS = 365;
 
-/** Roster planning beyond a year ahead is rejected. */
 function isTooFarFuture(date: string): boolean {
   const target = new Date(`${date}T12:00:00Z`).getTime();
   return target - Date.now() > MAX_FUTURE_DAYS * 24 * 60 * 60 * 1000;
@@ -100,7 +84,28 @@ function ensurePostIds(posts: any[]): any[] {
   }));
 }
 
-// GET /api/roster/:date — read the roster for the caller's unit
+async function canonicalizePersonnel(unitId: string, posts: any[]): Promise<{ posts: any[] } | { error: string }> {
+  const canonicalPosts: any[] = [];
+  const seenAgents = new Set<string>();
+  for (const post of posts) {
+    const personnel: any[] = [];
+    for (const person of post.personnel || []) {
+      if (seenAgents.has(person.agentId)) return { error: `Agent "${person.agentId}" is assigned twice on the same day` };
+      const staff = await getFreshDoc("users", person.agentId);
+      if (!staff || staff.role !== "agent" || staff.isActive === false) {
+        return { error: `Agent "${person.agentId}" is not an active staff account` };
+      }
+      if (toUnitId(staff.unitId) !== unitId) {
+        return { error: `Agent "${person.agentId}" does not belong to this unit` };
+      }
+      seenAgents.add(person.agentId);
+      personnel.push({ ...person, name: staff.name });
+    }
+    canonicalPosts.push({ ...post, personnel });
+  }
+  return { posts: canonicalPosts };
+}
+
 router.get("/:date", requireAuth, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -135,7 +140,6 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/roster/:date — replace the whole day roster (commander/superadmin)
 router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -156,26 +160,17 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
     res.status(400).json({ error: `Cannot plan rosters more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
-
   const parsed = daySchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() });
     return;
   }
-
-  // Guard: an agent may not appear on two posts the same day.
-  const seenAgents = new Set<string>();
-  for (const post of parsed.data.posts) {
-    for (const p of post.personnel) {
-      if (seenAgents.has(p.agentId)) {
-        res.status(409).json({ error: `Agent "${p.agentId}" is assigned twice on the same day` });
-        return;
-      }
-      seenAgents.add(p.agentId);
-    }
+  const canonical = await canonicalizePersonnel(unitId, parsed.data.posts);
+  if ("error" in canonical) {
+    res.status(403).json({ error: canonical.error });
+    return;
   }
-
-  const posts = ensurePostIds(parsed.data.posts);
+  const posts = ensurePostIds(canonical.posts);
   const day = { unitId, date, posts, updatedAt: new Date().toISOString() };
   try {
     const existing = await docGet(rosterPath(unitId), date);
@@ -190,9 +185,7 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
     const diff = {
       added: posts.filter((p) => !existingIds.has(p.id)).length,
       removed: existingPosts.filter((p: any) => !newIds.has(p.id)).length,
-      modified: posts.filter(
-        (p) => existingIds.has(p.id) && JSON.stringify(existingPosts.find((e: any) => e.id === p.id)) !== JSON.stringify(p)
-      ).length,
+      modified: posts.filter((p) => existingIds.has(p.id) && JSON.stringify(existingPosts.find((e: any) => e.id === p.id)) !== JSON.stringify(p)).length,
     };
     logger.info({ unitId, date, actor: admin?.agentId || "admin", diff }, "Roster saved");
     res.json(day);
@@ -202,7 +195,6 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
   }
 });
 
-// POST /api/roster/:date — append one post to the day (same write rules)
 router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -228,22 +220,23 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
     res.status(400).json({ error: `Cannot plan rosters more than ${MAX_FUTURE_DAYS} days in the future` });
     return;
   }
+  const canonical = await canonicalizePersonnel(unitId, [parsed.data]);
+  if ("error" in canonical) {
+    res.status(403).json({ error: canonical.error });
+    return;
+  }
+  const newPost = ensurePostIds(canonical.posts)[0];
   try {
-    const existing = await docGet(rosterPath(unitId), date);
-    const posts = existing?.posts || [];
-    if (posts.length >= MAX_POSTS_PER_DAY) {
+    const result = await appendRosterPostAtomic(rosterPath(unitId), date, unitId, newPost, MAX_POSTS_PER_DAY);
+    if (result === "limit") {
       res.status(409).json({ error: `Maximum ${MAX_POSTS_PER_DAY} posts per day` });
       return;
     }
-    const newPost = ensurePostIds([parsed.data])[0];
-    const day = {
-      unitId,
-      date,
-      posts: [...posts, newPost],
-      updatedAt: new Date().toISOString(),
-    };
-    const ok = await docSet(rosterPath(unitId), date, day);
-    if (!ok) {
+    if (result === "duplicate-agent") {
+      res.status(409).json({ error: "One or more agents are already assigned on this day" });
+      return;
+    }
+    if (result !== "created") {
       res.status(503).json({ error: "Database not available" });
       return;
     }
@@ -254,7 +247,6 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
   }
 });
 
-// DELETE /api/roster/:date — clear the day
 router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -293,7 +285,6 @@ router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, re
   }
 });
 
-// POST /api/roster/:date/copy-to/:target — duplicate a day's posts into another date
 router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   const target = str(req.params.target);
@@ -321,7 +312,12 @@ router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (re
       res.status(404).json({ error: `No roster found for ${date} to copy from` });
       return;
     }
-    const posts = ensurePostIds(source.posts.map((p: any) => ({ ...p })));
+    const canonical = await canonicalizePersonnel(unitId, source.posts.map((p: any) => ({ ...p })));
+    if ("error" in canonical) {
+      res.status(403).json({ error: canonical.error });
+      return;
+    }
+    const posts = ensurePostIds(canonical.posts);
     const day = { unitId, date: target, posts, updatedAt: new Date().toISOString() };
     const ok = await docSet(rosterPath(unitId), target, day);
     if (!ok) {
