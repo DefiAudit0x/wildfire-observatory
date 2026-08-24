@@ -5,6 +5,35 @@ import volunteersRouter from "../server/routes/volunteers.js";
 import { generateAdminToken } from "../server/middleware.js";
 import * as fs from "../server/fs.js";
 
+const atomicReservations = vi.hoisted(() => new Map<string, string>());
+
+vi.mock("../server/atomic.js", async () => {
+  const actual = await vi.importActual<typeof import("../server/atomic.js")>("../server/atomic.js");
+  const fsModule = await vi.importActual<typeof import("../server/fs.js")>("../server/fs.js");
+  return {
+    ...actual,
+    createVolunteerRegistrationAtomically: vi.fn(async (
+      registration: Record<string, any>,
+      keys: { phoneHash: string; emailHash?: string; fullNameHash: string },
+    ) => {
+      const candidates = [
+        { kind: "phone", key: keys.phoneHash },
+        ...(keys.emailHash ? [{ kind: "email", key: keys.emailHash }] : []),
+        { kind: "name", key: `${keys.fullNameHash}:${registration.wilaya}` },
+      ];
+      for (const candidate of candidates) {
+        const existing = atomicReservations.get(`${candidate.kind}:${candidate.key}`);
+        if (existing) {
+          return candidate.kind === "phone" ? "duplicate-phone" : candidate.kind === "email" ? "duplicate-email" : "duplicate-name";
+        }
+      }
+      if (!(await fsModule.docSet("volunteerRegistrations", registration.id, registration))) return "unavailable";
+      for (const candidate of candidates) atomicReservations.set(`${candidate.kind}:${candidate.key}`, registration.id);
+      return "created";
+    }),
+  };
+});
+
 function createVolunteersApp() {
   const app = express();
   app.set("trust proxy", 1);
@@ -22,6 +51,7 @@ describe("POST /api/volunteer/register", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    atomicReservations.clear();
     vi.spyOn(fs, "docSet").mockResolvedValue(true);
   });
 
