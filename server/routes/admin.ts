@@ -193,7 +193,7 @@ router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req:
 
   const deleted = await deleteReportFromFirestore(id);
   if (deleted) {
-    logAdminAction("report.delete", { id });
+    logAdminAction("report.delete", { id }).catch(() => {});
     liveHub.broadcast("report:delete", { id });
     res.json({ success: true });
     return;
@@ -202,7 +202,7 @@ router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req:
   const index = citizenReports.findIndex((r: any) => r.id === id);
   if (index !== -1) {
     citizenReports.splice(index, 1);
-    logAdminAction("report.delete", { id });
+    logAdminAction("report.delete", { id }).catch(() => {});
     liveHub.broadcast("report:delete", { id });
     res.json({ success: true });
     return;
