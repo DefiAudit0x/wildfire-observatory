@@ -20,7 +20,7 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
     return await runTransaction(db, async (tx: any) => {
       const ref = doc(db, collectionName, id);
       const existing = await tx.get(ref);
-      if (existing.exists) return "exists";
+      if (existing.exists()) return "exists";
       tx.set(ref, data);
       return "created";
     });
