@@ -5,34 +5,58 @@ import volunteersRouter from "../server/routes/volunteers.js";
 import { generateAdminToken } from "../server/middleware.js";
 import * as fs from "../server/fs.js";
 
-const atomicReservations = vi.hoisted(() => new Map<string, string>());
+type Doc = Record<string, any>;
+type State = { docs: Map<string, Doc>; queue: Promise<void>; available: boolean };
+const state = vi.hoisted<State>(() => ({ docs: new Map(), queue: Promise.resolve(), available: true }));
 
-vi.mock("../server/atomic.js", async () => {
-  const actual = await vi.importActual<typeof import("../server/atomic.js")>("../server/atomic.js");
-  const fsModule = await vi.importActual<typeof import("../server/fs.js")>("../server/fs.js");
+vi.mock("../server/firebase.js", () => ({
+  getDb: () => state.available ? createDb() : null,
+  isAdminDb: () => true,
+}));
+
+function snapshot(path: string) {
+  const data = state.docs.get(path);
+  return { exists: Boolean(data), id: path.split("/").at(-1), data: () => data };
+}
+
+function createDb() {
   return {
-    ...actual,
-    createVolunteerRegistrationAtomically: vi.fn(async (
-      registration: Record<string, any>,
-      keys: { phoneHash: string; emailHash?: string; fullNameHash: string },
-    ) => {
-      const candidates = [
-        { kind: "phone", key: keys.phoneHash },
-        ...(keys.emailHash ? [{ kind: "email", key: keys.emailHash }] : []),
-        { kind: "name", key: `${keys.fullNameHash}:${registration.wilaya}` },
-      ];
-      for (const candidate of candidates) {
-        const existing = atomicReservations.get(`${candidate.kind}:${candidate.key}`);
-        if (existing) {
-          return candidate.kind === "phone" ? "duplicate-phone" : candidate.kind === "email" ? "duplicate-email" : "duplicate-name";
+    collection(name: string) {
+      return {
+        doc(id: string) {
+          const path = `${name}/${id}`;
+          return { id, path };
+        },
+      };
+    },
+    async runTransaction<T>(callback: (tx: any) => Promise<T>): Promise<T> {
+      const previous = state.queue;
+      let release!: () => void;
+      state.queue = new Promise<void>((resolve) => { release = resolve; });
+      await previous;
+      const writes: Array<{ kind: "create" | "set" | "update"; path: string; data: Doc }> = [];
+      const tx = {
+        get: async (ref: { path: string }) => snapshot(ref.path),
+        create: (ref: { path: string }, data: Doc) => {
+          if (state.docs.has(ref.path)) throw new Error(`Document already exists: ${ref.path}`);
+          writes.push({ kind: "create", path: ref.path, data });
+        },
+        set: (ref: { path: string }, data: Doc) => writes.push({ kind: "set", path: ref.path, data }),
+        update: (ref: { path: string }, data: Doc) => writes.push({ kind: "update", path: ref.path, data }),
+      };
+      try {
+        const result = await callback(tx);
+        for (const write of writes) {
+          if (write.kind === "update") state.docs.set(write.path, { ...state.docs.get(write.path), ...write.data });
+          else state.docs.set(write.path, write.data);
         }
+        return result;
+      } finally {
+        release();
       }
-      if (!(await fsModule.docSet("volunteerRegistrations", registration.id, registration))) return "unavailable";
-      for (const candidate of candidates) atomicReservations.set(`${candidate.kind}:${candidate.key}`, registration.id);
-      return "created";
-    }),
+    },
   };
-});
+}
 
 function createVolunteersApp() {
   const app = express();
@@ -51,7 +75,9 @@ describe("POST /api/volunteer/register", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
-    atomicReservations.clear();
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.available = true;
     vi.spyOn(fs, "docSet").mockResolvedValue(true);
   });
 
@@ -84,6 +110,12 @@ describe("POST /api/volunteer/register", () => {
   });
 
   it("rejects a duplicate phone number with 409", async () => {
+    const first = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "مختبر حماية",
+      phone: VALID_PHONE,
+      wilaya: "الجزائر - البليدة",
+    });
+    expect(first.status).toBe(200);
     const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
       fullName: "مختبر حماية 2",
       phone: VALID_PHONE,
@@ -136,7 +168,7 @@ describe("POST /api/volunteer/register", () => {
   });
 
   it("fails closed when durable Firestore persistence fails", async () => {
-    vi.mocked(fs.docSet).mockResolvedValue(false);
+    state.available = false;
     const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
       fullName: "فشل حفظ",
       phone: "0731315555",
