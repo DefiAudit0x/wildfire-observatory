@@ -1,10 +1,9 @@
 import { WebSocketServer, WebSocket } from "ws";
-import { Server } from "http";
+import { Server, IncomingMessage } from "http";
 import logger from "./logger.js";
 import config from "./config.js";
 
 const LIVE_PATH = "/api/live";
-
 const CONN_WINDOW_MS = 60 * 1000;
 const MAX_CONNS_PER_IP = 10;
 
@@ -15,6 +14,22 @@ function originAllowed(origin: string | undefined): boolean {
   const host = origin.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   const appHost = config.appUrl.replace(/^https?:\/\//, "");
   return appHost !== "" && appHost === host;
+}
+
+/**
+ * Express is configured for one trusted reverse-proxy hop. Such a proxy appends
+ * the immediate client address to the right of X-Forwarded-For; a client can
+ * prepend arbitrary values. Taking the right-most forwarded value therefore
+ * avoids keying this limiter by a spoofable left-most value.
+ */
+export function connectionKey(req: IncomingMessage): string {
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string") {
+    const entries = forwarded.split(",").map((value) => value.trim()).filter(Boolean);
+    const clientIp = entries.at(-1);
+    if (clientIp) return clientIp;
+  }
+  return req.socket.remoteAddress || "unknown";
 }
 
 class LiveHub {
@@ -35,7 +50,7 @@ class LiveHub {
         socket.destroy();
         return;
       }
-      const ip = String((req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown");
+      const ip = connectionKey(req);
       const now = Date.now();
       const entry = this.connCount.get(ip);
       if (!entry || now > entry.expiresAt) {
