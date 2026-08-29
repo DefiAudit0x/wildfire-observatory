@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import logger from "./logger.js";
 import { verifyMeshToken } from "./mesh-auth.js";
+import { connectionKey } from "./live.js";
 
 export interface MeshNodeInfo {
   id: string;
@@ -23,10 +24,17 @@ const HEARTBEAT_MS = 30_000;
 const STALE_NODE_MS = 90_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_NODES = 250;
+// C3 fix: the upgrade path must not be an unauthenticated resource drain.
+// Mirror live.ts: cap connection attempts per IP per window, and close any
+// socket that never completes a mesh hello.
+const CONN_WINDOW_MS = 60 * 1000;
+const MAX_CONNS_PER_IP = 10;
+const AUTH_TIMEOUT_MS = 10_000;
 
 class MeshHub {
   private wss: WebSocketServer | null = null;
   private nodes = new Map<string, MeshNode>();
+  private connCount = new Map<string, { count: number; expiresAt: number }>();
   private cleanupTimer: NodeJS.Timeout | null = null;
 
   attach(server: Server): void {
@@ -36,6 +44,23 @@ class MeshHub {
     server.on("upgrade", (req, socket, head) => {
       const pathname = new URL(req.url || "/", "http://localhost").pathname;
       if (pathname !== MESH_PATH || !this.wss) return;
+
+      // C3 fix: per-IP connection-attempt cap (same policy as live.ts).
+      const ip = connectionKey(req);
+      const now = Date.now();
+      const entry = this.connCount.get(ip);
+      if (!entry || now > entry.expiresAt) {
+        this.connCount.set(ip, { count: 1, expiresAt: now + CONN_WINDOW_MS });
+      } else {
+        entry.count += 1;
+        if (entry.count > MAX_CONNS_PER_IP) {
+          logger.warn({ ip }, "Mesh upgrade rejected — connection limit reached");
+          socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      }
+
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         this.wss!.emit("connection", ws, req);
       });
@@ -44,6 +69,16 @@ class MeshHub {
     this.wss.on("connection", (ws, req) => {
       const ip = req.socket.remoteAddress || "unknown";
       let nodeId: string | null = null;
+
+      // C3 fix: an unauthenticated socket must not be allowed to park forever.
+      // If no mesh hello completed within the window, drop the connection.
+      let authTimer: NodeJS.Timeout | null = setTimeout(() => {
+        if (!nodeId) {
+          logger.warn({ ip }, "Mesh auth timeout — closing unauthenticated socket");
+          try { ws.close(4002, "Auth timeout"); } catch { /* ignore */ }
+        }
+      }, AUTH_TIMEOUT_MS);
+      authTimer.unref();
 
       ws.on("message", (raw) => {
         let message: MeshMessage;
@@ -85,6 +120,7 @@ class MeshHub {
           }
 
           nodeId = deviceId;
+          if (authTimer) { clearTimeout(authTimer); authTimer = null; }
           this.nodes.set(deviceId, { id: deviceId, label, lastSeen: Date.now(), ws });
           logger.info({ deviceId, ip, nodeCount: this.nodes.size }, "Mesh node joined");
 
@@ -129,6 +165,7 @@ class MeshHub {
       });
 
       ws.on("close", () => {
+        if (authTimer) { clearTimeout(authTimer); authTimer = null; }
         if (nodeId && this.nodes.get(nodeId)?.ws === ws) {
           this.nodes.delete(nodeId);
           logger.info({ nodeId, nodeCount: this.nodes.size }, "Mesh node left");
@@ -150,6 +187,10 @@ class MeshHub {
           logger.info({ nodeId: id, nodeCount: this.nodes.size }, "Mesh node removed (stale)");
           this.broadcast({ type: "node:left", nodeId: id, nodeCount: this.nodes.size });
         }
+      }
+      // C3 fix: sweep expired per-IP connection counters.
+      for (const [k, v] of this.connCount) {
+        if (now > v.expiresAt) this.connCount.delete(k);
       }
     }, HEARTBEAT_MS);
     this.cleanupTimer.unref();
