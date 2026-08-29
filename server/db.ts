@@ -240,7 +240,10 @@ export async function saveReportWithIdempotency(
               : typeof badge.expiresAt === "string"
                 ? new Date(badge.expiresAt).getTime()
                 : null;
-            const notExpired = expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+            // H3 fix: fail-closed — an unparseable/corrupt expiresAt (NaN,
+            // Infinity) is treated as EXPIRED, never as never-expiring. A
+            // badge with no expiry field (null) legitimately never expires.
+            const notExpired = expiresAt === null || (Number.isFinite(expiresAt) && Date.now() < expiresAt);
             const maxUses = typeof badge.maxUses === "number" && badge.maxUses > 0 ? badge.maxUses : null;
             const usedCount = Number(badge.usedCount || 0);
             const underUsageCap = maxUses === null || usedCount < maxUses;
