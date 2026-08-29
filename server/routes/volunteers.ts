@@ -133,7 +133,12 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
   }
   if (!reg) { res.status(404).json({ error: "Registration not found" }); return; }
   const readable = toReadable(reg);
-  const registrationUpdate = { status: finalStatus, assignedCode };
+  // ARC-C1 fix: build the update conditionally — a bare `assignedCode: undefined`
+  // used to make Firestore throw ("Cannot use undefined as a Firestore value"),
+  // so every rejection (and every approval without a badge code) surfaced as a
+  // misleading 503 "Database not available" and the 30-day name-reservation
+  // release branch became unreachable.
+  const registrationUpdate: Record<string, any> = { status: finalStatus, ...(assignedCode ? { assignedCode } : {}) };
 
   if (finalStatus === "approved" && assignedCode) {
     const newBadge = {
@@ -141,7 +146,7 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
       ownerName: ownerName || readable.fullName || "متطوع",
       type: finalType || "volunteer",
       wilaya: wilaya || readable.wilaya || "",
-      phone: phone || readable.phone || undefined,
+      phone: phone || readable.phone || null,
       createdAt: new Date().toISOString(),
       isActive: true,
     };

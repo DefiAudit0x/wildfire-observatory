@@ -6,11 +6,13 @@ import cookieParser from "cookie-parser";
 import { generateAdminToken } from "../server/middleware.js";
 
 const fsMock = vi.hoisted(() => ({
-  collectionGet: vi.fn(async () => []),
-  docGet: vi.fn(async () => null),
-  docSet: vi.fn(async () => true),
-  docUpdate: vi.fn(async () => true),
-  createSosWithAdmission: vi.fn(async () => "created"),
+  collectionGet: vi.fn(async (..._a: any[]) => [] as any),
+  docGet: vi.fn(async (..._a: any[]) => null as any),
+  docSet: vi.fn(async (..._a: any[]) => true as any),
+  docUpdate: vi.fn(async (..._a: any[]) => true as any),
+  createSosWithAdmission: vi.fn(async (..._a: any[]) => "created" as any),
+  appendSosDispatch: vi.fn(async (..._a: any[]) => "ok" as any),
+  clearTeamMissionsForSos: vi.fn(async (..._a: any[]) => true as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -52,6 +54,10 @@ beforeEach(() => {
   fsMock.docUpdate.mockResolvedValue(true);
   fsMock.createSosWithAdmission.mockReset();
   fsMock.createSosWithAdmission.mockResolvedValue("created");
+  fsMock.appendSosDispatch.mockReset();
+  fsMock.appendSosDispatch.mockResolvedValue("ok");
+  fsMock.clearTeamMissionsForSos.mockReset();
+  fsMock.clearTeamMissionsForSos.mockResolvedValue(true);
 });
 
 describe("POST /api/sos", () => {
@@ -204,8 +210,7 @@ describe("SOS durable lifecycle mutations", () => {
   it("does not claim dispatch success when durable update fails", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
-    fsMock.collectionGet.mockResolvedValueOnce([{ id: created.body.id, dispatchedTeams: [] }] as any);
-    fsMock.docUpdate.mockResolvedValueOnce(false);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("unavailable");
 
     const dispatch = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
@@ -214,6 +219,46 @@ describe("SOS durable lifecycle mutations", () => {
 
     expect(dispatch.status).toBe(503);
     expect(dispatch.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
+  });
+
+  it("rejects dispatching to a resolved SOS with 409 (atomic transaction guard)", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.appendSosDispatch.mockResolvedValueOnce("resolved");
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ type: "protection_civile", teamNameAr: "فريق تجريبي", teamNameFr: "Équipe test" });
+
+    expect(dispatch.status).toBe(409);
+    expect(dispatch.body.error).toMatch(/resolved/i);
+  });
+
+  it("rejects a team already on an active mission with 409 (ARC-H8 uniqueness)", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.appendSosDispatch.mockResolvedValueOnce("team_busy");
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ type: "protection_civile", teamNameAr: "RAPIDE 1", teamNameFr: "RAPIDE 1" });
+
+    expect(dispatch.status).toBe(409);
+    expect(dispatch.body.code).toBe("TEAM_ALREADY_DISPATCHED");
+  });
+
+  it("passes a stable mission team id derived from type+team name", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ type: "protection_civile", teamNameAr: "RAPIDE 1", teamNameFr: "RAPIDE 1" });
+
+    const missionId = fsMock.appendSosDispatch.mock.calls[0][2];
+    expect(missionId).toBe("protection_civile:rapide-1");
   });
 });
 

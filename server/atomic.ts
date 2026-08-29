@@ -1,5 +1,6 @@
 import { getDb, isAdminDb } from "./firebase.js";
 import logger from "./logger.js";
+import { stripUndefinedDeep } from "./clean.js";
 
 export type AtomicCreateResult = "created" | "exists" | "unavailable";
 
@@ -7,12 +8,13 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
   const db = getDb();
   if (!db) return "unavailable";
   try {
+    const clean = stripUndefinedDeep(data);
     if (isAdminDb(db)) {
       return await db.runTransaction(async (tx: any) => {
         const ref = db.collection(collectionName).doc(id);
         const existing = await tx.get(ref);
         if (existing.exists) return "exists";
-        tx.create(ref, data);
+        tx.create(ref, clean);
         return "created";
       });
     }
@@ -21,7 +23,7 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
       const ref = doc(db, collectionName, id);
       const existing = await tx.get(ref);
       if (existing.exists()) return "exists";
-      tx.set(ref, data);
+      tx.set(ref, clean);
       return "created";
     });
   } catch (err) {
@@ -44,7 +46,7 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
         if (!unit.exists) return "unit-missing";
         const existing = await tx.get(userRef);
         if (existing.exists) return "exists";
-        tx.create(userRef, data);
+        tx.create(userRef, stripUndefinedDeep(data));
         return "created";
       });
     }
@@ -56,7 +58,7 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
       if (!unit.exists()) return "unit-missing";
       const existing = await tx.get(userRef);
       if (existing.exists()) return "exists";
-      tx.set(userRef, data);
+      tx.set(userRef, stripUndefinedDeep(data));
       return "created";
     });
   } catch (err) {
@@ -115,6 +117,35 @@ export async function getFreshDoc(collectionName: string, id: string): Promise<a
   }
 }
 
+export type FreshDocResult =
+  | { status: "found"; doc: any }
+  | { status: "missing" }
+  | { status: "error" };
+
+/**
+ * ARC-L04 fix: `getFreshDoc` collapses three different outcomes (missing doc,
+ * database unavailable, read error) into a single `null`, so callers like the
+ * roster validator report "agent is not an active staff account" when the
+ * real problem is a database outage. Callers that need to distinguish these
+ * cases should prefer this discriminated-union variant.
+ */
+export async function getFreshDocResult(collectionName: string, id: string): Promise<FreshDocResult> {
+  const db = getDb();
+  if (!db) return { status: "error" };
+  try {
+    if (isAdminDb(db)) {
+      const snap = await db.collection(collectionName).doc(id).get();
+      return snap.exists ? { status: "found", doc: { id: snap.id, ...snap.data() } } : { status: "missing" };
+    }
+    const { doc, getDocFromServer } = await import("firebase/firestore");
+    const snap = await getDocFromServer(doc(db, collectionName, id));
+    return snap.exists() ? { status: "found", doc: { id: snap.id, ...snap.data() } } : { status: "missing" };
+  } catch (err) {
+    logger.error({ err, collectionName, id }, "Fresh Firestore doc read failed");
+    return { status: "error" };
+  }
+}
+
 export type RosterAppendResult = "created" | "limit" | "duplicate-agent" | "unavailable";
 
 export async function appendRosterPostAtomic(collectionName: string, date: string, unitId: string, post: Record<string, any>, maxPosts: number): Promise<RosterAppendResult> {
@@ -131,7 +162,7 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
         const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
         const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
         if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
-        tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
+        tx.set(ref, stripUndefinedDeep({ unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() }));
         return "created";
       });
     }
@@ -145,7 +176,7 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
       const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
       const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
       if (incomingAgents.some((agentId: string) => existingAgents.has(agentId)) || new Set(incomingAgents).size !== incomingAgents.length) return "duplicate-agent";
-      tx.set(ref, { unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() });
+      tx.set(ref, stripUndefinedDeep({ unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() }));
       return "created";
     });
   } catch (err) {
@@ -198,14 +229,14 @@ export async function createVolunteerRegistrationAtomically(
           }
         }
         for (const { kind, ref } of refs) {
-          tx.set(ref, {
+          tx.set(ref, stripUndefinedDeep({
             registrationId: registration.id,
             kind,
             createdAt: registration.createdAt,
             ...(kind === "name" ? { expiresAt: nameExpiresAt } : {}),
-          });
+          }));
         }
-        tx.create(db.collection("volunteerRegistrations").doc(registration.id), registration);
+        tx.create(db.collection("volunteerRegistrations").doc(registration.id), stripUndefinedDeep(registration));
         return "created";
       });
     }
@@ -226,14 +257,14 @@ export async function createVolunteerRegistrationAtomically(
         }
       }
       for (const { kind, ref } of refs) {
-        tx.set(ref, {
+        tx.set(ref, stripUndefinedDeep({
           registrationId: registration.id,
           kind,
           createdAt: registration.createdAt,
           ...(kind === "name" ? { expiresAt: nameExpiresAt } : {}),
-        });
+        }));
       }
-      tx.set(doc(db, "volunteerRegistrations", registration.id), registration);
+      tx.set(doc(db, "volunteerRegistrations", registration.id), stripUndefinedDeep(registration));
       return "created";
     });
   } catch (err) {
@@ -256,8 +287,8 @@ export async function approveVolunteerAtomically(registrationId: string, registr
         const badgeRef = db.collection("badgeCodes").doc(badgeCode);
         const badge = await tx.get(badgeRef);
         if (badge.exists) return "badge-exists";
-        tx.update(registrationRef, registrationUpdate);
-        tx.create(badgeRef, badgeData);
+        tx.update(registrationRef, stripUndefinedDeep(registrationUpdate));
+        tx.create(badgeRef, stripUndefinedDeep(badgeData));
         return "updated";
       });
     }
@@ -269,8 +300,8 @@ export async function approveVolunteerAtomically(registrationId: string, registr
       const badgeRef = doc(db, "badgeCodes", badgeCode);
       const badge = await tx.get(badgeRef);
       if (badge.exists()) return "badge-exists";
-      tx.update(registrationRef, registrationUpdate);
-      tx.set(badgeRef, badgeData);
+      tx.update(registrationRef, stripUndefinedDeep(registrationUpdate));
+      tx.set(badgeRef, stripUndefinedDeep(badgeData));
       return "updated";
     });
   } catch (err) {
