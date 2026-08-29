@@ -27,7 +27,14 @@ async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
   const timeout = setTimeout(() => controller.abort(), 15000);
 
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    // M5 fix: when fetching through the Cloudflare worker proxy, present the
+    // shared proxy secret — the worker rejects unauthenticated callers.
+    const response = await fetch(url, {
+      signal: controller.signal,
+      ...(isProxy && config.firmsProxySecret
+        ? { headers: { Authorization: `Bearer ${config.firmsProxySecret}` } }
+        : {}),
+    });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       logger.warn(
