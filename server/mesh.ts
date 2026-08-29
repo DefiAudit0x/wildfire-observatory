@@ -24,6 +24,38 @@ const HEARTBEAT_MS = 30_000;
 const STALE_NODE_MS = 90_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_NODES = 250;
+
+// L6 fix: shape/bounds gates for relayed report traffic. Authenticated nodes
+// could previously relay arbitrary report:new / report:confirm payloads to
+// every client; the web layer validates locally, but the displayed consensus
+// numbers could be briefly poisoned until the next HTTP refresh.
+const VALID_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
+const VALID_STATUSES = new Set(["pending", "verified", "rejected", "resolved"]);
+
+function isValidRelayedReport(report: unknown): boolean {
+  if (!report || typeof report !== "object") return false;
+  const r = report as Record<string, unknown>;
+  // A relayed report must at least carry a bounded id. The mesh wire contract
+  // allows metadata-light frames (e.g. {id, locationName}) — clients fetch
+  // the full report over HTTP — so present fields are checked for sanity
+  // instead of being required.
+  if (typeof r.id !== "string" || r.id.length === 0 || r.id.length > 64) return false;
+  if (r.lat !== undefined && (typeof r.lat !== "number" || !Number.isFinite(r.lat) || r.lat < -90 || r.lat > 90)) return false;
+  if (r.lng !== undefined && (typeof r.lng !== "number" || !Number.isFinite(r.lng) || r.lng < -180 || r.lng > 180)) return false;
+  if (r.description !== undefined && (typeof r.description !== "string" || r.description.length > 2000)) return false;
+  if (r.wilaya !== undefined && (typeof r.wilaya !== "string" || r.wilaya.length > 200)) return false;
+  if (r.severity !== undefined && !VALID_SEVERITIES.has(String(r.severity))) return false;
+  if (r.status !== undefined && !VALID_STATUSES.has(String(r.status))) return false;
+  return true;
+}
+
+function isValidRelayedConfirm(message: MeshMessage): boolean {
+  const { id, consensusCount, status } = message;
+  if (typeof id !== "string" || id.length === 0 || id.length > 64) return false;
+  if (typeof consensusCount !== "number" || !Number.isFinite(consensusCount) || consensusCount < 0 || consensusCount > 1_000_000) return false;
+  if (status !== undefined && !VALID_STATUSES.has(String(status))) return false;
+  return true;
+}
 // C3 fix: the upgrade path must not be an unauthenticated resource drain.
 // Mirror live.ts: cap connection attempts per IP per window, and close any
 // socket that never completes a mesh hello.
@@ -148,9 +180,19 @@ class MeshHub {
             this.send(ws, { type: "pong", at: Date.now() });
             break;
           case "report:new":
+            if (!isValidRelayedReport(message.report)) {
+              logger.warn({ nodeId }, "Mesh relay rejected — invalid report payload");
+              this.send(ws, { type: "error", message: "Invalid report payload" });
+              break;
+            }
             this.broadcast({ type: "report:new", report: message.report, from: nodeId }, nodeId);
             break;
           case "report:confirm":
+            if (!isValidRelayedConfirm(message)) {
+              logger.warn({ nodeId }, "Mesh relay rejected — invalid confirm payload");
+              this.send(ws, { type: "error", message: "Invalid confirm payload" });
+              break;
+            }
             this.broadcast({
               type: "report:confirm",
               id: message.id,
