@@ -30,6 +30,8 @@ vi.mock("../server/routes/notifications.js", () => ({
 
 vi.mock("../server/routes/audit.js", () => ({
   logAdminAction: mocks.logAdminAction,
+  // L5: admin.ts also imports the actor helper from the audit module.
+  actorFromRequest: () => ({ agentId: null, name: null, ip: null }),
 }));
 
 vi.mock("../server/live.js", () => ({
