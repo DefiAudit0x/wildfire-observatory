@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ScrollText, RefreshCw, Clock, ShieldCheck, ChevronLeft, ChevronRight } from "lucide-react";
 import { Language } from "../../types";
 
@@ -38,6 +38,15 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
 
+  // ARC-M27 fix: onAuthError is an inline prop recreated on every parent
+  // render, so its identity in this dependency array re-fetched the whole log
+  // on EVERY keystroke typed anywhere in the admin panel. The latest callback
+  // lives in a ref; the effect fires on mount only.
+  const onAuthErrorRef = useRef(onAuthError);
+  useEffect(() => {
+    onAuthErrorRef.current = onAuthError;
+  });
+
   const fetchEntries = useCallback(async () => {
     setLoading(true);
     try {
@@ -48,7 +57,7 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
           setEntries(data);
           setPage(1);
         }
-      } else if (!onAuthError(res)) {
+      } else if (!onAuthErrorRef.current(res)) {
         // silent
       }
     } catch (err) {
@@ -56,7 +65,7 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
     } finally {
       setLoading(false);
     }
-  }, [onAuthError]);
+  }, []);
 
   useEffect(() => {
     fetchEntries();

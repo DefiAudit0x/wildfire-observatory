@@ -47,6 +47,16 @@ export default function WilayaList({ wilayas, lang }: WilayaListProps) {
           textAr: "متوسط",
           textFr: "Moyen",
         };
+      case "low":
+        // ARC-M22 fix: a LOW-severity zone used to fall into the default
+        // branch and show the same green "Stable / Sûr" badge as a fully safe
+        // zone — a false sense of security. Low activity gets its own distinct
+        // badge.
+        return {
+          bg: "bg-lime-500/10 border-lime-500/30 text-lime-400",
+          textAr: "نشاط محدود",
+          textFr: "Activité limitée",
+        };
       default:
         return {
           bg: "bg-emerald-500/10 border-emerald-500/30 text-emerald-500",

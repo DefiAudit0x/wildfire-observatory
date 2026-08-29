@@ -21,8 +21,12 @@ interface StatCardsProps {
 }
 
 export default function StatCards({ isArabic, reports, satellites, sosCalls, activeUsers, teams }: StatCardsProps) {
-  const totalFires = reports.filter(r => r.status !== "resolved").length;
-  const criticalFires = reports.filter(r => r.status === "pending" && r.severity === "critical").length;
+  // ARC-M30 fix: rejected reports were counted as active fires (they are
+  // declared invalid) and verified critical fires were invisible in the
+  // critical card (only "pending" was counted). Align with the SOS proximity
+  // active filter and count every ACTIVE critical fire.
+  const totalFires = reports.filter(r => r.status !== "resolved" && r.status !== "rejected").length;
+  const criticalFires = reports.filter(r => (r.status === "pending" || r.status === "verified") && r.severity === "critical").length;
   const verifiedReports = reports.filter(r => r.status === "verified").length;
   const totalVolunteers = activeUsers.filter(u => u.role === "volunteer").length;
   const totalOfficials = activeUsers.filter(u => u.role === "official").length;

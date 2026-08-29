@@ -141,6 +141,12 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
   useEffect(() => {
     return () => {
+      // ARC-M19 fix: unmounting mid-recording (user closes the modal early)
+      // used to leave the 1-second recording timer and the audio-level
+      // animation loop running against an unmounted component, while the mic
+      // stream and audio context were already stopped here.
+      if (timerRef.current) clearInterval(timerRef.current);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (audioCtxRef.current) {
         audioCtxRef.current.close();
       }
@@ -390,12 +396,19 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: finalName, phone: phone.trim() }),
+          // Best-effort step: never let it hold the SOS hostage.
+          signal: AbortSignal.timeout(5000),
         });
       } catch {
         // Non-critical: identity persistence is best-effort
       }
 
       // 2) Send the SOS.
+      // ARC-H11 fix: this POST used to have NO timeout — on a congested or
+      // half-dead connection the trapped user was stuck on "sending" forever
+      // with no retry button. A 15s ceiling guarantees the failure surfaces
+      // while the user still has time (and a working UI) to retry or call
+      // civil protection directly.
       const res = await fetch("/api/sos", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -409,6 +422,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           audioDuration: recordingTime || 5,
           textMessage: buildTextMessage(finalName),
         }),
+        signal: AbortSignal.timeout(15000),
       });
 
       if (!res.ok) {

@@ -413,18 +413,28 @@ export default function InteractiveMap({
   }, [reports, satellites, lang, isArabic, severityFilter, statusFilter, mapReady]);
 
   // Handle flyTo when a selected report is clicked in list
+  // ARC-H10 fix: this effect depended on the `reports` array identity, which is
+  // replaced on every poll tick (10s/60s) — re-yanking the citizen's viewport
+  // back to the selected report every 10 seconds during active incidents. The
+  // effect now runs on genuine selection changes only, reading the latest
+  // reports through a ref.
+  const reportsForFlyRef = useRef(reports);
+  useEffect(() => {
+    reportsForFlyRef.current = reports;
+  }, [reports]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !selectedReportId) return;
 
-    const report = reports.find((r) => r.id === selectedReportId);
+    const report = reportsForFlyRef.current.find((r) => r.id === selectedReportId);
     if (report) {
       map.setView([report.lat, report.lng], 13, {
         animate: true,
         duration: 1.5,
       });
     }
-  }, [selectedReportId, reports]);
+  }, [selectedReportId]);
 
   return (
     <div className="relative w-full h-[300px] md:h-[450px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
