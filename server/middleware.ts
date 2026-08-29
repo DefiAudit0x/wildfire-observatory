@@ -118,13 +118,6 @@ export function requireRole(...roles: UserRole[]) {
   };
 }
 
-export const looseLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
 export function errorHandler(err: Error, _req: Request, res: Response, _next: NextFunction): void {
   logger.error({ err }, "Unhandled error");
   const isMulterSize = (err as any).code === "LIMIT_FILE_SIZE";

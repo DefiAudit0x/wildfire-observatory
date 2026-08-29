@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
-import { collectionGet, docGet, docUpdate, docDelete } from "../fs.js";
+import { collectionGet, docGet, docUpdate, docDelete, docSet } from "../fs.js";
 import { createUserIfUnitExists, createDocIfAbsent } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
@@ -61,8 +61,40 @@ router.put("/:agentId", requireRole("superadmin", "commander"), async (req: Requ
 
 router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Request, res: Response) => {
   const agentId = str(req.params.agentId); const admin = (req as any).admin; if (admin?.agentId === agentId) { res.status(400).json({ error: "Cannot delete your own account" }); return; }
-  try { const existing = await docGet("users", agentId); if (!existing) { res.status(404).json({ error: "User not found" }); return; } const ok = await docDelete("users", agentId); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } res.json({ success: true }); }
-  catch (err) { logger.error({ err }, "Failed to delete user"); res.status(500).json({ error: "Internal server error" }); }
+  try {
+    const existing = await docGet("users", agentId);
+    if (!existing) { res.status(404).json({ error: "User not found" }); return; }
+    const ok = await docDelete("users", agentId);
+    if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
+    // ARC-M10 fix: deleting a staff account used to leave the agent embedded in
+    // every planned daily roster (displayed as an active assignment until the
+    // day passed). Roster writes always validate unit membership, so an agent
+    // can only ever appear in their own unit's rosterDays — sweeping that unit
+    // is a complete, bounded cleanup.
+    if (existing.unitId) {
+      try {
+        const rosterCollection = `units/${toUnitId(existing.unitId)}/rosterDays`;
+        const days = await collectionGet(rosterCollection);
+        if (Array.isArray(days)) {
+          const affected = days.filter((dayDoc: any) =>
+            Array.isArray(dayDoc?.posts) &&
+            dayDoc.posts.some((p: any) => Array.isArray(p?.personnel) && p.personnel.some((x: any) => x?.agentId === agentId))
+          );
+          await Promise.all(affected.map((dayDoc: any) => {
+            const posts = dayDoc.posts.map((p: any) => ({
+              ...p,
+              personnel: Array.isArray(p.personnel) ? p.personnel.filter((x: any) => x?.agentId !== agentId) : p.personnel,
+            }));
+            return docSet(rosterCollection, dayDoc.id, { ...dayDoc, posts, updatedAt: new Date().toISOString() });
+          }));
+          if (affected.length > 0) logger.info({ agentId, unitId: existing.unitId, days: affected.length }, "Removed deleted agent from planned rosters");
+        }
+      } catch (sweepErr) {
+        logger.warn({ err: sweepErr, agentId }, "Roster cleanup after user deletion failed — rosters keep the historical copy");
+      }
+    }
+    res.json({ success: true });
+  } catch (err) { logger.error({ err }, "Failed to delete user"); res.status(500).json({ error: "Internal server error" }); }
 });
 
 export default router;

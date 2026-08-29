@@ -29,16 +29,24 @@ if (
 
 const devJwtSecret = jwtSecret || "change-me-in-production";
 
+/**
+ * ARC-L06 fix: a malformed PORT ("3000px", empty string with no default…) used
+ * to become NaN and the server silently listened on "NaN" → crash at boot with
+ * an unrelated error. Clamp to the valid range with an explicit fallback.
+ */
+function parsePort(raw: string | undefined, fallback: number): number {
+  const parsed = parseInt(raw || String(fallback), 10);
+  return Number.isFinite(parsed) && parsed > 0 && parsed < 65536 ? parsed : fallback;
+}
+
 const config = {
-  port: parseInt(process.env.PORT || "3000", 10),
+  port: parsePort(process.env.PORT, 3000),
   nodeEnv,
   generalLimitMax: parseInt(process.env.GENERAL_LIMIT_MAX || "100", 10),
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   nasaFirmsKey: process.env.NASA_FIRMS_KEY || "",
   firmsBaseUrl: process.env.FIRMS_BASE_URL || "https://firms.modaps.eosdis.nasa.gov/api/area/csv",
   firmsProxySecret: process.env.FIRMS_PROXY_SECRET || "",
-  adminPassword: process.env.ADMIN_PASSWORD || "",
-  superAdminPassword: process.env.SUPER_ADMIN_PASSWORD || "",
   jwtSecret: nodeEnv === "production" ? jwtSecret! : devJwtSecret,
   cookieSecure,
   sosEncryptionKey: process.env.SOS_ENCRYPTION_KEY || "",

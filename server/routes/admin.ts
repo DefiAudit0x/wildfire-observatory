@@ -5,7 +5,12 @@ import bcrypt from "bcryptjs";
 import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { str } from "../params.js";
-import { updateReportInFirestore, deleteReportFromFirestore, getReportsFromFirestore } from "../db.js";
+import {
+  updateReportInFirestore,
+  deleteReportFromFirestore,
+  purgeReportWithIdempotency,
+  getReportsFromFirestore,
+} from "../db.js";
 import { createNotification } from "./notifications.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
 import { liveHub } from "../live.js";
@@ -165,7 +170,7 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
   if (severity) updateData.severity = severity;
 
   const updated = await updateReportInFirestore(id, updateData);
-  if (updated) {
+  if (updated === "updated") {
     // Firestore is the source of truth here. The in-memory seed can be stale
     // or may not contain reports created after startup, so load the persisted
     // report before building a notification that depends on deviceId/locationName.
@@ -178,39 +183,57 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
     return;
   }
 
-  const report = citizenReports.find((r: any) => r.id === id);
-  if (report) {
-    if (status) report.status = status;
-    if (severity) report.severity = severity;
-    await buildStatusNotification(report, status);
-    logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
-    liveHub.broadcast("report:update", { id, status, severity });
-    res.json({ success: true });
+  // ARC-M05 fix: the old bool contract collapsed no-db / error / missing into
+  // one falsy value, so a live database outage either mutated the in-memory
+  // seed while claiming success (a lie the operator could not detect) or
+  // returned a misleading 404. Only the genuinely-missing / no-db (local dev)
+  // cases fall back to the static seed now; a real read/write failure is a 503.
+  if (updated === "missing" || updated === "no-db") {
+    const report = citizenReports.find((r: any) => r.id === id);
+    if (report) {
+      if (status) report.status = status;
+      if (severity) report.severity = severity;
+      await buildStatusNotification(report, status);
+      logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
+      liveHub.broadcast("report:update", { id, status, severity });
+      res.json({ success: true });
+      return;
+    }
+    res.status(404).json({ error: "Report not found" });
     return;
   }
-  res.status(404).json({ error: "Report not found" });
+
+  res.status(503).json({ code: "DATABASE_UNAVAILABLE", error: "Report persistence is currently unavailable" });
 });
 
 router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req: Request, res: Response) => {
   const id = str(req.params.id);
 
-  const deleted = await deleteReportFromFirestore(id);
-  if (deleted) {
+  // ARC-H3 fix: purge the report together with its durable idempotency record —
+  // leaving the key behind turned the citizen's offline draft into a permanent
+  // 503 DURABLE_IDEMPOTENCY_UNAVAILABLE on every retry.
+  const deleted = await purgeReportWithIdempotency(id);
+  if (deleted === "deleted") {
     logAdminAction("report.delete", { id }, actorFromRequest(req)).catch(() => {});
     liveHub.broadcast("report:delete", { id });
     res.json({ success: true });
     return;
   }
 
-  const index = citizenReports.findIndex((r: any) => r.id === id);
-  if (index !== -1) {
-    citizenReports.splice(index, 1);
-    logAdminAction("report.delete", { id }, actorFromRequest(req)).catch(() => {});
-    liveHub.broadcast("report:delete", { id });
-    res.json({ success: true });
+  if (deleted === "missing" || deleted === "no-db") {
+    const index = citizenReports.findIndex((r: any) => r.id === id);
+    if (index !== -1) {
+      citizenReports.splice(index, 1);
+      logAdminAction("report.delete", { id }, actorFromRequest(req)).catch(() => {});
+      liveHub.broadcast("report:delete", { id });
+      res.json({ success: true });
+      return;
+    }
+    res.status(404).json({ error: "Report not found" });
     return;
   }
-  res.status(404).json({ error: "Report not found" });
+
+  res.status(503).json({ code: "DATABASE_UNAVAILABLE", error: "Report persistence is currently unavailable" });
 });
 
 export default router;

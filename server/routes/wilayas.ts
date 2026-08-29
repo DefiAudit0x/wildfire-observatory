@@ -57,7 +57,13 @@ router.get("/", async (_req: Request, res: Response) => {
   let currentReports: any[] = [];
   try {
     const firestoreReports = await getReportsFromFirestore();
-    currentReports = firestoreReports || [];
+    // ARC-M04 fix: rejected and resolved reports used to be counted as active
+    // fires and could still drive a wilaya's severity/evacuation flag — the
+    // public map showed fires that no longer exist (or were declared invalid).
+    // Keep the same active filter the SOS proximity path uses.
+    currentReports = (firestoreReports || []).filter(
+      (rep: any) => rep.status !== "resolved" && rep.status !== "rejected"
+    );
   } catch (err) {
     logger.warn(
       { msg: err instanceof Error ? err.message : String(err) },
