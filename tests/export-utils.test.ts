@@ -42,6 +42,21 @@ describe("reportsToCsv", () => {
     expect(csv).toContain('"نار قوية، ""خطيرة"" جداً"');
   });
 
+  it("neutralizes spreadsheet formula injection with a leading apostrophe (M3)", () => {
+    const base = { ...report };
+    const csv = reportsToCsv([
+      report,
+      { ...base, id: "r2", description: "=HYPERLINK(\"http://evil.example\",\"نفّذ\")" },
+      { ...base, id: "r3", description: "+cmd|'/C calc'!A0" },
+      { ...base, id: "r4", description: "@SUM(1+1)" },
+    ]);
+    expect(csv).toContain("'=HYPERLINK");
+    expect(csv).toContain("'+cmd");
+    expect(csv).toContain("'@SUM");
+    // Regular descriptions stay untouched
+    expect(csv).toContain('"نار قوية، ""خطيرة"" جداً"');
+  });
+
   it("handles empty input with just the header", () => {
     const csv = reportsToCsv([]);
     expect(csv.split("\r\n")).toHaveLength(1);

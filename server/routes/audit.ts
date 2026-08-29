@@ -9,11 +9,36 @@ const router = Router();
 
 const memoryAudit: any[] = [];
 
-export async function logAdminAction(action: string, details: Record<string, unknown> = {}): Promise<void> {
+// L5 fix: identity of who performed an administrative action, captured from
+// the authenticated request. Without it, an audit trail shared by several
+// supervisors is meaningless for attribution or incident response.
+export interface AdminActionActor {
+  agentId?: string | null;
+  name?: string | null;
+  ip?: string | null;
+}
+
+export function actorFromRequest(req: Request): AdminActionActor {
+  const admin = (req as any).admin;
+  return {
+    agentId: admin?.agentId ?? null,
+    name: admin?.name ?? null,
+    ip: req.ip || null,
+  };
+}
+
+export async function logAdminAction(
+  action: string,
+  details: Record<string, unknown> = {},
+  actor?: AdminActionActor
+): Promise<void> {
   const entry = {
     id: `audit-${Date.now()}-${randomBytes(3).toString("hex")}`,
     action,
     details,
+    actorId: actor?.agentId || null,
+    actorName: actor?.name || null,
+    ip: actor?.ip || null,
     timestamp: new Date().toISOString(),
   };
   memoryAudit.unshift(entry);

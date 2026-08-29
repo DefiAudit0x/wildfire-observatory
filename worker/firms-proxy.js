@@ -2,11 +2,16 @@
 // Deploy on Cloudflare Workers (free tier: 100k requests/day, IP never changes)
 //
 // Endpoints:
-//   GET /                       -> health check (JSON)
+//   GET /                       -> health check (JSON, unauthenticated)
 //   GET /new-key?email=YOUR_EMAIL -> requests a fresh NASA FIRMS MAP_KEY bound to THIS worker's IP
 //                                   (NASA sends the key to your email; add it as the NASA_FIRMS_KEY secret)
 //   GET /{source}/{bbox}/{days} -> proxies FIRMS API (key stays server-side, never in URL)
 //                                   e.g. /VIIRS_SNPP_NRT/-17,18,25,38/1
+//
+// Auth (M5 fix): all routes except the health check require the header
+//   Authorization: Bearer <PROXY_SECRET>
+// where PROXY_SECRET is a Worker secret, and the server sends the same
+// value via FIRMS_PROXY_SECRET.
 
 const FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov";
 
@@ -18,6 +23,19 @@ export default {
 
     if (path.length === 0 || path[0] === "health") {
       return json({ ok: true, service: "vigil-firms-proxy" });
+    }
+
+    // M5 fix: everything beyond the health check requires a shared secret.
+    // /new-key previously accepted any email (flooding the account owner's
+    // inbox with NASA MAP_KEY issuance, risking suspension for abuse), and
+    // the proxy path leaked the worker-bound MAP_KEY quota to strangers.
+    const proxySecret = env.PROXY_SECRET;
+    if (!proxySecret) {
+      return json({ ok: false, error: "proxy not configured: set PROXY_SECRET" }, 500);
+    }
+    const auth = request.headers.get("Authorization") || "";
+    if (auth !== `Bearer ${proxySecret}`) {
+      return json({ ok: false, error: "unauthorized" }, 401);
     }
 
     // ---- Request a brand-new MAP_KEY bound to this worker's IP ----

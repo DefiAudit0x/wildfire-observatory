@@ -7,6 +7,7 @@ import config from "../config.js";
 import { str } from "../params.js";
 import { collectionGet, docSet, docUpdate } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
+import { boundDeviceId, issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 
 const router = Router();
 const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
@@ -89,6 +90,10 @@ export async function createNotification(notif: { deviceId: string; titleAr: str
     throw err;
   }
   memoryNotifications.unshift(newNotif);
+  // M4 fix: bound the in-memory fallback list like memoryRegs/memorySos/
+  // memoryAudit — Firestore is the real read source, and an unbounded array
+  // here is a slow memory leak on long-running deployments.
+  if (memoryNotifications.length > 500) memoryNotifications.length = 500;
   return newNotif;
 }
 
@@ -160,21 +165,16 @@ router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
 
 router.get("/:deviceId", async (req: Request, res: Response) => {
   const deviceId = str(req.params.deviceId);
-  const cookieDevice = (req as any).cookies?.deviceId;
-  // The deviceId cookie acts as the bearer proof of ownership. A request that
-  // claims a DIFFERENT deviceId than the one this browser is bound to is an
-  // IDOR probe — refuse instead of silently rebinding to the attacker's value.
-  if (cookieDevice && cookieDevice !== deviceId) {
-    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device." });
-    return;
-  }
-  if (!cookieDevice) {
-    res.cookie("deviceId", deviceId, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      maxAge: 365 * 24 * 60 * 60 * 1000,
-    });
+  // M2 fix: ownership is a server-signed cookie, not a first-come plain one.
+  // A valid signed cookie for the claimed device reads it; a signed cookie
+  // for a DIFFERENT device is an IDOR probe — refuse; no cookie binds now.
+  if (!ownsDevice(req, deviceId)) {
+    const bound = (req as any).cookies?.["device_sig"];
+    if (bound) {
+      res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device." });
+      return;
+    }
+    issueDeviceCookie(res, deviceId);
   }
   const notifs = await getNotificationsFromDb(deviceId);
   res.json(notifs);
@@ -182,12 +182,13 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
 
 router.post("/:id/read", async (req: Request, res: Response) => {
   const id = str(req.params.id);
-  const cookieDevice = (req as any).cookies?.deviceId;
-  if (!cookieDevice) {
+  // M2 fix: the signed device cookie is the ownership proof.
+  const boundId = boundDeviceId(req);
+  if (!boundId) {
     res.status(403).json({ error: "Forbidden: no device binding" });
     return;
   }
-  const owned = (await getNotificationsFromDb(cookieDevice)).some((n: any) => n.id === id);
+  const owned = (await getNotificationsFromDb(boundId)).some((n: any) => n.id === id);
   if (!owned) {
     res.status(404).json({ error: "Notification not found" });
     return;
@@ -218,7 +219,9 @@ const subscribeLimiter = rateLimit({
 
 const subscribeSchema = z.object({
   email: z.string().email(),
-  wilayas: z.array(z.string()).optional(),
+  // L3 fix: bound the array and its members — an unbounded wilayas array let
+  // a subscriber document balloon toward the 1 MiB Firestore doc limit.
+  wilayas: z.array(z.string().max(100)).max(20).optional(),
   minSeverity: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 

@@ -1,7 +1,12 @@
 import { Report, SatelliteHotspot } from "../types";
 
 function csvCell(value: unknown): string {
-  const text = String(value ?? "");
+  let text = String(value ?? "");
+  // M3 fix: neutralize spreadsheet formula injection. A cell beginning with
+  // =, +, -, @, TAB or CR is executed as a formula by Excel/LibreOffice when
+  // the export is opened (a known attack against official agencies that
+  // consume these files). A leading apostrophe forces literal interpretation.
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

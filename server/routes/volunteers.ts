@@ -7,7 +7,7 @@ import { collectionGet, docUpdate, docGet } from "../fs.js";
 import { approveVolunteerAtomically, createVolunteerRegistrationAtomically } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
-import { logAdminAction } from "./audit.js";
+import { logAdminAction, actorFromRequest } from "./audit.js";
 import logger from "../logger.js";
 import config from "../config.js";
 
@@ -99,9 +99,14 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
 });
 
 async function loadRegs(): Promise<any[]> {
-  if (memoryRegs.length === 0) {
-    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
-    if (fromDb && fromDb.length > 0) memoryRegs.push(...fromDb);
+  // L2 fix: refresh from Firestore on every read instead of only when the
+  // in-memory copy is empty — the old one-shot load froze the admin view:
+  // approvals/status changes by a concurrent admin never appeared until a
+  // process restart.
+  const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
+  if (fromDb !== null && fromDb.length > 0) {
+    memoryRegs.length = 0;
+    memoryRegs.push(...fromDb);
   }
   return memoryRegs;
 }
@@ -151,7 +156,7 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
 
   reg.status = finalStatus;
   if (assignedCode) reg.assignedCode = assignedCode;
-  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }).catch(() => {});
+  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }, actorFromRequest(req)).catch(() => {});
   res.json({ success: true });
 });
 

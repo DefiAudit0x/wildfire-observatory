@@ -1,7 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import logger from "../logger.js";
-import { requireAuth, requireRole } from "../middleware.js";
+import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
 import { collectionGet, docGet, docSet, docUpdate } from "../fs.js";
 import { createDocIfAbsent, deleteUnitIfUnlinked } from "../atomic.js";
@@ -10,7 +10,9 @@ const router = Router();
 const unitSchema = z.object({ code: z.string().min(1).max(12).regex(/^[A-Za-z0-9_-]+$/), nameAr: z.string().min(2).max(200), nameFr: z.string().min(2).max(200), wilaya: z.string().min(1).max(100) });
 export function toUnitId(code: string): string { return `unit-${code.toLowerCase()}`; }
 
-router.get("/", requireAuth, async (_req: Request, res: Response) => {
+// C2 fix: unit listings carry civil-defense codes/locations — require an
+// explicit staff role, not just any validly-signed token.
+router.get("/", requireRole("superadmin", "admin", "commander", "agent"), async (_req: Request, res: Response) => {
   try { const units = (await collectionGet("units")) || []; res.json({ units }); }
   catch (err) { logger.error({ err }, "Failed to list units"); res.status(500).json({ error: "Internal server error" }); }
 });

@@ -77,7 +77,8 @@ router.get("/session", requireAuth, (req: Request, res: Response) => {
     user: {
       agentId: admin?.agentId || null,
       name: admin?.name || null,
-      role: admin?.role || "admin",
+      // C2 fix: never announce a default admin role — an absent role stays absent.
+      role: admin?.role ?? null,
       unitId: admin?.unitId || null,
     },
   });

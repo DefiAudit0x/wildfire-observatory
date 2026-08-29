@@ -62,6 +62,14 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const decoded = jwt.verify(token, config.jwtSecret) as AuthPayload;
 
+    // C2 fix: strict scope separation — a mesh token is issued anonymously to
+    // any visitor for the /ws relay only. It is NOT a session credential and
+    // must never pass the staff/admin authentication gate.
+    if ((decoded as any).scope === "mesh") {
+      res.status(403).json({ error: "Forbidden: mesh tokens are not session credentials" });
+      return;
+    }
+
     // Legacy password-based admin sessions have no agentId and therefore no
     // staff user record to revalidate. Staff sessions are fail-closed whenever
     // a Firestore database is configured: deactivation, role changes, unit

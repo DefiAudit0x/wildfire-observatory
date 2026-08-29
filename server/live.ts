@@ -10,6 +10,10 @@ const MAX_CONNS_PER_IP = 10;
 // Browsers send an Origin header on the WS upgrade; native apps do not.
 function originAllowed(origin: string | undefined): boolean {
   if (!origin) return true;
+  // L4 fix: the scheme was stripped before host comparison, so an insecure
+  // ws:// origin could match the production host. Browser origins on a
+  // production deployment must be https/wss only.
+  if (config.nodeEnv === "production" && /^(ws|http):\/\//i.test(origin)) return false;
   if (config.corsOrigins.includes(origin)) return true;
   const host = origin.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
   const appHost = config.appUrl.replace(/^https?:\/\//, "");

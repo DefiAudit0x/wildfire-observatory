@@ -409,13 +409,15 @@ class MeshService : Service() {
         restartNearbyPresence()
     }
 
+    /**
+     * M7 fix: pure read. This used to trigger a rotation as a side effect on
+     * an hourly clock — a second, independent rotation timer hiding inside a
+     * getter. The documented design is single-authority rotation via
+     * trickleTick(); any future caller of this getter (UI, debugging, a
+     * library) must not be able to resurrect the dual-clock rotation bug.
+     */
     @Synchronized
-    fun getEphemeralId(): String {
-        if (System.currentTimeMillis() - lastEphemeralRotation > EPHEMERAL_ROTATION_MS) {
-            rotateEphemeralId()
-        }
-        return currentEphemeralId
-    }
+    fun getEphemeralId(): String = currentEphemeralId
 
     // ========================
     // NEARBY CONNECTIONS
@@ -841,6 +843,11 @@ class MeshService : Service() {
             // Store-and-forward relay FIRST (audit B1): enqueue relay BEFORE
             // notifying local listeners so a listener exception cannot stop propagation.
             if (payload.hopsLeft > 0) {
+                // H1 fix: the relay path must respect the same queue bound as
+                // broadcastMessage — otherwise a peer flooding unique valid
+                // frames grows pendingMessages without limit (OOM on a device
+                // that must stay alive for an emergency).
+                evictIfQueueFull()
                 pendingMessages.add(MeshMessage(
                     messageId = payload.messageId,
                     type = payload.type,
@@ -881,6 +888,31 @@ class MeshService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Message handling error", e)
             return false
+        }
+    }
+
+/**
+     * H1 fix: single eviction policy shared by the local broadcast and relay
+     * paths. Entries that have never been sent to anyone (no reachable peers
+     * yet) are shielded from eviction — they carry the newest reports and
+     * would otherwise be the first to die under load. Already-attempted
+     * entries go first (their 10-minute clock is ordered by lastSendAttemptAt).
+     */
+    @Synchronized
+    private fun evictIfQueueFull() {
+        if (pendingMessages.size < MAX_PENDING_MESSAGES) return
+        val evictable = pendingMessages
+            .withIndex()
+            .filter { it.value.lastSendAttemptAt > 0 }
+            .minByOrNull { it.value.lastSendAttemptAt }
+        if (evictable != null) {
+            pendingMessages.removeAt(evictable.index)
+        } else {
+            // Everything is un-attempted and alive: drop the oldest
+            // entry to keep the queue bounded.
+            if (pendingMessages.isNotEmpty()) {
+                pendingMessages.removeAt(0)
+            }
         }
     }
 
@@ -927,21 +959,7 @@ class MeshService : Service() {
         // the newest reports and would otherwise be the first to die under
         // load. Already-attempted entries go first (their 10-minute clock is
         // ordered by lastSendAttemptAt).
-        if (pendingMessages.size >= MAX_PENDING_MESSAGES) {
-            val evictable = pendingMessages
-                .withIndex()
-                .filter { it.value.lastSendAttemptAt > 0 }
-                .minByOrNull { it.value.lastSendAttemptAt }
-            if (evictable != null) {
-                pendingMessages.removeAt(evictable.index)
-            } else {
-                // Everything is un-attempted and alive: drop the oldest
-                // entry to keep the queue bounded.
-                if (pendingMessages.isNotEmpty()) {
-                    pendingMessages.removeAt(0)
-                }
-            }
-        }
+        evictIfQueueFull()
 
         pendingMessages.add(MeshMessage(
             messageId = messageId,

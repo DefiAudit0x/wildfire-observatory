@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import { generateStaffToken, generateAdminToken, requireAuth, requireRole, isCurrentStaffSession } from "../server/middleware.js";
+import { createMeshToken } from "../server/mesh-auth.js";
 import authRouter from "../server/routes/auth.js";
 
 function createAuthTestApp() {
@@ -33,6 +34,15 @@ describe("requireAuth", () => {
     app.get("/protected", requireAuth, (_req, res) => res.json({ ok: true }));
     const res = await supertest(app).get("/protected").set("Authorization", "Bearer not-a-real-token");
     expect(res.status).toBe(401);
+  });
+
+  it("rejects a mesh-scope token as a session credential (C2)", async () => {
+    const app = express();
+    app.get("/protected", requireAuth, (_req, res) => res.json({ ok: true }));
+    const token = createMeshToken("attacker-device");
+    const res = await supertest(app).get("/protected").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("mesh");
   });
 });
 

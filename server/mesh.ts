@@ -2,6 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { Server } from "http";
 import logger from "./logger.js";
 import { verifyMeshToken } from "./mesh-auth.js";
+import { connectionKey } from "./live.js";
 
 export interface MeshNodeInfo {
   id: string;
@@ -24,9 +25,48 @@ const STALE_NODE_MS = 90_000;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_NODES = 250;
 
+// L6 fix: shape/bounds gates for relayed report traffic. Authenticated nodes
+// could previously relay arbitrary report:new / report:confirm payloads to
+// every client; the web layer validates locally, but the displayed consensus
+// numbers could be briefly poisoned until the next HTTP refresh.
+const VALID_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
+const VALID_STATUSES = new Set(["pending", "verified", "rejected", "resolved"]);
+
+function isValidRelayedReport(report: unknown): boolean {
+  if (!report || typeof report !== "object") return false;
+  const r = report as Record<string, unknown>;
+  // A relayed report must at least carry a bounded id. The mesh wire contract
+  // allows metadata-light frames (e.g. {id, locationName}) — clients fetch
+  // the full report over HTTP — so present fields are checked for sanity
+  // instead of being required.
+  if (typeof r.id !== "string" || r.id.length === 0 || r.id.length > 64) return false;
+  if (r.lat !== undefined && (typeof r.lat !== "number" || !Number.isFinite(r.lat) || r.lat < -90 || r.lat > 90)) return false;
+  if (r.lng !== undefined && (typeof r.lng !== "number" || !Number.isFinite(r.lng) || r.lng < -180 || r.lng > 180)) return false;
+  if (r.description !== undefined && (typeof r.description !== "string" || r.description.length > 2000)) return false;
+  if (r.wilaya !== undefined && (typeof r.wilaya !== "string" || r.wilaya.length > 200)) return false;
+  if (r.severity !== undefined && !VALID_SEVERITIES.has(String(r.severity))) return false;
+  if (r.status !== undefined && !VALID_STATUSES.has(String(r.status))) return false;
+  return true;
+}
+
+function isValidRelayedConfirm(message: MeshMessage): boolean {
+  const { id, consensusCount, status } = message;
+  if (typeof id !== "string" || id.length === 0 || id.length > 64) return false;
+  if (typeof consensusCount !== "number" || !Number.isFinite(consensusCount) || consensusCount < 0 || consensusCount > 1_000_000) return false;
+  if (status !== undefined && !VALID_STATUSES.has(String(status))) return false;
+  return true;
+}
+// C3 fix: the upgrade path must not be an unauthenticated resource drain.
+// Mirror live.ts: cap connection attempts per IP per window, and close any
+// socket that never completes a mesh hello.
+const CONN_WINDOW_MS = 60 * 1000;
+const MAX_CONNS_PER_IP = 10;
+const AUTH_TIMEOUT_MS = 10_000;
+
 class MeshHub {
   private wss: WebSocketServer | null = null;
   private nodes = new Map<string, MeshNode>();
+  private connCount = new Map<string, { count: number; expiresAt: number }>();
   private cleanupTimer: NodeJS.Timeout | null = null;
 
   attach(server: Server): void {
@@ -36,6 +76,23 @@ class MeshHub {
     server.on("upgrade", (req, socket, head) => {
       const pathname = new URL(req.url || "/", "http://localhost").pathname;
       if (pathname !== MESH_PATH || !this.wss) return;
+
+      // C3 fix: per-IP connection-attempt cap (same policy as live.ts).
+      const ip = connectionKey(req);
+      const now = Date.now();
+      const entry = this.connCount.get(ip);
+      if (!entry || now > entry.expiresAt) {
+        this.connCount.set(ip, { count: 1, expiresAt: now + CONN_WINDOW_MS });
+      } else {
+        entry.count += 1;
+        if (entry.count > MAX_CONNS_PER_IP) {
+          logger.warn({ ip }, "Mesh upgrade rejected — connection limit reached");
+          socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+      }
+
       this.wss.handleUpgrade(req, socket, head, (ws) => {
         this.wss!.emit("connection", ws, req);
       });
@@ -44,6 +101,16 @@ class MeshHub {
     this.wss.on("connection", (ws, req) => {
       const ip = req.socket.remoteAddress || "unknown";
       let nodeId: string | null = null;
+
+      // C3 fix: an unauthenticated socket must not be allowed to park forever.
+      // If no mesh hello completed within the window, drop the connection.
+      let authTimer: NodeJS.Timeout | null = setTimeout(() => {
+        if (!nodeId) {
+          logger.warn({ ip }, "Mesh auth timeout — closing unauthenticated socket");
+          try { ws.close(4002, "Auth timeout"); } catch { /* ignore */ }
+        }
+      }, AUTH_TIMEOUT_MS);
+      authTimer.unref();
 
       ws.on("message", (raw) => {
         let message: MeshMessage;
@@ -85,6 +152,7 @@ class MeshHub {
           }
 
           nodeId = deviceId;
+          if (authTimer) { clearTimeout(authTimer); authTimer = null; }
           this.nodes.set(deviceId, { id: deviceId, label, lastSeen: Date.now(), ws });
           logger.info({ deviceId, ip, nodeCount: this.nodes.size }, "Mesh node joined");
 
@@ -112,9 +180,19 @@ class MeshHub {
             this.send(ws, { type: "pong", at: Date.now() });
             break;
           case "report:new":
+            if (!isValidRelayedReport(message.report)) {
+              logger.warn({ nodeId }, "Mesh relay rejected — invalid report payload");
+              this.send(ws, { type: "error", message: "Invalid report payload" });
+              break;
+            }
             this.broadcast({ type: "report:new", report: message.report, from: nodeId }, nodeId);
             break;
           case "report:confirm":
+            if (!isValidRelayedConfirm(message)) {
+              logger.warn({ nodeId }, "Mesh relay rejected — invalid confirm payload");
+              this.send(ws, { type: "error", message: "Invalid confirm payload" });
+              break;
+            }
             this.broadcast({
               type: "report:confirm",
               id: message.id,
@@ -129,6 +207,7 @@ class MeshHub {
       });
 
       ws.on("close", () => {
+        if (authTimer) { clearTimeout(authTimer); authTimer = null; }
         if (nodeId && this.nodes.get(nodeId)?.ws === ws) {
           this.nodes.delete(nodeId);
           logger.info({ nodeId, nodeCount: this.nodes.size }, "Mesh node left");
@@ -150,6 +229,10 @@ class MeshHub {
           logger.info({ nodeId: id, nodeCount: this.nodes.size }, "Mesh node removed (stale)");
           this.broadcast({ type: "node:left", nodeId: id, nodeCount: this.nodes.size });
         }
+      }
+      // C3 fix: sweep expired per-IP connection counters.
+      for (const [k, v] of this.connCount) {
+        if (now > v.expiresAt) this.connCount.delete(k);
       }
     }, HEARTBEAT_MS);
     this.cleanupTimer.unref();

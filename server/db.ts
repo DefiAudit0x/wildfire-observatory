@@ -240,7 +240,10 @@ export async function saveReportWithIdempotency(
               : typeof badge.expiresAt === "string"
                 ? new Date(badge.expiresAt).getTime()
                 : null;
-            const notExpired = expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt;
+            // H3 fix: fail-closed — an unparseable/corrupt expiresAt (NaN,
+            // Infinity) is treated as EXPIRED, never as never-expiring. A
+            // badge with no expiry field (null) legitimately never expires.
+            const notExpired = expiresAt === null || (Number.isFinite(expiresAt) && Date.now() < expiresAt);
             const maxUses = typeof badge.maxUses === "number" && badge.maxUses > 0 ? badge.maxUses : null;
             const usedCount = Number(badge.usedCount || 0);
             const underUsageCap = maxUses === null || usedCount < maxUses;
@@ -320,9 +323,19 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          const existingVoters = data.voters || [];
+          const existingVoters: string[] = data.voters || [];
+          if (existingVoters.includes(voterId)) {
+            return { status: "already_voted" as const };
+          }
           if (existingVoters.length >= 50) {
-            existingVoters.shift();
+            // H4 fix: never evict a recorded voter to admit a new one —
+            // shift() re-opened already-counted identities, letting the
+            // displayed consensusCount be inflated without bound (each new
+            // wave of 50 pushed the count higher). The 5-vote verified
+            // threshold is reached long before the cap, so overflow
+            // confirmations are politely treated as already counted (same
+            // 409 contract, no client change).
+            return { status: "already_voted" as const };
           }
           update.voters = [...existingVoters, voterId];
         }
@@ -350,9 +363,19 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          const existingVoters = data.voters || [];
+          const existingVoters: string[] = data.voters || [];
+          if (existingVoters.includes(voterId)) {
+            return { status: "already_voted" as const };
+          }
           if (existingVoters.length >= 50) {
-            existingVoters.shift();
+            // H4 fix: never evict a recorded voter to admit a new one —
+            // shift() re-opened already-counted identities, letting the
+            // displayed consensusCount be inflated without bound (each new
+            // wave of 50 pushed the count higher). The 5-vote verified
+            // threshold is reached long before the cap, so overflow
+            // confirmations are politely treated as already counted (same
+            // 409 contract, no client change).
+            return { status: "already_voted" as const };
           }
           update.voters = [...existingVoters, voterId];
         }
