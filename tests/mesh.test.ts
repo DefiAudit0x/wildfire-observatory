@@ -132,25 +132,29 @@ describe("mesh hub", () => {
     expect(String(message.message)).toContain("Unauthorized");
   });
 
-  it("rejects a token issued for a different deviceId", async () => {
+  it("identity comes from the token subject, not the hello deviceId claim", async () => {
+    // Post-#62 model: the JWT subject is authoritative. A spoofed hello
+    // deviceId claim must be ignored — the node joins under the token's
+    // subject (the anti-spoofing property behind issue #49).
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Server not listening");
     const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
     clients.push(ws);
     await new Promise<void>((resolve) => ws.on("open", () => resolve()));
 
-    const errorMessage = waitForMessage(ws, "error");
+    const welcome = waitForMessage(ws, "welcome");
     ws.send(JSON.stringify({
       type: "hello",
       deviceId: "impostor",
       label: "attacker",
-      token: createMeshToken("other-device"),
+      token: createMeshToken("subject-from-token"),
     }));
-    const message = await errorMessage;
-    expect(String(message.message)).toContain("Unauthorized");
+    const welcomeMessage = await welcome;
+    expect(welcomeMessage.deviceId).toBe("subject-from-token");
+    expect(welcomeMessage.nodeCount).toBe(3); // node-A + node-B + this node
   });
 
-  it("handles duplicate deviceId by replacing old connection", async () => {
+  it("handles duplicate subject by replacing old connection", async () => {
     const nodeA = clients[0];
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Server not listening");
@@ -168,7 +172,7 @@ describe("mesh hub", () => {
     await oldClosed;
     const welcomeMessage = await welcome;
     expect(welcomeMessage.deviceId).toBe("node-A");
-    expect(welcomeMessage.nodeCount).toBe(2);
-    expect(meshHub.getNodeCount()).toBe(2);
+    expect(welcomeMessage.nodeCount).toBe(3); // node-A (replaced) + node-B + subject-from-token
+    expect(meshHub.getNodeCount()).toBe(3);
   });
 });
