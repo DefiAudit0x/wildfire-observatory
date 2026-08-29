@@ -122,47 +122,44 @@ class MeshHub {
         }
 
         if (message.type === "hello") {
-          const deviceId = String(message.deviceId || "");
-          if (!deviceId || deviceId.length > 128) {
-            this.send(ws, { type: "error", message: "Invalid deviceId" });
-            return;
-          }
-
           const token = String(message.authKey || message.token || "");
           const payload = verifyMeshToken(token);
-          if (!payload || payload.deviceId !== deviceId) {
+          if (!payload) {
             logger.warn({ ip }, "Mesh hello rejected — invalid token");
             this.send(ws, { type: "error", message: "Unauthorized" });
             ws.close(4001, "Unauthorized");
             return;
           }
 
-          const label = String(message.label || "Mesh Node").slice(0, 64);
+          // The JWT subject is authoritative. Client-provided deviceId is never
+          // used as an identity key and may only exist as display metadata.
+          const subject = payload.subject;
+          const label = String(message.label || message.deviceId || "Mesh Node").slice(0, 64);
 
-          if (this.nodes.size >= MAX_NODES) {
-            logger.warn({ ip, deviceId }, "Mesh node rejected — node limit reached");
+          const previous = this.nodes.get(subject);
+          if (!previous && this.nodes.size >= MAX_NODES) {
+            logger.warn({ ip, subject }, "Mesh node rejected — node limit reached");
             this.send(ws, { type: "error", message: "Node limit reached" });
             ws.close(4001, "Too many nodes");
             return;
           }
 
-          const previous = this.nodes.get(deviceId);
           if (previous && previous.ws !== ws) {
             try { previous.ws.close(); } catch { /* ignore */ }
           }
 
-          nodeId = deviceId;
+          nodeId = subject;
           if (authTimer) { clearTimeout(authTimer); authTimer = null; }
-          this.nodes.set(deviceId, { id: deviceId, label, lastSeen: Date.now(), ws });
-          logger.info({ deviceId, ip, nodeCount: this.nodes.size }, "Mesh node joined");
+          this.nodes.set(subject, { id: subject, label, lastSeen: Date.now(), ws });
+          logger.info({ subject, ip, nodeCount: this.nodes.size }, "Mesh node joined");
 
           this.send(ws, {
             type: "welcome",
-            deviceId,
+            deviceId: subject,
             nodeCount: this.nodes.size,
             nodes: this.getNodeInfos(),
           });
-          this.broadcast({ type: "node:joined", node: { id: deviceId, label }, nodeCount: this.nodes.size }, deviceId);
+          this.broadcast({ type: "node:joined", node: { id: subject, label }, nodeCount: this.nodes.size }, subject);
           return;
         }
 
@@ -252,16 +249,12 @@ class MeshHub {
     const payload = JSON.stringify({ ts: Date.now(), ...message });
     for (const [id, node] of this.nodes) {
       if (excludeNodeId && id === excludeNodeId) continue;
-      if (node.ws.readyState === WebSocket.OPEN) {
-        node.ws.send(payload);
-      }
+      if (node.ws.readyState === WebSocket.OPEN) node.ws.send(payload);
     }
   }
 
   private send(ws: WebSocket, message: MeshMessage): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ ts: Date.now(), ...message }));
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ ts: Date.now(), ...message }));
   }
 }
 
