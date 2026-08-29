@@ -9,6 +9,7 @@ import { getHaversineDistance } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
 import config from "../config.js";
 import logger from "../logger.js";
+import { issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 
 const router = Router();
 
@@ -41,22 +42,19 @@ const profileSchema = z.object({
   phone: z.string().max(30).optional(),
 });
 
-const PROFILE_COOKIE = "sos_device_id";
-
+// M2 fix: ownership is cryptographic — a server-signed cookie — not
+// first-come. A valid signed cookie for the claimed device grants access;
+// an existing signed cookie for a DIFFERENT device is a 403; no cookie
+// issues one for the claimed device. (Legacy plain "sos_device_id" cookies
+// are simply ignored — affected clients rebind once.)
 function bindProfileDevice(req: Request, res: Response, deviceId: string): boolean {
-  const bound = (req as any).cookies?.[PROFILE_COOKIE];
-  if (bound && bound !== deviceId) {
-    res.status(403).json({ error: "Device identity mismatch" });
+  if (ownsDevice(req, deviceId)) return true;
+  const bound = (req as any).cookies?.["device_sig"];
+  if (bound) {
+    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a different device." });
     return false;
   }
-  if (!bound) {
-    res.cookie(PROFILE_COOKIE, deviceId, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.cookieSecure,
-      maxAge: PROFILE_TTL_MS,
-    });
-  }
+  issueDeviceCookie(res, deviceId, PROFILE_TTL_MS);
   return true;
 }
 
