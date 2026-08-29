@@ -4,6 +4,7 @@ export async function fetchWithRetry(
   retries = 3,
   delayMs = 1500
 ): Promise<Response> {
+  let lastError: any = null;
   for (let i = 0; i < retries; i++) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
@@ -31,12 +32,17 @@ export async function fetchWithRetry(
       if (i === retries - 1) {
         throw e;
       }
+      lastError = e;
       await sleep(delayMs * (i + 1), options.signal);
     } finally {
       clearTimeout(timeoutId);
     }
   }
-  throw new Error(`Failed after ${retries} retries`);
+  // ARC-L14 fix: the terminal failure used to throw a context-free "Failed
+  // after N retries" that erased the real error (transport type, timeout vs
+  // abort). Surface the last underlying error in the message.
+  const detail = lastError?.message ? `: ${lastError.message}` : "";
+  throw new Error(`Failed after ${retries} retries${detail}`);
 }
 
 function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {

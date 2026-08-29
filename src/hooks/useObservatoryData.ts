@@ -660,7 +660,10 @@ export function useObservatoryData() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
       try {
-        const res = await fetch("/api/public-principal", { method: "POST" });
+        // ARC-M17 fix: the controller was built and armed but its signal was
+        // never passed to fetch — the 15s timeout aborted nothing, so a hung
+        // enrollment could block the confirm retry path indefinitely.
+        const res = await fetch("/api/public-principal", { method: "POST", signal: controller.signal });
         return res.ok;
       } finally {
         clearTimeout(timeoutId);
