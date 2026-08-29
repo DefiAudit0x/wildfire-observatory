@@ -38,7 +38,12 @@ export function issuePublicPrincipal(res: Response): PublicPrincipalPayload {
   const token = createPublicPrincipalToken(subject, jti);
   res.cookie(PUBLIC_PRINCIPAL_COOKIE, token, {
     httpOnly: true,
-    sameSite: "lax",
+    // SameSite=strict (not lax): the strict policy keeps the credential out of
+    // every cross-site request, which is a recognized CSRF mitigation (CodeQL
+    // js/missing-token-validation). Functionally safe here — the SPA and all
+    // its API calls are same-origin, so strict never withholds the cookie
+    // where it is actually needed.
+    sameSite: "strict",
     secure: config.nodeEnv === "production",
     maxAge: PUBLIC_PRINCIPAL_TTL_SECONDS * 1000,
     path: "/",
