@@ -651,6 +651,26 @@ export function useObservatoryData() {
     [deviceId, fetchData]
   );
 
+  // Server-issued anonymous principal (HttpOnly `public_principal` cookie):
+  // the confirm endpoint requires it. Enroll lazily with the same 15s write
+  // timeout discipline (audit B7); a same-origin POST is enough — the cookie
+  // comes back in the response's Set-Cookie header.
+  const ensurePublicPrincipal = useCallback(async (): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+      try {
+        const res = await fetch("/api/public-principal", { method: "POST" });
+        return res.ok;
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (err) {
+      console.error("Failed to enroll public principal:", err);
+      return false;
+    }
+  }, []);
+
   // Upvote/Confirm fire (Consensus Engine)
   const handleConfirmReport = useCallback(async (id: string) => {
     setConfirmError(null);
@@ -659,12 +679,21 @@ export function useObservatoryData() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 15000);
       try {
-        const res = await fetch(`/api/reports/${id}/confirm`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ deviceId }),
-          signal: controller.signal,
-        });
+        const postConfirm = () =>
+          fetch(`/api/reports/${id}/confirm`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ deviceId }),
+            signal: controller.signal,
+          });
+        let res = await postConfirm();
+        // A 401 "Public principal required" means the browser has no (or an
+        // expired) principal cookie — first visit or 30-day expiry. Enroll
+        // once and retry so the user's first confirm click succeeds.
+        if (res.status === 401) {
+          const enrolled = await ensurePublicPrincipal();
+          if (enrolled) res = await postConfirm();
+        }
         if (!res.ok) {
           let message: ConfirmationErrorCode | string = "CONFIRMATION_FAILED";
           try {
@@ -703,7 +732,7 @@ export function useObservatoryData() {
       console.error("Failed to confirm report:", err);
       return false;
     }
-  }, [deviceId, fetchData]);
+  }, [deviceId, fetchData, ensurePublicPrincipal]);
 
   const handleMarkNotificationRead = useCallback(async (id: string) => {
     try {
