@@ -409,13 +409,15 @@ class MeshService : Service() {
         restartNearbyPresence()
     }
 
+    /**
+     * M7 fix: pure read. This used to trigger a rotation as a side effect on
+     * an hourly clock — a second, independent rotation timer hiding inside a
+     * getter. The documented design is single-authority rotation via
+     * trickleTick(); any future caller of this getter (UI, debugging, a
+     * library) must not be able to resurrect the dual-clock rotation bug.
+     */
     @Synchronized
-    fun getEphemeralId(): String {
-        if (System.currentTimeMillis() - lastEphemeralRotation > EPHEMERAL_ROTATION_MS) {
-            rotateEphemeralId()
-        }
-        return currentEphemeralId
-    }
+    fun getEphemeralId(): String = currentEphemeralId
 
     // ========================
     // NEARBY CONNECTIONS
