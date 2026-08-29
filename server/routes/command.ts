@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import config from "../config.js";
+import logger from "../logger.js";
 import { collectionGet } from "../fs.js";
 import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
@@ -57,6 +58,19 @@ const heartbeatSchema = z.object({
   lng: z.coerce.number().finite().min(-180).max(180),
   name: z.string().trim().max(120).optional(),
   badgeCode: z.string().trim().max(64).optional(),
+});
+
+// H2 fix: the highest-privilege login gate must not be the cheapest to
+// brute-force. Mirror the /api/admin/verify policy (5 attempts / 15 min,
+// successful logins not counted) instead of falling back to the general
+// 100-per-minute limiter.
+const centralCommandLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  message: { error: "Too many attempts. Try again in 15 minutes." },
 });
 
 async function checkSuperAdminPassword(candidate: string): Promise<boolean> {
@@ -132,9 +146,11 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
   res.json({ success: true, name: finalName, role: finalRole });
 });
 
-router.post("/auth/central-command", async (req: Request, res: Response) => {
+router.post("/auth/central-command", centralCommandLimiter, async (req: Request, res: Response) => {
   const { password } = req.body;
   if (!password || !(await checkSuperAdminPassword(password))) {
+    // H2 fix: log brute-force probes so monitoring can flag them early.
+    logger.warn({ ip: req.ip }, "Central-command auth failed");
     res.status(401).json({ valid: false });
     return;
   }
