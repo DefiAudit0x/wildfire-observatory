@@ -1,8 +1,9 @@
 import { Request, Response, Router } from "express";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
+import config from "../config.js";
 import { citizenReports } from "../data.js";
 import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
@@ -574,11 +575,58 @@ function recordVoter(reportId: string, voterIp: string): boolean {
   return true;
 }
 
+// ── C1 fix: server-signed voter identity ─────────────────────────────────────
+// A client-supplied deviceId alone is not an identity: an attacker can mint
+// unlimited fresh ids from one address and manufacture consensus (sirens,
+// subscriber emails). The voter cookie carries an HMAC signature produced by
+// this server; only signatures it issued count as a device identity.
+// Cookie-less requests still vote, but at IP granularity so one address can
+// never fabricate more than one vote per report.
+const VOTER_COOKIE = "voter_device";
+const VOTER_COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
+
+function signDevice(id: string): string {
+  return createHmac("sha256", config.jwtSecret).update(id).digest("base64url");
+}
+
+function deviceVoterKey(req: Request, res: Response, claimed: string, voterIp: string): string {
+  const bound = (req as any).cookies?.[VOTER_COOKIE] as string | undefined;
+  if (bound) {
+    const idx = bound.indexOf(".");
+    if (idx <= 0) return "";
+    const id = bound.slice(0, idx);
+    const sig = bound.slice(idx + 1);
+    const expected = signDevice(id);
+    const sigOk = sig.length === expected.length &&
+      timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
+    if (!sigOk) return "";          // forged cookie → refuse
+    if (id !== claimed) return "";  // bound device ≠ claimed device → refuse
+    return `dev:${id}`;             // server-verified device identity
+  }
+  // No cookie yet: bind this browser to the claimed device (signed, httpOnly)
+  // but count the vote at IP level — cookie-less scripts cannot mint voters.
+  res.cookie(VOTER_COOKIE, `${claimed}.${signDevice(claimed)}`, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.cookieSecure,
+    maxAge: VOTER_COOKIE_MAX_AGE_MS,
+  });
+  return `anon:${voterIp}`;
+}
+
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
   const id = str(req.params.id);
   const voterIp = req.ip || req.socket.remoteAddress || "unknown";
   const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
-  const voterKey = deviceId ? `${voterIp}::${deviceId}` : voterIp;
+  if (!deviceId) {
+    res.status(400).json({ error: "deviceId is required to confirm a report" });
+    return;
+  }
+  const voterKey = deviceVoterKey(req, res, deviceId, voterIp);
+  if (!voterKey) {
+    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to rebind this browser." });
+    return;
+  }
 
   const result = await confirmReportInFirestore(id, voterKey);
   if (result.status === "confirmed") {
