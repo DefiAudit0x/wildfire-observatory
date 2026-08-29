@@ -90,6 +90,10 @@ export async function createNotification(notif: { deviceId: string; titleAr: str
     throw err;
   }
   memoryNotifications.unshift(newNotif);
+  // M4 fix: bound the in-memory fallback list like memoryRegs/memorySos/
+  // memoryAudit — Firestore is the real read source, and an unbounded array
+  // here is a slow memory leak on long-running deployments.
+  if (memoryNotifications.length > 500) memoryNotifications.length = 500;
   return newNotif;
 }
 
