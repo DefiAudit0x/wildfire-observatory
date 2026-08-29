@@ -43,7 +43,7 @@ function TabBar({ isArabic, activeTab, privilegedTabVisible, rosterVisible, onSe
           aria-current={activeTab === tab.id ? "page" : undefined}
           className={`flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-xs font-black transition-all whitespace-nowrap cursor-pointer ${
             activeTab === tab.id
-              ? "bg-red-650 text-white shadow-[0_0_15px_rgba(220,38,38,0.4)] scale-[1.02]"
+              ? "bg-red-600 text-white shadow-[0_0_15px_rgba(220,38,38,0.4)] scale-[1.02]"
               : "text-slate-400 hover:text-slate-200 hover:bg-white/5"
           }`}
         >

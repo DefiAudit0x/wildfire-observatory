@@ -1369,7 +1369,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               type="button"
               onClick={handleGetLocation}
               disabled={isLocating}
-              className="w-full py-2 bg-red-650/10 hover:bg-red-650/20 border border-red-500/20 hover:border-red-500/40 text-red-400 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="w-full py-2 bg-red-600/10 hover:bg-red-600/20 border border-red-500/20 hover:border-red-500/40 text-red-400 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               {isLocating ? (
                 <>
@@ -1956,7 +1956,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           <button
             type="submit"
             disabled={isSubmitting || isCompressing}
-            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:bg-zinc-850 text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_10px_20px_rgba(220,38,38,0.2)]"
+            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_10px_20px_rgba(220,38,38,0.2)]"
           >
             {isSubmitting ? (
               <>

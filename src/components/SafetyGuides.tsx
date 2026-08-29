@@ -54,7 +54,7 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)]" dir={isArabic ? "rtl" : "ltr"}>
       {/* Title */}
       <div className="flex items-center gap-2 mb-4 border-b border-white/5 pb-3">
-        <div className="p-1.5 bg-red-650/15 text-red-500 rounded border border-red-500/15">
+        <div className="p-1.5 bg-red-600/15 text-red-500 rounded border border-red-500/15">
           <BookOpen className="h-5 w-5" />
         </div>
         <div>

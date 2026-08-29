@@ -336,7 +336,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
               placeholder={isArabic ? "كلمة المرور" : "Mot de passe"}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-black/50 border border-white/10 rounded-xl py-3 pl-11 pr-11 text-sm text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-650 transition-all font-mono text-center"
+              className="w-full bg-black/50 border border-white/10 rounded-xl py-3 pl-11 pr-11 text-sm text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-600 transition-all font-mono text-center"
             />
             <button
               type="button"
@@ -394,7 +394,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         </div>
         <button
           onClick={handleLogout}
-          className="px-4 py-2 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer"
+          className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer"
         >
           <LogOut className="h-3.5 w-3.5" />
           <span>{isArabic ? "خروج" : "Déconnexion"}</span>
@@ -463,7 +463,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                     onConfirm: () => handleDeleteUnit(unit),
                   })}
                   disabled={busy}
-                  className="p-2 bg-zinc-900 hover:bg-red-650/25 border border-white/5 text-gray-400 hover:text-red-400 rounded-lg cursor-pointer transition-colors"
+                  className="p-2 bg-zinc-900 hover:bg-red-600/25 border border-white/5 text-gray-400 hover:text-red-400 rounded-lg cursor-pointer transition-colors"
                   title={isArabic ? "حذف الوحدة" : "Supprimer l'unité"}
                 >
                   <Trash2 className="h-3.5 w-3.5" />

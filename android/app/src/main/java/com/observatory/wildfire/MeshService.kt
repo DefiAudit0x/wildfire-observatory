@@ -990,12 +990,41 @@ class MeshService : Service() {
 
     private fun startTrickleTimer() {
         trickleTimer = Timer("TrickleTimer", true)
-        trickleTimer?.schedule(object : TimerTask() {
+        scheduleNextTrickle()
+    }
+
+    /**
+     * ARC-H14 fix: the timer used to be scheduled with a FIXED 1000ms period,
+     * so the sleep-mode interval (SLEEP_INTERVAL = 10s) was computed in
+     * managePower() but NEVER applied — the service kept pulsing at 1Hz
+     * forever, burning battery while claiming a sleep mode. Self-rescheduling
+     * with the live interval makes sleep mode actually slow the loop down and
+     * wake it back up at 1Hz on activity.
+     *
+     * ARC-H15 fix: an unexpected exception inside a fixed-rate TimerTask used
+     * to kill the TrickleTimer thread SILENTLY — the foreground service stayed
+     * alive with a dead mesh. The tick body is now contained; a failed tick
+     * logs and the loop reschedules.
+     */
+    private fun scheduleNextTrickle() {
+        val timer = trickleTimer ?: return
+        val delay = if (isSleeping) SLEEP_INTERVAL else TRICKLE_I_MIN
+        val task = object : TimerTask() {
             override fun run() {
-                trickleTick()
-                managePower()
+                try {
+                    trickleTick()
+                    managePower()
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Trickle tick failed — contained so the mesh loop survives", t)
+                }
+                scheduleNextTrickle()
             }
-        }, TRICKLE_I_MIN, 1000L)
+        }
+        try {
+            timer.schedule(task, delay)
+        } catch (e: IllegalStateException) {
+            // Timer was cancelled during shutdown — stop the chain.
+        }
     }
 
     @Synchronized

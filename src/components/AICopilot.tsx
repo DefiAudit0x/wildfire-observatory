@@ -194,7 +194,7 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
               onClick={() => setActiveWilaya(isArabic ? w.ar : w.fr)}
               className={`text-xs px-2.5 py-1 rounded-full border transition-all cursor-pointer font-medium ${
                 activeWilaya === (isArabic ? w.ar : w.fr)
-                  ? "bg-red-600 text-white border-red-650 shadow-[0_0_12px_rgba(220,38,38,0.3)]"
+                  ? "bg-red-600 text-white border-red-600 shadow-[0_0_12px_rgba(220,38,38,0.3)]"
                   : "bg-black/40 text-slate-400 border-white/5 hover:border-white/10"
               }`}
             >
