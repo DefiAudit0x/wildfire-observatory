@@ -55,7 +55,10 @@ export async function verifySuperAdminPassword(candidate: string): Promise<boole
     process.env.SUPER_ADMIN_PASSWORD,
     "superadmin"
   );
-  if (!passwordHash) return verifyAdminPassword(candidate);
+  // M6 fix: fail closed — falling back to the admin password let one
+  // ADMIN_PASSWORD unlock the super-admin role (user management, units,
+  // central command) whenever SUPER_ADMIN_* was left unset.
+  if (!passwordHash) return false;
   try {
     return await bcrypt.compare(candidate, passwordHash);
   } catch (err) {

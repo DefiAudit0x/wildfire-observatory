@@ -12,6 +12,21 @@ if (nodeEnv === "production" && (!jwtSecret || jwtSecret === "change-me-in-produ
   throw new Error("[FATAL] JWT_SECRET must be set to a strong random value in production");
 }
 
+// M6 fix: refuse to boot in production with only ADMIN_PASSWORD configured —
+// verifySuperAdminPassword used to fall back to it, silently making the admin
+// password the super-admin password. Force explicit separation instead of a
+// silent privilege merge.
+if (
+  nodeEnv === "production" &&
+  (process.env.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD_HASH) &&
+  !process.env.SUPER_ADMIN_PASSWORD &&
+  !process.env.SUPER_ADMIN_PASSWORD_HASH
+) {
+  throw new Error(
+    "[FATAL] SUPER_ADMIN_PASSWORD (or SUPER_ADMIN_PASSWORD_HASH) must be set in production so the super-admin credential differs from ADMIN_PASSWORD"
+  );
+}
+
 const devJwtSecret = jwtSecret || "change-me-in-production";
 
 const config = {
