@@ -48,6 +48,31 @@ test.describe("Smoke tests", () => {
     await expect(page.getByText(/أدمن نشط/i)).toBeVisible({ timeout: 5000 });
   });
 
+  test("central-command login accepts the super-admin password and rejects the admin password", async ({
+    request,
+  }) => {
+    // Synced with SUPER_ADMIN_PASSWORD / ADMIN_PASSWORD in playwright.config.ts
+    // webServer env. The server boots with NODE_ENV=production here, so this
+    // exercises the M6 guarantee end-to-end: the central-command gate must
+    // only open with the dedicated super-admin credential, never the regular
+    // admin password.
+    // The rejection runs FIRST: a successful login sets the admin_token cookie
+    // in this request context, and cookie-bearing state changes from a
+    // non-browser client are rejected by the server's CSRF origin gate (403)
+    // before credential checking — which would mask the expected 401.
+    const bad = await request.post("/api/auth/central-command", {
+      data: { password: "test-admin" },
+    });
+    expect(bad.status()).toBe(401);
+    expect((await bad.json()).valid).toBe(false);
+
+    const good = await request.post("/api/auth/central-command", {
+      data: { password: "test-super-admin" },
+    });
+    expect(good.status()).toBe(200);
+    expect((await good.json()).valid).toBe(true);
+  });
+
   test("reports tab shows the report form", async ({ page }) => {
     await page.goto("/");
     await page.click('button:has-text("إرسال بلاغ حريق")');

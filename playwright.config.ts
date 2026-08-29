@@ -31,6 +31,11 @@ export default defineConfig({
       ENABLE_SWAGGER: "true",
       JWT_SECRET: "e2e-secret",
       ADMIN_PASSWORD: "test-admin",
+      // M6 production boot check (server/config.ts): with NODE_ENV=production
+      // and ADMIN_PASSWORD set, the server refuses to start unless the
+      // super-admin credential is explicitly different. Give E2E a distinct
+      // value so the production-mode boot succeeds (asserted in smoke.spec.ts).
+      SUPER_ADMIN_PASSWORD: "test-super-admin",
       FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
       GCLOUD_PROJECT: "demo-wildfire-observatory-e2e",
       E2E_DURABLE_ASSERTION: "true",
