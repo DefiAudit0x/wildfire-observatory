@@ -159,11 +159,15 @@ function scheduleBadgeCacheCleanup(): void {
 }
 scheduleBadgeCacheCleanup();
 
-function badgeRateLimited(badgeCode: string): boolean {
+// M1 fix: key the attempt window by (ip, badge) instead of the badge alone —
+// otherwise anyone who learns a volunteer's badge code can burn the window
+// and force every legitimate report from that badge down to pending.
+function badgeRateLimited(badgeCode: string, ip: string): boolean {
+  const key = `${ip}::${badgeLogId(badgeCode)}`;
   const now = Date.now();
-  const entry = badgeAttempts.get(badgeCode);
+  const entry = badgeAttempts.get(key);
   if (!entry || now > entry.expiresAt) {
-    badgeAttempts.set(badgeCode, { count: 1, expiresAt: now + BADGE_ATTEMPT_WINDOW_MS });
+    badgeAttempts.set(key, { count: 1, expiresAt: now + BADGE_ATTEMPT_WINDOW_MS });
     return false;
   }
   entry.count += 1;
@@ -366,7 +370,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
 
   if (reporterType === "official" || reporterType === "volunteer") {
     const code = reporterBadgeCode?.trim();
-    const rateLimited = !!code && badgeRateLimited(code);
+    const rateLimited = !!code && badgeRateLimited(code, req.ip || "unknown");
     const envTrusted = !!code && !rateLimited && VALID_BADGE_CODES.has(code);
     if (envTrusted) {
       isTrusted = true;
