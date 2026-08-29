@@ -1,36 +1,49 @@
 import express from "express";
 import cookieParser from "cookie-parser";
 import supertest from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 
-// C1 regression: consensus must not be manufacturable from one address by
-// minting fresh deviceIds. Voter identity is either a server-signed cookie
-// (dev:<id>) or, for cookie-less clients, the IP itself (anon:<ip>).
-const dbState = vi.hoisted(() => ({
-  confirmation: { status: "confirmed", consensusCount: 2, statusValue: "pending" },
-  seenVoterKeys: new Set<string>(),
-  capturedVoterKeys: [] as (string | undefined)[],
+// ARC-H1 regression: the consensus endpoint used to be registered TWICE —
+// inline in server.ts (public-principal contract) shadowing the reportsRouter
+// route (legacy voter-cookie contract). Express matches the first handler, so
+// the router machinery was production-dead while its tests stayed green. These
+// tests now pin the SINGLE surviving contract: the reports router route keyed
+// by the server-issued public principal and the durable confirmation ledger.
+
+const ledgerState = vi.hoisted(() => ({
+  result: { status: "confirmed", consensusCount: 2, statusValue: "pending" } as any,
+  calls: [] as Array<{ reportId: string; subject: string }>,
 }));
 const meshBroadcast = vi.hoisted(() => vi.fn());
+const principalState = vi.hoisted(() => ({
+  subject: "subject-abc" as string | null,
+}));
 
 vi.mock("../server/mesh.js", () => ({
   meshHub: { broadcast: meshBroadcast },
 }));
 
+vi.mock("../server/public-principal.js", () => ({
+  getPublicPrincipal: () =>
+    principalState.subject
+      ? { scope: "public-principal", subject: principalState.subject, jti: "jti-1" }
+      : null,
+}));
+
+vi.mock("../server/confirmation-ledger.js", () => ({
+  confirmReportWithPrincipal: vi.fn(async (reportId: string, subject: string) => {
+    ledgerState.calls.push({ reportId, subject });
+    return ledgerState.result;
+  }),
+}));
+
 vi.mock("../server/db.js", () => ({
-  getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: [] })),
+  getReportsDbResult: vi.fn(async () => ({ status: "no-db" })),
   seedReportsToFirestore: vi.fn(async () => undefined),
-  saveReportToFirestore: vi.fn(async () => "saved"),
   saveReportWithIdempotency: vi.fn(async (report: any) => ({ status: "saved", report })),
   lookupReportIdempotency: vi.fn(async () => ({ status: "missing" })),
-  confirmReportInFirestore: vi.fn(async (_id: string, voterKey?: string) => {
-    dbState.capturedVoterKeys.push(voterKey);
-    if (voterKey && dbState.seenVoterKeys.has(voterKey)) {
-      return { status: "already_voted" as const };
-    }
-    if (voterKey) dbState.seenVoterKeys.add(voterKey);
-    return dbState.confirmation;
-  }),
 }));
 
 const { default: reportsRouter } = await import("../server/routes/reports.js");
@@ -38,82 +51,119 @@ const { default: reportsRouter } = await import("../server/routes/reports.js");
 function createApp() {
   const app = express();
   app.use(express.json());
-  app.use(cookieParser()); // mirrors server.ts so voter cookies are parsed
+  app.use(cookieParser());
   app.use("/api/reports", reportsRouter);
   return app;
 }
 
-function freshState() {
-  dbState.seenVoterKeys.clear();
-  dbState.capturedVoterKeys.length = 0;
-}
+beforeEach(() => {
+  ledgerState.calls.length = 0;
+  ledgerState.result = { status: "confirmed", consensusCount: 2, statusValue: "pending" };
+  principalState.subject = "subject-abc";
+  meshBroadcast.mockClear();
+});
 
-describe("C1 consensus voter binding", () => {
-  it("counts two cookie-less confirms with different deviceIds from one IP as a single voter", async () => {
-    freshState();
-    const app = createApp();
-
-    const first = await supertest(app).post("/api/reports/rep-1/confirm").send({ deviceId: "spoofed-a" });
-    expect(first.status).toBe(200);
-
-    const second = await supertest(app).post("/api/reports/rep-1/confirm").send({ deviceId: "spoofed-b" });
-    expect(second.status).toBe(409); // same anon:<ip> voter key → already voted
-
-    expect(dbState.capturedVoterKeys[0]).toMatch(/^anon:/);
-    expect(dbState.capturedVoterKeys[1]).toMatch(/^anon:/);
-    expect(dbState.capturedVoterKeys[0]).toBe(dbState.capturedVoterKeys[1]);
+describe("ARC-H1: single principal-keyed consensus contract", () => {
+  it("server.ts no longer registers a shadowing inline confirm route", () => {
+    // Static guard: the shadowing was invisible to runtime tests because the
+    // router was mounted directly. Keep it invisible in the source too.
+    const serverSource = fs.readFileSync(
+      path.join(process.cwd(), "server", "server.ts"),
+      "utf8"
+    );
+    expect(serverSource).not.toMatch(/app\.post\(\s*["'`]\/api\/reports\/:id\/confirm/);
+    // The endpoint must live in the reports router.
+    const reportsSource = fs.readFileSync(
+      path.join(process.cwd(), "server", "routes", "reports.ts"),
+      "utf8"
+    );
+    expect(reportsSource).toMatch(/router\.post\("\/:id\/confirm"/);
   });
 
-  it("binds a signed httpOnly voter cookie on first confirm", async () => {
-    freshState();
-    const app = createApp();
-    const res = await supertest(app).post("/api/reports/rep-1/confirm").send({ deviceId: "device-xyz" });
+  it("requires a server-issued public principal (401 without one)", async () => {
+    principalState.subject = null;
+    const res = await supertest(createApp()).post("/api/reports/rep-1/confirm").send({});
+    expect(res.status).toBe(401);
+    expect(ledgerState.calls).toHaveLength(0);
+  });
 
+  it("confirms through the durable principal ledger and broadcasts", async () => {
+    const res = await supertest(createApp()).post("/api/reports/rep-1/confirm").send({});
     expect(res.status).toBe(200);
-    const cookieHeader = res.headers["set-cookie"][0] as string;
-    expect(cookieHeader).toContain("voter_device=device-xyz.");
-    expect(cookieHeader.toLowerCase()).toContain("httponly");
+    expect(ledgerState.calls[0]).toEqual({ reportId: "rep-1", subject: "subject-abc" });
+    expect(res.body).toMatchObject({ success: true, consensusCount: 2, status: "pending" });
+    expect(meshBroadcast).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "report:confirm", id: "rep-1" })
+    );
   });
 
-  it("accepts a repeat confirm from the same bound device without inflating consensus", async () => {
-    freshState();
-    const app = createApp();
-    const agent = supertest.agent(app);
+  it("maps already_voted to 409 and not_found to 404", async () => {
+    ledgerState.result = { status: "already_voted" };
+    const voted = await supertest(createApp()).post("/api/reports/rep-1/confirm").send({});
+    expect(voted.status).toBe(409);
 
-    const first = await agent.post("/api/reports/rep-1/confirm").send({ deviceId: "device-xyz" });
+    ledgerState.result = { status: "not_found" };
+    const missing = await supertest(createApp()).post("/api/reports/rep-404/confirm").send({});
+    expect(missing.status).toBe(404);
+  });
+
+  it("maps ledger errors to 503 CONSENSUS_DURABILITY_UNAVAILABLE", async () => {
+    ledgerState.result = { status: "error" };
+    const res = await supertest(createApp()).post("/api/reports/rep-1/confirm").send({});
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("CONSENSUS_DURABILITY_UNAVAILABLE");
+  });
+});
+
+describe("ARC-M01/M02: bounded dev-only fallback ledger", () => {
+  it("no_db in production is a 503, never a silent memory confirmation", async () => {
+    const prevEnv = process.env.NODE_ENV;
+    const prevSecret = process.env.JWT_SECRET;
+    try {
+      // Re-import the router with production config? config.nodeEnv is read at
+      // import time; reload the module fresh with production env (config.ts
+      // demands a strong JWT_SECRET in production — provide one).
+      vi.resetModules();
+      process.env.NODE_ENV = "production";
+      process.env.JWT_SECRET = "test-production-secret-strong-enough-123456";
+      const { default: prodRouter } = await import("../server/routes/reports.js");
+      const app = express();
+      app.use(express.json());
+      app.use(cookieParser());
+      app.use("/api/reports", prodRouter);
+
+      ledgerState.result = { status: "no_db" };
+      const res = await supertest(app).post("/api/reports/rep-1/confirm").send({});
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe("CONSENSUS_DURABILITY_UNAVAILABLE");
+    } finally {
+      if (prevSecret === undefined) delete process.env.JWT_SECRET;
+      else process.env.JWT_SECRET = prevSecret;
+      process.env.NODE_ENV = prevEnv || "test";
+      vi.resetModules();
+    }
+  });
+
+  it("dev fallback dedupes by principal subject and never evicts a recorded voter", async () => {
+    // config.nodeEnv is NOT production in tests (SKIP_FIREBASE dev mode), so
+    // the memory fallback activates for no_db results — but only for reports
+    // that exist in the local seed.
+    const { citizenReports } = await import("../server/data.js");
+    const seedId = citizenReports[0].id as string;
+    const baselineCount = Number(citizenReports[0].consensusCount || 0);
+
+    ledgerState.result = { status: "no_db" };
+    const app = createApp();
+
+    const first = await supertest(app)
+      .post(`/api/reports/${seedId}/confirm`)
+      .send({ deviceId: "ignored" });
     expect(first.status).toBe(200);
+    expect(first.body.consensusCount).toBe(baselineCount + 1);
 
-    const second = await agent.post("/api/reports/rep-1/confirm").send({ deviceId: "device-xyz" });
-    // dev:<id> was already recorded via... (first vote was anon:<ip>; the bound
-    // retry is a distinct, bounded second identity — documented trade-off).
-    expect([200, 409]).toContain(second.status);
-  });
-
-  it("rejects a bound cookie claiming a different device with 403", async () => {
-    freshState();
-    const app = createApp();
-    const agent = supertest.agent(app);
-
-    await agent.post("/api/reports/rep-1/confirm").send({ deviceId: "device-xyz" });
-    const mismatch = await agent.post("/api/reports/rep-1/confirm").send({ deviceId: "device-other" });
-    expect(mismatch.status).toBe(403);
-  });
-
-  it("rejects a forged voter cookie signature with 403", async () => {
-    freshState();
-    const app = createApp();
-    const res = await supertest(app)
-      .post("/api/reports/rep-1/confirm")
-      .set("Cookie", "voter_device=device-xyz.c2FtZmVkLXNpZ25hdHVyZQ")
-      .send({ deviceId: "device-xyz" });
-    expect(res.status).toBe(403);
-  });
-
-  it("requires a deviceId", async () => {
-    freshState();
-    const app = createApp();
-    const res = await supertest(app).post("/api/reports/rep-1/confirm").send({});
-    expect(res.status).toBe(400);
-    expect(dbState.capturedVoterKeys.length).toBe(0);
+    const second = await supertest(app)
+      .post(`/api/reports/${seedId}/confirm`)
+      .send({ deviceId: "ignored" });
+    expect(second.status).toBe(409);
   });
 });

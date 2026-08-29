@@ -1,5 +1,5 @@
 import { Request, Response, Router } from "express";
-import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
@@ -14,13 +14,14 @@ import {
   seedReportsToFirestore,
   saveReportWithIdempotency,
   lookupReportIdempotency,
-  confirmReportInFirestore,
 } from "../db.js";
 import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
 import { meshHub } from "../mesh.js";
 import { liveHub } from "../live.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
+import { getPublicPrincipal } from "../public-principal.js";
+import { confirmReportWithPrincipal } from "../confirmation-ledger.js";
 import type { Report } from "../../src/types.js";
 
 const router = Router();
@@ -529,17 +530,15 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   res.json(safeReport);
 });
 
-const VOTERS_TTL_MS = 60 * 60 * 1000;
-const MAX_VOTERS_ENTRIES = 1000;
-const voters = new Map<string, { ips: Set<string>; expiresAt: number }>();
-
-const votersCleanupTimer = setInterval(() => {
-  const now = Date.now();
-  for (const [reportId, entry] of voters) {
-    if (now > entry.expiresAt) voters.delete(reportId);
-  }
-}, VOTERS_TTL_MS);
-votersCleanupTimer.unref();
+// ── ARC-H1 fix: single consensus endpoint ────────────────────────────────────
+// POST /:id/confirm used to be registered TWICE with two different identity
+// contracts: inline in server.ts (server-issued public principal) and here
+// (legacy voter-cookie machinery). Express matches the first registration, so
+// the ~140 lines below were production-dead code whose tests passed against a
+// route no client could ever reach — a guaranteed test/production drift.
+// The principal contract now lives HERE (the reports router) as the single
+// source of truth, and the dead voter machinery (voters map, signDevice,
+// deviceVoterKey, 50-entry voter cap with silent eviction semantics) is gone.
 
 const confirmLimiter = rateLimit({
   windowMs: 60 * 1000,
@@ -549,86 +548,44 @@ const confirmLimiter = rateLimit({
   message: { error: "Too many confirmations. Slow down." },
 });
 
-function recordVoter(reportId: string, voterIp: string): boolean {
-  const entry = voters.get(reportId);
-  if (entry) {
-    if (Date.now() > entry.expiresAt) {
-      voters.delete(reportId);
-    } else {
-      if (entry.ips.has(voterIp)) return false;
-      entry.ips.add(voterIp);
-      return true;
+// ARC-M02 fix: the no-database development ledger used to grow without bound
+// (one Set per report id, one entry per subject). Two hard caps keep the
+// process-local fallback bounded: 500 report ids (oldest evicted) and 50
+// subjects per report — the 5-vote verified threshold is reached long before
+// either cap matters for its purpose.
+const MAX_LOCAL_VOTE_REPORTS = 500;
+const MAX_LOCAL_VOTES_PER_REPORT = 50;
+const localPrincipalVotes = new Map<string, Set<string>>();
+
+function recordLocalPrincipalVote(reportId: string, subject: string): boolean {
+  const votes = localPrincipalVotes.get(reportId);
+  if (votes) {
+    if (votes.has(subject)) return false;
+    if (votes.size >= MAX_LOCAL_VOTES_PER_REPORT) {
+      // Same contract as the durable ledger: never evict a recorded voter.
+      return false;
     }
+    votes.add(subject);
+    return true;
   }
-  if (voters.size >= MAX_VOTERS_ENTRIES) {
-    const oldestKey = voters.keys().next().value;
-    if (oldestKey) voters.delete(oldestKey);
+  if (localPrincipalVotes.size >= MAX_LOCAL_VOTE_REPORTS) {
+    const oldestKey = localPrincipalVotes.keys().next().value;
+    if (oldestKey) localPrincipalVotes.delete(oldestKey);
   }
-  voters.set(reportId, { ips: new Set([voterIp]), expiresAt: Date.now() + VOTERS_TTL_MS });
+  localPrincipalVotes.set(reportId, new Set([subject]));
   return true;
 }
 
-// ── C1 fix: server-signed voter identity ─────────────────────────────────────
-// A client-supplied deviceId alone is not an identity: an attacker can mint
-// unlimited fresh ids from one address and manufacture consensus (sirens,
-// subscriber emails). The voter cookie carries an HMAC signature produced by
-// this server; only signatures it issued count as a device identity.
-// Cookie-less requests still vote, but at IP granularity so one address can
-// never fabricate more than one vote per report.
-const VOTER_COOKIE = "voter_device";
-const VOTER_COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
-
-function signDevice(id: string): string {
-  return createHmac("sha256", config.jwtSecret).update(id).digest("base64url");
-}
-
-function deviceVoterKey(req: Request, res: Response, claimed: string, voterIp: string): string {
-  const bound = (req as any).cookies?.[VOTER_COOKIE] as string | undefined;
-  if (bound) {
-    const idx = bound.indexOf(".");
-    if (idx <= 0) return "";
-    const id = bound.slice(0, idx);
-    const sig = bound.slice(idx + 1);
-    const expected = signDevice(id);
-    const sigOk = sig.length === expected.length &&
-      timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
-    if (!sigOk) return "";          // forged cookie → refuse
-    if (id !== claimed) return "";  // bound device ≠ claimed device → refuse
-    return `dev:${id}`;             // server-verified device identity
-  }
-  // No cookie yet: bind this browser to the claimed device (signed, httpOnly)
-  // but count the vote at IP level — cookie-less scripts cannot mint voters.
-  res.cookie(VOTER_COOKIE, `${claimed}.${signDevice(claimed)}`, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: config.cookieSecure,
-    maxAge: VOTER_COOKIE_MAX_AGE_MS,
-  });
-  return `anon:${voterIp}`;
-}
-
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
-  const id = str(req.params.id);
-  const voterIp = req.ip || req.socket.remoteAddress || "unknown";
-  const deviceId = typeof req.body?.deviceId === "string" ? req.body.deviceId.trim().slice(0, 128) : "";
-  if (!deviceId) {
-    res.status(400).json({ error: "deviceId is required to confirm a report" });
+  const principal = getPublicPrincipal(req);
+  if (!principal) {
+    res.status(401).json({ error: "Public principal required" });
     return;
   }
-  const voterKey = deviceVoterKey(req, res, deviceId, voterIp);
-  if (!voterKey) {
-    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to rebind this browser." });
-    return;
-  }
-
-  const result = await confirmReportInFirestore(id, voterKey);
+  const reportId = String(req.params.id || "");
+  const result = await confirmReportWithPrincipal(reportId, principal.subject);
   if (result.status === "confirmed") {
-    meshHub.broadcast({
-      type: "report:confirm",
-      id,
-      consensusCount: result.consensusCount,
-      status: result.statusValue,
-    });
+    meshHub.broadcast({ type: "report:confirm", id: reportId, consensusCount: result.consensusCount, status: result.statusValue });
     res.json({ success: true, consensusCount: result.consensusCount, status: result.statusValue });
     return;
   }
@@ -636,36 +593,39 @@ router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) 
     res.status(409).json({ error: "Already confirmed" });
     return;
   }
-  if (result.status === "error") {
-    res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
-    return;
-  }
   if (result.status === "not_found") {
     res.status(404).json({ error: "Report not found" });
     return;
   }
+  if (result.status === "error") {
+    res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
+    return;
+  }
 
-  // No Firestore is the intentional local development mode. It is the only
-  // state in which the process-local confirmation ledger may be used.
-  const report = citizenReports.find((r) => r.id === id);
+  // ARC-M01 fix: the process-local fallback used to accept confirmations even
+  // when a database was configured but the admin SDK was not (client-SDK
+  // deployments), silently mutating in-memory counters that vanish on restart
+  // while the client believes the vote was recorded durably. The fallback is
+  // now exclusively a no-database development mode; production without a
+  // durable ledger answers 503 instead of pretending.
+  if (config.nodeEnv === "production") {
+    res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
+    return;
+  }
+  const report = citizenReports.find((item) => item.id === reportId);
   if (!report) {
     res.status(404).json({ error: "Report not found" });
     return;
   }
-  if (!recordVoter(id, voterKey)) {
-    res.status(409).json({ error: "Already confirmed from this device" });
+  if (!recordLocalPrincipalVote(reportId, principal.subject)) {
+    res.status(409).json({ error: "Already confirmed" });
     return;
   }
   report.consensusCount += 1;
   if (report.consensusCount >= 5 && report.status === "pending") {
     report.status = "verified";
   }
-  meshHub.broadcast({
-    type: "report:confirm",
-    id,
-    consensusCount: report.consensusCount,
-    status: report.status,
-  });
+  meshHub.broadcast({ type: "report:confirm", id: reportId, consensusCount: report.consensusCount, status: report.status });
   res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
 });
 

@@ -1,4 +1,5 @@
 import express from "express";
+import cookieParser from "cookie-parser";
 import supertest from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,7 +21,12 @@ vi.mock("../server/db.js", () => ({
     ? { status: "existing", report: { ...report, id: "rep-durable-1" } }
     : { status: "saved", report }),
   lookupReportIdempotency: vi.fn(async () => ({ status: "missing" })),
-  confirmReportInFirestore: vi.fn(async () => dbState.confirmation),
+}));
+
+// ARC-H1: the confirm route now speaks to the durable principal ledger, not
+// confirmReportInFirestore — mock the module the route actually consumes.
+vi.mock("../server/confirmation-ledger.js", () => ({
+  confirmReportWithPrincipal: vi.fn(async () => dbState.confirmation as any),
 }));
 
 const { default: reportsRouter } = await import("../server/routes/reports.js");
@@ -28,6 +34,7 @@ const { default: reportsRouter } = await import("../server/routes/reports.js");
 function createApp() {
   const app = express();
   app.use(express.json());
+  app.use(cookieParser()); // ARC-H1: the principal contract reads cookies
   app.use("/api/reports", reportsRouter);
   return app;
 }
@@ -78,14 +85,19 @@ describe("reports database result semantics", () => {
 
   it("returns 503 without RAM mutation or broadcast when durable confirmation fails", async () => {
     const { citizenReports } = await import("../server/data.js");
+    const { createPublicPrincipalToken, PUBLIC_PRINCIPAL_COOKIE } = await import(
+      "../server/public-principal.js"
+    );
     const seed = citizenReports.find((report) => report.id === "rep-1");
     if (!seed) throw new Error("expected rep-1 seed fixture");
     const before = seed.consensusCount;
     dbState.confirmation = { status: "error" };
     meshBroadcast.mockClear();
 
+    // ARC-H1: the endpoint now requires the server-issued public principal.
     const res = await supertest(createApp())
       .post("/api/reports/rep-1/confirm")
+      .set("Cookie", `${PUBLIC_PRINCIPAL_COOKIE}=${createPublicPrincipalToken("subject-durable-test" as any)}`)
       .send({ deviceId: "consensus-failure-device" });
 
     expect(res.status).toBe(503);
