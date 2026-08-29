@@ -219,7 +219,9 @@ const subscribeLimiter = rateLimit({
 
 const subscribeSchema = z.object({
   email: z.string().email(),
-  wilayas: z.array(z.string()).optional(),
+  // L3 fix: bound the array and its members — an unbounded wilayas array let
+  // a subscriber document balloon toward the 1 MiB Firestore doc limit.
+  wilayas: z.array(z.string().max(100)).max(20).optional(),
   minSeverity: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 

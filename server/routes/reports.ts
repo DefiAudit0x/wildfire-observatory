@@ -55,24 +55,12 @@ function pruneClientIds(): void {
   if (recentClientIds.length > 2000) recentClientIds.splice(0, recentClientIds.length - 2000);
 }
 
-async function findReportByClientId(clientId: string): Promise<any | null> {
-  pruneClientIds();
-  for (const entry of recentClientIds) {
-    if (entry.id === clientId) {
-      const existing = citizenReports.find((r) => r.clientGeneratedId === clientId);
-      return existing || null;
-    }
-  }
-  const dbResult = await getReportsDbResult();
-  if (dbResult.status === "ok") {
-    const existing = dbResult.reports.find((r: any) => r.clientGeneratedId === clientId);
-    if (existing) {
-      recentClientIds.push({ id: clientId, timestamp: Date.now() });
-      return existing;
-    }
-  }
-  return null;
-}
+// L1 fix: findReportByClientId removed — it was never called, and its
+// in-memory branch only searched citizenReports (ignoring the stored
+// fingerprint) which made it a trap for future maintainers. Idempotency
+// dedup flows through lookupReportIdempotency/saveReportWithIdempotency.
+// pruneClientIds() is still invoked on the submission path to keep the
+// in-memory client-id map bounded.
 
 function isDuplicateReport(lat: number, lng: number): boolean {
   const now = Date.now();
@@ -358,6 +346,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   // Reserve the location in the duplicate window BEFORE any await below:
   // badge lookups and AI calls are async, and two concurrent identical
   // submissions must not both pass the check before either reserves.
+  pruneClientIds();
   recentReports.push({ lat, lng, timestamp: Date.now() });
   if (clientGeneratedId) {
     recentClientIds.push({ id: clientGeneratedId, timestamp: Date.now(), fingerprint: requestFingerprint });

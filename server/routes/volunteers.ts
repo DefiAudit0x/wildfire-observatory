@@ -99,9 +99,14 @@ router.post("/register", registerLimiter, async (req: Request, res: Response) =>
 });
 
 async function loadRegs(): Promise<any[]> {
-  if (memoryRegs.length === 0) {
-    const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
-    if (fromDb && fromDb.length > 0) memoryRegs.push(...fromDb);
+  // L2 fix: refresh from Firestore on every read instead of only when the
+  // in-memory copy is empty — the old one-shot load froze the admin view:
+  // approvals/status changes by a concurrent admin never appeared until a
+  // process restart.
+  const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
+  if (fromDb !== null && fromDb.length > 0) {
+    memoryRegs.length = 0;
+    memoryRegs.push(...fromDb);
   }
   return memoryRegs;
 }
