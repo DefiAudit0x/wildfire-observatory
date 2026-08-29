@@ -1,3 +1,6 @@
+overrides:
+  'uuid@<11.1.1': ^11.1.1
+
 allowBuilds:
   esbuild: true
   '@firebase/util': false
