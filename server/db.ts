@@ -323,9 +323,19 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          const existingVoters = data.voters || [];
+          const existingVoters: string[] = data.voters || [];
+          if (existingVoters.includes(voterId)) {
+            return { status: "already_voted" as const };
+          }
           if (existingVoters.length >= 50) {
-            existingVoters.shift();
+            // H4 fix: never evict a recorded voter to admit a new one —
+            // shift() re-opened already-counted identities, letting the
+            // displayed consensusCount be inflated without bound (each new
+            // wave of 50 pushed the count higher). The 5-vote verified
+            // threshold is reached long before the cap, so overflow
+            // confirmations are politely treated as already counted (same
+            // 409 contract, no client change).
+            return { status: "already_voted" as const };
           }
           update.voters = [...existingVoters, voterId];
         }
@@ -353,9 +363,19 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
         }
         const update: Record<string, any> = { consensusCount: newConsensus, status: newStatus };
         if (voterId) {
-          const existingVoters = data.voters || [];
+          const existingVoters: string[] = data.voters || [];
+          if (existingVoters.includes(voterId)) {
+            return { status: "already_voted" as const };
+          }
           if (existingVoters.length >= 50) {
-            existingVoters.shift();
+            // H4 fix: never evict a recorded voter to admit a new one —
+            // shift() re-opened already-counted identities, letting the
+            // displayed consensusCount be inflated without bound (each new
+            // wave of 50 pushed the count higher). The 5-vote verified
+            // threshold is reached long before the cap, so overflow
+            // confirmations are politely treated as already counted (same
+            // 409 contract, no client change).
+            return { status: "already_voted" as const };
           }
           update.voters = [...existingVoters, voterId];
         }
