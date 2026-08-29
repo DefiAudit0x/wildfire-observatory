@@ -7,7 +7,7 @@ import { collectionGet, docUpdate, docGet } from "../fs.js";
 import { approveVolunteerAtomically, createVolunteerRegistrationAtomically } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
-import { logAdminAction } from "./audit.js";
+import { logAdminAction, actorFromRequest } from "./audit.js";
 import logger from "../logger.js";
 import config from "../config.js";
 
@@ -156,7 +156,7 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
 
   reg.status = finalStatus;
   if (assignedCode) reg.assignedCode = assignedCode;
-  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }).catch(() => {});
+  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }, actorFromRequest(req)).catch(() => {});
   res.json({ success: true });
 });
 

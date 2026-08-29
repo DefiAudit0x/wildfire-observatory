@@ -4,7 +4,7 @@ import { collectionGet, docUpdate, docDelete } from "../fs.js";
 import { createDocIfAbsent } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
-import { logAdminAction } from "./audit.js";
+import { logAdminAction, actorFromRequest } from "./audit.js";
 
 const router = Router();
 const badgeSchema = z.object({ code: z.string().min(1).max(64), ownerName: z.string().min(1).max(120), type: z.string().min(1).max(40), wilaya: z.string().min(1).max(200), phone: z.string().max(30).optional(), maxUses: z.number().int().positive().optional(), expiresAt: z.string().optional() });
@@ -35,20 +35,20 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
   const result = await createDocIfAbsent("badgeCodes", parsed.data.code, newBadge);
   if (result === "exists") { res.status(409).json({ error: "Code already exists" }); return; }
   if (result === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
-  memoryBadges.push(newBadge); logAdminAction("badge.create", { code: parsed.data.code }).catch(() => {}); res.json(newBadge);
+  memoryBadges.push(newBadge); logAdminAction("badge.create", { code: parsed.data.code }, actorFromRequest(req)).catch(() => {}); res.json(newBadge);
 });
 router.put("/:code", requireAdmin, async (req: Request, res: Response) => {
   const code = str(req.params.code); const parsed = updateBadgeSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Invalid fields", details: parsed.error.flatten() }); return; }
   const existing = await loadBadges(); const current = existing.find((b: any) => b.code === code); if (!current) { res.status(404).json({ error: "Badge not found" }); return; }
   const update: Record<string, any> = {}; if (parsed.data.ownerName !== undefined) update.ownerName = parsed.data.ownerName; if (parsed.data.type !== undefined) update.type = parsed.data.type; if (parsed.data.wilaya !== undefined) update.wilaya = parsed.data.wilaya; if (parsed.data.phone !== undefined) update.phone = parsed.data.phone || null; if (parsed.data.maxUses !== undefined) update.maxUses = parsed.data.maxUses; if (parsed.data.expiresAt !== undefined) update.expiresAt = parsed.data.expiresAt || null; update.updatedAt = new Date().toISOString();
-  const ok = await docUpdate("badgeCodes", code, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } Object.assign(current, update); logAdminAction("badge.update", { code, fields: Object.keys(update) }).catch(() => {}); res.json(current);
+  const ok = await docUpdate("badgeCodes", code, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } Object.assign(current, update); logAdminAction("badge.update", { code, fields: Object.keys(update) }, actorFromRequest(req)).catch(() => {}); res.json(current);
 });
 router.delete("/:code", requireAdmin, async (req: Request, res: Response) => {
-  const code = str(req.params.code); const ok = await docDelete("badgeCodes", code); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } const idx = memoryBadges.findIndex((b: any) => b.code === code); if (idx !== -1) memoryBadges.splice(idx, 1); logAdminAction("badge.delete", { code }).catch(() => {}); res.json({ success: true });
+  const code = str(req.params.code); const ok = await docDelete("badgeCodes", code); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } const idx = memoryBadges.findIndex((b: any) => b.code === code); if (idx !== -1) memoryBadges.splice(idx, 1); logAdminAction("badge.delete", { code }, actorFromRequest(req)).catch(() => {}); res.json({ success: true });
 });
 router.post("/:code/toggle", requireAdmin, async (req: Request, res: Response) => {
   const code = str(req.params.code); const existing = await loadBadges(); const badge = existing.find((b: any) => b.code === code); if (!badge) { res.status(404).json({ error: "Badge not found" }); return; }
-  const nextActive = badge.isActive !== true; const ok = await docUpdate("badgeCodes", code, { isActive: nextActive }); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } badge.isActive = nextActive; logAdminAction("badge.toggle", { code, isActive: nextActive }).catch(() => {}); res.json({ success: true, isActive: nextActive });
+  const nextActive = badge.isActive !== true; const ok = await docUpdate("badgeCodes", code, { isActive: nextActive }); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } badge.isActive = nextActive; logAdminAction("badge.toggle", { code, isActive: nextActive }, actorFromRequest(req)).catch(() => {}); res.json({ success: true, isActive: nextActive });
 });
 export default router;
