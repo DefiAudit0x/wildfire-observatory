@@ -12,6 +12,27 @@ Object.defineProperty(globalThis, "localStorage", {
 
 vi.stubGlobal("indexedDB", undefined);
 
+
+// ARC-M13: the relay confirms delivery only when the 200 response body
+// satisfies the report contract (the server echoes the stored report), so
+// these mocks model that body instead of a body-less 200.
+let ok200Seq = 0;
+function ok200(): Response {
+  ok200Seq += 1;
+  return new Response(JSON.stringify({
+    id: `srv-relay-${ok200Seq}`,
+    lat: 36.75,
+    lng: 3.06,
+    locationName: "Test location",
+    wilaya: "Alger",
+    description: "Relayed mesh report body",
+    severity: "medium",
+    status: "pending",
+    timestamp: new Date().toISOString(),
+    consensusCount: 1,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 function journalFor(item: { id: string; report: Record<string, unknown> }, state: "prepared" | "delivered") {
   return {
     journalId: `journal-${item.id}`,
@@ -51,7 +72,7 @@ describe("mesh relay capacity recovery after reload", () => {
     vi.resetModules();
     const secondSession = await import("../src/lib/meshRelay.js");
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(ok200())
       .mockResolvedValue(new Response(null, { status: 503 }));
     vi.stubGlobal("fetch", fetchMock);
     await secondSession.flushQueue();

@@ -10,6 +10,27 @@ Object.defineProperty(globalThis, "localStorage", {
   },
 });
 
+
+// ARC-M13: the relay confirms delivery only when the 200 response body
+// satisfies the report contract (the server echoes the stored report), so
+// these mocks model that body instead of a body-less 200.
+let ok200Seq = 0;
+function ok200(): Response {
+  ok200Seq += 1;
+  return new Response(JSON.stringify({
+    id: `srv-relay-${ok200Seq}`,
+    lat: 36.75,
+    lng: 3.06,
+    locationName: "Test location",
+    wilaya: "Alger",
+    description: "Relayed mesh report body",
+    severity: "medium",
+    status: "pending",
+    timestamp: new Date().toISOString(),
+    consensusCount: 1,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 type StoredState = {
   revision: number;
   pending: Array<{ report: { clientGeneratedId: string } }>;
@@ -122,7 +143,7 @@ async function expectTerminalReplicaSuppressesNewerPending(indexedState: unknown
   storage.set("mesh_relay_queue", JSON.stringify(localState));
   const indexedDb = indexedDbWithState(indexedState);
   const relay = await loadRelay(indexedDb);
-  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+  const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
   vi.stubGlobal("fetch", fetchMock);
 
   await relay.flushQueue();
@@ -157,7 +178,7 @@ describe("mesh relay durable reconciliation journal", () => {
   it("does not dispatch HTTP when durable prepared persistence fails", async () => {
     const relay = await loadRelay();
     await relay.enqueueRelay({ clientGeneratedId: "journal-prepared-failure" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation(() => {
       throw new Error("quota");
@@ -175,7 +196,7 @@ describe("mesh relay durable reconciliation journal", () => {
   it("rebuilds delivered state after reload when queue persistence fails", async () => {
     const relay = await loadRelay();
     await relay.enqueueRelay({ clientGeneratedId: "journal-delivered-before-queue" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     const setItem = failWriteAt(3); // prepared → delivered → queue transition
 
@@ -198,7 +219,7 @@ describe("mesh relay durable reconciliation journal", () => {
   it("retries the same clientGeneratedId after crash between HTTP and delivered", async () => {
     const relay = await loadRelay();
     await relay.enqueueRelay({ clientGeneratedId: "journal-retry-same-client-id" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     const setItem = failWriteAt(2); // prepared → delivered
 
@@ -222,7 +243,7 @@ describe("mesh relay durable reconciliation journal", () => {
   it("resumes committed finalization after crash between queue commit and journal commit", async () => {
     const relay = await loadRelay();
     await relay.enqueueRelay({ clientGeneratedId: "journal-commit-finalization" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     const setItem = failWriteAt(4); // prepared → delivered → queue transition → committed
 
@@ -259,7 +280,7 @@ describe("mesh relay durable reconciliation journal", () => {
     storage.set("mesh_relay_queue", JSON.stringify(replicaState(13, "prepared")));
     const indexedDb = indexedDbWithState(replicaState(12, "prepared"));
     const relay = await loadRelay(indexedDb);
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
 
     await relay.flushQueue();

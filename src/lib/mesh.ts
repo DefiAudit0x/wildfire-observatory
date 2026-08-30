@@ -1,3 +1,5 @@
+import { ReconnectingSocket } from "../hooks/useReconnectingSocket";
+
 export type MeshStatus = "connecting" | "online" | "offline";
 
 export interface MeshNodeInfo {
@@ -15,9 +17,16 @@ export interface MeshMessage {
 type MessageHandler = (message: MeshMessage) => void;
 type StatusHandler = (status: MeshStatus, nodeCount: number, nodes: MeshNodeInfo[]) => void;
 
+// ARC-M14: connection lifecycle (heartbeat, half-open watchdog, jittered
+// backoff) lives in the shared ReconnectingSocket engine — this client keeps
+// only what is mesh-specific: the device identity, the short-lived mesh
+// token, and the node/status fan-out.
 const HEARTBEAT_MS = 30_000;
+// The mesh hub answers every {"type":"ping"} with a pong, so >2 missed
+// heartbeat windows of total inbound silence means the link is dead behind a
+// proxy — force-close and rebuild instead of staying silently half-open.
+const QUIET_SOCKET_MS = 75_000;
 const FETCH_TOKEN_TIMEOUT_MS = 10_000;
-const MAX_RECONNECT_DELAY_MS = 30_000;
 const DEVICE_ID_KEY = "mesh_device_id";
 let memoryDeviceId: string | null = null;
 
@@ -37,22 +46,33 @@ function getDeviceId(): string {
 }
 
 class MeshClient {
-  private ws: WebSocket | null = null;
+  private engine: ReconnectingSocket;
   private deviceId = getDeviceId();
   private label = this.buildLabel();
   private status: MeshStatus = "offline";
   private nodeCount = 0;
   private nodes: MeshNodeInfo[] = [];
-  private reconnectDelay = 1_000;
-  private reconnectTimer: number | null = null;
-  private heartbeatTimer: number | null = null;
-  private manualClosed = false;
   private meshToken: string | null = null;
   private tokenController: AbortController | null = null;
-  private connectionGeneration = 0;
-  private connecting = false;
   private messageHandlers = new Set<MessageHandler>();
   private statusHandlers = new Set<StatusHandler>();
+
+  constructor() {
+    this.engine = new ReconnectingSocket({
+      createSocket: () => this.openSocket(),
+      heartbeatMs: HEARTBEAT_MS,
+      quietSocketMs: QUIET_SOCKET_MS,
+      onOpen: (send) => {
+        send(JSON.stringify({ type: "hello", deviceId: this.deviceId, label: this.label, token: this.meshToken }));
+      },
+      onMessage: (event) => this.handleMessage(event),
+      onDown: () => {
+        // The token is short-lived; fetch a fresh one on reconnect.
+        this.meshToken = null;
+        this.setStatus("offline");
+      },
+    });
+  }
 
   private buildLabel(): string {
     const ua = navigator.userAgent;
@@ -64,166 +84,81 @@ class MeshClient {
   }
 
   connect(): void {
-    if (this.ws || this.reconnectTimer !== null || this.connecting) return;
-    this.manualClosed = false;
-    this.connecting = true;
+    if (this.engine.getState() !== "idle") return;
     this.setStatus("connecting");
-    void this.openSocket();
+    this.engine.connect();
   }
 
   disconnect(): void {
-    this.manualClosed = true;
-    this.connectionGeneration++;
-    this.connecting = false;
     this.tokenController?.abort();
     this.tokenController = null;
-    if (this.reconnectTimer !== null) {
-      window.clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    if (this.heartbeatTimer !== null) {
-      window.clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
-    }
+    this.engine.disconnect();
     this.setStatus("offline");
   }
 
-  private async fetchMeshToken(generation: number): Promise<string | null> {
+  /** Token-gated socket factory — the engine's reconnect loop drives this. */
+  private async openSocket(): Promise<WebSocket> {
     const controller = new AbortController();
+    this.tokenController?.abort();
     this.tokenController = controller;
     const timeout = window.setTimeout(() => controller.abort(), FETCH_TOKEN_TIMEOUT_MS);
     try {
-      const res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
-        headers: { Accept: "application/json" },
-        signal: controller.signal,
-      });
-      if (generation !== this.connectionGeneration || this.manualClosed) return null;
-      if (!res.ok) return null;
-      const data = (await res.json()) as { token?: unknown };
-      return typeof data.token === "string" && data.token.length > 0 ? data.token : null;
-    } catch {
-      return null;
+      if (!this.meshToken) {
+        const res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
+          headers: { Accept: "application/json" },
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error("mesh token unavailable");
+        const data = (await res.json()) as { token?: unknown };
+        this.meshToken = typeof data.token === "string" && data.token.length > 0 ? data.token : null;
+        if (!this.meshToken) throw new Error("mesh token unavailable");
+      }
     } finally {
       window.clearTimeout(timeout);
       if (this.tokenController === controller) this.tokenController = null;
     }
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    return new WebSocket(`${protocol}//${location.host}/ws`);
   }
 
-  private async openSocket(): Promise<void> {
-    const generation = ++this.connectionGeneration;
-    if (this.manualClosed) return;
-    if (!this.meshToken) {
-      this.meshToken = await this.fetchMeshToken(generation);
-    }
-    if (generation !== this.connectionGeneration || this.manualClosed) {
-      if (generation === this.connectionGeneration) this.connecting = false;
-      return;
-    }
-    if (!this.meshToken) {
-      this.connecting = false;
-      this.setStatus("offline");
-      this.reconnectTimer = window.setTimeout(() => {
-        this.reconnectTimer = null;
-        this.meshToken = null;
-        this.connecting = true;
-        void this.openSocket();
-      }, this.reconnectDelay);
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
-      return;
-    }
-
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    let ws: WebSocket;
+  private handleMessage(event: MessageEvent): void {
     try {
-      ws = new WebSocket(`${protocol}//${location.host}/ws`);
+      const message = JSON.parse(String(event.data)) as MeshMessage;
+      if (message.type === "welcome") {
+        const nodeCount = parseNodeCount(message.nodeCount, 0);
+        const nodes = parseNodes(message.nodes);
+        if (nodeCount === null || nodes === null) return;
+        this.nodeCount = nodeCount;
+        this.nodes = nodes;
+        this.setStatus("online");
+      } else if (message.type === "node:joined") {
+        const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
+        const node = parseNode(message.node);
+        if (nodeCount === null || node === null) return;
+        this.nodeCount = nodeCount;
+        this.nodes = [...this.nodes.filter((n) => n.id !== node.id), node];
+        this.emitStatus();
+      } else if (message.type === "node:left") {
+        const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
+        if (nodeCount === null) return;
+        this.nodeCount = nodeCount;
+        if (typeof message.nodeId === "string") {
+          this.nodes = this.nodes.filter((n) => n.id !== message.nodeId);
+        }
+        this.emitStatus();
+      } else if (message.type === "error") {
+        // Log only; connection stays alive
+      }
+      this.messageHandlers.forEach((handler) => {
+        try {
+          handler(message);
+        } catch {
+          // One consumer must not prevent delivery to the remaining listeners.
+        }
+      });
     } catch {
-      this.connecting = false;
-      this.setStatus("offline");
-      return;
+      // Ignore malformed frames
     }
-    this.connecting = false;
-    this.ws = ws;
-
-    ws.onopen = () => {
-      if (this.ws !== ws || generation !== this.connectionGeneration || this.manualClosed) return;
-      this.reconnectDelay = 1_000;
-      ws.send(JSON.stringify({ type: "hello", deviceId: this.deviceId, label: this.label, token: this.meshToken }));
-      if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = window.setInterval(() => {
-        if (this.ws?.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: "ping" }));
-        }
-      }, HEARTBEAT_MS);
-    };
-
-    ws.onmessage = (event) => {
-      if (this.ws !== ws || generation !== this.connectionGeneration || this.manualClosed) return;
-      try {
-        const message = JSON.parse(String(event.data)) as MeshMessage;
-        if (message.type === "welcome") {
-          const nodeCount = parseNodeCount(message.nodeCount, 0);
-          const nodes = parseNodes(message.nodes);
-          if (nodeCount === null || nodes === null) return;
-          this.nodeCount = nodeCount;
-          this.nodes = nodes;
-          this.setStatus("online");
-        } else if (message.type === "node:joined") {
-          const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
-          const node = parseNode(message.node);
-          if (nodeCount === null || node === null) return;
-          this.nodeCount = nodeCount;
-          this.nodes = [...this.nodes.filter((n) => n.id !== node.id), node];
-          this.emitStatus();
-        } else if (message.type === "node:left") {
-          const nodeCount = parseNodeCount(message.nodeCount, this.nodeCount);
-          if (nodeCount === null) return;
-          this.nodeCount = nodeCount;
-          if (typeof message.nodeId === "string") {
-            this.nodes = this.nodes.filter((n) => n.id !== message.nodeId);
-          }
-          this.emitStatus();
-        } else if (message.type === "error") {
-          // Log only; connection stays alive
-        }
-        this.messageHandlers.forEach((handler) => {
-          try {
-            handler(message);
-          } catch {
-            // One consumer must not prevent delivery to the remaining listeners.
-          }
-        });
-      } catch {
-        // Ignore malformed frames
-      }
-    };
-
-    ws.onclose = () => {
-      if (this.ws !== ws || generation !== this.connectionGeneration) return;
-      this.ws = null;
-      this.meshToken = null; // token is short-lived; fetch a fresh one on reconnect
-      if (this.heartbeatTimer !== null) {
-        window.clearInterval(this.heartbeatTimer);
-        this.heartbeatTimer = null;
-      }
-      if (!this.manualClosed) {
-        this.setStatus("offline");
-        this.reconnectTimer = window.setTimeout(() => {
-          this.reconnectTimer = null;
-          this.connecting = true;
-          void this.openSocket();
-        }, this.reconnectDelay);
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, MAX_RECONNECT_DELAY_MS);
-      }
-    };
-
-    ws.onerror = () => {
-      if (this.ws !== ws || generation !== this.connectionGeneration) return;
-      // onclose will follow and schedule a reconnect
-    };
   }
 
   private setStatus(status: MeshStatus): void {
@@ -243,13 +178,7 @@ class MeshClient {
   }
 
   send(message: MeshMessage): boolean {
-    if (this.ws?.readyState !== WebSocket.OPEN) return false;
-    try {
-      this.ws.send(JSON.stringify(message));
-      return true;
-    } catch {
-      return false;
-    }
+    return this.engine.send(JSON.stringify(message));
   }
 
   onMessage(handler: MessageHandler): () => void {

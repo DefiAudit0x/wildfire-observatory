@@ -1,3 +1,8 @@
+// ARC-M13: the severity and reporter-type vocabularies are derived from the
+// dataset validators (the single owner of the report wire contract) instead of
+// re-declared here — a new enum value now lands in one place.
+import type { ReportSeverity, ReporterType } from "./utils/datasetValidators";
+
 export interface Report {
   id: string;
   lat: number;
@@ -5,12 +10,12 @@ export interface Report {
   locationName: string;
   wilaya: string;
   description: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
+  severity: ReportSeverity;
   status: 'pending' | 'verified' | 'rejected' | 'resolved';
   image?: string; // Base64 image
   reporterName?: string;
   reporterPhone?: string;
-  reporterType?: 'citizen' | 'volunteer' | 'official';
+  reporterType?: ReporterType;
   reporterBadgeCode?: string;
   clientGeneratedId?: string;
   timestamp: string;
