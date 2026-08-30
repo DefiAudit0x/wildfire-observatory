@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from "react";
 import { Lock, ShieldCheck, Users, Landmark, Plus, Trash2, RefreshCw, KeyRound, AlertTriangle, LogOut, Eye, EyeOff, Unlock } from "lucide-react";
 import { Language } from "../../types";
+import { useStaffSession } from "../../hooks/useAuth";
+import { apiFetch, isSessionExpiry } from "../../utils/adminApi"; // ARC-L21/M33: shared helper + one session truth
 import ConfirmDialog from "../ui/ConfirmDialog";
 
 interface ConfirmState {
@@ -26,31 +28,28 @@ interface StaffUser {
   createdAt?: string;
 }
 
-interface SessionInfo {
-  agentId: string | null;
-  name: string | null;
-  role: string;
-  unitId: string | null;
-}
-
 interface StaffManagerProps {
   lang: Language;
 }
 
-function roleLabel(role: string, isArabic: boolean): string {
+// ARC-M33: the shared StaffSession type carries role: string | null (session
+// claims nothing until a probe succeeds) — accept that here.
+function roleLabel(role: string | null, isArabic: boolean): string {
   const map: Record<string, string> = {
     superadmin: isArabic ? "مشرف عام" : "Super Admin",
     commander: isArabic ? "قائد وحدة" : "Chef d'unité",
     agent: isArabic ? "فعال / مناوب" : "Agent",
     admin: isArabic ? "إداري" : "Admin",
   };
-  return map[role] || role;
+  return (role && map[role]) || role || "";
 }
 
 export default function StaffManager({ lang }: StaffManagerProps) {
   const isArabic = lang === "ar";
-  const [session, setSession] = useState<SessionInfo | null>(null);
-  const [authChecking, setAuthChecking] = useState(true);
+  // ARC-M33: the private session copy is gone — this surface reads the SAME
+  // shared session poll the App and RosterBoard use, so there is one truth
+  // instead of two that can disagree while the other one claims the opposite.
+  const { session: staffSession, refetch: refetchSession, loading: sessionLoading } = useStaffSession();
 
   const [agentId, setAgentId] = useState("");
   const [password, setPassword] = useState("");
@@ -67,35 +66,6 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
-
-  const handleAuth = (res: Response) => {
-    if (res.status === 401 || res.status === 403) {
-      setSession(null);
-      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
-      return true;
-    }
-    return false;
-  };
-
-  const probeSession = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
-      if (res.ok) {
-        const data = await res.json();
-        setSession(data.user);
-      } else {
-        setSession(null);
-      }
-    } catch {
-      setSession(null);
-    } finally {
-      setAuthChecking(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    probeSession();
-  }, [probeSession]);
 
   const fetchUnits = useCallback(async () => {
     try {
@@ -127,14 +97,14 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   }, [fetchUnits, fetchUsers]);
 
   useEffect(() => {
-    if (session) {
+    if (staffSession.authenticated) {
       loadAll();
     } else {
       setLoaded(false);
       setUsers([]);
       setUnits([]);
     }
-  }, [session, loadAll]);
+  }, [staffSession.authenticated, loadAll]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,7 +126,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
       if (res.ok && data.success) {
         setAgentId("");
         setPassword("");
-        await probeSession();
+        await refetchSession();
       } else {
         setError(isArabic ? "بيانات الدخول غير صحيحة أو الحساب موقوف." : "Identifiants invalides ou compte désactivé.");
       }
@@ -168,18 +138,11 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   };
 
   const handleLogout = () => {
-    setSession(null);
-    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
-  };
-
-  const apiFetch = async (url: string, method: string, body?: unknown) => {
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    return res;
+    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
+      .catch(() => {})
+      .finally(() => {
+        void refetchSession();
+      });
   };
 
   const handleAddUnit = async (e: React.FormEvent) => {
@@ -199,6 +162,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         await fetchUnits();
         setMsg(isArabic ? "✓ تمت إضافة الوحدة." : "✓ Unité ajoutée.");
       } else {
+        if (isSessionExpiry(res)) void refetchSession();
         setMsg(isArabic ? (data.error || "فشل الإضافة") : (data.error || "Échec de l'ajout"));
       }
     } catch {
@@ -217,6 +181,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         await Promise.all([fetchUnits(), fetchUsers()]);
         setMsg(isArabic ? "✓ تم حذف الوحدة." : "✓ Unité supprimée.");
       } else {
+        if (isSessionExpiry(res)) void refetchSession();
         const data = await res.json().catch(() => ({}));
         setMsg(isArabic ? (data.error || "فشل الحذف") : (data.error || "Échec de la suppression"));
       }
@@ -245,6 +210,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         await fetchUsers();
         setMsg(isArabic ? "✓ تم إنشاء الحساب." : "✓ Compte créé.");
       } else {
+        if (isSessionExpiry(res)) void refetchSession();
         setMsg(isArabic ? (data.error || "فشل الإنشاء") : (data.error || "Échec de la création"));
       }
     } catch {
@@ -262,6 +228,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
       if (res.ok) {
         await fetchUsers();
       } else {
+        if (isSessionExpiry(res)) void refetchSession();
         const data = await res.json().catch(() => ({}));
         setMsg(isArabic ? (data.error || "فشل التحديث") : (data.error || "Échec de la mise à jour"));
       }
@@ -281,6 +248,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         await fetchUsers();
         setMsg(isArabic ? "✓ تم حذف الحساب." : "✓ Compte supprimé.");
       } else {
+        if (isSessionExpiry(res)) void refetchSession();
         const data = await res.json().catch(() => ({}));
         setMsg(isArabic ? (data.error || "فشل الحذف") : (data.error || "Échec de la suppression"));
       }
@@ -291,7 +259,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
     }
   };
 
-  if (authChecking) {
+  if (sessionLoading) {
     return (
       <div className="text-center py-12">
         <RefreshCw className="h-6 w-6 animate-spin mx-auto text-slate-400" />
@@ -300,7 +268,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
     );
   }
 
-  if (!session) {
+  if (!staffSession.authenticated) {
     return (
       <div id="staff-login-card" className="max-w-md mx-auto my-8 bg-zinc-950/80 border border-white/5 rounded-2xl p-8 shadow-[0_10px_50px_rgba(0,0,0,0.8)] text-center space-y-6">
         <div className="mx-auto w-16 h-16 bg-sky-600/10 border border-sky-500/20 rounded-2xl flex items-center justify-center text-sky-400">
@@ -367,7 +335,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
     );
   }
 
-  const isSuper = session.role === "superadmin" || session.role === "admin";
+  const isSuper = staffSession.role === "superadmin" || staffSession.role === "admin";
 
   return (
     <div className="space-y-5 w-full animate-fade-in">
@@ -379,13 +347,13 @@ export default function StaffManager({ lang }: StaffManagerProps) {
           </div>
           <div>
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="font-black text-sm text-slate-100">{session.name || session.agentId}</h3>
+              <h3 className="font-black text-sm text-slate-100">{staffSession.name || staffSession.agentId}</h3>
               <span className="bg-sky-700 text-white text-[9px] font-bold px-2 py-0.5 rounded-full uppercase">
-                {roleLabel(session.role, isArabic)}
+                {roleLabel(staffSession.role, isArabic)}
               </span>
             </div>
             <p className="text-[11px] text-gray-400 mt-0.5">
-              {session.agentId && <span className="font-mono">{session.agentId} · </span>}
+              {staffSession.agentId && <span className="font-mono">{staffSession.agentId} · </span>}
               {isSuper
                 ? (isArabic ? "صلاحيات مركزية كاملة" : "Accès central complet")
                 : (isArabic ? "مرتبط بوحدته فقط" : "Limité à son unité")}
@@ -489,7 +457,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
           {!isSuper && <span className="text-[10px] text-gray-500">{isArabic ? "(وحدتك فقط)" : "(votre unité)"}</span>}
         </div>
 
-        {(isSuper || session.role === "commander") && (
+        {(isSuper || staffSession.role === "commander") && (
           <form onSubmit={handleAddUser} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
             <input
               value={userForm.agentId}

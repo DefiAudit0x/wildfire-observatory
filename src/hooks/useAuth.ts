@@ -12,8 +12,13 @@ export interface StaffSession {
 /**
  * Probes the staff/auth session on the single shared session poller
  * (one interval for the whole app, every 60s) using the httpOnly cookie.
+ *
+ * ARC-M33: StaffManager and RosterBoard used to run their own private
+ * session checks against the same endpoint — two truths that could disagree
+ * with this one. They now read THIS hook; `loading` covers the first probe
+ * so login surfaces don't flash before the initial check resolves.
  */
-export function useStaffSession(): { session: StaffSession; refetch: () => void } {
+export function useStaffSession(): { session: StaffSession; refetch: () => void; loading: boolean } {
   const [session, setSession] = useState<StaffSession>({
     authenticated: false,
     role: null,
@@ -21,6 +26,7 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void 
     name: null,
     agentId: null,
   });
+  const [loading, setLoading] = useState(true);
 
   const refetch = useCallback(async () => {
     try {
@@ -39,6 +45,8 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void 
       }
     } catch {
       setSession({ authenticated: false, role: null, unitId: null, name: null, agentId: null });
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -47,5 +55,5 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void 
     return unsubscribe;
   }, [refetch]);
 
-  return { session, refetch };
+  return { session, refetch, loading };
 }

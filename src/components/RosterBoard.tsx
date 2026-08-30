@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ClipboardList, Plus, Trash2, Save, ChevronLeft, ChevronRight, CalendarDays, UserPlus, X, Wrench, AlertTriangle, LogOut, RefreshCw, Building2, ShieldCheck, Copy } from "lucide-react";
 import { Language } from "../types";
+import { useStaffSession } from "../hooks/useAuth"; // ARC-M33: one shared session truth
 import ConfirmDialog from "./ui/ConfirmDialog";
 
 interface StaffUser {
@@ -62,37 +63,16 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [session, setSession] = useState<{ authenticated: boolean; role: string | null; unitId: string | null; name: string | null }>({
-    authenticated: false, role: null, unitId: null, name: null,
-  });
+  // ARC-M33: the private probe + local session copy are gone. This board now
+  // reads the SAME shared poll as App and StaffManager — one truth, so a
+  // 401 here can never claim the session died while the shared one (driving
+  // this board's visibility) still says it lives.
+  const { session: staffSession, refetch: refetchSession } = useStaffSession();
   const [staff, setStaff] = useState<StaffUser[]>([]);
   const [newPost, setNewPost] = useState({ labelAr: "", vehicle: "" });
   const [confirmAction, setConfirmAction] = useState<null | { kind: "copy"; target: string } | { kind: "removePost"; postId: string }>(null);
 
-  const isWritable = session.authenticated && (session.role === "commander" || session.role === "superadmin" || session.role === "admin");
-
-  const probeSession = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
-      if (res.ok) {
-        const data = await res.json();
-        setSession({
-          authenticated: true,
-          role: data.user?.role || null,
-          unitId: data.user?.unitId || null,
-          name: data.user?.name || null,
-        });
-      } else {
-        setSession({ authenticated: false, role: null, unitId: null, name: null });
-      }
-    } catch {
-      setSession({ authenticated: false, role: null, unitId: null, name: null });
-    }
-  }, []);
-
-  useEffect(() => {
-    probeSession();
-  }, [probeSession]);
+  const isWritable = staffSession.authenticated && (staffSession.role === "commander" || staffSession.role === "superadmin" || staffSession.role === "admin");
 
   // ARC-M28: fast date navigation used to let the last *response* win regardless
   // of which request was last — the header could show day N with day N-2 content.
@@ -112,7 +92,8 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       if (res.ok) {
         setRoster(data);
       } else if (res.status === 401) {
-        setSession((s) => ({ ...s, authenticated: false }));
+        // ARC-M33: refresh the ONE session truth instead of mutating a local copy.
+        void refetchSession();
       } else {
         setRoster({ unitId: "", date, posts: [], saved: false });
       }
@@ -129,10 +110,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   }, []);
 
   useEffect(() => {
-    if (session.authenticated) {
+    if (staffSession.authenticated) {
       fetchRoster();
     }
-  }, [session.authenticated, fetchRoster]);
+  }, [staffSession.authenticated, fetchRoster]);
 
   const fetchStaff = useCallback(async () => {
     try {
@@ -319,12 +300,15 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   };
 
   const handleLogout = () => {
-    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }).catch(() => {});
-    setSession({ authenticated: false, role: null, unitId: null, name: null });
+    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
+      .catch(() => {})
+      .finally(() => {
+        void refetchSession();
+      });
     setRoster(null);
   };
 
-  if (!session.authenticated) {
+  if (!staffSession.authenticated) {
     return (
       <div className="max-w-md mx-auto my-12 bg-zinc-950/80 border border-white/5 rounded-2xl p-8 shadow-[0_10px_50px_rgba(0,0,0,0.8)] text-center space-y-6">
         <div className="mx-auto w-16 h-16 bg-sky-600/10 border border-sky-500/20 rounded-2xl flex items-center justify-center text-sky-400">
@@ -360,15 +344,15 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
           <div>
             <h2 className="text-lg font-black text-slate-100 flex items-center gap-2 flex-wrap">
               {isArabic ? "جدول مناوبة الوحدة" : "Tableau de Garde"}
-              {session.unitId && (
+              {staffSession.unitId && (
                 <span className="bg-sky-700/20 text-sky-300 border border-sky-500/20 text-[9px] font-bold px-2 py-0.5 rounded-full uppercase font-mono">
-                  {session.unitId}
+                  {staffSession.unitId}
                 </span>
               )}
             </h2>
             <p className="text-xs text-gray-400 mt-1">
-              {session.name ? <span className="font-bold text-slate-300">{session.name}</span> : null}
-              {session.role ? <span className="text-slate-400"> · {session.role}</span> : null}
+              {staffSession.name ? <span className="font-bold text-slate-300">{staffSession.name}</span> : null}
+              {staffSession.role ? <span className="text-slate-400"> · {staffSession.role}</span> : null}
               {isWritable
                 ? isArabic ? " — وضع التعديل مفعّل" : " — mode édition"
                 : isArabic ? " — وضع القراءة فقط" : " — lecture seule"}
@@ -384,7 +368,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
             <span>{isArabic ? "اليوم" : "Aujourd'hui"}</span>
           </button>
           <button
-            onClick={probeSession}
+            onClick={() => void refetchSession()}
             className="p-2.5 bg-black/40 hover:bg-zinc-800 text-gray-400 hover:text-white rounded-xl border border-white/5 transition-colors cursor-pointer"
             title={isArabic ? "تحديث الجلسة" : "Rafraîchir"}
           >

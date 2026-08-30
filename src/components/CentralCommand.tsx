@@ -367,6 +367,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         isArabic={isArabic}
         reports={reports}
         onChanged={onRefresh || (() => {})}
+        notify={push}
       />
 
       {/* User Locations Table */}

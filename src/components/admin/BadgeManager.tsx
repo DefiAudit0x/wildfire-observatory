@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { BadgeCheck, Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Save, X, AlertTriangle, Users, Activity, Ban, TimerOff, Gauge } from "lucide-react";
 import { Language } from "../../types";
+import { apiFetch } from "../../utils/adminApi"; // ARC-L21: one shared admin/staff fetch helper
 import ConfirmDialog from "../ui/ConfirmDialog";
 
 interface Badge {
@@ -77,16 +78,6 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const [editingCode, setEditingCode] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditState>({ ownerName: "", type: "", wilaya: "", maxUses: "", expiresAt: "" });
   const [confirmDelete, setConfirmDelete] = useState<Badge | null>(null);
-
-  const apiFetch = async (url: string, method: string, body?: unknown) => {
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      credentials: "same-origin",
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    return res;
-  };
 
   // ARC-M27 fix: onAuthError is an inline prop recreated on every parent
   // render, so its identity in this dependency array re-ran loadAll on EVERY
