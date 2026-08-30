@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Shield, User, Phone, Mail, MapPin, Send, CheckCircle, Loader2, BadgeCheck, AlertTriangle } from "lucide-react";
 import { Language } from "../types";
 import { MAGHREB_REGIONS } from "../data/maghrebRegions";
+import { isValidMaghrebPhone } from "../utils/phone";
 
 interface VolunteerRegistrationProps {
   lang: Language;
@@ -29,12 +30,10 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
       return;
     }
 
-    const PHONE_DZ = /^(?:\+213|0)(5|6|7)\d{8}$/;
-    const PHONE_TN = /^(?:\+216)?[2-9]\d{7}$/;
-    const PHONE_MA = /^(?:\+212|0)(?:5|6|7)\d{8}$/;
-    const PHONE_LY = /^(?:\+218|0)[2-9]\d{8}$/;
+    // ARC-L17: one shared Maghreb phone policy (src/utils/phone.ts) — the four
+    // inline regexes that used to live here moved there verbatim.
     const cleanPhone = phone.replace(/[\s\-]/g, "");
-    if (!PHONE_DZ.test(cleanPhone) && !PHONE_TN.test(cleanPhone) && !PHONE_MA.test(cleanPhone) && !PHONE_LY.test(cleanPhone)) {
+    if (!isValidMaghrebPhone(cleanPhone)) {
       setErrorMsg(isArabic
         ? "رقم الهاتف غير صحيح. يرجى إدخال رقم مغاربي صالح (مثال: 0550123456 أو +213550123456)."
         : "Numéro invalide. Veuillez entrer un numéro maghrébin valide (ex: 0550123456 ou +213550123456).");

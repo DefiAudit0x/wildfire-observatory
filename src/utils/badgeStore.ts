@@ -40,10 +40,13 @@ export function setReporterBadge(code: string): void {
 }
 
 export function subscribeReporterBadge(callback: () => void): () => void {
+  // ARC-L11: a "storage" listener here was dead code — the storage event only
+  // fires in OTHER browsing contexts for SHARED storage (localStorage), while
+  // sessionStorage is per-tab and never emits it. This store is session-only
+  // BY DESIGN (never an authorization source), so same-tab updates are the
+  // only possible change and are covered by the explicit custom event below.
   window.addEventListener(BADGE_CHANGED_EVENT, callback);
-  window.addEventListener("storage", callback);
   return () => {
     window.removeEventListener(BADGE_CHANGED_EVENT, callback);
-    window.removeEventListener("storage", callback);
   };
 }
