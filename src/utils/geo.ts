@@ -23,11 +23,18 @@ export function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: n
  */
 export const OUT_OF_COVERAGE = "خارج التغطية (Hors zone)";
 
+// ARC-L12: the arrays below previously overlapped on purpose-but-silently:
+// Skikda∩Annaba (lng 7.4–7.5), Skikda∩Jijel (lng 6.2–6.5) — the FIRST match in
+// this array silently won (find()). The lower-priority bounds were narrowed to
+// remove every overlap while keeping the RESOLVED wilaya byte-identical for
+// any coordinate (Annaba already won 7.4–7.5 because it precedes Skikda;
+// Skikda already won 6.2–6.5 because it precedes Jijel). Resolution contract:
+// scan order = priority; the server (server/geo.ts) remains the authority.
 const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = [
   { name: "الجزائر - الطارف (Algérie - El Tarf)", minLat: 36.5, maxLat: 37.0, minLng: 8.0, maxLng: 8.6 },
   { name: "الجزائر - عنابة (Algérie - Annaba)", minLat: 36.7, maxLat: 37.0, minLng: 7.4, maxLng: 7.95 },
-  { name: "الجزائر - سكيكدة (Algérie - Skikda)", minLat: 36.6, maxLat: 37.0, minLng: 6.2, maxLng: 7.5 },
-  { name: "الجزائر - جيجل (Algérie - Jijel)", minLat: 36.5, maxLat: 36.9, minLng: 5.8, maxLng: 6.5 },
+  { name: "الجزائر - سكيكدة (Algérie - Skikda)", minLat: 36.6, maxLat: 37.0, minLng: 6.2, maxLng: 7.4 },
+  { name: "الجزائر - جيجل (Algérie - Jijel)", minLat: 36.5, maxLat: 36.9, minLng: 5.8, maxLng: 6.2 },
   { name: "الجزائر - بجاية (Algérie - Béjaïa)", minLat: 36.5, maxLat: 36.9, minLng: 4.6, maxLng: 5.4 },
   { name: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)", minLat: 36.4, maxLat: 36.8, minLng: 3.8, maxLng: 4.55 },
   { name: "الجزائر - سوق أهراس (Algérie - Souk Ahras)", minLat: 36.0, maxLat: 36.5, minLng: 7.5, maxLng: 8.5 },

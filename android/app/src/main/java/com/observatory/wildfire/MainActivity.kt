@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.KeyEvent
 import android.webkit.*
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -279,7 +280,10 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             allowFileAccess = false
             allowContentAccess = false
-            mediaPlaybackRequiresUserGesture = false
+            // ARC-L25: restored the secure default (true). Autoplay was never
+            // needed — SOS audio playback is user-initiated — and a WebView
+            // that plays media without a gesture is a surprise cost.
+            mediaPlaybackRequiresUserGesture = true
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
 
@@ -374,6 +378,20 @@ class MainActivity : AppCompatActivity() {
 
         // Load PWA after all WebView callbacks are installed.
         webView.loadUrl(APP_URL)
+    }
+
+    /**
+     * ARC-L25: the hardware/system back button used to exit the app even when
+     * the WebView had internal history to pop (the PWA is SPA + history API,
+     * so users lose in-app state on a stray back press). Back now navigates
+     * the WebView when it can; only at the SPA root does it exit as before.
+     */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK && this::webView.isInitialized && webView.canGoBack()) {
+            webView.goBack()
+            return true
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     private fun injectMeshBridge() {

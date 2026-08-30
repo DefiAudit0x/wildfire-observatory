@@ -604,7 +604,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
           <div className="flex items-center gap-2">
             <button
               onClick={copyToNextDay}
-              disabled={saving || !roster || roster.posts.length === 0}
+              disabled={saving || !roster || roster.posts.length === 0 || roster.date !== date}
               className="px-4 py-2.5 bg-sky-700 hover:bg-sky-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
               title={isArabic ? "نسخ مناصب هذا اليوم إلى الغد" : "Copier les postes vers demain"}
             >
@@ -631,8 +631,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       message={
         confirmAction?.kind === "copy"
           ? isArabic
-            ? `نسخ مناصب ${date} إلى ${confirmAction.target}؟`
-            : `Copier les postes de ${date} vers ${confirmAction.target} ?`
+            ? // ARC-L19: the endpoint copies the LAST SAVED roster for this day,
+              // not the live (possibly unsaved) edits in this board.
+              `نسخ آخر نسخة محفوظة لمناصب ${date} إلى ${confirmAction.target}؟ احفظ تعديلاتك أولاً إن أردت نسخها.`
+            : `Copier la DERNIÈRE VERSION ENREGISTRÉE des postes de ${date} vers ${confirmAction.target} ? Enregistrez vos modifications d'abord.`
           : isArabic
             ? "إزالة هذا المنصب من الجدول؟ (تظهر بعد الحفظ)"
             : "Retirer ce poste du tableau ? (visible après enregistrement)"

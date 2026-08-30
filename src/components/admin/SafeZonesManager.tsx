@@ -38,6 +38,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [busyZoneIds, setBusyZoneIds] = useState<Set<string>>(new Set());
   const { toasts, push } = useToasts();
 
   const fetchZones = useCallback(async () => {
@@ -108,6 +109,9 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   };
 
   const handleToggleActive = async (zone: SafeZoneItem) => {
+    // ARC-L18: double-click guard — two PUTs raced the same flip.
+    if (busyZoneIds.has(zone.id)) return;
+    setBusyZoneIds((prev) => new Set(prev).add(zone.id));
     try {
       const res = await apiFetch(`/api/safezones/${zone.id}`, "PUT", {
         nameAr: zone.nameAr,
@@ -119,21 +123,41 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
         isActive: !zone.isActive,
       });
       if (res.ok) fetchZones();
-      else onAuthError(res);
-    } catch (err) {
-      console.error(err);
+      else if (!onAuthError(res)) {
+        // ARC-L18: non-401 failures used to be silent.
+        push(isArabic ? "فشل تحديث المركز الآمن" : "Échec de la mise à jour du centre", "error");
+      }
+    } catch {
+      push(isArabic ? "خطأ في الاتصال." : "Erreur de connexion.", "error");
+    } finally {
+      setBusyZoneIds((prev) => {
+        const next = new Set(prev);
+        next.delete(zone.id);
+        return next;
+      });
     }
   };
 
   const handleDeleteZone = async (id: string) => {
+    // ARC-L18: double-click guard — two DELETEs raced the same id.
+    if (busyZoneIds.has(id)) return;
+    setBusyZoneIds((prev) => new Set(prev).add(id));
     try {
       const res = await apiFetch(`/api/safezones/${id}`, "DELETE");
       if (res.ok) {
         fetchZones();
         push(isArabic ? "تم حذف المركز الآمن" : "Centre sécurisé supprimé");
-      } else onAuthError(res);
-    } catch (err) {
-      console.error(err);
+      } else if (!onAuthError(res)) {
+        push(isArabic ? "فشل حذف المركز الآمن" : "Échec de la suppression du centre", "error");
+      }
+    } catch {
+      push(isArabic ? "خطأ في الاتصال." : "Erreur de connexion.", "error");
+    } finally {
+      setBusyZoneIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -278,7 +302,8 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     onClick={() => handleToggleActive(z)}
-                    className={`px-2 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer ${
+                    disabled={busyZoneIds.has(z.id)}
+                    className={`px-2 py-1 rounded text-[10px] font-bold border transition-all cursor-pointer disabled:opacity-50 ${
                       z.isActive === false
                         ? "bg-zinc-900 text-gray-400 border-white/10"
                         : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"

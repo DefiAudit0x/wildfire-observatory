@@ -59,8 +59,10 @@ let initMeshPromise: Promise<{ supported: boolean; deviceId: string }> | null = 
 // against the 1h rotation period — see CryptoEngine.retiredEphemeralKeyPairs.
 const retiredPrivateKeys: CryptoKey[] = [];
 
-// Reputation cache
-const reputationCache = new Map<string, number>();
+// ARC-L08: the old `reputationCache` (read by the no-bridge fallback of
+// getPeerReputation) was deleted — it was NEVER written, so the JS fallback
+// always answered 0 and only masqueraded as state. The native bridge owns
+// reputation; the JS side has no legitimate reason to fake a copy of it.
 
 // Listeners
 const messageListeners = new Set<MeshMessageHandler>();
@@ -70,6 +72,23 @@ const peerListeners = new Set<PeerUpdateHandler>();
 // INITIALIZATION
 // ========================
 
+/**
+ * ARC-L08 — TEST-ONLY / PRECURSOR SURFACE (explicitly marked, do not silently
+ * grow). The exports below have NO production caller today (verified: the
+ * production entry points are initMeshRelay() in src/lib/meshRelay.ts and the
+ * broadcastMessage/isMeshSupported/checkAndRecordMessageHash trio used by
+ * useObservatoryData). They exist because:
+ *   1. tests/mesh-relay.test.ts pins cross-runtime byte vectors against the
+ *      Kotlin implementation (canonicalLatLng, buildSignedData, solvePoW,
+ *      getLocalPublicKeyBase64, isEncryptedMessageShape, EncryptedMessage,
+ *      encryptForPeer/decryptFromPeer) — the precursor work for the any-to-any
+ *      relay protocol tracked in ARCHITECTURE.md;
+ *   2. they are presentation/telemetry hooks (getMeshServiceState,
+ *      getConnectedPeers, onMeshReady, onPeersUpdate, checkAndRecordNonce)
+ *      kept for the team-telemetry decision on ARC-H7.
+ * Before relying on any of them from production code, remove the marker and
+ * re-verify their contract against the native bridge.
+ */
 export async function initMesh(): Promise<{ supported: boolean; deviceId: string }> {
   if (initMeshPromise) return initMeshPromise;
   initMeshPromise = initMeshInternal();
@@ -578,19 +597,6 @@ export function getConnectedPeers(): PeerInfo[] {
   return [];
 }
 
-export function getPeerReputation(endpointId: string): number {
-  const bridge = getAndroidBridge();
-  if (bridge) {
-    try {
-      const reputation = bridge.getPeerReputation(endpointId);
-      return Number.isFinite(reputation) ? reputation : 0;
-    } catch {
-      return 0;
-    }
-  }
-  return reputationCache.get(endpointId) || 0;
-}
-
 // ========================
 // EVENT SUBSCRIPTION
 // ========================
@@ -821,10 +827,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i]);
   }
   return btoa(binary);
-}
-
-function randomNonce(): number {
-  return Math.floor(Math.random() * 2 ** 31);
 }
 
 /**

@@ -72,6 +72,13 @@ export default function ActiveUsersTable({ isArabic, activeUsers }: ActiveUsersT
                 <td className="px-4 py-2 text-gray-400">{new Date(u.lastSeen).toLocaleTimeString()}</td>
               </tr>
             ))}
+            {filtered.length === 0 && activeUsers.length > 0 && (
+              <tr>
+                <td colSpan={5} className="text-center py-8 text-xs text-gray-600">
+                  {isArabic ? "لا نتائج مطابقة للبحث" : "Aucun résultat pour cette recherche"}
+                </td>
+              </tr>
+            )}
             {activeUsers.length === 0 && (
               <tr>
                 <td colSpan={5} className="text-center py-8 text-xs text-gray-600">

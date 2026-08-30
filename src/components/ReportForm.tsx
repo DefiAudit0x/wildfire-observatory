@@ -4,9 +4,10 @@ import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/
 import { geoErrorMessage } from "../hooks/useGeolocation";
 import { setReporterBadge } from "../utils/badgeStore";
 import { isFreshThreatTimestamp } from "../utils/threats";
-import { loadOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
+import { loadOfflineDrafts, removeOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
 import type { SyncState } from "../utils/datasetHealth";
 import { MAGHREB_REGIONS } from "../data/maghrebRegions";
+import { isValidOptionalPhone } from "../utils/phone";
 
 interface SubmissionResultView {
   responseValid: boolean;
@@ -325,7 +326,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         : draft);
     let persistenceError = false;
     try {
+      // ARC-L15: the store is a merge now — synced drafts are removed
+      // EXPLICITLY (tombstoned) instead of being dropped by full-list
+      // omission, which a stale second tab could resurrect.
       await replaceOfflineDrafts(nextDrafts);
+      await removeOfflineDrafts([...syncedIds]);
       setOfflineDrafts(nextDrafts);
     } catch (error: unknown) {
       persistenceError = true;
@@ -908,7 +913,9 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setErrorMsg(isArabic ? "يرجى إعطاء وصف تفصيلي لا يقل عن 10 أحرف." : "Description trop courte (min 10 caract.).");
       return;
     }
-    if (normalizedPhone && !/^\+?[0-9][0-9 ()-]{5,29}$/.test(normalizedPhone)) {
+    // ARC-L17: shared optional-phone policy (src/utils/phone.ts) — regex moved
+    // there verbatim; empty stays valid (the field is optional).
+    if (!isValidOptionalPhone(normalizedPhone)) {
       setErrorMsg(isArabic ? "يرجى إدخال رقم هاتف صالح أو ترك الحقل فارغًا." : "Veuillez saisir un numéro de téléphone valide ou laisser le champ vide.");
       return;
     }
@@ -955,7 +962,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         status: "pending" as const,
       };
 
-      const updatedDrafts = [draftReport, ...offlineDrafts];
+      // ARC-L10: append chronologically — the sync loop consumes the array in
+      // order, so the OLDEST queued draft must sit first. Prepending made the
+      // newest draft jump the queue (LIFO) while the sync path claimed to
+      // preserve ordering.
+      const updatedDrafts = [...offlineDrafts, draftReport];
       try {
         await replaceOfflineDrafts(updatedDrafts);
       } catch (err: unknown) {

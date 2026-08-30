@@ -48,6 +48,9 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const [nearestThreatState, setNearestThreatState] = useState<TrappedSOSModalProps["nearestThreat"]>(nearestThreat ?? null);
   const [recordingTime, setRecordingTime] = useState(0);
   const [name, setName] = useState("");
+  // ARC-L17: this phone field deliberately has NO validation policy — the SOS
+  // path is life-safety and must accept any string (see src/utils/phone.ts for
+  // the centralized policies used by the other citizen windows).
   const [phone, setPhone] = useState("");
   const [isTestingSound, setIsTestingSound] = useState(false);
   const [recordedAudioUrl, setRecordedAudioUrl] = useState<string | null>(null);

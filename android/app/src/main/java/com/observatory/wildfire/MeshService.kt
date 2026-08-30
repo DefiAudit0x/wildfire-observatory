@@ -48,8 +48,10 @@ class MeshService : Service() {
         const val MAX_HOPS = MeshWire.MAX_HOPS
         const val PROTOCOL_VERSION = MeshWire.PROTOCOL_VERSION
         const val REPUTATION_INITIAL = 50
-        const val REPUTATION_GOOD_REPORT = 15
-        const val REPUTATION_FALSE_REPORT = -50
+        // ARC-L24: REPUTATION_GOOD_REPORT (15) and REPUTATION_FALSE_REPORT
+        // (-50) were deleted — reputation is scored from AUTHENTICATED
+        // traffic quality elsewhere; these two were never referenced and
+        // implied a report-quality link that does not exist.
         const val REPUTATION_CONFIRM_MATCH = 5
         // Audit B2: penalties are differentiated by offense severity — garbage
         // bytes are often environmental noise, a failed PoW is cheap to fake,
@@ -71,7 +73,9 @@ class MeshService : Service() {
         const val EPHEMERAL_ROTATION_MS = 60 * 60 * 1000L
         const val SLEEP_IDLE_THRESHOLD = 120_000L  // 2 min no activity → sleep mode
         const val SLEEP_INTERVAL = 10_000L         // scan every 10s in sleep
-        const val ACTIVE_SCAN_INTERVAL = 2000L     // scan every 2s when active
+        // ARC-L24: ACTIVE_SCAN_INTERVAL (2s) was deleted — it was dead since
+        // the trickle rework (ARC-H14): the active rate is TRICKLE_I_MIN,
+        // not a fixed scan period.
 
         // Store-and-forward hygiene: a queued message lives at most 10 minutes
         // since its LAST delivery attempt — never since it was queued, so a
@@ -89,6 +93,10 @@ class MeshService : Service() {
         const val MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000L
         const val MAX_PENDING_MESSAGES = 200
         const val PEER_STALE_MS = 10 * 60 * 1000L
+        // ARC-L24: named (was an inline 300_000L). Forwarded markers expire
+        // 5 minutes after their last delivery attempt so a peer that dropped
+        // out can accept a re-send when it returns.
+        const val FORWARDED_MARKER_TTL_MS = 300_000L
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
         const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
         const val MAX_BRIDGE_JSON_BYTES = 512 * 1024 // JSON envelope before parsing
@@ -1067,7 +1075,9 @@ class MeshService : Service() {
             seenMessageHashes.entries.minByOrNull { it.value }
                 ?.let { seenMessageHashes.remove(it.key) } ?: break
         }
-        val forwardedCutoff = now - 300_000L
+        // ARC-L24: named — forwarded markers expire 5 minutes after their
+        // last delivery attempt so a peer that dropped can accept a re-send.
+        val forwardedCutoff = now - FORWARDED_MARKER_TTL_MS
         forwardedMessages.entries.removeAll { it.value < forwardedCutoff }
         val liveMessageIds = pendingMessages.map { it.messageId }.toSet()
         // Delivery sets for evicted messages can go; in-flight mapping entries
@@ -1290,7 +1300,11 @@ class MeshService : Service() {
     }
 
     fun getConnectedPeers(): List<Map<String, Any>> {
-        return peers.map { (id, info) ->
+        // ARC-L24: `peers` is populated at DISCOVERY time (registerPeer runs
+        // from onEndpointFound, before requestConnection completes), so
+        // mapping it whole reported still-CONNECTING endpoints as connected
+        // to the WebView UI. Filter to the ACTUALLY-connected set.
+        return peers.filterKeys { connectedPeers.contains(it) }.map { (id, info) ->
             mapOf(
                 "endpointId" to id,
                 // The public key is the peer's mesh identity (audit round

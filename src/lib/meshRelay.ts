@@ -425,7 +425,14 @@ function openRelayDb(): Promise<IDBDatabase | null> {
         }
       };
       request.onsuccess = () => {
-        if (settled) return;
+        if (settled) {
+          // ARC-L13: the 100ms fallback timer already won and the caller was
+          // answered with `null`. Closing the late connection here prevents a
+          // dangling IndexedDB handle that would otherwise stay open for the
+          // whole session (the fallback also flags the session disabled).
+          try { request.result.close(); } catch { /* already closed */ }
+          return;
+        }
         settled = true;
         globalThis.clearTimeout(fallbackTimer);
         resolve(request.result);

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Shield, HeartHandshake, MapPin, Truck, Search } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { TeamStatus, getTeamStatusBadge } from "./teams";
@@ -18,6 +18,24 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
   const [dispatchResult, setDispatchResult] = useState<Record<string, { ok: boolean; text: string }>>({});
   const [dispatchingTeamId, setDispatchingTeamId] = useState<string | null>(null);
   const [teamSearch, setTeamSearch] = useState("");
+
+  // ARC-L22: result chips used to persist until the NEXT attempt — a failed
+  // dispatch stayed on screen indefinitely. Each chip now expires on its own.
+  const resultTimers = useRef<Record<string, number>>({});
+  useEffect(() => () => {
+    for (const t of Object.values(resultTimers.current)) window.clearTimeout(t);
+  }, []);
+  const setDispatchResultWithTtl = (teamId: string, value: { ok: boolean; text: string }) => {
+    window.clearTimeout(resultTimers.current[teamId]);
+    setDispatchResult((prev) => ({ ...prev, [teamId]: value }));
+    resultTimers.current[teamId] = window.setTimeout(() => {
+      setDispatchResult((prev) => {
+        const next = { ...prev };
+        delete next[teamId];
+        return next;
+      });
+    }, 5000);
+  };
 
   const filteredTeams = teams.filter((t) => {
     const q = teamSearch.trim().toLowerCase();
@@ -48,10 +66,7 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
         sosId = activeSos[0].id;
         setTableDispatchSosId((prev) => ({ ...prev, [team.id]: sosId }));
       } else {
-        setDispatchResult((prev) => ({
-          ...prev,
-          [team.id]: { ok: false, text: isArabic ? "لا توجد استغاثات نشطة للتوجيه" : "Aucun SOS actif" },
-        }));
+        setDispatchResultWithTtl(team.id, { ok: false, text: isArabic ? "لا توجد استغاثات نشطة للتوجيه" : "Aucun SOS actif" });
         return;
       }
     }
@@ -68,12 +83,9 @@ export default function TeamsTable({ isArabic, teams, sosCalls, dispatchLoading,
       setTableDispatchSosId((prev) => ({ ...prev, [team.id]: "" }));
       setTableDispatchNotes((prev) => ({ ...prev, [team.id]: "" }));
     }
-    setDispatchResult((prev) => ({
-      ...prev,
-      [team.id]: ok
-        ? { ok: true, text: isArabic ? "✓ تم توجيه الفريق" : "✓ Équipe dépêchée" }
-        : { ok: false, text: isArabic ? "فشل التوجيه — تحقق من الاتصال" : "Échec du dispatch" },
-    }));
+    setDispatchResultWithTtl(team.id, ok
+      ? { ok: true, text: isArabic ? "✓ تم توجيه الفريق" : "✓ Équipe dépêchée" }
+      : { ok: false, text: isArabic ? "فشل التوجيه — تحقق من الاتصال" : "Échec du dispatch" });
   };
 
   return (

@@ -1,5 +1,6 @@
 import { Activity, MapPin, ShieldCheck, Sparkles } from "lucide-react";
 import { Report } from "../../types";
+import { useNowTick } from "../../hooks/useNowTick";
 
 interface ActivityFeedProps {
   isArabic: boolean;
@@ -20,8 +21,8 @@ const SEV_DOT: Record<string, string> = {
   critical: "bg-red-500",
 };
 
-function timeAgo(ts: string, isArabic: boolean): string {
-  const diff = Date.now() - new Date(ts).getTime();
+function timeAgo(ts: string, isArabic: boolean, now: number): string {
+  const diff = now - new Date(ts).getTime();
   const min = Math.floor(diff / 60000);
   if (min < 1) return isArabic ? "الآن" : "à l'instant";
   if (min < 60) return isArabic ? `قبل ${min} د` : `il y a ${min} min`;
@@ -30,7 +31,18 @@ function timeAgo(ts: string, isArabic: boolean): string {
   return new Date(ts).toLocaleDateString();
 }
 
+// ARC-L22: the status chip previously rendered `{isArabic ? rep.status : rep.status}`
+// — a dead ternary that showed English machine values in the Arabic UI.
+const STATUS_META: Record<string, { ar: string; fr: string; cls: string }> = {
+  pending: { ar: "بانتظار التحقق", fr: "En attente", cls: "bg-yellow-500/10 text-yellow-400" },
+  verified: { ar: "مُوثّق", fr: "Vérifié", cls: "bg-emerald-500/10 text-emerald-400" },
+  resolved: { ar: "معالَج", fr: "Résolu", cls: "bg-blue-500/10 text-blue-400" },
+  rejected: { ar: "مرفوض", fr: "Rejeté", cls: "bg-red-500/10 text-red-400" },
+};
+
 export default function ActivityFeed({ isArabic, reports }: ActivityFeedProps) {
+  // ARC-L22: shared age tick so "قبل N د" advances between data polls.
+  const now = useNowTick(30_000);
   const sorted = [...reports]
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
     .slice(0, 30);
@@ -55,12 +67,11 @@ export default function ActivityFeed({ isArabic, reports }: ActivityFeedProps) {
                   {rep.locationName}
                 </span>
                 <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold ${
-                  rep.status === "pending" ? "bg-yellow-500/10 text-yellow-400" :
-                  rep.status === "verified" ? "bg-emerald-500/10 text-emerald-400" :
-                  rep.status === "resolved" ? "bg-blue-500/10 text-blue-400" :
-                  "bg-red-500/10 text-red-400"
+                  (STATUS_META[rep.status] || STATUS_META.pending).cls
                 }`}>
-                  {isArabic ? rep.status : rep.status}
+                  {isArabic
+                    ? (STATUS_META[rep.status] || STATUS_META.pending).ar
+                    : (STATUS_META[rep.status] || STATUS_META.pending).fr}
                 </span>
               </div>
               <div className="flex items-center justify-between text-[9px] text-gray-500">
@@ -68,7 +79,7 @@ export default function ActivityFeed({ isArabic, reports }: ActivityFeedProps) {
                   <MapPin className="h-2.5 w-2.5" />
                   {rep.wilaya}
                 </span>
-                <span>{timeAgo(rep.timestamp, isArabic)}</span>
+                <span>{timeAgo(rep.timestamp, isArabic, now)}</span>
               </div>
               <div className="flex items-center gap-1.5">
                 {rep.reporterType === "official" && <span className="text-[8px] text-amber-400">🛡️</span>}
