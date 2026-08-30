@@ -1,50 +1,13 @@
 import { useState } from "react";
 import { Shield, User, Phone, Mail, MapPin, Send, CheckCircle, Loader2, BadgeCheck, AlertTriangle } from "lucide-react";
 import { Language } from "../types";
+import { MAGHREB_REGIONS } from "../data/maghrebRegions";
 
 interface VolunteerRegistrationProps {
   lang: Language;
 }
 
-const DZ_WILAYAS = [
-  "أدرار", "الشلف", "الأغواط", "أم البواقي", "باتنة", "بجاية", "بسكرة", "بشار",
-  "البليدة", "البويرة", "تمنراست", "تبسة", "تلمسان", "تيارت", "تيزي وزو", "الجزائر العاصمة",
-  "الجلفة", "جيجل", "سطيف", "سعيدة", "سكيكدة", "سيدي بلعباس", "عنابة", "قالمة",
-  "قسنطينة", "المدية", "مستغانم", "المسيلة", "معسكر", "ورقلة", "وهران", "البيض",
-  "إليزي", "برج بوعريريج", "بومرداس", "الطارف", "تندوف", "تيسمسيلت", "الوادي", "خنشلة",
-  "سوق أهراس", "تيبازة", "ميلة", "عين الدفلى", "النعامة", "عين تموشنت", "غرداية", "غليزان",
-  "تيميمون", "برج باجي مختار", "أولاد جلال", "بني عباس", "عين صالح", "عين قزام", "تقرت", "جانت",
-  "المغير", "المنيعة",
-];
-
-const WILAYAS_LIST = [
-  ...DZ_WILAYAS.map((w) => ({ nameAr: `الجزائر - ${w}`, nameFr: `Algérie - ${w}` })),
-  { nameAr: "تونس - تونس العاصمة", nameFr: "Tunisie - Tunis" },
-  { nameAr: "تونس - جندوبة", nameFr: "Tunisie - Jendouba" },
-  { nameAr: "تونس - بنزرت", nameFr: "Tunisie - Bizerte" },
-  { nameAr: "تونس - سوسة", nameFr: "Tunisie - Sousse" },
-  { nameAr: "تونس - صفاقس", nameFr: "Tunisie - Sfax" },
-  { nameAr: "تونس - القيروان", nameFr: "Tunisie - Kairouan" },
-  { nameAr: "تونس - الكاف", nameFr: "Tunisie - Le Kef" },
-  { nameAr: "تونس - باجة", nameFr: "Tunisie - Béja" },
-  { nameAr: "تونس - قابس", nameFr: "Tunisie - Gabès" },
-  { nameAr: "المغرب - طنجة تطوان الحسيمة", nameFr: "Maroc - Tanger-Tétouan" },
-  { nameAr: "المغرب - الرباط سلا القنيطرة", nameFr: "Maroc - Rabat-Salé" },
-  { nameAr: "المغرب - الدار البيضاء سطات", nameFr: "Maroc - Casablanca-Settat" },
-  { nameAr: "المغرب - مراكش آسفي", nameFr: "Maroc - Marrakech-Safi" },
-  { nameAr: "المغرب - فاس مكناس", nameFr: "Maroc - Fès-Meknès" },
-  { nameAr: "المغرب - بني ملال خنيفرة", nameFr: "Maroc - Béni Mellal-Khénifra" },
-  { nameAr: "المغرب - سوس ماسة", nameFr: "Maroc - Souss-Massa" },
-  { nameAr: "المغرب - الشرق", nameFr: "Maroc - L'Oriental" },
-  { nameAr: "المغرب - كلميم واد نون", nameFr: "Maroc - Guelmim-Oued Noun" },
-  { nameAr: "ليبيا - طرابلس", nameFr: "Libye - Tripoli" },
-  { nameAr: "ليبيا - بنغازي", nameFr: "Libye - Benghazi" },
-  { nameAr: "ليبيا - الجبل الأخضر", nameFr: "Libye - Al Jabal al Akhdar" },
-  { nameAr: "ليبيا - درنة", nameFr: "Libye - Derna" },
-  { nameAr: "ليبيا - مصراتة", nameFr: "Libye - Misrata" },
-  { nameAr: "ليبيا - الزاوية", nameFr: "Libye - Az Zawiyah" },
-  { nameAr: "ليبيا - سبها", nameFr: "Libye - Sebha" },
-];
+const WILAYAS_LIST = MAGHREB_REGIONS;
 
 export default function VolunteerRegistration({ lang }: VolunteerRegistrationProps) {
   const [fullName, setFullName] = useState("");
