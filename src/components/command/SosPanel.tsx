@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Radio, Phone, MapPin, Check, Volume2, AlertTriangle, Clock } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { getTeamStatusText } from "./teams";
+import { useNowTick } from "../../hooks/useNowTick";
 
 interface SosPanelProps {
   isArabic: boolean;
@@ -18,6 +19,9 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
   const [dispatchType, setDispatchType] = useState<'protection_civile' | 'volunteers'>('protection_civile');
   const [selectedTeam, setSelectedTeam] = useState('');
   const [dispatchNotes, setDispatchNotes] = useState('');
+  // ARC-L22: SOS ages froze between polls — a 2-min-old emergency could
+  // still read "2 min" many minutes later. Shared tick re-renders ages.
+  const now = useNowTick(30_000);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
   const [loadingAudio, setLoadingAudio] = useState<string | null>(null);
 
@@ -85,7 +89,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
         ) : (
           activeSos.map((sos) => {
             const hasDispatch = sos.dispatchedTeams && sos.dispatchedTeams.length > 0;
-            const ageMin = Math.floor((Date.now() - new Date(sos.timestamp).getTime()) / 60000);
+            const ageMin = Math.floor((now - new Date(sos.timestamp).getTime()) / 60000);
             return (
               <div key={sos.id} className={`rounded-lg p-2.5 text-[11px] space-y-2 text-start relative overflow-hidden border ${
                 hasDispatch ? "bg-emerald-950/20 border-emerald-500/30" : "bg-red-950/10 border-red-500/20"

@@ -43,6 +43,29 @@ interface EditState {
 
 const EMPTY_FORM = { code: "", ownerName: "", type: "volunteer", wilaya: "", phone: "", maxUses: "", expiresAt: "" };
 
+/**
+ * ARC-L23: <input type="datetime-local"> yields a bare "YYYY-MM-DDTHH:mm"
+ * with NO timezone. The old code shipped that string to the server, so the
+ * UTC server parsed "08:00" as 08:00Z and a badge created by an Algiers
+ * manager died one hour before its intended expiry. Both directions now
+ * convert explicitly: local input -> UTC ISO on write, UTC ISO -> local
+ * datetime-local value on the edit round-trip.
+ */
+function toUtcIso(value: string): string | undefined {
+  const v = value.trim();
+  if (!v) return undefined;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString();
+}
+
+function toDatetimeLocalValue(iso: string | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso; // legacy/bare value: pass through
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const isArabic = lang === "ar";
   const [badges, setBadges] = useState<Badge[]>([]);
@@ -114,7 +137,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
         wilaya: form.wilaya.trim(),
         phone: form.phone.trim() || undefined,
         maxUses,
-        expiresAt: form.expiresAt || undefined,
+        expiresAt: toUtcIso(form.expiresAt),
       });
       if (res.ok || res.status === 201) {
         setForm(EMPTY_FORM);
@@ -173,7 +196,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
       type: badge.type || "",
       wilaya: badge.wilaya || "",
       maxUses: badge.maxUses !== undefined ? String(badge.maxUses) : "",
-      expiresAt: badge.expiresAt || "",
+      expiresAt: toDatetimeLocalValue(badge.expiresAt || undefined),
     });
   };
 
@@ -189,7 +212,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
         type: editForm.type.trim(),
         wilaya: editForm.wilaya.trim(),
         maxUses,
-        expiresAt: editForm.expiresAt || undefined,
+        expiresAt: toUtcIso(editForm.expiresAt),
       });
       if (res.ok) {
         setEditingCode(null);
@@ -205,6 +228,8 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     }
   };
 
+  // ARC-L23: stored values are UTC ISO (new writes) — Date parses them
+  // unambiguously; legacy bare values fall back to local interpretation.
   const isExpired = (b: Badge) => {
     if (!b.expiresAt) return false;
     const t = new Date(b.expiresAt).getTime();

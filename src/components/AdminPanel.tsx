@@ -113,8 +113,9 @@ const res = await fetch("/api/admin/verify", {
       } else if (!handleAuthError(res)) {
         push(isArabic ? "فشل تحديث الحالة" : "Échec de la mise à jour de l'état", "error");
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // ARC-L18: network failures used to vanish into console.error only.
+      push(isArabic ? "فشل تحديث الحالة — تحقق من الاتصال" : "Échec de la mise à jour — vérifiez la connexion", "error");
     } finally {
       setUpdatingIds((prev) => {
         const next = new Set(prev);
@@ -140,8 +141,9 @@ const res = await fetch("/api/admin/verify", {
       } else if (!handleAuthError(res)) {
         push(isArabic ? "فشل تحديث درجة الخطورة" : "Échec de la mise à jour de la gravité", "error");
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      // ARC-L18: network failures used to vanish into console.error only.
+      push(isArabic ? "فشل تحديث درجة الخطورة — تحقق من الاتصال" : "Échec de la gravité — vérifiez la connexion", "error");
     } finally {
       setUpdatingIds((prev) => {
         const next = new Set(prev);
