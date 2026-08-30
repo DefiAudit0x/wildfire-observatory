@@ -16,6 +16,13 @@ object MeshDeliveryRetry {
         attemptedTargets.remove(endpointId)
     }
 
+    /**
+     * ARC-L24: this predicate is the TEST-PINNED reference for "may we retry
+     * this peer for this message". MeshService evaluates the SAME two
+     * conditions inline on its hot path (guarding the actual re-send) rather
+     * than calling in here; keep the two in sync — the JVM tests fail loudly
+     * if the reference semantics drift.
+     */
     fun canRetry(
         endpointId: String,
         messageId: String,

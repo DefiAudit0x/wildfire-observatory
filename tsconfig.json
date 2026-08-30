@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "experimentalDecorators": true,
     "useDefineForClassFields": false,
     "module": "ESNext",
     "lib": [
@@ -9,6 +8,10 @@
       "DOM",
       "DOM.Iterable"
     ],
+    // ARC-L26: skipLibCheck stays ON deliberately — with it off, tsc fails
+    // inside third-party shipped types (@testing-library/jest-dom's jest.d.ts
+    // references jest globals this repo does not provide), which is packaging
+    // noise, not our dependency drift. First-party code is fully strict-checked.
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "isolatedModules": true,
