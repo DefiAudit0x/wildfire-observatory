@@ -30,6 +30,14 @@ export type ReportsDbResult =
  *  - "no-db": no Firestore is configured (or SKIP_FIREBASE)
  *  - "error": a read error occurred
  */
+// ARC-L07: a bare limit(999) silently truncated the collection — report #1000
+// vanished from every list, map and stat with no error and no pagination hint.
+// Reads now page through the collection (admin cursor / client startAfter)
+// up to a hard cap that bounds memory: 5000 docs ≈ the practical read budget
+// for a 30s-cached list payload.
+const REPORTS_READ_CAP = 5000;
+const READ_PAGE_SIZE = 999;
+
 export async function getReportsDbResult(): Promise<ReportsDbResult> {
   if (reportsCache && Date.now() < reportsCache.expiresAt) {
     return reportsCache.data === null ? { status: "empty" } : { status: "ok", reports: reportsCache.data };
@@ -39,17 +47,32 @@ export async function getReportsDbResult(): Promise<ReportsDbResult> {
   try {
     let data: any[] | null = null;
     if (isAdminDb(db)) {
-      const snapshot = await db.collection("reports").orderBy("timestamp", "desc").limit(999).get();
-      if (!snapshot.empty) {
-        data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() })) as any[];
+      let snapshot = await db.collection("reports").orderBy("timestamp", "desc").limit(READ_PAGE_SIZE).get();
+      const docs: any[] = [...snapshot.docs];
+      // Only chase another page when the current page came back FULL — a short
+      // page proves the collection is exhausted and saves the extra round trip.
+      while (snapshot.docs.length >= READ_PAGE_SIZE && docs.length < REPORTS_READ_CAP) {
+        const last = docs[docs.length - 1];
+        snapshot = await db.collection("reports").orderBy("timestamp", "desc").startAfter(last).limit(READ_PAGE_SIZE).get();
+        if (snapshot.empty) break;
+        docs.push(...snapshot.docs);
+      }
+      if (docs.length > 0) {
+        data = docs.slice(0, REPORTS_READ_CAP).map((d) => ({ id: d.id, ...d.data() })) as any[];
       }
     } else {
-      const { collection, getDocs, query, orderBy, limit } = await loadClientSdk();
+      const { collection, getDocs, query, orderBy, limit, startAfter } = await loadClientSdk();
       const reportsCol = collection(db, "reports");
-      const q = query(reportsCol, orderBy("timestamp", "desc"), limit(999));
-      const snapshot = await getDocs(q);
-      if (!snapshot.empty) {
-        data = snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as any));
+      let snapshot = await getDocs(query(reportsCol, orderBy("timestamp", "desc"), limit(READ_PAGE_SIZE)));
+      const docs: any[] = [...snapshot.docs];
+      while (snapshot.docs.length >= READ_PAGE_SIZE && docs.length < REPORTS_READ_CAP) {
+        const last = docs[docs.length - 1];
+        snapshot = await getDocs(query(reportsCol, orderBy("timestamp", "desc"), startAfter(last), limit(READ_PAGE_SIZE)));
+        if (snapshot.empty) break;
+        docs.push(...snapshot.docs);
+      }
+      if (docs.length > 0) {
+        data = docs.slice(0, REPORTS_READ_CAP).map((d) => ({ id: d.id, ...d.data() } as any));
       }
     }
     if (data === null) return { status: "empty" };
@@ -66,24 +89,47 @@ export async function getReportsFromFirestore() {
   return result.status === "ok" ? result.reports : null;
 }
 
+// ARC-L07: seeding used to await one set() per document — N sequential
+// round-trips per boot against Firestore. Batched writes (450 ops per batch,
+// Firestore's own 500 limit minus headroom) collapse this to ⌈N/450⌉ trips.
+const SEED_BATCH_SIZE = 450;
+
 export async function seedReportsToFirestore(): Promise<boolean> {
   const db = getDb();
   if (!db) return false;
   try {
     if (isAdminDb(db)) {
+      let batch = db.batch();
+      let ops = 0;
       for (const rep of citizenReports) {
-        await db.collection("reports").doc(rep.id).set(rep);
+        batch.set(db.collection("reports").doc(rep.id), rep);
+        ops += 1;
+        if (ops >= SEED_BATCH_SIZE) {
+          await batch.commit();
+          batch = db.batch();
+          ops = 0;
+        }
       }
+      if (ops > 0) await batch.commit();
     } else {
-      const { setDoc, doc } = await loadClientSdk();
+      const { doc, writeBatch } = await loadClientSdk();
+      let batch = writeBatch(db);
+      let ops = 0;
       for (const rep of citizenReports) {
-        await setDoc(doc(db, "reports", rep.id), rep);
+        batch.set(doc(db, "reports", rep.id), rep);
+        ops += 1;
+        if (ops >= SEED_BATCH_SIZE) {
+          await batch.commit();
+          batch = writeBatch(db);
+          ops = 0;
+        }
       }
+      if (ops > 0) await batch.commit();
     }
     // ARC-L03 fix: seeding writes the exact documents the reports cache holds —
     // serving a pre-seed cache afterwards hid the seeded rows for one TTL.
     invalidateReportsCache();
-    logger.info("Seeded initial reports to Firestore");
+    logger.info(`Seeded initial reports to Firestore (${citizenReports.length} docs, batched)`);
     return true;
   } catch (err) {
     logger.error({ err }, "Failed to seed reports");

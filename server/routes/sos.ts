@@ -1,11 +1,12 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
+import { createHash, randomBytes } from "crypto";
+import { encryptAead, decryptAead } from "../crypto.js";
 import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet, appendSosDispatch, clearTeamMissionsForSos } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
-import { getHaversineDistance } from "../geo.js";
+import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
 import config from "../config.js";
 import logger from "../logger.js";
@@ -13,7 +14,7 @@ import { issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 
 const router = Router();
 
-const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 };
+// ARC-M09: NA_BOUNDS now lives once in server/geo.ts (single canonical copy).
 
 const MAX_AUDIO_BASE64_LENGTH = 700 * 1024; // ~512KB raw audio, fits comfortably in Firestore doc limits
 const MAX_AUDIO_DURATION_SEC = 20;
@@ -112,13 +113,13 @@ function profileKey(): Buffer {
   return createHash("sha256").update("sos-profile:" + (config.sosEncryptionKey || config.jwtSecret)).digest();
 }
 
+// ARC-M09: the GCM envelope is shared (server/crypto.ts); the key domains
+// ("sos-profile" primary + legacy JWT-derived fallback below) stay local.
 function tryDecryptProfile(token: string, key: Buffer): { name?: string; phone?: string } | null {
+  const plain = decryptAead(token, key);
+  if (plain === null) return null;
   try {
-    const [ivB64, tagB64, dataB64] = token.split(".");
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
-    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-    const dec = Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);
-    return JSON.parse(dec.toString("utf8"));
+    return JSON.parse(plain.toString("utf8"));
   } catch {
     return null;
   }
@@ -136,11 +137,7 @@ function decryptProfile(token: string): { name?: string; phone?: string } | null
 }
 
 function encryptProfile(plain: { name?: string; phone?: string }): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", profileKey(), iv);
-  const payload = Buffer.from(JSON.stringify(plain), "utf8");
-  const enc = Buffer.concat([cipher.update(payload), cipher.final()]);
-  return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), enc.toString("base64")].join(".");
+  return encryptAead(JSON.stringify(plain), profileKey());
 }
 
 function stripAudio(sos: any) {

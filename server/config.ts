@@ -51,7 +51,13 @@ const config = {
   cookieSecure,
   sosEncryptionKey: process.env.SOS_ENCRYPTION_KEY || "",
   meshSecret: process.env.MESH_SECRET || "",
-  corsOrigins: process.env.CORS_ORIGINS?.split(",") || ["http://localhost:3000", "http://localhost:5173"],
+  // ARC-L07: entries used to keep whatever whitespace the operator typed
+  // ("https://a.com, https://b.com" produced " https://b.com" which can never
+  // match a real Origin header — the second origin silently never worked).
+  corsOrigins: (process.env.CORS_ORIGINS || "http://localhost:3000,http://localhost:5173")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
   logLevel: process.env.LOG_LEVEL || "info",
   sentryDsn: process.env.SENTRY_DSN || "",
   firebaseConfigPath: process.env.FIREBASE_CONFIG_PATH || "firebase-applet-config.json",

@@ -1,6 +1,13 @@
 import { Report } from "../src/types.js";
 import logger from "./logger.js";
 
+/**
+ * ARC-M09: the North-Africa admission bounds used to be declared independently
+ * in reports.ts and sos.ts (drifting values were the audit's original finding).
+ * This is the single canonical copy; both routes import it.
+ */
+export const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 } as const;
+
 export function getHaversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;

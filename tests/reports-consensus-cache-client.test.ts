@@ -22,6 +22,9 @@ vi.mock("firebase/firestore", () => ({
   query: (collection: { name: string }) => ({ collection }),
   orderBy: () => ({}),
   limit: () => ({}),
+  // ARC-L07: production reads are cursor-paginated, so the SDK surface now
+  // includes startAfter; the mock models it (never called for short pages).
+  startAfter: () => ({}),
   getDocs: async () => ({
     empty: state.reports.size === 0,
     docs: [...state.reports.values()].map((report) => ({ id: report.id, data: () => report })),
