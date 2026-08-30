@@ -29,9 +29,14 @@ const RISK_STYLES: Record<RiskLevel, { bar: string; text: string; labelAr: strin
 export default function StatisticsPanel({ reports, satellites, wilayas, lang }: StatisticsPanelProps) {
   const isArabic = lang === "ar";
 
-  const totalReports = reports.filter((r) => r.status === "pending" || r.status === "verified").length;
+  // One denominator for the card: the active subset (pending + verified).
+  // The "of which critical" note must be a subset of the value shown above
+  // it — counting critical across resolved/rejected too produced ratios
+  // that were mathematically impossible (ARC-M24).
+  const activeReports = reports.filter((r) => r.status === "pending" || r.status === "verified");
+  const totalReports = activeReports.length;
   const verifiedReports = reports.filter((r) => r.status === "verified").length;
-  const criticalReports = reports.filter((r) => r.severity === "critical").length;
+  const criticalReports = activeReports.filter((r) => r.severity === "critical").length;
   const totalSatellites = satellites.length;
 
   // Shared, honest rate: verified over every report the system received,

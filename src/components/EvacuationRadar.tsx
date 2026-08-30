@@ -290,6 +290,16 @@ export default function EvacuationRadar({ reports, userLocation, lang }: Evacuat
                 </div>
               </div>
             </div>
+          ) : !userLocation ? (
+            <div className="bg-amber-950/10 border border-amber-500/20 rounded-lg p-5 text-center space-y-2">
+              <div className="text-3xl">📍</div>
+              <p className="font-bold text-amber-400 text-xs">{isArabic ? "حدد موقعك لتشغيل الرادار" : "Activez votre position pour activer le radar"}</p>
+              <p className="text-[10px] text-gray-400 max-w-sm mx-auto">
+                {isArabic
+                  ? "الرادار يحسب المسافات من موقعك؛ لما لم يُحدد الموقع بعد لم يُحتسب أي شيء — هذه ليست رسالة سلامة."
+                  : "Le radar calcule depuis votre position; aucune position définie, donc aucun calcul effectué — ceci n'est pas un message de sécurité."}
+              </p>
+            </div>
           ) : (
             <div className="bg-emerald-950/10 border border-emerald-500/10 rounded-lg p-5 text-center space-y-2">
               <div className="text-3xl">🛡️</div>

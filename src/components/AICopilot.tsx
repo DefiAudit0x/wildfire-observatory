@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import { Sparkles, Loader2, RefreshCw, Send, Shield, PhoneCall } from "lucide-react";
+import { NORTHEAST_ALGERIA_FOCUS } from "../data/maghrebRegions";
 
 interface AICopilotProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -181,14 +182,7 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
           {isArabic ? "تحديد ولاية للاستعلام الفوري:" : "Sélectionner une Wilaya à cibler :"}
         </label>
         <div className="flex flex-wrap gap-1.5">
-          {[
-            { ar: "الطارف", fr: "El Tarf" },
-            { ar: "سكيكدة", fr: "Skikda" },
-            { ar: "عنابة", fr: "Annaba" },
-            { ar: "سوق أهراس", fr: "Souk Ahras" },
-            { ar: "جيجل", fr: "Jijel" },
-            { ar: "قالمة", fr: "Guelma" },
-          ].map((w, idx) => (
+          {NORTHEAST_ALGERIA_FOCUS.map((w, idx) => (
             <button
               key={idx}
               onClick={() => setActiveWilaya(isArabic ? w.ar : w.fr)}

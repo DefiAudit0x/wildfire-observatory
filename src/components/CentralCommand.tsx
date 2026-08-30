@@ -46,7 +46,12 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const isArabic = lang === "ar";
   const [confirmResolve, setConfirmResolve] = useState<TrappedSOS | null>(null);
   const { toasts, push } = useToasts();
-  const reportedErrorRef = useRef(false);
+  // ARC-M32: one error ref used to guard BOTH the SOS and the locations
+  // fetchers — the first failure silenced the other's toast until any success
+  // reset the shared flag. Each consumer now owns its ref and resets it on its
+  // own success.
+  const sosErrorRef = useRef(false);
+  const locationsErrorRef = useRef(false);
   const reportedFallbackRef = useRef(false);
 
   const fetchFullSos = useCallback(async () => {
@@ -55,7 +60,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       const res = await fetch("/api/sos/full", { credentials: "same-origin" });
       if (res.ok) {
         setFullSos(await res.json());
-        reportedErrorRef.current = false;
+        sosErrorRef.current = false;
         const source = res.headers.get("X-SOS-Source");
         if (source === "memory_fallback" && !reportedFallbackRef.current) {
           reportedFallbackRef.current = true;
@@ -66,14 +71,14 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         } else if (source === "firestore") {
           reportedFallbackRef.current = false;
         }
-      } else if (!reportedErrorRef.current) {
-        reportedErrorRef.current = true;
+      } else if (!sosErrorRef.current) {
+        sosErrorRef.current = true;
         push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");
       }
     } catch (err) {
       console.error("Failed to fetch full SOS list:", err);
-      if (!reportedErrorRef.current) {
-        reportedErrorRef.current = true;
+      if (!sosErrorRef.current) {
+        sosErrorRef.current = true;
         push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");
       }
     }
@@ -87,8 +92,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
-      } else if (!reportedErrorRef.current) {
-        reportedErrorRef.current = true;
+        locationsErrorRef.current = false;
+      } else if (!locationsErrorRef.current) {
+        locationsErrorRef.current = true;
         push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
       }
       if (onRefresh) {
@@ -96,8 +102,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       }
     } catch (err) {
       console.error("Failed to fetch user locations:", err);
-      if (!reportedErrorRef.current) {
-        reportedErrorRef.current = true;
+      if (!locationsErrorRef.current) {
+        locationsErrorRef.current = true;
         push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
       }
     } finally {
