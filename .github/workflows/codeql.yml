@@ -22,7 +22,9 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: javascript-typescript
+          # ARC-L26: java-kotlin added — the mesh service (~3.3k lines incl. the
+          # crypto layer) previously had zero SAST coverage.
+          languages: javascript-typescript,java-kotlin
           config-file: ./.github/codeql/codeql-config.yml
       - name: Autobuild
         uses: github/codeql-action/autobuild@v4

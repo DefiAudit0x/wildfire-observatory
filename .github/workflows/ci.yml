@@ -1,13 +1,18 @@
 name: CI
 
+# ARC-L26: push trigger carries only main — the historical
+# 'audit/fix-remaining-findings' branch is long gone.
 on:
   push:
-    branches: [main, audit/fix-remaining-findings]
+    branches: [main]
   pull_request:
     branches: [main]
 
 jobs:
   lint-and-test:
+    # ARC-L26: "lint" is tsc --noEmit by design — the repo has no ESLint
+    # configuration; the job name predates that decision and is kept so
+    # required-check names stay stable.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
