@@ -31,7 +31,11 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
   const parsed = badgeSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Missing or invalid required fields", details: parsed.error.flatten() }); return; }
   const existing = await loadBadges(); if (existing.find((b: any) => b.code === parsed.data.code)) { res.status(409).json({ error: "Code already exists" }); return; }
-  const newBadge = { code: parsed.data.code, ownerName: parsed.data.ownerName, type: parsed.data.type, wilaya: parsed.data.wilaya, phone: parsed.data.phone || undefined, maxUses: parsed.data.maxUses, expiresAt: parsed.data.expiresAt, usedCount: 0, createdAt: new Date().toISOString(), isActive: true };
+  // ARC-C2 fix: the PUT route in this file already writes null for absent
+  // optional fields; the POST route used to pass `undefined` straight through
+  // to createDocIfAbsent, so the admin UI's default (empty-optional) create
+  // always 503'd with a fake "Database not available". Unify on null like PUT.
+  const newBadge = { code: parsed.data.code, ownerName: parsed.data.ownerName, type: parsed.data.type, wilaya: parsed.data.wilaya, phone: parsed.data.phone || null, maxUses: parsed.data.maxUses ?? null, expiresAt: parsed.data.expiresAt ?? null, usedCount: 0, createdAt: new Date().toISOString(), isActive: true };
   const result = await createDocIfAbsent("badgeCodes", parsed.data.code, newBadge);
   if (result === "exists") { res.status(409).json({ error: "Code already exists" }); return; }
   if (result === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }

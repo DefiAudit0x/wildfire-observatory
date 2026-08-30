@@ -300,7 +300,7 @@ function HeaderBar({
             <button
               onClick={onRefresh}
               disabled={loading}
-              className="p-1 hover:bg-zinc-850 rounded transition-colors cursor-pointer"
+              className="p-1 hover:bg-zinc-800 rounded transition-colors cursor-pointer"
               title={isArabic ? "تحديث البيانات الآن" : "Actualiser les données"}
               aria-label={isArabic ? "تحديث البيانات الآن" : "Actualiser les données"}
             >

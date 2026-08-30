@@ -16,8 +16,6 @@ import { meshHub, MESH_PATH } from "./mesh.js";
 import { liveHub, LIVE_PATH } from "./live.js";
 import { createMeshToken } from "./mesh-auth.js";
 import { getPublicPrincipal, issuePublicPrincipal } from "./public-principal.js";
-import { confirmReportWithPrincipal } from "./confirmation-ledger.js";
-import { citizenReports } from "./data.js";
 
 import { healthHandler } from "./routes/health.js";
 import reportsRouter from "./routes/reports.js";
@@ -56,9 +54,13 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: config.generalLimitMax, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests, please try again later." }, skip: (req) => !req.path.startsWith("/api") });
+// ARC-L02 fix: the `//`-prefix normalization used to run AFTER generalLimiter,
+// so a request to "//api/health" skipped the general rate limit entirely (its
+// path did not start with "/api" yet) and was then normalized into a real API
+// route. Normalize first, limit second.
+app.use((req, _res, next) => { if (req.url.startsWith("//")) req.url = req.url.replace(/^\/+/, "/"); next(); });
 app.use(generalLimiter);
 const aiLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false, message: { error: "AI guidance limit reached. Try again later." } });
-app.use((req, _res, next) => { if (req.url.startsWith("//")) req.url = req.url.replace(/^\/+/, "/"); next(); });
 
 const MUTATING_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 function hasSessionCookie(req: express.Request): boolean {
@@ -98,34 +100,12 @@ app.get("/api/mesh/token", meshTokenLimiter, (req, res) => {
   res.json({ token: createMeshToken(principal.subject) });
 });
 
-const confirmLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, standardHeaders: true, legacyHeaders: false, message: { error: "Too many confirmations. Slow down." } });
-const localPrincipalVotes = new Map<string, Set<string>>();
-app.post("/api/reports/:id/confirm", confirmLimiter, async (req, res) => {
-  const principal = getPublicPrincipal(req);
-  if (!principal) return void res.status(401).json({ error: "Public principal required" });
-  const reportId = String(req.params.id || "");
-  const result = await confirmReportWithPrincipal(reportId, principal.subject);
-  if (result.status === "confirmed") {
-    meshHub.broadcast({ type: "report:confirm", id: reportId, consensusCount: result.consensusCount, status: result.statusValue });
-    return void res.json({ success: true, consensusCount: result.consensusCount, status: result.statusValue });
-  }
-  if (result.status === "already_voted") return void res.status(409).json({ error: "Already confirmed" });
-  if (result.status === "not_found") return void res.status(404).json({ error: "Report not found" });
-  if (result.status === "error") return void res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
-
-  // Local development only: the fallback ledger is still keyed exclusively by
-  // the verified server-issued subject, never by IP or caller-selected deviceId.
-  const report = citizenReports.find((item) => item.id === reportId);
-  if (!report) return void res.status(404).json({ error: "Report not found" });
-  const votes = localPrincipalVotes.get(reportId) ?? new Set<string>();
-  if (votes.has(principal.subject)) return void res.status(409).json({ error: "Already confirmed" });
-  votes.add(principal.subject);
-  localPrincipalVotes.set(reportId, votes);
-  report.consensusCount += 1;
-  if (report.consensusCount >= 5 && report.status === "pending") report.status = "verified";
-  meshHub.broadcast({ type: "report:confirm", id: reportId, consensusCount: report.consensusCount, status: report.status });
-  res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
-});
+// ARC-H1 fix: the inline POST /api/reports/:id/confirm handler was REMOVED from
+// here. It shadowed the reportsRouter route registered below (Express matches
+// in registration order), leaving the router's contract as the dead one and
+// making every test that loaded the router pass against a route production
+// never executed. The single consensus endpoint now lives in routes/reports.ts
+// (server-issued public principal + durable confirmation ledger).
 
 app.use("/api/reports", reportsRouter);
 app.use("/api/admin", adminRouter);
@@ -178,5 +158,26 @@ async function startServer() {
   logger.info(`Mesh hub listening on ${MESH_PATH}`);
   liveHub.attach(httpServer);
   logger.info(`Live hub listening on ${LIVE_PATH}`);
+
+  // ARC-L05 fix: upgrade requests that match NEITHER hub path used to dangle
+  // forever — both hubs return early on a foreign path and nobody else consumed
+  // the socket, leaking one open connection per probe. This final listener runs
+  // last: if both hubs rejected the path, destroy the socket explicitly.
+  const WS_HUB_PATHS = new Set([MESH_PATH, LIVE_PATH]);
+  httpServer.on("upgrade", (req, socket) => {
+    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    if (!WS_HUB_PATHS.has(pathname)) {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+    }
+  });
 }
-startServer();
+
+// ARC-L05 fix: startServer() used to float — a listen/bind failure (port in
+// use, missing permission) surfaced as an unhandled rejection that crashed the
+// process with a stack trace pointing nowhere. Anchor the promise and fail with
+// a clear, actionable log line.
+startServer().catch((err) => {
+  logger.error({ err }, "Server failed to start — check the port and environment configuration");
+  process.exitCode = 1;
+});

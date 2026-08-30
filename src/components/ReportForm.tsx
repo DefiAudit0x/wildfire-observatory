@@ -529,8 +529,18 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   };
 
   // Listener for actual device orientation/compass sensors
+  // ARC-M20 fix: this listener fed setState directly from every sensor event
+  // (phones fire up to 60Hz with sub-degree jitter), re-rendering the entire
+  // ~1900-line component continuously. Updates are now throttled to 4Hz AND
+  // skipped when the rounded values did not change.
   useEffect(() => {
+    const lastCompassValuesRef = { heading: null as number | null, pitch: null as number | null };
+    let lastUpdateAt = 0;
+
     const handleOrientation = (e: DeviceOrientationEvent) => {
+      const now = Date.now();
+      if (now - lastUpdateAt < 250) return;
+
       let currentHeading = null;
       if ("webkitCompassHeading" in e) {
         currentHeading = (e as any).webkitCompassHeading;
@@ -539,14 +549,22 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         // orientation vs. geographic north); it is treated as an estimate.
         currentHeading = 360 - e.alpha;
       }
-      
-      if (currentHeading !== null) {
-        setHeading(Math.round(currentHeading));
+
+      const roundedHeading = currentHeading !== null ? Math.round(currentHeading) : null;
+      const roundedPitch = e.beta !== null ? Math.round(e.beta) : null;
+      if (roundedHeading === lastCompassValuesRef.heading && roundedPitch === lastCompassValuesRef.pitch) {
+        return;
+      }
+      lastUpdateAt = now;
+      lastCompassValuesRef.heading = roundedHeading;
+      lastCompassValuesRef.pitch = roundedPitch;
+
+      if (roundedHeading !== null) {
+        setHeading(roundedHeading);
         setHeadingSource("sensor");
       }
-
-      if (e.beta !== null) {
-        setPitch(Math.round(e.beta));
+      if (roundedPitch !== null) {
+        setPitch(roundedPitch);
         setPitchSource("sensor");
       }
     };
@@ -628,8 +646,25 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
   }, [stream]);
 
+  // ARC-H12 fix: this component is conditionally mounted (tab switches unmount
+  // it) — without this cleanup an open camera stream kept the device camera
+  // hardware live with NO UI attached to it. When the stream changes or the
+  // component unmounts, the tracks are stopped.
+  useEffect(() => {
+    return () => {
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [stream]);
+
   // Camera stream activation
+  // ARC-H12 fix: a double-tap on the camera button used to race two
+  // getUserMedia calls — the first stream was overwritten by the second and
+  // leaked live (privacy). A reentrancy guard plus an unmount cleanup effect
+  // guarantee the hardware is released exactly once.
+  const cameraStartingRef = useRef(false);
   const startCamera = async () => {
+    if (cameraStartingRef.current || stream) return;
+    cameraStartingRef.current = true;
     try {
       setIsCameraOpen(true);
       setCameraStatus("closed");
@@ -663,6 +698,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       setStream(null);
       setIsCameraOpen(false);
       setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة." : "Caméra indisponible ou permission refusée. Vous pouvez joindre une photo ou continuer sans image.");
+    } finally {
+      cameraStartingRef.current = false;
     }
   };
 
@@ -873,6 +910,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   // Image Upload & Smart Canvas Compression with Edge AI integration
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
+    // ARC-M23 fix: the input value was never reset, so re-selecting the SAME
+    // photo fired no change event and the button appeared dead. Clearing the
+    // input value here (the File object is already captured) makes every
+    // selection — including the same file twice — a real change event.
+    e.target.value = "";
     if (!file) return;
     const isImageType = file.type.startsWith("image/");
     const MAX_INPUT_BYTES = 15 * 1024 * 1024;
@@ -1327,7 +1369,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               type="button"
               onClick={handleGetLocation}
               disabled={isLocating}
-              className="w-full py-2 bg-red-650/10 hover:bg-red-650/20 border border-red-500/20 hover:border-red-500/40 text-red-400 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="w-full py-2 bg-red-600/10 hover:bg-red-600/20 border border-red-500/20 hover:border-red-500/40 text-red-400 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               {isLocating ? (
                 <>
@@ -1863,7 +1905,6 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   onChange={(e) => setReporterBadgeCode(e.target.value)}
                   placeholder={isArabic ? "أدخل الرمز للتحقق الخادمي" : "Saisir le code à valider par le serveur"}
                   className="w-full bg-black/60 border border-amber-500/30 rounded-lg py-2 px-3 text-xs text-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                  required
                 />
                 <p className="text-[9px] text-amber-400/80 italic leading-snug">
                   {isArabic 
@@ -1915,7 +1956,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           <button
             type="submit"
             disabled={isSubmitting || isCompressing}
-            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:bg-zinc-850 text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_10px_20px_rgba(220,38,38,0.2)]"
+            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:bg-zinc-800 text-white rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-[0_10px_20px_rgba(220,38,38,0.2)]"
           >
             {isSubmitting ? (
               <>

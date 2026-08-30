@@ -276,7 +276,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
 
                   <button
                     onClick={() => onResolve(sos)}
-                    className="flex-1 bg-emerald-650 hover:bg-emerald-600 text-white font-bold rounded py-1 text-[9px] cursor-pointer flex items-center justify-center gap-0.5"
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-600 text-white font-bold rounded py-1 text-[9px] cursor-pointer flex items-center justify-center gap-0.5"
                   >
                     <Check className="h-3 w-3" />
                     <span>{isArabic ? "تم الإنقاذ" : "Sauvé"}</span>

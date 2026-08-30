@@ -2,11 +2,12 @@ import { Report, SatelliteHotspot } from "../types";
 
 function csvCell(value: unknown): string {
   let text = String(value ?? "");
-  // M3 fix: neutralize spreadsheet formula injection. A cell beginning with
-  // =, +, -, @, TAB or CR is executed as a formula by Excel/LibreOffice when
-  // the export is opened (a known attack against official agencies that
-  // consume these files). A leading apostrophe forces literal interpretation.
-  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  // ARC-M16 fix: the formula-injection guard used to prefix a leading "-" with
+  // an apostrophe — corrupting every negative coordinate (Morocco's lng ≈
+  // -13.0 became text "'-13.0" and the geometry silently broke downstream). A
+  // plain numeric literal cannot be a spreadsheet formula, so numbers pass
+  // through verbatim; the guard still applies to everything else.
+  if (!/^-?\d+(?:\.\d+)?$/.test(text) && /^[=+\-@\t\r]/.test(text)) text = "'" + text;
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

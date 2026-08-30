@@ -8,7 +8,8 @@ import logger from "../logger.js";
 
 const router = Router();
 
-let cachedZones: any[] | null = null;
+const ZONES_CACHE_TTL_MS = 60 * 1000;
+let cachedZones: { data: any[]; expiresAt: number } | null = null;
 
 const zoneSchema = z.object({
   nameAr: z.string().min(2).max(120),
@@ -21,13 +22,21 @@ const zoneSchema = z.object({
 });
 
 async function loadZones(): Promise<any[]> {
-  if (cachedZones) return cachedZones;
+  const now = Date.now();
+  // ARC-M07 fix: the cache used to live forever until an in-place write — zones
+  // added by another instance (or directly in Firestore) never appeared, and a
+  // failure snapshot froze the served list at whatever it happened to hold.
+  if (cachedZones && now < cachedZones.expiresAt) return cachedZones.data;
   try {
     const fromDb = await collectionGet("safeZones", "createdAt", 1000);
     if (fromDb === null) throw new Error("safe-zone database read unavailable");
-    cachedZones = fromDb;
-    return cachedZones;
+    cachedZones = { data: fromDb, expiresAt: now + ZONES_CACHE_TTL_MS };
+    return cachedZones.data;
   } catch (err) {
+    if (cachedZones) {
+      logger.warn({ err }, "Safe zones read failed — serving the stale cached copy");
+      return cachedZones.data;
+    }
     logger.error({ err }, "Safe zones read failed");
     throw err;
   }

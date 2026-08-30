@@ -4,8 +4,8 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { requireAuth } from "../middleware.js";
 import { str } from "../params.js";
-import { docGet, docSet, docDelete } from "../fs.js";
-import { appendRosterPostAtomic, getFreshDoc } from "../atomic.js";
+import { docGet, docSet, docDelete, collectionGet } from "../fs.js";
+import { appendRosterPostAtomic, getFreshDocResult } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -87,11 +87,34 @@ function ensurePostIds(posts: any[]): any[] {
 async function canonicalizePersonnel(unitId: string, posts: any[]): Promise<{ posts: any[] } | { error: string }> {
   const canonicalPosts: any[] = [];
   const seenAgents = new Set<string>();
+  // ARC-M08 fix: validation used to fire one SEQUENTIAL server round-trip per
+  // personnel slot — up to 500 reads for a full 50-post day (and the operator
+  // waited on every one of them). One cached collection read seeds a staff
+  // map; only ids missing from the snapshot fall back to a fresh read.
+  const staffCache = new Map<string, any>();
+  const usersSnapshot = await collectionGet("users");
+  if (Array.isArray(usersSnapshot)) {
+    for (const user of usersSnapshot) {
+      if (user?.id) staffCache.set(user.id, user);
+    }
+  }
+  const missingIds = new Set<string>();
+  for (const post of posts) {
+    for (const person of post.personnel || []) {
+      if (!staffCache.has(person.agentId)) missingIds.add(person.agentId);
+    }
+  }
+  await Promise.all(
+    [...missingIds].map(async (agentId) => {
+      const result = await getFreshDocResult("users", agentId);
+      if (result.status === "found") staffCache.set(agentId, result.doc);
+    })
+  );
   for (const post of posts) {
     const personnel: any[] = [];
     for (const person of post.personnel || []) {
       if (seenAgents.has(person.agentId)) return { error: `Agent "${person.agentId}" is assigned twice on the same day` };
-      const staff = await getFreshDoc("users", person.agentId);
+      const staff = staffCache.get(person.agentId);
       if (!staff || staff.role !== "agent" || staff.isActive === false) {
         return { error: `Agent "${person.agentId}" is not an active staff account` };
       }

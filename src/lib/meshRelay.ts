@@ -47,6 +47,14 @@ const MAX_SEEN_HASHES = 2000;
 export const RELAY_REPLAY_RETENTION_MS = MESH_MESSAGE_TTL_MS + MESH_MESSAGE_CLOCK_SKEW_MS;
 export const RELAY_MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000;
 export const RELAY_MAX_QUEUE_ATTEMPTS = 8;
+// ARC-H5 fix: submitRelayOutcome used to be a bare fetch with no timeout while
+// flushQueue runs single-flight — one hung request (congested cell network,
+// exactly the relay's design scenario) froze the whole offline queue until a
+// page reload. Mirror the 15s ceiling useObservatoryData already received.
+const RELAY_SUBMIT_TIMEOUT_MS = 15000;
+// ARC-H6 fix: bound the dead-letter list; committed journal entries whose
+// retention window passed are pure dead weight (each carries a full report).
+const RELAY_MAX_DEAD_LETTERS = 100;
 export const RELAY_BASE_RETRY_BACKOFF_MS = 60 * 1000;
 export const RELAY_MAX_RETRY_BACKOFF_MS = 60 * 60 * 1000;
 const TERMINAL_DUPLICATE_CODES = new Set([
@@ -723,6 +731,7 @@ async function submitRelayOutcome(report: Record<string, unknown>): Promise<Rela
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(report),
+      signal: AbortSignal.timeout(RELAY_SUBMIT_TIMEOUT_MS),
     });
     if (res.status === 200) return "http_200";
     if (res.status !== 409) return null;
@@ -868,10 +877,22 @@ async function flushQueueInternal(): Promise<void> {
         }
         return [updated];
       });
+    // ARC-H6 fix: garbage-collect committed journal entries past the queue age
+    // (their recovery purpose is complete; each entry duplicates the report
+    // body) and cap dead letters — otherwise localStorage fills after a fire
+    // season and persistence silently degrades to volatile memory.
+    const gcJournal = latestState.journal.filter((entry) =>
+      entry.state === "committed"
+        ? now - entry.updatedAt < RELAY_MAX_QUEUE_AGE_MS
+        : true
+    );
+    const deadLettersCapped = [...latestState.deadLetters, ...deadLetterMoves]
+      .sort((a, b) => (a.deadLetteredAt ?? 0) - (b.deadLetteredAt ?? 0))
+      .slice(-RELAY_MAX_DEAD_LETTERS);
     const storage = await writeRelayQueueState({
       pending: nextPending,
-      deadLetters: [...latestState.deadLetters, ...deadLetterMoves],
-      journal: latestState.journal,
+      deadLetters: deadLettersCapped,
+      journal: gcJournal,
     });
     if (storage === "persistent") {
       queueCommitted = true;

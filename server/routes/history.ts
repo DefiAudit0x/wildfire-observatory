@@ -2,6 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { getReportsDbResult } from "../db.js";
 import { citizenReports } from "../data.js";
+import { collectionGet } from "../fs.js";
 import { getLiveSatelliteData } from "./satellite.js";
 import { getSosSummarySnapshot } from "./sos.js";
 
@@ -36,7 +37,24 @@ router.get("/", async (_req: Request, res: Response) => {
     if (report.status === "verified") bucket.verified += 1;
   }
 
-  for (const sos of getSosSummarySnapshot()) {
+  // ARC-M12 fix: the SOS daily counts used to come exclusively from the
+  // process-local memory window (capped at 200 items, swept every 12h), which
+  // made the history panel show almost zero SOS on any real deployment — and
+  // different numbers per instance. Read the durable collection (metadata only
+  // reaches this route anyway) and keep the memory snapshot as fallback.
+  let sosItems: Array<{ timestamp: string }> = [];
+  try {
+    const fromDb = await collectionGet("trappedSos", "timestamp", 500);
+    if (fromDb !== null) {
+      sosItems = fromDb.map((s: any) => ({ timestamp: String(s.timestamp || "") }));
+    }
+  } catch {
+    // fall through to the memory snapshot below
+  }
+  if (sosItems.length === 0) {
+    sosItems = getSosSummarySnapshot();
+  }
+  for (const sos of sosItems) {
     const bucket = buckets.get(dayKey(sos.timestamp));
     if (bucket) bucket.sos += 1;
   }

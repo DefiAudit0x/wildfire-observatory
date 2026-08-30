@@ -5,12 +5,23 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
 import { str } from "../params.js";
-import { collectionGet, docSet, docUpdate } from "../fs.js";
+import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 import { boundDeviceId, issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 
 const router = Router();
 const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
+
+/**
+ * ARC-M06 fix: subscribers used to be created with an auto-id after a
+ * check-then-add query, so two concurrent subscribes with the same email both
+ * passed the check and created duplicate documents (double fan-out on every
+ * alert). A deterministic document id derived from the email makes the
+ * create-vs-update race impossible: same email ⇒ same document.
+ */
+function subscriberId(email: string): string {
+  return crypto.createHash("sha256").update(email.trim().toLowerCase()).digest("hex").slice(0, 64);
+}
 
 const memoryNotifications: any[] = [];
 
@@ -188,7 +199,21 @@ router.post("/:id/read", async (req: Request, res: Response) => {
     res.status(403).json({ error: "Forbidden: no device binding" });
     return;
   }
-  const owned = (await getNotificationsFromDb(boundId)).some((n: any) => n.id === id);
+  // ARC-M11 fix: ownership used to be checked by scanning the LATEST-100
+  // collection window, so marking an older notification as read answered 404
+  // even for its rightful owner. Ownership is a property of the notification
+  // document itself — read that document directly (memory copy as fallback).
+  let owned = false;
+  try {
+    const doc = await docGet("notifications", id);
+    if (doc) {
+      owned = doc.deviceId === boundId;
+    } else {
+      owned = memoryNotifications.some((n: any) => n.id === id && n.deviceId === boundId);
+    }
+  } catch {
+    owned = memoryNotifications.some((n: any) => n.id === id && n.deviceId === boundId);
+  }
   if (!owned) {
     res.status(404).json({ error: "Notification not found" });
     return;
@@ -250,11 +275,15 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
     }
 
     if (isAdminDb(db)) {
-      const existing = await db.collection("subscribers").where("email", "==", email).get();
-      if (!existing.empty) {
-        await existing.docs[0].ref.update({
+      // ARC-M06 fix: deterministic id — no check-then-add duplicate window.
+      const ref = db.collection("subscribers").doc(subscriberId(email));
+      const existingDoc = await ref.get();
+      if (existingDoc.exists) {
+        await ref.update({
+          email,
           wilayas: wilayas || [],
           minSeverity: minSeverity || "medium",
+          verified: existingDoc.data()?.verified === true,
           verificationToken,
           verificationExpiresAt,
           unsubscribeToken,
@@ -264,25 +293,26 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
-      await db.collection("subscribers").add({
+      await ref.set({
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
         verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
       });
     } else {
-      const { collection, getDocs, query, where, addDoc, updateDoc, doc } = await import("firebase/firestore");
-      const subsCol = collection(db, "subscribers");
-      const q = query(subsCol, where("email", "==", email));
-      const snap = await getDocs(q);
-      if (!snap.empty) {
-        await updateDoc(doc(db, "subscribers", snap.docs[0].id), {
+      const { doc, getDoc, setDoc, updateDoc } = await import("firebase/firestore");
+      const ref = doc(db, "subscribers", subscriberId(email));
+      const existingDoc = await getDoc(ref);
+      if (existingDoc.exists()) {
+        await updateDoc(ref, {
+          email,
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
+          verified: existingDoc.data()?.verified === true,
           verificationToken, verificationExpiresAt, unsubscribeToken, updatedAt: new Date().toISOString(),
         });
         await sendVerificationEmail(email, verificationToken);
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
-      await addDoc(subsCol, {
+      await setDoc(ref, {
         email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
         verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
       });

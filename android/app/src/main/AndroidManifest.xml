@@ -16,7 +16,7 @@
 
     <!-- Foreground service + notifications -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -57,10 +57,18 @@
             </intent-filter>
         </activity>
 
+        <!-- ARC-M37 fix: dataSync FGS is capped (6h) and killed for background
+             starts on Android 15+ — a fatal mismatch for an always-on mesh
+             relay. specialUse is the documented type for long-running
+             device-essential work; the subtype documents the reason. -->
         <service
             android:name=".MeshService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="offline-mesh-relay-for-wildfire-dispatch" />
+        </service>
 
     </application>
 </manifest>

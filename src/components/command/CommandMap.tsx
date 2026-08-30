@@ -31,14 +31,12 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
-  const [ticker, setTicker] = useState(0);
-
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setTicker((t) => t + 1);
-    }, 4000);
-    return () => clearInterval(timer);
-  }, []);
+  // ARC-H9 fix: a 4s ticker used to sit in the marker effect's dependency
+  // array, forcing a full teardown/rebuild of EVERY marker (and a fitBounds
+  // viewport steal) every 4 seconds even with zero data changes — yanking the
+  // operator's zoom/pan right after they moved it. CSS animations (animate-ping)
+  // keep the live feel; the DOM no longer churns.
+  const didFitRef = useRef(false);
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -222,12 +220,15 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       `).addTo(layer);
     });
 
-    // Fit bounds if we have user locations
-    if (activeUsers.length > 0 && mapInstance.current) {
+    // ARC-H9 fix: fitBounds only ONCE on first data arrival — the operator
+    // keeps full control of the viewport afterwards (use the focus prop to
+    // deliberately move the camera).
+    if (!didFitRef.current && activeUsers.length > 0 && mapInstance.current) {
       const group = L.featureGroup(activeUsers.map((u) => L.marker([u.lat, u.lng])));
       mapInstance.current.fitBounds(group.getBounds().pad(0.2));
+      didFitRef.current = true;
     }
-  }, [activeUsers, satellites, reports, sosCalls, isArabic, ticker, teams]);
+  }, [activeUsers, satellites, reports, sosCalls, isArabic, teams]);
 
   // External focus target (e.g. from table "تحديد" buttons)
   useEffect(() => {

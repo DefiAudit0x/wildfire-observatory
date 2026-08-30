@@ -3,7 +3,7 @@ import express from "express";
 import supertest from "supertest";
 
 const mocks = vi.hoisted(() => ({
-  updateReportInFirestore: vi.fn(async () => true),
+  updateReportInFirestore: vi.fn(async (..._a: any[]) => "updated" as any),
   getReportsFromFirestore: vi.fn(async () => [
     {
       id: "firestore-only-report",
@@ -12,7 +12,8 @@ const mocks = vi.hoisted(() => ({
       status: "verified",
     },
   ]),
-  deleteReportFromFirestore: vi.fn(async () => false),
+  deleteReportFromFirestore: vi.fn(async (..._a: any[]) => "missing" as any),
+  purgeReportWithIdempotency: vi.fn(async (..._a: any[]) => "deleted" as any),
   createNotification: vi.fn(async () => undefined),
   logAdminAction: vi.fn(async () => undefined),
   broadcast: vi.fn(),
@@ -22,6 +23,7 @@ vi.mock("../server/db.js", () => ({
   updateReportInFirestore: mocks.updateReportInFirestore,
   getReportsFromFirestore: mocks.getReportsFromFirestore,
   deleteReportFromFirestore: mocks.deleteReportFromFirestore,
+  purgeReportWithIdempotency: mocks.purgeReportWithIdempotency,
 }));
 
 vi.mock("../server/routes/notifications.js", () => ({

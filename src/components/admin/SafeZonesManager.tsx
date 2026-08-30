@@ -288,7 +288,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
                   </button>
                   <button
                     onClick={() => setConfirmDelete(z.id)}
-                    className="p-1.5 bg-zinc-900 hover:bg-red-650/25 border border-white/10 text-gray-400 hover:text-red-400 rounded transition-all cursor-pointer"
+                    className="p-1.5 bg-zinc-900 hover:bg-red-600/25 border border-white/10 text-gray-400 hover:text-red-400 rounded transition-all cursor-pointer"
                     title={isArabic ? "حذف المركز" : "Supprimer le centre"}
                   >
                     <Trash2 className="h-3 w-3" />

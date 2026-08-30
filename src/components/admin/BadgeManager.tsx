@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { BadgeCheck, Plus, Trash2, RefreshCw, ToggleLeft, ToggleRight, Save, X, AlertTriangle, Users, Activity, Ban, TimerOff, Gauge } from "lucide-react";
 import { Language } from "../../types";
 import ConfirmDialog from "../ui/ConfirmDialog";
@@ -65,6 +65,15 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     return res;
   };
 
+  // ARC-M27 fix: onAuthError is an inline prop recreated on every parent
+  // render, so its identity in this dependency array re-ran loadAll on EVERY
+  // keystroke typed anywhere in the admin panel. The latest callback lives in
+  // a ref; the effect fires on genuine mount/language changes only.
+  const onAuthErrorRef = useRef(onAuthError);
+  useEffect(() => {
+    onAuthErrorRef.current = onAuthError;
+  });
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
@@ -75,7 +84,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
       if (bRes.ok) {
         const data = await bRes.json();
         setBadges(Array.isArray(data) ? data : []);
-      } else if (!onAuthError(bRes)) {
+      } else if (!onAuthErrorRef.current(bRes)) {
         setMsg(isArabic ? "فشل تحميل البادجات" : "Échec du chargement des badges");
       }
       if (aRes.ok) {
@@ -86,7 +95,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     } finally {
       setLoading(false);
     }
-  }, [onAuthError, isArabic]);
+  }, [isArabic]);
 
   useEffect(() => {
     loadAll();

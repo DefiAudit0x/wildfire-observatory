@@ -57,6 +57,16 @@ describe("reportsToCsv", () => {
     expect(csv).toContain('"نار قوية، ""خطيرة"" جداً"');
   });
 
+  it("keeps negative coordinates intact while still guarding formula text (ARC-M16)", () => {
+    const csv = reportsToCsv([{ ...report, id: "r-ma", lat: 31.63, lng: -13.0 }]);
+    // Morocco coordinates: a negative lng must NOT be apostrophe-prefixed.
+    expect(csv).toContain("31.63,-13,");
+    expect(csv).not.toContain("'-13.0");
+    // A description that merely starts with "-" keeps the injection guard.
+    const guarded = reportsToCsv([{ ...report, id: "r-guard", description: "-cmd|calc" }]);
+    expect(guarded).toContain("'-cmd|calc");
+  });
+
   it("handles empty input with just the header", () => {
     const csv = reportsToCsv([]);
     expect(csv.split("\r\n")).toHaveLength(1);

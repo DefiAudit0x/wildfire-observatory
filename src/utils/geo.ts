@@ -57,7 +57,11 @@ export function determineWilayaByCoords(lat: number, lng: number): string {
   if (matched) return matched.name;
 
   if (lng < -1.0 && lat > 27.0 && lat < 36.5) return "المغرب - منطقة أخرى (Maroc - Autre)";
-  if (lng >= -1.0 && lng <= 8.5 && lat > 18.0 && lat < 37.5) return "الجزائر - منطقة أخرى (Algérie - Autre)";
+  // ARC-M25 fix: this mirror accepted lat > 18.0 while BOTH the report form
+  // gate and the server geofence require lat >= 19 — a GPS fix in [18,19) was
+  // told "covered" then rejected on submit. The envelope is aligned to the
+  // server bounds (19..38 / -18..25) so no layer promises what another rejects.
+  if (lng >= -1.0 && lng <= 8.5 && lat >= 19.0 && lat < 37.5) return "الجزائر - منطقة أخرى (Algérie - Autre)";
   if (lng > 8.5 && lng < 11.5 && lat > 30.0 && lat < 37.5) return "تونس - منطقة أخرى (Tunisie - Autre)";
   if (lng >= 11.5 && lat > 20.0 && lat < 33.5) return "ليبيا - منطقة أخرى (Libye - Autre)";
 

@@ -2,7 +2,7 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
-import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet } from "../fs.js";
+import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet, appendSosDispatch, clearTeamMissionsForSos } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance } from "../geo.js";
@@ -363,6 +363,8 @@ router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) =>
     res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
     return;
   }
+  // ARC-H8 companion: free the teams whose missions pointed at this SOS.
+  await clearTeamMissionsForSos(id).catch(() => false);
   const sos = memorySos.find((s: any) => s.id === id);
   if (sos) sos.status = "resolved";
   res.json({ success: true });
@@ -383,38 +385,40 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
     status: "en_route",
     notes: parsed.data.notes || "",
   };
+  // ARC-H8 fix: the mission identity is the team, not the SOS — one team must
+  // not be on two active missions. The server-side guard replaces the old
+  // client-only "available" filter that two operators could race past.
+  const missionTeamId = `${parsed.data.type}:${parsed.data.teamNameAr}`
+    .toLowerCase()
+    .replace(/[^a-z0-9_\u0600-\u06FF:]+/g, "-")
+    .slice(0, 120);
 
-  const sos = memorySos.find((s: any) => s.id === id);
-  let persisted = false;
+  let outcome: Awaited<ReturnType<typeof appendSosDispatch>>;
   try {
-    const existing = await collectionGet("trappedSos");
-    if (existing === null) {
-      res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
-      return;
-    }
-    const current = existing?.find((d: any) => d.id === id);
-    if (current) {
-      const teams = current.dispatchedTeams || [];
-      persisted = await docUpdate("trappedSos", id, { dispatchedTeams: [...teams, dispatchItem] });
-    } else if (sos) {
-      const teams = sos.dispatchedTeams || [];
-      const { audioUrl: _audioUrl, ...sosWithoutAudio } = sos;
-      persisted = await docSet("trappedSos", id, {
-        ...sosWithoutAudio,
-        dispatchedTeams: [...teams, dispatchItem],
-        ...(sos.audioUrl ? { hasAudio: true } : {}),
-      });
-    } else {
-      res.status(404).json({ error: "SOS not found" });
-      return;
-    }
+    outcome = await appendSosDispatch(id, dispatchItem, missionTeamId);
   } catch (err) {
     logger.error({ err, id }, "Firestore dispatch error");
+    outcome = "unavailable";
   }
-  if (!persisted) {
+
+  if (outcome === "missing") {
+    res.status(404).json({ error: "SOS not found" });
+    return;
+  }
+  if (outcome === "resolved") {
+    res.status(409).json({ error: "This SOS is already resolved" });
+    return;
+  }
+  if (outcome === "team_busy") {
+    res.status(409).json({ code: "TEAM_ALREADY_DISPATCHED", error: "This team is already dispatched to an active SOS" });
+    return;
+  }
+  if (outcome !== "ok") {
     res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
     return;
   }
+
+  const sos = memorySos.find((s: any) => s.id === id);
   if (sos) {
     if (!sos.dispatchedTeams) sos.dispatchedTeams = [];
     sos.dispatchedTeams.push(dispatchItem);

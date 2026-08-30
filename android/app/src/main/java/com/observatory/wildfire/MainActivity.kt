@@ -53,8 +53,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // PWA URL — change to your deployment URL
-        private const val APP_URL = "https://wildfire-observatory-production.up.railway.app"
+        // PWA URL — the deploy target is Fly (see fly.toml: app
+        // wildfire-observatory-odcibw). ARC-M38: this used to point at the old
+        // Railway origin, so the packaged app booted a host the server no
+        // longer serves and the allowlist below rejected it.
+        private const val APP_URL = "https://wildfire-observatory-odcibw.fly.dev"
     }
 
     private var meshService: MeshService? = null
@@ -258,7 +261,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             null
         } ?: return false
-        if (host == "wildfire-observatory-production.up.railway.app") return scheme == "https"
+        if (host == "wildfire-observatory-odcibw.fly.dev") return scheme == "https"
         return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
     }
 

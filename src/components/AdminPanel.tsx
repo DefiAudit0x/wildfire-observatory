@@ -224,7 +224,7 @@ const res = await fetch("/api/admin/verify", {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="w-full bg-black/50 border border-white/10 rounded-xl py-3 pl-11 pr-4 text-sm text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-650 transition-all font-mono text-center"
+              className="w-full bg-black/50 border border-white/10 rounded-xl py-3 pl-11 pr-4 text-sm text-slate-200 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-red-600 transition-all font-mono text-center"
             />
           </div>
 
@@ -341,7 +341,7 @@ const res = await fetch("/api/admin/verify", {
           
           <button
             onClick={handleLogout}
-            className="px-4 py-2 bg-red-650 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer"
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer"
           >
             <Lock className="h-3.5 w-3.5" />
             <span>{isArabic ? "خروج" : "Déconnexion"}</span>
@@ -519,7 +519,7 @@ const res = await fetch("/api/admin/verify", {
 
                       {/* Severity Badges */}
                       <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
-                        rep.severity === "critical" ? "bg-red-650 text-white" :
+                        rep.severity === "critical" ? "bg-red-600 text-white" :
                         rep.severity === "high" ? "bg-orange-500/20 text-orange-400 border border-orange-500/30" :
                         rep.severity === "medium" ? "bg-amber-500/20 text-amber-400 border border-amber-500/30" :
                         "bg-zinc-800 text-gray-400"
@@ -625,7 +625,7 @@ const res = await fetch("/api/admin/verify", {
                     {/* Delete button */}
                     <button
                       onClick={() => deleteReport(rep.id)}
-                      className="p-1.5 bg-zinc-900 hover:bg-red-650/25 border border-white/5 hover:border-red-500/30 text-gray-400 hover:text-red-400 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all"
+                      className="p-1.5 bg-zinc-900 hover:bg-red-600/25 border border-white/5 hover:border-red-500/30 text-gray-400 hover:text-red-400 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-all"
                       title="Delete Report Permanently"
                     >
                       <Trash2 className="h-3.5 w-3.5" />

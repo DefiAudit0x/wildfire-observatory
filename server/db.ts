@@ -80,6 +80,9 @@ export async function seedReportsToFirestore(): Promise<boolean> {
         await setDoc(doc(db, "reports", rep.id), rep);
       }
     }
+    // ARC-L03 fix: seeding writes the exact documents the reports cache holds —
+    // serving a pre-seed cache afterwards hid the seeded rows for one TTL.
+    invalidateReportsCache();
     logger.info("Seeded initial reports to Firestore");
     return true;
   } catch (err) {
@@ -160,7 +163,20 @@ export async function lookupReportIdempotency(clientGeneratedId: string): Promis
       const keyData = keySnapshot.data() as { reportId?: string; fingerprint?: string };
       if (!keyData.reportId || typeof keyData.fingerprint !== "string") return { status: "error" };
       const reportSnapshot = await db.collection("reports").doc(keyData.reportId).get();
-      if (!reportSnapshot.exists) return { status: "error" };
+      if (!reportSnapshot.exists) {
+        // ARC-H3 fix: the admin deleted the report but its idempotency key
+        // survived (nothing in the repo ever cleaned these up). The client's
+        // offline draft then re-sent the SAME clientGeneratedId by design and
+        // got a permanent 503 DURABLE_IDEMPOTENCY_UNAVAILABLE for that one
+        // draft. An orphaned key is a repairable inconsistency, not a server
+        // failure: drop the key and let the retry re-create the report.
+        await db
+          .collection(REPORT_IDEMPOTENCY_COLLECTION)
+          .doc(clientGeneratedId)
+          .delete()
+          .catch(() => {});
+        return { status: "missing" };
+      }
       return {
         status: "found",
         report: { id: reportSnapshot.id, ...reportSnapshot.data() },
@@ -393,38 +409,122 @@ export async function confirmReportInFirestore(id: string, voterId?: string): Pr
   }
 }
 
-export async function updateReportInFirestore(id: string, updateData: Record<string, any>) {
+export type ReportMutationResult = "updated" | "deleted" | "no-db" | "missing" | "error";
+
+/**
+ * ARC-M05 fix: both mutations used to collapse missing / no-db / error into a
+ * single `false`, so the admin route answered 404 for a live database outage
+ * and happily mutated the in-memory seed while claiming success. The
+ * discriminated result lets the route tell the operator the truth.
+ */
+export async function updateReportInFirestore(
+  id: string,
+  updateData: Record<string, any>
+): Promise<ReportMutationResult> {
   const db = getDb();
-  if (!db) return false;
+  if (!db) return "no-db";
   try {
     if (isAdminDb(db)) {
-      await db.collection("reports").doc(id).update(updateData);
+      const docRef = db.collection("reports").doc(id);
+      const snap = await docRef.get();
+      if (!snap.exists) return "missing";
+      await docRef.update(updateData);
     } else {
-      const { doc, updateDoc } = await loadClientSdk();
-      await updateDoc(doc(db, "reports", id), updateData);
+      const { doc, getDoc, updateDoc } = await loadClientSdk();
+      const docRef = doc(db, "reports", id);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) return "missing";
+      await updateDoc(docRef, updateData);
     }
     invalidateReportsCache();
-    return true;
+    return "updated";
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to update report");
-    return false;
+    return "error";
   }
 }
 
-export async function deleteReportFromFirestore(id: string) {
+export async function deleteReportFromFirestore(id: string): Promise<ReportMutationResult> {
   const db = getDb();
-  if (!db) return false;
+  if (!db) return "no-db";
   try {
     if (isAdminDb(db)) {
-      await db.collection("reports").doc(id).delete();
+      const docRef = db.collection("reports").doc(id);
+      const snap = await docRef.get();
+      if (!snap.exists) return "missing";
+      await docRef.delete();
     } else {
-      const { doc, deleteDoc } = await loadClientSdk();
-      await deleteDoc(doc(db, "reports", id));
+      const { doc, getDoc, deleteDoc } = await loadClientSdk();
+      const docRef = doc(db, "reports", id);
+      const snap = await getDoc(docRef);
+      if (!snap.exists()) return "missing";
+      await deleteDoc(docRef);
     }
     invalidateReportsCache();
-    return true;
+    return "deleted";
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to delete report");
-    return false;
+    return "error";
+  }
+}
+
+export type ReportPurgeResult = "deleted" | "missing" | "no-db" | "error";
+
+/**
+ * ARC-H3 fix: deleting a report used to orphan its durable idempotency record
+ * forever (nothing in the repo ever cleaned reportIdempotency). A client that
+ * re-syncs its offline draft — same clientGeneratedId by design — then hit a
+ * permanent 503 DURABLE_IDEMPOTENCY_UNAVAILABLE. This purge removes the report
+ * and every idempotency key bound to it in one batch: the key stored on the
+ * report itself (clientGeneratedId) plus any legacy key found by reportId.
+ */
+export async function purgeReportWithIdempotency(id: string): Promise<ReportPurgeResult> {
+  const db = getDb();
+  if (!db) return "no-db";
+  try {
+    if (isAdminDb(db)) {
+      const reportRef = db.collection("reports").doc(id);
+      const reportSnap = await reportRef.get();
+      if (!reportSnap.exists) return "missing";
+      const keys = new Set<string>();
+      const cgid = (reportSnap.data() as any)?.clientGeneratedId;
+      if (typeof cgid === "string" && cgid) keys.add(cgid);
+      const legacy = await db
+        .collection(REPORT_IDEMPOTENCY_COLLECTION)
+        .where("reportId", "==", id)
+        .get();
+      legacy.forEach((d) => keys.add(d.id));
+      const batch = db.batch();
+      batch.delete(reportRef);
+      for (const key of keys) {
+        batch.delete(db.collection(REPORT_IDEMPOTENCY_COLLECTION).doc(key));
+      }
+      await batch.commit();
+      invalidateReportsCache();
+      return "deleted";
+    }
+
+    const { collection, doc, getDoc, getDocs, query, where, writeBatch } = await loadClientSdk();
+    const reportRef = doc(db, "reports", id);
+    const reportSnap = await getDoc(reportRef);
+    if (!reportSnap.exists()) return "missing";
+    const keys = new Set<string>();
+    const cgid = reportSnap.data()?.clientGeneratedId;
+    if (typeof cgid === "string" && cgid) keys.add(cgid);
+    const legacy = await getDocs(
+      query(collection(db, REPORT_IDEMPOTENCY_COLLECTION), where("reportId", "==", id))
+    );
+    legacy.forEach((d) => keys.add(d.id));
+    const batch = writeBatch(db);
+    batch.delete(reportRef);
+    for (const key of keys) {
+      batch.delete(doc(db, REPORT_IDEMPOTENCY_COLLECTION, key));
+    }
+    await batch.commit();
+    invalidateReportsCache();
+    return "deleted";
+  } catch (err) {
+    logger.error({ err }, "[Firestore] Failed to purge report with idempotency record");
+    return "error";
   }
 }

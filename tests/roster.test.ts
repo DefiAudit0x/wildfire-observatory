@@ -9,6 +9,16 @@ vi.mock("../server/atomic.js", () => ({
     if (id === "unknown-agent") return null;
     return { id, role: "agent", isActive: true, unitId: "unit-dz16", name: id === "a1" ? "علي" : id };
   },
+  // ARC-M08: canonicalizePersonnel now prefers getFreshDocResult — mirror the
+  // same fixtures so both entry points stay covered.
+  getFreshDocResult: async (collection: string, id: string) => {
+    if (collection !== "users") return { status: "missing" };
+    if (id === "unknown-agent") return { status: "missing" };
+    return {
+      status: "found",
+      doc: { id, role: "agent", isActive: true, unitId: "unit-dz16", name: id === "a1" ? "علي" : id },
+    };
+  },
   appendRosterPostAtomic: async () => "created",
 }));
 

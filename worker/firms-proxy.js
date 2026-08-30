@@ -15,6 +15,20 @@
 
 const FIRMS_BASE = "https://firms.modaps.eosdis.nasa.gov";
 
+// ARC-M39 fix: hardening the authenticated proxy surface.
+//  - Input caps: the upstream path segments were previously concatenated
+//    verbatim into the FIRMS URL — an (authenticated) client could send
+//    absurdly long bbox strings or a giant days value (upstream accepts up to
+//    10) and burn the worker-bound MAP_KEY quota. Enforce the FIRMS contract
+//    exactly: 4 comma-separated coordinates, sane ranges, days 1..10, and a
+//    known source from the short allowlist.
+//  - Cache: fire hotspots refresh on a satellite pass cadence, not per click —
+//    cache upstream answers at the edge for 5 minutes so a chatty server
+//    poll doesn't multiply upstream quota usage.
+const ALLOWED_SOURCES = new Set(["VIIRS_SNPP_NRT", "VIIRS_NOAA20_NRT", "MODIS_NRT", "MODIS_SP"]);
+const MAX_DAYS = 10;
+const UPSTREAM_CACHE_SECONDS = 300;
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -43,6 +57,11 @@ export default {
       if (!email) {
         return json({ ok: false, error: "missing email param" }, 400);
       }
+      // Basic sanity: a valid-looking email, bounded length — this value is
+      // forwarded verbatim to a NASA form endpoint.
+      if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+        return json({ ok: false, error: "invalid email param" }, 400);
+      }
       try {
         const form = new FormData();
         form.append("email", email);
@@ -68,23 +87,47 @@ export default {
       return json({ ok: false, error: "usage: /{source}/{minLng},{minLat},{maxLng},{maxLat}/{days}" }, 400);
     }
 
+    const [source, bbox, daysRaw] = path;
+    if (!ALLOWED_SOURCES.has(source)) {
+      return json({ ok: false, error: "unknown source" }, 400);
+    }
+    const coords = String(bbox || "").split(",");
+    if (coords.length !== 4 || coords.some((c) => !Number.isFinite(Number(c)))) {
+      return json({ ok: false, error: "bbox must be minLng,minLat,maxLng,maxLat" }, 400);
+    }
+    const [minLng, minLat, maxLng, maxLat] = coords.map(Number);
+    if (
+      Math.abs(minLng) > 180 || Math.abs(maxLng) > 180 ||
+      Math.abs(minLat) > 90 || Math.abs(maxLat) > 90 ||
+      minLng >= maxLng || minLat >= maxLat ||
+      maxLng - minLng > 40 || maxLat - minLat > 40
+    ) {
+      return json({ ok: false, error: "bbox out of range" }, 400);
+    }
+    const days = Number(daysRaw);
+    if (!Number.isInteger(days) || days < 1 || days > MAX_DAYS) {
+      return json({ ok: false, error: `days must be an integer 1..${MAX_DAYS}` }, 400);
+    }
+
     const apiKey = env.NASA_FIRMS_KEY;
     if (!apiKey) {
       return json({ ok: false, error: "NASA_FIRMS_KEY secret missing" }, 500);
     }
 
     const target =
-      FIRMS_BASE + "/api/area/csv/" + apiKey + "/" + path.join("/");
+      FIRMS_BASE + "/api/area/csv/" + apiKey + "/" + [source, bbox, days].join("/");
 
     try {
-      const resp = await fetch(target, {
+      const upstream = await fetch(target, {
         headers: { "User-Agent": "VIGIL-Observatory-Proxy/1.0" },
+        cf: { cacheTtl: UPSTREAM_CACHE_SECONDS, cacheEverything: true },
       });
-      return new Response(resp.body, {
-        status: resp.status,
+      return new Response(upstream.body, {
+        status: upstream.status,
         headers: {
-          "Content-Type": resp.headers.get("Content-Type") || "text/plain",
+          "Content-Type": upstream.headers.get("Content-Type") || "text/plain",
           "Access-Control-Allow-Origin": "*",
+          "Cache-Control": `s-maxage=${UPSTREAM_CACHE_SECONDS}`,
         },
       });
     } catch (err) {
