@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ClipboardList, Plus, Trash2, Save, ChevronLeft, ChevronRight, CalendarDays, UserPlus, X, Wrench, AlertTriangle, LogOut, RefreshCw, Building2, ShieldCheck, Copy } from "lucide-react";
 import { Language } from "../types";
 import ConfirmDialog from "./ui/ConfirmDialog";
@@ -94,12 +94,21 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     probeSession();
   }, [probeSession]);
 
+  // ARC-M28: fast date navigation used to let the last *response* win regardless
+  // of which request was last — the header could show day N with day N-2 content.
+  // Each fetch owns an AbortController; only the current owner may touch state.
+  const rosterReqRef = useRef<AbortController | null>(null);
   const fetchRoster = useCallback(async () => {
+    rosterReqRef.current?.abort();
+    const controller = new AbortController();
+    rosterReqRef.current = controller;
+    const isCurrent = () => rosterReqRef.current === controller;
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${date}`, { credentials: "same-origin" });
+      const res = await fetch(`/api/roster/${date}`, { credentials: "same-origin", signal: controller.signal });
       const data = await res.json();
+      if (!isCurrent()) return;
       if (res.ok) {
         setRoster(data);
       } else if (res.status === 401) {
@@ -108,11 +117,16 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         setRoster({ unitId: "", date, posts: [], saved: false });
       }
     } catch {
+      if (!isCurrent()) return; // superseded by a newer fetch
       setMsg(isArabic ? "تعذر تحميل الجدول." : "Erreur de chargement.");
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [date, isArabic]);
+
+  useEffect(() => {
+    return () => rosterReqRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (session.authenticated) {
@@ -138,10 +152,19 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
 
   const saveRoster = async () => {
     if (!roster) return;
+    // ARC-M28 second half: the PUT used to target the *current* date state
+    // while the body carried whatever roster was loaded — a save issued while
+    // another day was loading could write day X's content into day Y. The
+    // request now always targets the day the edited roster actually belongs to.
+    const rosterDate = roster.date || date;
+    if (rosterDate !== date) {
+      setMsg(isArabic ? "انتظر انتهاء تحميل اليوم المحدد قبل الحفظ." : "Attendez la fin du chargement avant d'enregistrer.");
+      return;
+    }
     setSaving(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${date}`, {
+      const res = await fetch(`/api/roster/${rosterDate}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
@@ -239,11 +262,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     if (!roster) return;
     const agent = staff.find((s) => s.agentId === agentId);
     if (!agent) return;
+    // ARC-M29: the check used to exclude the current post (`p.id !== postId`),
+    // so the same agent could be added twice inside one post — a duplicate key
+    // render discovered only as a server rejection that wiped unsaved edits.
     const exists = roster.posts.some(
-      (p) => p.id !== postId && p.personnel.some((x) => x.agentId === agentId)
+      (p) => p.personnel.some((x) => x.agentId === agentId)
     );
     if (exists) {
-      setMsg(isArabic ? "هذا المناوب موزع في منصب آخر اليوم." : "Cet agent est déjà affecté à un autre poste.");
+      setMsg(isArabic ? "هذا المناوب موزع بالفعل في منصب اليوم." : "Cet agent est déjà affecté aujourd'hui.");
       return;
     }
     const updated = {
@@ -519,11 +545,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
                         {isArabic ? "لا يوجد موظفون متاحون" : "Aucun agent disponible"}
                       </option>
                     ) : (
-                      staff.map((s) => (
-                        <option key={s.agentId} value={s.agentId}>
-                          {s.name} ({s.agentId})
-                        </option>
-                      ))
+                      staff.map((s) => {
+                        const alreadyAssigned = roster.posts.some((p) => p.personnel.some((x) => x.agentId === s.agentId));
+                        return (
+                          <option key={s.agentId} value={s.agentId} disabled={alreadyAssigned}>
+                            {s.name} ({s.agentId}){alreadyAssigned ? (isArabic ? " — موزع" : " — affecté") : ""}
+                          </option>
+                        );
+                      })
                     )}
                   </select>
                 </div>
@@ -584,7 +613,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
             </button>
             <button
               onClick={saveRoster}
-              disabled={saving || !roster}
+              disabled={saving || !roster || loading || (roster ? roster.date !== date : false)}
               className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black flex items-center gap-1.5 shadow-lg shadow-emerald-600/20 cursor-pointer transition-all disabled:opacity-50"
             >
               {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
