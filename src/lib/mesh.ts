@@ -1,4 +1,5 @@
 import { ReconnectingSocket } from "../hooks/useReconnectingSocket";
+import { getDeviceId as getCanonicalDeviceId } from "../utils/device";
 
 export type MeshStatus = "connecting" | "online" | "offline";
 
@@ -27,27 +28,15 @@ const HEARTBEAT_MS = 30_000;
 // proxy — force-close and rebuild instead of staying silently half-open.
 const QUIET_SOCKET_MS = 75_000;
 const FETCH_TOKEN_TIMEOUT_MS = 10_000;
-const DEVICE_ID_KEY = "mesh_device_id";
-let memoryDeviceId: string | null = null;
-
-function getDeviceId(): string {
-  const storage = typeof localStorage !== "undefined" ? localStorage : null;
-  let id = storage?.getItem(DEVICE_ID_KEY) ?? memoryDeviceId;
-  if (!id) {
-    id = `dev-${crypto.randomUUID()}`;
-    memoryDeviceId = id;
-    try {
-      storage?.setItem(DEVICE_ID_KEY, id);
-    } catch {
-      // Private browsing or test environments may expose no writable storage.
-    }
-  }
-  return id;
-}
+// M15: the mesh client no longer mints a parallel `dev-<uuid>` identity.
+// It uses the one canonical device id (src/utils/device.ts), which migrates
+// the legacy localStorage["mesh_device_id"] value on first read. The hub
+// treats this value as a display label only — the JWT subject stays the
+// authoritative identity for every mesh security decision.
 
 class MeshClient {
   private engine: ReconnectingSocket;
-  private deviceId = getDeviceId();
+  private deviceId = getCanonicalDeviceId();
   private label = this.buildLabel();
   private status: MeshStatus = "offline";
   private nodeCount = 0;
