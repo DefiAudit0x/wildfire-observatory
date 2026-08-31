@@ -8,7 +8,7 @@ import { citizenReports } from "../data.js";
 import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { sanitizeForPrompt } from "./ai.js";
-import { getHaversineDistance, runClustering, wilayaContainsCoords } from "../geo.js";
+import { getHaversineDistance, NA_BOUNDS, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
   getReportsDbResult,
   seedReportsToFirestore,
@@ -29,14 +29,15 @@ const router = Router();
 function badgeLogId(code: string): string {
   return createHash("sha256").update(code).digest("hex").slice(0, 12);
 }
-const MAX_IN_MEMORY_REPORTS = 500;
+// ARC-L07: MAX_IN_MEMORY_REPORTS was declared but never referenced anywhere —
+// a dead constant that advertised an eviction policy the code never implemented.
 
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 500 * 1024, files: 1 },
 });
 
-const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 };
+// ARC-M09: NA_BOUNDS is the single canonical copy in server/geo.ts.
 
 const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 const DUPLICATE_DISTANCE_KM = 0.5;

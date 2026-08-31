@@ -1,18 +1,26 @@
 import { useMemo, useState } from "react";
 import { FileText, Filter, Check, X, CheckCircle2, ShieldAlert } from "lucide-react";
 import { Report } from "../../types";
+import { useReportModeration } from "../../hooks/useReportModeration";
+import { ToastType } from "../ui/ToastStack";
 
 interface ReportsTableProps {
   isArabic: boolean;
   reports: Report[];
   onChanged: () => void;
+  /** Toast channel of the owning command surface — ARC-M31: moderation
+   * outcomes (success, failure, session expiry) must be user-visible, never
+   * a silent button or a console.error swallow. */
+  notify: (message: string, type?: ToastType) => void;
 }
 
 const STATUS_META: Record<string, { labelAr: string; labelFr: string; cls: string }> = {
   pending: { labelAr: "قيد المراجعة", labelFr: "En attente", cls: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20" },
-  verified: { labelAr: "مؤكد", labelFr: "Vérifié", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
+  // ARC-M31: verified/resolved Arabic wording aligned with AdminPanel — one
+  // moderation vocabulary instead of two drifting ones.
+  verified: { labelAr: "موثق رسمي", labelFr: "Vérifié", cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" },
   rejected: { labelAr: "مرفوض", labelFr: "Rejeté", cls: "bg-red-500/10 text-red-400 border-red-500/20" },
-  resolved: { labelAr: "تم الإخماد", labelFr: "Résolu", cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
+  resolved: { labelAr: "تم الحل / خمد", labelFr: "Résolu", cls: "bg-blue-500/10 text-blue-400 border-blue-500/20" },
 };
 
 const SEVERITY_META: Record<string, { labelAr: string; labelFr: string; cls: string }> = {
@@ -22,13 +30,29 @@ const SEVERITY_META: Record<string, { labelAr: string; labelFr: string; cls: str
   critical: { labelAr: "حرج", labelFr: "Critique", cls: "bg-red-600/20 text-red-400 border-red-500/30 animate-pulse" },
 };
 
-export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTableProps) {
+export default function ReportsTable({ isArabic, reports, onChanged, notify }: ReportsTableProps) {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [search, setSearch] = useState("");
-  const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const ITEMS_PER_PAGE = 20;
 
+  // ARC-M31: the ONE moderation hook (same endpoint, busy-set, 401 routing
+  // and wording as AdminPanel) replaces the hand-rolled fetch that had no
+  // 401 handling (expired session = silent button) and swallowed errors
+  // into console.error.
+  const { updatingIds, updateStatus: postStatus } = useReportModeration(isArabic, {
+    onSettled: onChanged,
+    onSessionExpiry: (message) => notify(message, "warning"),
+    onError: (message) => notify(message, "error"),
+    onSuccess: (message) => notify(message),
+  });
+
+  // Local adapter so the JSX keeps its {status} body shape while the call
+  // itself runs through the shared hook.
+  const updateStatus = (id: string, body: { status?: string; severity?: string }) => {
+    if (body.status) postStatus(id, body.status);
+    else if (body.severity) postStatus(id, body.severity);
+  };
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: reports.length };
     for (const r of reports) c[r.status] = (c[r.status] || 0) + 1;
@@ -54,23 +78,6 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
   const paginated = filtered.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
 
   const resetPage = () => setPage(1);
-
-  const updateStatus = async (id: string, body: Record<string, string>) => {
-    setUpdatingId(id);
-    try {
-      const res = await fetch(`/api/admin/reports/${id}/update-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify(body),
-      });
-      if (res.ok) onChanged();
-    } catch (err) {
-      console.error("Status update failed:", err);
-    } finally {
-      setUpdatingId(null);
-    }
-  };
 
   return (
     <div className="bg-zinc-900/60 border border-white/5 rounded-xl shadow-[0_4px_25px_rgba(0,0,0,0.3)] overflow-hidden">
@@ -168,7 +175,7 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => updateStatus(rep.id, { status: "verified" })}
-                          disabled={updatingId === rep.id}
+                          disabled={updatingIds.has(rep.id)}
                           title={isArabic ? "تأكيد" : "Vérifier"}
                           className="bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 rounded p-1 cursor-pointer"
                         >
@@ -176,7 +183,7 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
                         </button>
                         <button
                           onClick={() => updateStatus(rep.id, { status: "rejected" })}
-                          disabled={updatingId === rep.id}
+                          disabled={updatingIds.has(rep.id)}
                           title={isArabic ? "رفض" : "Rejeter"}
                           className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 rounded p-1 cursor-pointer"
                         >
@@ -187,7 +194,7 @@ export default function ReportsTable({ isArabic, reports, onChanged }: ReportsTa
                     {rep.status === "verified" && (
                       <button
                         onClick={() => updateStatus(rep.id, { status: "resolved" })}
-                        disabled={updatingId === rep.id}
+                        disabled={updatingIds.has(rep.id)}
                         title={isArabic ? "تم الإخماد" : "Marquer résolu"}
                         className="bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 rounded p-1 cursor-pointer flex items-center gap-0.5"
                       >

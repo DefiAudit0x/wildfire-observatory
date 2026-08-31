@@ -2,7 +2,8 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import crypto from "node:crypto";
 import rateLimit from "express-rate-limit";
-import { createHash, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
+import { encryptAead, decryptAead } from "../crypto.js";
 import { collectionGet, docUpdate, docGet } from "../fs.js";
 import { approveVolunteerAtomically, createVolunteerRegistrationAtomically } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
@@ -44,20 +45,13 @@ const registerLimiter = rateLimit({
 const memoryRegs: any[] = [];
 const MAX_MEMORY_REGS = 500;
 function getPiiKey(): Buffer { return createHash("sha256").update("volunteer-pii:" + config.jwtSecret).digest(); }
-function encryptPII(data: string): string {
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", getPiiKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(data, "utf8"), cipher.final()]);
-  return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), encrypted.toString("base64")].join(".");
-}
+// ARC-M09: the GCM envelope is shared (server/crypto.ts); only the key
+// derivation above stays local to this route's "volunteer-pii" domain.
+function encryptPII(data: string): string { return encryptAead(data, getPiiKey()); }
 function decryptPII(token: string | undefined): string {
-  if (!token) return "";
-  try {
-    const [ivB64, tagB64, dataB64] = token.split(".");
-    const decipher = createDecipheriv("aes-256-gcm", getPiiKey(), Buffer.from(ivB64, "base64"));
-    decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-    return Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]).toString("utf8");
-  } catch (err) { logger.error({ err }, "PII decryption failed"); return ""; }
+  const plain = decryptAead(token, getPiiKey());
+  if (plain === null) { logger.warn("PII decryption failed"); return ""; }
+  return plain.toString("utf8");
 }
 function toReadable(r: any): any {
   return { ...r, fullName: decryptPII(r.fullName), phone: r.phone ? decryptPII(r.phone) : undefined, email: r.email ? decryptPII(r.email) : undefined, idNumber: r.idNumber ? decryptPII(r.idNumber) : undefined };

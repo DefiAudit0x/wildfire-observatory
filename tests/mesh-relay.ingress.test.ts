@@ -36,6 +36,27 @@ function storedState(): {
   return JSON.parse(storage.get("mesh_relay_queue") || '{"pending":[],"journal":[]}');
 }
 
+
+// ARC-M13: the relay confirms delivery only when the 200 response body
+// satisfies the report contract (the server echoes the stored report), so
+// these mocks model that body instead of a body-less 200.
+let ok200Seq = 0;
+function ok200(): Response {
+  ok200Seq += 1;
+  return new Response(JSON.stringify({
+    id: `srv-relay-${ok200Seq}`,
+    lat: 36.75,
+    lng: 3.06,
+    locationName: "Test location",
+    wilaya: "Alger",
+    description: "Relayed mesh report body",
+    severity: "medium",
+    status: "pending",
+    timestamp: new Date().toISOString(),
+    consensusCount: 1,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 function meshReport(clientGeneratedId?: string, powNonce = 1): string {
   return JSON.stringify({
     type: "report",
@@ -108,7 +129,7 @@ describe("mesh relay online ingress journal", () => {
     const relay = await loadRelay();
     const fetchMock = vi.fn().mockImplementation(async () => {
       expect(storedState().journal[0]).toMatchObject({ state: "prepared" });
-      return new Response(null, { status: 200 });
+      return ok200();
     });
     vi.stubGlobal("fetch", fetchMock);
     relay.initMeshRelay();
@@ -130,7 +151,7 @@ describe("mesh relay online ingress journal", () => {
 
   it("rejects a legacy Mesh envelope without origin ID before queue or HTTP", async () => {
     const relay = await loadRelay();
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     relay.initMeshRelay();
 
@@ -145,7 +166,7 @@ describe("mesh relay online ingress journal", () => {
   it("retries the same online relay id after HTTP success but crash before delivered persistence", async () => {
     const relay = await loadRelay();
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(ok200())
       .mockResolvedValueOnce(new Response(JSON.stringify({ code: "DUPLICATE_CLIENT_GENERATED_ID" }), {
         status: 409,
         headers: { "Content-Type": "application/json" },
@@ -173,7 +194,7 @@ describe("mesh relay online ingress journal", () => {
 
   it("does not let PoW-valid malformed payloads exhaust replay capacity before a valid report", async () => {
     const relay = await loadRelay();
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     relay.initMeshRelay();
 

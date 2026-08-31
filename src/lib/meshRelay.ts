@@ -26,6 +26,16 @@ import {
 } from "../utils/meshBridge";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
+// ARC-M13: the report wire contract (severities, reporter types, text limits,
+// and the POST-response gate) lives in the dataset validators — the same
+// module the GET poll and the manual POST path use. Hand-copying it here was
+// how the relay drifted from the schema it feeds.
+import {
+  isValidReport,
+  REPORT_SEVERITIES,
+  REPORTER_TYPES,
+  REPORT_TEXT_LIMITS,
+} from "../utils/datasetValidators";
 
 export interface MeshEnvelope {
   payload?: unknown;
@@ -719,9 +729,14 @@ export function buildRelayedPayload(envelope: MeshEnvelope): Record<string, unkn
   const locationName = typeof payload.locationName === "string" ? payload.locationName.trim() : "";
   const wilaya = typeof payload.wilaya === "string" ? payload.wilaya.trim() : "";
   const description = typeof payload.description === "string" ? payload.description.trim() : "";
-  if (locationName.length < 3 || locationName.length > 200 || wilaya.length < 3 || wilaya.length > 200 || description.length < 10 || description.length > 2000) return null;
-  if (payload.severity !== undefined && !["low", "medium", "high", "critical"].includes(payload.severity)) return null;
-  if (payload.reporterType !== undefined && !["citizen", "volunteer", "official"].includes(payload.reporterType)) return null;
+  // ARC-M13: vocabularies and length limits imported from the validators
+  // module (which mirrors the server schema) — not hand-rewritten here.
+  const limits = REPORT_TEXT_LIMITS;
+  if (locationName.length < limits.locationName.min || locationName.length > limits.locationName.max) return null;
+  if (wilaya.length < limits.wilaya.min || wilaya.length > limits.wilaya.max) return null;
+  if (description.length < limits.description.min || description.length > limits.description.max) return null;
+  if (payload.severity !== undefined && !(REPORT_SEVERITIES as readonly string[]).includes(payload.severity)) return null;
+  if (payload.reporterType !== undefined && !(REPORTER_TYPES as readonly string[]).includes(payload.reporterType)) return null;
   const report: Record<string, unknown> = {
     lat, lng, locationName, wilaya, description,
     severity: payload.severity ?? "medium",
@@ -740,7 +755,15 @@ async function submitRelayOutcome(report: Record<string, unknown>): Promise<Rela
       body: JSON.stringify(report),
       signal: AbortSignal.timeout(RELAY_SUBMIT_TIMEOUT_MS),
     });
-    if (res.status === 200) return "http_200";
+    if (res.status === 200) {
+      // ARC-M13: same response gate as the manual POST path
+      // (useObservatoryData) — a 200 only confirms delivery when the server
+      // echoes a report that satisfies the app's report contract. On
+      // mismatch, return null (retry): the server's clientGeneratedId
+      // idempotency turns the re-POST into a terminal 409 duplicate.
+      const body = await res.json().catch(() => null);
+      return isValidReport(body) ? "http_200" : null;
+    }
     if (res.status !== 409) return null;
     const body = await res.json().catch(() => null) as { code?: unknown } | null;
     return typeof body?.code === "string" && TERMINAL_DUPLICATE_CODES.has(body.code) ? "terminal_duplicate" : null;

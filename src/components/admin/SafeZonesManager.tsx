@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { MapPin, Plus, Trash2, RefreshCw, ShieldCheck, AlertTriangle, Save, Search } from "lucide-react";
 import { Language } from "../../types";
+import { apiFetch } from "../../utils/adminApi"; // ARC-L21: one shared admin/staff fetch helper
 import ConfirmDialog from "../ui/ConfirmDialog";
 import ToastStack from "../ui/ToastStack";
 import useToasts from "../../hooks/useToasts";
@@ -59,18 +60,6 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   useEffect(() => {
     fetchZones();
   }, [fetchZones]);
-
-  const apiFetch = async (url: string, method: string, body?: unknown) => {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "Content-Type": "application/json",
-      },
-      credentials: "same-origin",
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    return res;
-  };
 
   const handleAddZone = async (e: React.FormEvent) => {
     e.preventDefault();

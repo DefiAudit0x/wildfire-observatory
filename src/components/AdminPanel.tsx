@@ -8,6 +8,7 @@ import BadgeManager from "./admin/BadgeManager";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
+import { useReportModeration } from "../hooks/useReportModeration";
 
 interface ConfirmState {
   title: string;
@@ -28,7 +29,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
@@ -97,61 +98,26 @@ const res = await fetch("/api/admin/verify", {
     return false;
   };
 
-  const updateReportStatus = async (id: string, newStatus: string) => {
-    setUpdatingIds((prev) => new Set(prev).add(id));
-    try {
-      const res = await fetch(`/api/admin/reports/${id}/update-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ status: newStatus }),
-      });
+  // ARC-M31: status/severity moderation now runs through the ONE shared hook
+  // (same endpoint, busy-set, 401 routing and wording as ReportsTable on the
+  // command surface). deleteReport keeps its own busy-set — a different
+  // endpoint with a confirm-dialog flow.
+  const { updatingIds, updateStatus, updateSeverity } = useReportModeration(isArabic, {
+    onSettled: onRefresh,
+    onSessionExpiry: (message) => {
+      handleLogout();
+      push(message, "warning");
+    },
+    onError: (message) => push(message, "error"),
+    onSuccess: (message) => push(message),
+  });
 
-      if (res.ok) {
-        onRefresh();
-        push(isArabic ? "تم تحديث حالة البلاغ" : "État du signalement mis à jour");
-      } else if (!handleAuthError(res)) {
-        push(isArabic ? "فشل تحديث الحالة" : "Échec de la mise à jour de l'état", "error");
-      }
-    } catch {
-      // ARC-L18: network failures used to vanish into console.error only.
-      push(isArabic ? "فشل تحديث الحالة — تحقق من الاتصال" : "Échec de la mise à jour — vérifiez la connexion", "error");
-    } finally {
-      setUpdatingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  };
+  // ARC-M31: the two moderation mutators are now thin delegations to the
+  // shared hook — the call, busy-set, 401 routing and messages live in ONE
+  // place for both surfaces.
+  const updateReportStatus = (id: string, newStatus: string) => updateStatus(id, newStatus);
 
-  const updateReportSeverity = async (id: string, newSeverity: string) => {
-    setUpdatingIds((prev) => new Set(prev).add(id));
-    try {
-      const res = await fetch(`/api/admin/reports/${id}/update-status`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ severity: newSeverity }),
-      });
-
-      if (res.ok) {
-        onRefresh();
-        push(isArabic ? "تم تحديث درجة خطورة البلاغ" : "Gravité du signalement mise à jour");
-      } else if (!handleAuthError(res)) {
-        push(isArabic ? "فشل تحديث درجة الخطورة" : "Échec de la mise à jour de la gravité", "error");
-      }
-    } catch {
-      // ARC-L18: network failures used to vanish into console.error only.
-      push(isArabic ? "فشل تحديث درجة الخطورة — تحقق من الاتصال" : "Échec de la gravité — vérifiez la connexion", "error");
-    } finally {
-      setUpdatingIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  };
+  const updateReportSeverity = (id: string, newSeverity: string) => updateSeverity(id, newSeverity);
 
   const deleteReport = (id: string) => {
     setConfirm({
@@ -160,7 +126,7 @@ const res = await fetch("/api/admin/verify", {
       confirmLabel: isArabic ? "حذف نهائياً" : "Supprimer",
       onConfirm: async () => {
         setConfirm(null);
-        setUpdatingIds((prev) => new Set(prev).add(id));
+        setDeletingIds((prev) => new Set(prev).add(id));
         try {
           const res = await fetch(`/api/admin/reports/${id}/delete`, {
             method: "POST",
@@ -178,7 +144,7 @@ const res = await fetch("/api/admin/verify", {
           console.error(err);
           push(isArabic ? "حدث خطأ أثناء الحذف" : "Erreur lors de la suppression", "error");
         } finally {
-          setUpdatingIds((prev) => {
+          setDeletingIds((prev) => {
             const next = new Set(prev);
             next.delete(id);
             return next;
@@ -470,7 +436,7 @@ const res = await fetch("/api/admin/verify", {
               <div
                 key={rep.id}
                 className={`bg-black/50 p-4 rounded-xl border transition-all flex flex-col xl:flex-row gap-4 items-start xl:items-center justify-between ${
-                  updatingIds.has(rep.id) ? "opacity-50 pointer-events-none" : ""
+                  updatingIds.has(rep.id) || deletingIds.has(rep.id) ? "opacity-50 pointer-events-none" : ""
                 } ${
                   rep.status === "rejected" ? "border-red-950/40 opacity-70" : "border-white/5"
                 }`}

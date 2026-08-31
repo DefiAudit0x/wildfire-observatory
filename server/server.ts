@@ -81,7 +81,14 @@ function csrfProtection(req: express.Request, res: express.Response, next: expre
   next();
 }
 app.use(csrfProtection);
-app.use((req, _res, next) => { logger.info({ req }, "Request"); next(); });
+// ARC-L07: the "Request" log used to fire for EVERY request — every static
+// asset, every swagger fetch, every favicon probe — drowning the /api traffic
+// it existed to observe. The app's contract is API-first, so log API paths
+// (and the root shell) only.
+app.use((req, _res, next) => {
+  if (req.path.startsWith("/api") || req.path === "/") logger.info({ req }, "Request");
+  next();
+});
 if (!isProduction || process.env.ENABLE_SWAGGER === "true") app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
 app.get("/api/health", healthHandler);
 

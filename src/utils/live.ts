@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { ReconnectingSocket } from "../hooks/useReconnectingSocket";
 
 export interface LiveEvent {
   ts: number;
@@ -11,54 +12,28 @@ export function useLiveEvents(onEvent: (event: LiveEvent) => void): void {
   handlerRef.current = onEvent;
 
   useEffect(() => {
-    let ws: WebSocket | null = null;
-    let retryMs = 1000;
-    let closed = false;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const connect = () => {
-      if (closed) return;
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      ws = new WebSocket(`${proto}//${window.location.host}/api/live`);
-
-      ws.onopen = () => {
-        retryMs = 1000;
-      };
-
-      ws.onmessage = (event) => {
+    // ARC-M14: this used to be a second hand-rolled WebSocket client with no
+    // heartbeat (a half-open link behind a proxy stayed silently dead until
+    // the GET poll hid it) and an unjittered reconnect storm. It now runs on
+    // the same ReconnectingSocket engine as the mesh client. No quiet-socket
+    // watchdog here: the live hub does not answer pings, so inbound silence
+    // is normal on a quiet day — the 30s heartbeat only keeps proxies and
+    // NAT gateways from dropping the idle connection.
+    const socket = new ReconnectingSocket({
+      createSocket: () =>
+        new WebSocket(
+          `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/api/live`
+        ),
+      heartbeatMs: 30_000,
+      onMessage: (event) => {
         try {
-          const parsed = JSON.parse(String(event.data)) as LiveEvent;
-          handlerRef.current(parsed);
+          handlerRef.current(JSON.parse(String(event.data)) as LiveEvent);
         } catch {
           // ignore malformed frames
         }
-      };
-
-      ws.onclose = () => {
-        if (closed) return;
-        reconnectTimer = setTimeout(connect, retryMs);
-        retryMs = Math.min(retryMs * 2, 30000);
-      };
-
-      ws.onerror = () => {
-        try {
-          ws?.close();
-        } catch {
-          // ignore
-        }
-      };
-    };
-
-    connect();
-
-    return () => {
-      closed = true;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      try {
-        ws?.close();
-      } catch {
-        // ignore
-      }
-    };
+      },
+    });
+    socket.connect();
+    return () => socket.disconnect();
   }, []);
 }

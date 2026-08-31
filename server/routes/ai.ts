@@ -46,17 +46,12 @@ if (/[A-Za-z0-9+/]{20,}={0,2}/.test(cleaned)) {
   return cleaned;
 }
 
-/** Distance in kilometres between two coordinates (Haversine). */
-export function distanceKm(latA: number, lngA: number, latB: number, lngB: number): number {
-  const toRad = (d: number) => (d * Math.PI) / 180;
-  const R = 6371;
-  const dLat = toRad(latB - latA);
-  const dLng = toRad(lngB - lngA);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(latA)) * Math.cos(toRad(latB)) * Math.sin(dLng / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
+// ARC-M09: distanceKm was a second hand-rolled haversine (asin form) next to
+// the canonical getHaversineDistance in server/geo.ts (atan2 form). Both are
+// the same haversine formula; the canonical one wins, re-exported under the
+// old name so tests/ai.test.ts and internal callers keep their import paths.
+import { getHaversineDistance as distanceKm } from "../geo.js";
+export { distanceKm };
 
 const DAILY_AI_CALL_BUDGET = 200;
 let aiCallsToday = 0;

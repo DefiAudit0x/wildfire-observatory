@@ -42,6 +42,22 @@ export const SATELLITE_TYPES = ["MODIS", "VIIRS", "MODIS/VIIRS", "VIIRS/MODIS"] 
 export const WILAYA_SEVERITIES = ["safe", "low", "medium", "high", "critical"] as const;
 export const NOTIFICATION_TYPES = ["success", "warning", "error", "info"] as const;
 
+// ARC-M13: the reporter-type vocabulary lives beside the other report wire
+// enums so the mesh relay (and any other payload composer) imports ONE module
+// for every report vocabulary instead of hand-copying drift-prone lists.
+export const REPORTER_TYPES = ["citizen", "volunteer", "official"] as const;
+export type ReporterType = (typeof REPORTER_TYPES)[number];
+
+// ARC-M13: mirrors the server's POST /api/reports zod schema
+// (server/routes/reports.ts). The mesh relay derives its text-length checks
+// from here, so a schema change on either side lands everywhere at once
+// instead of silently dropping (or admitting) relayed reports.
+export const REPORT_TEXT_LIMITS = {
+  locationName: { min: 3, max: 200 },
+  wilaya: { min: 3, max: 200 },
+  description: { min: 10, max: 2000 },
+} as const;
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 

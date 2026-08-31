@@ -9,6 +9,27 @@ Object.defineProperty(globalThis, "localStorage", {
     removeItem: (key: string) => storage.delete(key),
   },
 });
+
+// ARC-M13: the relay confirms delivery only when the 200 response body
+// satisfies the report contract (the server echoes the stored report), so
+// these mocks model that body instead of a body-less 200.
+let ok200Seq = 0;
+function ok200(): Response {
+  ok200Seq += 1;
+  return new Response(JSON.stringify({
+    id: `srv-relay-${ok200Seq}`,
+    lat: 36.75,
+    lng: 3.06,
+    locationName: "Test location",
+    wilaya: "Alger",
+    description: "Relayed mesh report body",
+    severity: "medium",
+    status: "pending",
+    timestamp: new Date().toISOString(),
+    consensusCount: 1,
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
 vi.stubGlobal("indexedDB", undefined);
 
 const {
@@ -57,7 +78,7 @@ describe("mesh relay queue concurrency", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
     await enqueueRelay({ clientGeneratedId: "queued-b" });
-    resolveFirst!(new Response(null, { status: 200 }));
+    resolveFirst!(ok200());
     await firstFlush;
 
     const saved = storedQueue();
@@ -80,7 +101,7 @@ describe("mesh relay queue concurrency", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await enqueueRelay({ clientGeneratedId: "flush-capacity-race-new" });
 
-    resolveFirst!(new Response(null, { status: 200 }));
+    resolveFirst!(ok200());
     await flush;
 
     const submittedIds = fetchMock.mock.calls.map((call) =>
@@ -106,7 +127,7 @@ describe("mesh relay queue concurrency", () => {
     expect(overlappingFlush).toBe(firstFlush);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
 
-    resolveFirst!(new Response(null, { status: 200 }));
+    resolveFirst!(ok200());
     await firstFlush;
     expect(storedQueue()).toEqual([]);
   });
@@ -235,7 +256,7 @@ describe("mesh relay queue concurrency", () => {
     await enqueueRelay({ clientGeneratedId: "journal-overflow-new" });
 
     vi.stubGlobal("fetch", vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(ok200())
       .mockResolvedValue(new Response(null, { status: 503 })));
     await flushQueue();
 
@@ -333,7 +354,7 @@ describe("mesh relay queue concurrency", () => {
     storage.set("mesh_relay_queue", JSON.stringify(persisted));
 
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(null, { status: 200 }))
+      .mockResolvedValueOnce(ok200())
       .mockResolvedValueOnce(new Response(null, { status: 503 }));
     vi.stubGlobal("fetch", fetchMock);
     let writes = 0;
@@ -362,7 +383,7 @@ describe("mesh relay queue concurrency", () => {
   it("does not replay delivered reports when all-success flush persistence fails", async () => {
     await enqueueRelay({ clientGeneratedId: "delivered-a-after-persistence-failure" });
     await enqueueRelay({ clientGeneratedId: "delivered-b-after-persistence-failure" });
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     let writes = 0;
     const setItem = vi.spyOn(globalThis.localStorage, "setItem").mockImplementation((key, value) => {
@@ -414,7 +435,7 @@ describe("mesh relay queue concurrency", () => {
     await enqueueRelay({ clientGeneratedId: "volatile-item" });
     setItem.mockRestore();
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     await flushQueue();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -535,7 +556,7 @@ describe("mesh relay queue concurrency", () => {
   });
 
   it("sends a legacy pending item normally when it has a valid origin ID", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(ok200()));
     vi.stubGlobal("fetch", fetchMock);
     storage.set("mesh_relay_queue", JSON.stringify([{
       id: "legacy-valid-origin",
