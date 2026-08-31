@@ -116,12 +116,21 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRefresh]);
 
+  const teamsFetchSeq = useRef(0);
   const fetchRegisteredTeams = useCallback(async () => {
     if (!unlocked) return;
+    // ARC-W1: this fetcher fires from three unsynchronized paths (the 15s
+    // interval, post-dispatch refresh, onTeamsChanged). A slow response from
+    // an EARLIER fetch used to land last and clobber fresher state — hiding a
+    // just-reported mission, resurrecting a removed member chip. Only the
+    // latest-issued fetch may commit state.
+    const seq = ++teamsFetchSeq.current;
     try {
       const res = await apiFetch("/api/teams", "GET");
+      if (seq !== teamsFetchSeq.current) return;
       if (res.ok) {
         const data = (await res.json()) as RegisteredTeam[];
+        if (seq !== teamsFetchSeq.current) return;
         if (Array.isArray(data)) setRegisteredTeams(data);
       } else if (isSessionExpiry(res)) {
         setUnlocked(false);
@@ -210,12 +219,15 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
 
   const sendDispatchRequest = async (sosId: string, body: any): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/sos/${sosId}/dispatch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify(body),
-      });
+      // ARC-W2 + ARC-R7: this was a raw fetch — a dead session came back as a
+      // generic failure ("فريق مشغول" lie, no relock) and a hung link wedged
+      // the dispatch button for minutes. It now rides apiFetch (15s ceiling)
+      // and routes 401 through the one session-expiry classifier (ARC-M33).
+      const res = await apiFetch(`/api/sos/${encodeURIComponent(sosId)}/dispatch`, "POST", body);
+      if (isSessionExpiry(res)) {
+        setUnlocked(false);
+        return false;
+      }
       if (res.ok) {
         const data = await res.json().catch(() => null);
         applyLocalDispatch(sosId, data?.dispatch || body);
@@ -250,7 +262,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     setDispatchLoading(true);
     try {
       const ok = await sendDispatchRequest(sosId, { teamId, notes: notes || "" });
-      if (ok) await fetchRegisteredTeams(); // mission state changes → refresh roster
+      // ARC-W1: refresh on BOTH outcomes — a 409 usually means another tab
+      // dispatched this team first, and the operator's roster is stale.
+      await fetchRegisteredTeams();
       return ok;
     } finally {
       setDispatchLoading(false);

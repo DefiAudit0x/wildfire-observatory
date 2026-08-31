@@ -132,15 +132,15 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
 
   const handleDispatch = async (team: RegisteredTeam) => {
     if (dispatchingTeam) return;
-    let sosId = dispatchSos[team.teamId] || "";
+    // ARC-W3: the silent auto-pick probe ("oldest unassigned") actually
+    // selected the NEWEST unassigned SOS under the desc ordering, kept the
+    // selector empty, and never named the target in the success chip — a team
+    // could be sent to the wrong casualty with two active SOS. Dispatch now
+    // REQUIRES an explicit operator selection.
+    const sosId = dispatchSos[team.teamId] || "";
     if (!sosId) {
-      const oldestUnassigned = sosCalls.find((s) => s.status === "active" && (!s.dispatchedTeams || s.dispatchedTeams.length === 0));
-      if (oldestUnassigned) sosId = oldestUnassigned.id;
-      else if (sosCalls.some((s) => s.status === "active")) sosId = sosCalls.find((s) => s.status === "active")!.id;
-      else {
-        setChipWithTtl(team.teamId, { ok: false, text: isArabic ? "لا توجد استغاثات نشطة" : "Aucun SOS actif" });
-        return;
-      }
+      setChipWithTtl(team.teamId, { ok: false, text: isArabic ? "اختر بلاغ الاستغاثة أولًا" : "Sélectionnez d'abord un SOS" });
+      return;
     }
     setDispatchingTeam(team.teamId);
     const ok = await onDispatch(team.teamId, sosId, dispatchNotes[team.teamId] || "");
@@ -149,8 +149,10 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
       setDispatchSos((prev) => ({ ...prev, [team.teamId]: "" }));
       setDispatchNotes((prev) => ({ ...prev, [team.teamId]: "" }));
     }
+    const target = sosCalls.find((s) => s.id === sosId);
+    const targetLabel = target?.name || sosId;
     setChipWithTtl(team.teamId, ok
-      ? { ok: true, text: isArabic ? "✓ تم توجيه الفريق" : "✓ Équipe dépêchée" }
+      ? { ok: true, text: isArabic ? `✓ تم توجيه الفريق إلى ${targetLabel}` : `✓ Équipe dépêchée vers ${targetLabel}` }
       : { ok: false, text: isArabic ? "فشل التوجيه — قد يكون الفريق مشغولًا" : "Échec — équipe peut-être occupée" });
   };
 
@@ -347,12 +349,16 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                         value={selectedSosId}
                         onChange={(e) => setDispatchSos((prev) => ({ ...prev, [team.teamId]: e.target.value }))}
                         className="bg-zinc-950 border border-white/10 rounded px-2 py-1 text-[11px] text-slate-300 focus:outline-none max-w-[220px]"
+                        aria-label={isArabic ? "اختيار بلاغ الاستغاثة" : "Sélection du SOS"}
                       >
                         <option value="">{isArabic ? "اختر بلاغ استغاثة..." : "Sélectionner SOS..."}</option>
                         {activeSos.map((sos) => (
                           <option key={sos.id} value={sos.id}>🚨 {sos.name} ({new Date(sos.timestamp).toLocaleTimeString()})</option>
                         ))}
                       </select>
+                      {activeSos.length === 0 && (
+                        <span className="text-[10px] text-gray-500">{isArabic ? "لا استغاثات نشطة حاليًا" : "Aucun SOS actif"}</span>
+                      )}
                       <input
                         type="text"
                         value={dispatchNotes[team.teamId] || ""}
@@ -362,7 +368,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       />
                       <button
                         type="button"
-                        disabled={dispatchLoading || dispatchingTeam !== null}
+                        disabled={dispatchLoading || dispatchingTeam !== null || !selectedSosId}
                         onClick={() => handleDispatch(team)}
                         className="bg-amber-600 hover:bg-amber-500 disabled:bg-zinc-800 disabled:text-gray-500 border border-amber-500 text-black font-extrabold rounded px-3 py-1 text-[11px] transition-all cursor-pointer flex items-center gap-1"
                       >

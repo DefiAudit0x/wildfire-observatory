@@ -80,17 +80,27 @@ describe("RegisteredTeams", () => {
     expect(screen.getByText(/لا توجد فرق مسجلة بعد/)).toBeInTheDocument();
   });
 
-  it("dispatches the registered team by teamId with notes", async () => {
+  it("dispatches the registered team by teamId with notes after an explicit SOS selection", async () => {
     const { onDispatch } = setup();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sos-77" } });
     fireEvent.change(screen.getByPlaceholderText("تعليمات (اختياري)..."), { target: { value: "انطلقوا" } });
     fireEvent.click(screen.getByRole("button", { name: /توجيه/ }));
     await waitFor(() => expect(onDispatch).toHaveBeenCalledWith("team-a1", "sos-77", "انطلقوا"));
   });
 
-  it("auto-picks the oldest unassigned SOS when none selected", async () => {
+  it("ARC-W3: refuses to dispatch without an explicit SOS selection — no silent auto-pick", async () => {
     const { onDispatch } = setup();
+    const btn = screen.getByRole("button", { name: /توجيه/ });
+    expect(btn).toBeDisabled();
+    fireEvent.click(btn);
+    expect(onDispatch).not.toHaveBeenCalled();
+  });
+
+  it("ARC-W3: the success chip NAMES the SOS the team was sent to", async () => {
+    setup();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "sos-77" } });
     fireEvent.click(screen.getByRole("button", { name: /توجيه/ }));
-    await waitFor(() => expect(onDispatch).toHaveBeenCalledWith("team-a1", "sos-77", ""));
+    await waitFor(() => expect(screen.getByText(/✓ تم توجيه الفريق إلى المحتجز أحمد/)).toBeInTheDocument());
   });
 
   it("mints a join code and displays it for copying", async () => {
