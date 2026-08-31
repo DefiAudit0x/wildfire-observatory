@@ -468,6 +468,69 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
 });
 
 /**
+ * POST /api/teams/session — resume a team session WITHOUT a GPS fix (Phase 2).
+ *
+ * Why it exists: the member panel persists its 12h token (sessionStorage) and
+ * needs to restore { team, member, mission } on page reload / WebView restart
+ * before any location permission has been granted. The heartbeat cannot serve
+ * this — it hard-requires lat/lng. Session probe therefore validates the SAME
+ * gate chain as the heartbeat (fail-closed per request, live Firestore state)
+ * and returns everything the panel renders, minus any location fields.
+ *
+ * Cheap by design (2–3 doc reads, no writes) and rate-limited per member.
+ */
+const sessionLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const token = teamTokenFromRequest(req);
+    if (token) return `member:${token.memberId}`;
+    const ip = req.ip ?? "unknown";
+    return `ip:${ip === "unknown" ? ip : ipKeyGenerator(ip)}`;
+  },
+  message: { error: "Too many team session probes from this address." },
+});
+
+router.post("/session", sessionLimiter, async (req: Request, res: Response) => {
+  const token = teamTokenFromRequest(req);
+  if (!token) {
+    res.status(401).json({ error: "Team session required" });
+    return;
+  }
+  const member = await docGet("teamMembers", token.memberId);
+  if (!member || member.teamId !== token.teamId) {
+    res.status(403).json({ code: "MEMBER_INVALID", error: "Team membership not found" });
+    return;
+  }
+  if (member.active === false) {
+    res.status(403).json({ code: "MEMBER_INACTIVE", error: "Membership is deactivated" });
+    return;
+  }
+  if (isMemberTokenRevoked(token, member)) {
+    res.status(403).json({ code: "MEMBER_REVOKED", error: "Membership token has been revoked" });
+    return;
+  }
+  const team = await docGet("teams", token.teamId);
+  if (!team || team.active === false) {
+    res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
+    return;
+  }
+  const mission = activeMissionOf(await docGet("teamMissions", token.teamId));
+  res.json({
+    memberId: token.memberId,
+    teamId: token.teamId,
+    teamName: team.name,
+    teamNameAr: team.nameAr,
+    name: member.name,
+    mission,
+    heartbeatIntervalMs: 15_000,
+    serverTime: Date.now(),
+  });
+});
+
+/**
  * POST /api/teams/leave — member opts out (Bearer team token). Deactivates
  * the membership and drops the live position immediately.
  */
