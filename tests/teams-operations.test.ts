@@ -23,6 +23,7 @@ const fsMock = vi.hoisted(() => ({
   collectionGet: vi.fn(async (..._a: any[]) => [] as any),
   docGet: vi.fn(async (..._a: any[]) => null as any),
   docSet: vi.fn(async (..._a: any[]) => true as any),
+  docMergeSet: vi.fn(async (..._a: any[]) => true as any),
   docUpdate: vi.fn(async (..._a: any[]) => true as any),
   invalidateCollectionCache: vi.fn(),
   invalidateDocCache: vi.fn(),
@@ -70,6 +71,7 @@ beforeEach(() => {
   fsMock.collectionGet.mockReset().mockResolvedValue([]);
   fsMock.docGet.mockReset().mockResolvedValue(null);
   fsMock.docSet.mockReset().mockResolvedValue(true);
+  fsMock.docMergeSet.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
 });
@@ -155,6 +157,40 @@ describe("POST /api/teams/heartbeat", () => {
     expect(other.status).toBe(200);
   });
 
+  it("ARC-R3: 65 co-located members behind ONE egress IP never starve (member-keyed limit)", async () => {
+    // Under the old IP-keyed bucket (60/min/IP) request #61 got a 429 mid-operation.
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { memberId: "dynamic", teamId: "team-a1", name: "عضو ميداني", active: true };
+      if (collection === "teams") return { teamId: "team-a1", name: "U", nameAr: "و", type: "volunteers", active: true };
+      return null;
+    });
+    const app = createApp();
+    const sharedIp = { "X-Forwarded-For": "10.99.99.99" }; // ONE CGNAT egress for everyone
+    for (let i = 0; i < 65; i += 1) {
+      const res = await supertest(app).post("/api/teams/heartbeat").set(memberAuth(`tm-cgnat-${i}`)).set(sharedIp).send({ lat: 36.7, lng: 5.0 });
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("ARC-R1: snapshots are MERGE writes carrying only display fields (no authority wipe)", async () => {
+    heartbeatableMocks("tm-snap");
+    const app = createApp();
+    const res = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-snap")).set(nextIp()).send({ lat: 36.71, lng: 5.01 });
+    expect(res.status).toBe(200);
+    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
+    expect(fsMock.docMergeSet).toHaveBeenCalledWith("teamMembers", "tm-snap", expect.objectContaining({ lastKnownLat: 36.71, teamId: "team-a1" }));
+    const payload = fsMock.docMergeSet.mock.calls[0][2] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(["lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
+    // the old docSet path must be gone from the snapshot entirely
+    expect(fsMock.docSet).not.toHaveBeenCalledWith("teamMembers", expect.anything(), expect.anything());
+
+    // throttle: the second heartbeat inside the 5-min window writes nothing more
+    await new Promise((r) => setTimeout(r, 3100)); // clear the 3s per-member floor
+    const again = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-snap")).set(nextIp()).send({ lat: 36.72, lng: 5.02 });
+    expect(again.status).toBe(200);
+    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
+  });
+
   it("maintains a bounded trail and rejects absurd payloads", async () => {
     heartbeatableMocks("tm-payload");
     const app = createApp();
@@ -190,6 +226,7 @@ describe("POST /api/teams/leave", () => {
 
 describe("POST /api/teams/mission/phase", () => {
   it("updates the phase via the atomic helper and 409s without an active mission", async () => {
+    heartbeatableMocks("tm-phase"); // ARC-R2 gate: live member + active team
     const app = createApp();
     const ok = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-phase")).set(nextIp()).send({ phase: "on_scene" });
     expect(ok.status).toBe(200);
@@ -208,6 +245,37 @@ describe("POST /api/teams/mission/phase", () => {
     const app = createApp();
     expect((await supertest(app).post("/api/teams/mission/phase").set(nextIp()).send({ phase: "on_scene" })).status).toBe(401);
     expect((await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-phase2")).set(nextIp()).send({ phase: "cleared" })).status).toBe(400);
+  });
+
+  it("ARC-R2: 403 for a REMOVED member or a deactivated team even with a valid token", async () => {
+    const app = createApp();
+    // removed member (active:false) — the 12h token alone must not move missions
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-removed"), active: false };
+      if (collection === "teams") return { teamId: "team-a1", active: true };
+      return null;
+    });
+    const removed = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-removed")).set(nextIp()).send({ phase: "on_scene" });
+    expect(removed.status).toBe(403);
+    expect(removed.body.code).toBe("MEMBER_INACTIVE");
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
+
+    // membership missing entirely (token forged for an unknown member id)
+    fsMock.docGet.mockResolvedValue(null);
+    const missing = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-ghost")).set(nextIp()).send({ phase: "on_scene" });
+    expect(missing.status).toBe(403);
+    expect(missing.body.code).toBe("MEMBER_INVALID");
+
+    // deactivated team
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return memberFixture("tm-deadteam-phase");
+      if (collection === "teams") return { teamId: "team-a1", active: false };
+      return null;
+    });
+    const deadTeam = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-deadteam-phase")).set(nextIp()).send({ phase: "on_scene" });
+    expect(deadTeam.status).toBe(403);
+    expect(deadTeam.body.code).toBe("TEAM_INACTIVE");
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
   });
 });
 
