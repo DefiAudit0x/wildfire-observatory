@@ -2,6 +2,12 @@ package com.observatory.wildfire
 
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.Manifest
+import android.os.Build
+import androidx.core.content.ContextCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -29,7 +35,10 @@ class WebAppInterface(
     private val meshProvider: () -> MeshService?,
     private val urlProvider: () -> String = { "" },
     private val deviceIdProvider: () -> String = { "" },
-    private val capabilityProvider: () -> Boolean = { true }
+    private val capabilityProvider: () -> Boolean = { true },
+    // Phase 2: application context for the team-tracking FGS surface. The
+    // bridge never holds an Activity reference, so no leak is possible.
+    private val appContext: Context? = null
 ) {
 
     companion object {
@@ -284,5 +293,75 @@ class WebAppInterface(
         if (!isTrustedOrigin()) return false
         if (difficulty != MeshService.PO_W_DIFFICULTY) return false
         return MeshWire.ProofOfWork.verify(prefix, nonce, difficulty)
+    }
+
+    // ========================
+    // TEAM TRACKING (Phase 2) — native foreground-service GPS surface
+    // ========================
+
+    /**
+     * Feature probe for the member panel. True when this build carries the
+     * TeamLocationService surface; actual readiness (fine-location grant) is
+     * answered by the prerequisite check so the panel can guide the user.
+     */
+    @JavascriptInterface
+    fun isTeamTrackingSupported(): Boolean = isTrustedOrigin()
+
+    /**
+     * Pre-flight for startTeamTracking: "ok" when the FGS can legally start
+     * right now, otherwise a machine-readable reason the panel renders as
+     * guidance (the fix is a system-settings action, not a retry).
+     */
+    @JavascriptInterface
+    fun teamTrackingPrerequisite(): String {
+        if (!isTrustedOrigin()) return "unsupported"
+        val context = appContext ?: return "unsupported"
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        return if (fineGranted) "ok" else "missing-fine-location"
+    }
+
+    /**
+     * Start the team-location FGS with the panel's session config. The JSON
+     * is validated NATIVELY (allow-listed base URL, sane token, id shapes,
+     * interval clamp) inside TeamLocationService.parseConfig — a false return
+     * here means "refused", and the panel shows the prerequisite hint.
+     *
+     * The token travels this bridge exactly once; the service keeps it in
+     * memory only and the beats go directly to the server from native code,
+     * so no heartbeat (and no token) ever round-trips through JS again.
+     */
+    @JavascriptInterface
+    fun startTeamTracking(configJson: String): Boolean {
+        if (!isTrustedOrigin()) return false
+        val context = appContext ?: return false
+        if (configJson.length > 4096) return false
+        val intent = Intent(context, TeamLocationService::class.java)
+            .setAction(TeamLocationService.ACTION_START)
+            .putExtra(TeamLocationService.EXTRA_CONFIG, configJson)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "startTeamTracking refused", e)
+            false
+        }
+    }
+
+    /** Stop the team-location FGS (panel button or member leaving the team). */
+    @JavascriptInterface
+    fun stopTeamTracking() {
+        if (!isTrustedOrigin()) return
+        val context = appContext ?: return
+        try {
+            context.stopService(Intent(context, TeamLocationService::class.java))
+        } catch (e: Exception) {
+            Log.w(TAG, "stopTeamTracking error", e)
+        }
     }
 }

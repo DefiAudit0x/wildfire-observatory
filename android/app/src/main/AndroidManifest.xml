@@ -17,6 +17,10 @@
     <!-- Foreground service + notifications -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Phase 2: the team-location FGS (TeamLocationService) needs the
+         location-typed FGS permission on API 34+ in addition to the runtime
+         ACCESS_FINE_LOCATION granted for mesh/WebView use. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -69,6 +73,14 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="offline-mesh-relay-for-wildfire-dispatch" />
         </service>
+
+        <!-- Phase 2: team-member GPS tracking. The location FGS type keeps
+             the beat loop legal while the screen is off (while-in-use access,
+             service started from the foreground panel). -->
+        <service
+            android:name=".TeamLocationService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
 
     </application>
 </manifest>

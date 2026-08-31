@@ -83,6 +83,11 @@ class MainActivity : AppCompatActivity() {
     // every unbind.
     private var meshMessageListener: ((String) -> Unit)? = null
 
+    // Phase 2: forwards TeamLocationService state changes into the WebView as
+    // `teamTrackingState` CustomEvents. Kept as a field so onDestroy removes
+    // THE EXACT instance (same leak lesson as meshMessageListener below).
+    private var teamStateListener: ((String) -> Unit)? = null
+
     // Audit round 11: the connectivity callback is kept as a field and
     // unregistered in onDestroy — the old code registered a fresh anonymous
     // callback per activity instance and never unregistered it, stacking a
@@ -212,6 +217,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // Phase 2: remove the EXACT team-state listener instance registered in
+        // setupWebView — a fresh lambda would never match (leak lesson above).
+        teamStateListener?.let { TeamLocationService.removeStateListener(it) }
+        teamStateListener = null
         if (meshBound || meshBindingInProgress) {
             meshMessageListener?.let { meshService?.removeMessageListener(it) }
         synchronized(meshUiQueueLock) {
@@ -361,10 +370,18 @@ class MainActivity : AppCompatActivity() {
                 meshProvider = { meshService },
                 urlProvider = { webView.url ?: "" },
                 deviceIdProvider = { stableDeviceId() },
-                    capabilityProvider = { hasMeshRuntimeCapability() }
+                    capabilityProvider = { hasMeshRuntimeCapability() },
+                appContext = applicationContext
             ),
             "AndroidBridge"
         )
+
+        // Mirror the team-tracking FGS state into the WebView. Registered for
+        // the activity's lifetime; the service outlives the WebView, so the
+        // panel re-syncs from events after every renderer recovery too.
+        val teamListener: (String) -> Unit = { state -> dispatchTeamTrackingState(state) }
+        teamStateListener = teamListener
+        TeamLocationService.addStateListener(teamListener)
 
         // Install the progress observer before starting navigation so a fast
         // load cannot finish before the bridge injection callback exists.
@@ -613,6 +630,24 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             if (::webView.isInitialized) {
                 webView.evaluateJavascript("window.dispatchEvent(new Event('$event'));", null)
+            }
+        }
+    }
+
+    /**
+     * Phase 2: forward a TeamLocationService state change (started / stopped /
+     * revoked / error) into the WebView. The panel never polls or guesses the
+     * native service's state — it only listens for these events.
+     */
+    private fun dispatchTeamTrackingState(state: String) {
+        if (!::webView.isInitialized) return
+        val escaped = JSONObject.quote(state)
+        runOnUiThread {
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('teamTrackingState', { detail: { state: $escaped } }));",
+                    null
+                )
             }
         }
     }
