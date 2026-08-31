@@ -39,13 +39,14 @@ function generateJoinCode(): string {
   return code;
 }
 
-/** Normalizes user-typed codes: uppercase, drop separators and mistyped glyphs. */
+/**
+ * Normalizes user-typed codes: uppercase, drop separators/spaces. The
+ * generation alphabet deliberately excludes 0/1/I/L/O, so typed-in lookalike
+ * glyphs simply never match (404) — mapping them to "equivalents" would only
+ * corrupt valid-length codes into equally-invalid ones.
+ */
 function normalizeCode(raw: string): string {
-  return raw
-    .toUpperCase()
-    .replace(/O/g, "0")
-    .replace(/[IL]/g, "1")
-    .replace(/[^0-9A-Z]/g, "");
+  return raw.toUpperCase().replace(/[^0-9A-Z]/g, "");
 }
 
 const createTeamSchema = z.object({
@@ -266,6 +267,12 @@ router.post("/:id/join-code", requireAdmin, async (req: Request, res: Response) 
  * transaction, so two devices racing the last remaining use cannot both pass.
  * The member id is deterministic per (principal, team) — rejoining the same
  * team reactivates the same member instead of duplicating it.
+ *
+ * CSRF note: a RE-join from a device that already holds a public_principal
+ * cookie goes through the global CSRF origin check. Browser devices pass it
+ * (same-origin Origin header); native clients pass it by attaching their
+ * (even expired) team token as `Authorization: Bearer …`, which the global
+ * guard treats as an explicitly credentialed request.
  */
 router.post("/join", joinLimiter, async (req: Request, res: Response) => {
   const parsed = joinSchema.safeParse(req.body);
@@ -450,6 +457,29 @@ router.post("/mission/phase", async (req: Request, res: Response) => {
   invalidateCollectionCache("teamMissions");
   invalidateDocCache("teamMissions", token.teamId);
   res.json({ ok: true, mission: result.mission });
+});
+
+/**
+ * DELETE /api/teams/:id/members/:memberId — dispatcher removes (deactivates)
+ * a member, e.g. a device lost or a reassignment. The live position drops
+ * immediately; the member doc stays as history with active:false.
+ */
+router.delete("/:id/members/:memberId", requireAdmin, async (req: Request, res: Response) => {
+  const teamId = String(req.params.id || "");
+  const memberId = String(req.params.memberId || "");
+  if (!/^[A-Za-z0-9_-]{3,64}$/.test(teamId) || !/^tm-[0-9a-f]{16}$/.test(memberId)) {
+    res.status(400).json({ error: "Invalid identifiers" });
+    return;
+  }
+  const member = await docGet("teamMembers", memberId);
+  if (!member || member.teamId !== teamId) {
+    res.status(404).json({ error: "Member not found in this team" });
+    return;
+  }
+  await docUpdate("teamMembers", memberId, { active: false, removedAt: Date.now() });
+  removeMember(memberId);
+  logger.info({ memberId, teamId }, "Team member removed by dispatcher");
+  res.json({ ok: true });
 });
 
 export default router;

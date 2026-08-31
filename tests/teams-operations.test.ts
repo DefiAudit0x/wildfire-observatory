@@ -247,6 +247,36 @@ describe("POST /api/teams — team registration", () => {
   });
 });
 
+describe("DELETE /api/teams/:id/members/:memberId — dispatcher removes a member", () => {
+  it("deactivates the member, drops the live position, and 404s foreign members", async () => {
+    const memberId = "tm-abcdef0123456789"; // must match the server's tm-<16hex> shape
+    heartbeatableMocks(memberId);
+    const app = createApp();
+    const hb = await supertest(app).post("/api/teams/heartbeat").set(memberAuth(memberId)).set(nextIp()).send({ lat: 36.7, lng: 5.0 });
+    expect(hb.status).toBe(200);
+    expect(listPositions()).toHaveLength(1);
+
+    const ok = await supertest(app).delete(`/api/teams/team-a1/members/${memberId}`).set(adminAuth()).set(nextIp());
+    expect(ok.status).toBe(200);
+    expect(listPositions()).toHaveLength(0);
+    expect(fsMock.docUpdate).toHaveBeenCalledWith("teamMembers", memberId, expect.objectContaining({ active: false }));
+
+    // foreign member (different team) → 404, nothing written
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture(memberId), teamId: "team-OTHER" };
+      return null;
+    });
+    const foreign = await supertest(app).delete(`/api/teams/team-a1/members/${memberId}`).set(adminAuth()).set(nextIp());
+    expect(foreign.status).toBe(404);
+  });
+
+  it("400 for malformed identifiers and 401 without admin", async () => {
+    const app = createApp();
+    expect((await supertest(app).delete("/api/teams/team-a1/members/not-a-member-id").set(adminAuth()).set(nextIp())).status).toBe(400);
+    expect((await supertest(app).delete("/api/teams/team-a1/members/tm-0123456789abcdef").set(nextIp())).status).toBe(401);
+  });
+});
+
 describe("GET /api/teams — command-center roster", () => {
   it("merges teams, live positions, trails and active missions; hides deactivated teams", async () => {
     fsMock.collectionGet.mockImplementation(async (collection: string) => {

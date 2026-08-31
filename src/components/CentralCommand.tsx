@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Report, SatelliteHotspot, Language, TrappedSOS } from "../types";
 import { Crown, RefreshCw } from "lucide-react";
 import CommandLock from "./command/CommandLock";
@@ -168,24 +168,30 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   }, []);
 
   const teams = getTeamsStatusAndPositions(fullSos);
-  const mapTeamMembers: MapTeamMember[] = registeredTeams.flatMap((team) =>
-    team.members
-      .filter((m) => m.lat !== null && m.lng !== null)
-      .map((m) => ({
-        memberId: m.memberId,
-        name: m.name,
-        online: m.online,
-        lat: m.lat as number,
-        lng: m.lng as number,
-        accuracy: m.accuracy,
-        speed: m.speed,
-        batteryPct: m.batteryPct,
-        lastSeen: m.lastSeenAt,
-        trail: m.trail,
-        teamId: team.teamId,
-        teamName: isArabic ? team.nameAr : team.name,
-        teamType: team.type,
-      }))
+  // Memoized: the map's marker effect rebuilds on identity change — without
+  // this, every unrelated CentralCommand render would churn the layer too.
+  const mapTeamMembers: MapTeamMember[] = useMemo(
+    () =>
+      registeredTeams.flatMap((team) =>
+        team.members
+          .filter((m) => m.lat !== null && m.lng !== null)
+          .map((m) => ({
+            memberId: m.memberId,
+            name: m.name,
+            online: m.online,
+            lat: m.lat as number,
+            lng: m.lng as number,
+            accuracy: m.accuracy,
+            speed: m.speed,
+            batteryPct: m.batteryPct,
+            lastSeen: m.lastSeenAt,
+            trail: m.trail,
+            teamId: team.teamId,
+            teamName: isArabic ? team.nameAr : team.name,
+            teamType: team.type,
+          }))
+      ),
+    [registeredTeams, isArabic]
   );
 
   const handleUnlocked = () => {

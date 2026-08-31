@@ -98,6 +98,18 @@ The application uses HTTPS deployment, Helmet, CORS controls, rate limiting, Zod
 
 Known protocol and scaling limitations are tracked explicitly in the audit process. Changes affecting persistence, identity, cryptographic binding, distributed uniqueness, or mesh transport semantics require explicit architectural decisions and regression tests.
 
+### 5.1 Identity model (M15) / نموذج الهوية
+
+There is exactly one client device label and several server-issued authorities, and the two layers must never be confused:
+
+- **Device label** — `src/utils/device.ts` is the single generator. `web_<uuid>` in `localStorage["device_id"]`, mirrored per tab in sessionStorage. One-time migration adopts the legacy `mesh_device_id` (display-only for the mesh hub) and the native Android bridge UUID (first boot). Rotation happens only when storage is cleared. The label is a lookup/display key; it proves nothing.
+- **Server authorities** — every security decision derives from a server-issued, scope-separated credential: staff/admin sessions (`role`-bearing JWTs, revalidated against Firestore), the public principal (anonymous actions: consensus voting, mesh relay, team join binding), team-member tokens (Team GPS channel only), and mesh tokens (`/ws` relay only). Scope tokens are rejected by `requireAuth` — a capability token is never a session credential.
+- **Mesh crypto identity** — unchanged: peer public keys with TOFU records inside the Android keychain; orthogonal to the device label.
+
+### 5.2 Team Mode live positions (Phase 1) / مواقع الفرق الحية
+
+Field-team GPS is streamed through `POST /api/teams/heartbeat` (team-member Bearer token) into a per-process registry (`server/teamRegistry.ts`): 90s online window, 30-minute eviction, 50-point breadcrumb trail, NA-bounds gate, 3s per-member minimum interval. Durable state is a throttled snapshot (≤1 write per member per 5 min) into `teamMembers/{id}` so restarts recover last-known positions without paying Firestore per ping (~5.7k writes/member/day would be wasted otherwise). Positions are exposed ONLY to admin sessions (`GET /api/teams`); nothing team-related is broadcast on the public `/api/live` hub. `teamMissions/{teamId}` doubles as the one-team-one-mission lock (SOS dispatch transaction, 409 `TEAM_ALREADY_DISPATCHED`) and the mission the field app reads back on each heartbeat. Multi-instance deployments must move the registry to a shared store before scaling out.
+
 ---
 
 ## 6. Evolution Plan / خطة التطور

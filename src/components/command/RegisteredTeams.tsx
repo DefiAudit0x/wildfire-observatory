@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Shield, HeartHandshake, KeyRound, MapPin, Plus, Radio, Search, Truck, Users, Copy, RefreshCw, X } from "lucide-react";
+import { Shield, HeartHandshake, KeyRound, MapPin, Plus, Radio, Search, Truck, Users, Copy, RefreshCw, UserMinus, X } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { apiFetch, isSessionExpiry } from "../../utils/adminApi";
 import { RegisteredTeam, JoinCodeIssued } from "./registeredTeams";
@@ -154,6 +154,23 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
       : { ok: false, text: isArabic ? "فشل التوجيه — قد يكون الفريق مشغولًا" : "Échec — équipe peut-être occupée" });
   };
 
+  const handleRemoveMember = async (teamId: string, memberId: string, name: string) => {
+    if (!window.confirm(isArabic ? `إزالة العضو «${name}» من الفريق؟` : `Retirer le membre « ${name} » ?`)) return;
+    try {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`, "DELETE");
+      if (res.ok) {
+        notify(isArabic ? `تمت إزالة ${name}` : `${name} retiré`, "success");
+        await onTeamsChanged();
+      } else if (isSessionExpiry(res)) {
+        onSessionExpired();
+      } else {
+        notify(isArabic ? "تعذرت إزالة العضو" : "Échec du retrait du membre", "error");
+      }
+    } catch {
+      notify(isArabic ? "تعذرت إزالة العضو" : "Échec du retrait du membre", "error");
+    }
+  };
+
   const activeSos = sosCalls.filter((s) => s.status === "active");
 
   return (
@@ -302,6 +319,14 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                         </button>
                       )}
                       {m.online && m.batteryPct !== null && <span className="text-gray-500">{Math.round(m.batteryPct)}%</span>}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMember(team.teamId, m.memberId, m.name)}
+                        className="text-gray-500 hover:text-red-400 cursor-pointer"
+                        title={isArabic ? "إزالة العضو" : "Retirer le membre"}
+                      >
+                        <UserMinus className="h-2.5 w-2.5" />
+                      </button>
                     </span>
                   ))}
                 </div>

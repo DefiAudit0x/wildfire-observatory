@@ -128,8 +128,8 @@ describe("POST /api/teams/join — happy path", () => {
     await supertest(createApp())
       .post("/api/teams/join")
       .set(nextIp())
-      .send({ code: "ab odil45", name: "فريق" }); // O→0, I/L→1, spaces dropped → AB0D1145
-    expect(atomicMock.joinTeamAtomically.mock.calls[1][0]).toBe("AB0D1145");
+      .send({ code: "ab odil45", name: "فريق" }); // uppercase + separators stripped; lookalike glyphs pass through untouched (they can never match a generated code)
+    expect(atomicMock.joinTeamAtomically.mock.calls[1][0]).toBe("ABODIL45");
   });
 
   it("strips control characters from the display name", async () => {
