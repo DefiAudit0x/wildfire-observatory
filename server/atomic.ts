@@ -309,3 +309,151 @@ export async function approveVolunteerAtomically(registrationId: string, registr
     return "unavailable";
   }
 }
+
+export type TeamJoinResult =
+  | { status: "joined"; member: Record<string, any> }
+  | { status: "code-invalid" }
+  | { status: "code-expired" }
+  | { status: "code-exhausted" }
+  | { status: "team-inactive" }
+  | { status: "unavailable" };
+
+/**
+ * Team Mode (Phase 1): a join-code redemption that must be atomic because the
+ * code carries a use budget. The pre-check in the route only filters obvious
+ * misses; two devices submitting the last remaining use of a code MUST NOT
+ * both pass. Inside one transaction the code doc is re-read fresh and
+ * re-validated (revocation, expiry, use budget), the budget is incremented,
+ * and the member record is upserted — so re-joining the same team from the
+ * same principal reactivates the same member instead of duplicating it.
+ */
+export async function joinTeamAtomically(
+  code: string,
+  memberId: string,
+  memberData: Record<string, any>
+): Promise<TeamJoinResult> {
+  const db = getDb();
+  if (!db) return { status: "unavailable" };
+  try {
+    if (isAdminDb(db)) {
+      const { FieldValue } = await import("firebase-admin/firestore");
+      return await db.runTransaction(async (tx: any): Promise<TeamJoinResult> => {
+        const codeRef = db.collection("teamJoinCodes").doc(code);
+        const codeSnap = await tx.get(codeRef);
+        if (!codeSnap.exists) return { status: "code-invalid" };
+        const codeDoc = codeSnap.data() || {};
+        const now = Date.now();
+        if (codeDoc.revoked === true) return { status: "code-invalid" };
+        const expiresAt = typeof codeDoc.expiresAt === "number" ? codeDoc.expiresAt : Date.parse(codeDoc.expiresAt);
+        if (Number.isFinite(expiresAt) && now >= expiresAt) return { status: "code-expired" };
+        const uses = Number(codeDoc.uses) || 0;
+        const maxUses = Number(codeDoc.maxUses) || 0;
+        if (maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
+
+        const teamRef = db.collection("teams").doc(codeDoc.teamId);
+        const teamSnap = await tx.get(teamRef);
+        if (!teamSnap.exists) return { status: "code-invalid" };
+        if (teamSnap.data()?.active === false) return { status: "team-inactive" };
+
+        const memberRef = db.collection("teamMembers").doc(memberId);
+        const memberSnap = await tx.get(memberRef);
+        const member = {
+          ...memberData,
+          // First join stamps joinedAt; a rejoin keeps the original (undefined
+          // is stripped before the write, and merge:true preserves the field).
+          joinedAt: memberSnap.exists ? undefined : now,
+          rejoinCount: (Number(memberSnap.data()?.rejoinCount) || 0) + 1,
+          lastSeenAt: now,
+          active: true,
+        };
+        tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
+        tx.update(codeRef, { uses: FieldValue.increment(1), lastUsedAt: now });
+        return { status: "joined", member };
+      });
+    }
+
+    const { doc, runTransaction, increment } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any): Promise<TeamJoinResult> => {
+      const codeRef = doc(db, "teamJoinCodes", code);
+      const codeSnap = await tx.get(codeRef);
+      if (!codeSnap.exists()) return { status: "code-invalid" };
+      const codeDoc = codeSnap.data() || {};
+      const now = Date.now();
+      if (codeDoc.revoked === true) return { status: "code-invalid" };
+      const expiresAt = typeof codeDoc.expiresAt === "number" ? codeDoc.expiresAt : Date.parse(codeDoc.expiresAt);
+      if (Number.isFinite(expiresAt) && now >= expiresAt) return { status: "code-expired" };
+      const uses = Number(codeDoc.uses) || 0;
+      const maxUses = Number(codeDoc.maxUses) || 0;
+      if (maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
+
+      const teamRef = doc(db, "teams", codeDoc.teamId);
+      const teamSnap = await tx.get(teamRef);
+      if (!teamSnap.exists()) return { status: "code-invalid" };
+      if (teamSnap.data()?.active === false) return { status: "team-inactive" };
+
+      const memberRef = doc(db, "teamMembers", memberId);
+      const memberSnap = await tx.get(memberRef);
+      const member = {
+        ...memberData,
+        joinedAt: memberSnap.exists() ? undefined : now,
+        rejoinCount: (Number(memberSnap.data()?.rejoinCount) || 0) + 1,
+        lastSeenAt: now,
+        active: true,
+      };
+      tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
+      tx.update(codeRef, { uses: increment(1), lastUsedAt: now });
+      return { status: "joined", member };
+    });
+  } catch (err) {
+    logger.error({ err, code: "[join-code]", memberId }, "Atomic team join failed");
+    return { status: "unavailable" };
+  }
+}
+
+export type MissionPhaseResult =
+  | { status: "updated"; mission: Record<string, any> }
+  | { status: "no-active-mission" }
+  | { status: "unavailable" };
+
+/**
+ * Team Mode (Phase 1): a field team marks its own phase progression on the
+ * active mission (en_route → on_scene). Cleared stays admin-only (SOS resolve
+ * frees teams via clearTeamMissionsForSos). Transactional read-then-write so
+ * a team racing an admin resolve cannot resurrect a cleared mission.
+ */
+export async function setMissionPhaseAtomically(
+  teamId: string,
+  phase: "on_scene",
+  now = Date.now()
+): Promise<MissionPhaseResult> {
+  const db = getDb();
+  if (!db) return { status: "unavailable" };
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any): Promise<MissionPhaseResult> => {
+        const missionRef = db.collection("teamMissions").doc(teamId);
+        const missionSnap = await tx.get(missionRef);
+        if (!missionSnap.exists || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
+          return { status: "no-active-mission" };
+        }
+        const mission = { ...missionSnap.data(), phase, since: missionSnap.data()?.since, phaseUpdatedAt: now };
+        tx.update(missionRef, { phase, phaseUpdatedAt: now });
+        return { status: "updated", mission };
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any): Promise<MissionPhaseResult> => {
+      const missionRef = doc(db, "teamMissions", teamId);
+      const missionSnap = await tx.get(missionRef);
+      if (!missionSnap.exists() || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
+        return { status: "no-active-mission" };
+      }
+      const mission = { ...missionSnap.data(), phase, phaseUpdatedAt: now };
+      tx.update(missionRef, { phase, phaseUpdatedAt: now });
+      return { status: "updated", mission };
+    });
+  } catch (err) {
+    logger.error({ err, teamId, phase }, "Atomic mission phase update failed");
+    return { status: "unavailable" };
+  }
+}

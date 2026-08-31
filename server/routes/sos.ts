@@ -31,9 +31,12 @@ const sosSchema = z.object({
 });
 
 const dispatchSchema = z.object({
-  type: z.enum(["protection_civile", "volunteers"]),
-  teamNameAr: z.string().min(1),
-  teamNameFr: z.string().min(1),
+  // Registered-team dispatch (Team Mode): the team entity supplies names/type.
+  teamId: z.string().regex(/^[A-Za-z0-9_-]{3,64}$/).optional(),
+  // Legacy dispatch by display names (kept for backward compatibility).
+  type: z.enum(["protection_civile", "volunteers"]).optional(),
+  teamNameAr: z.string().min(1).optional(),
+  teamNameFr: z.string().min(1).optional(),
   notes: z.string().optional(),
 });
 
@@ -374,21 +377,49 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
     res.status(400).json({ error: "Missing required fields" });
     return;
   }
-  const dispatchItem = {
-    type: parsed.data.type,
-    teamNameAr: parsed.data.teamNameAr,
-    teamNameFr: parsed.data.teamNameFr,
-    dispatchedAt: new Date().toISOString(),
-    status: "en_route",
-    notes: parsed.data.notes || "",
-  };
-  // ARC-H8 fix: the mission identity is the team, not the SOS — one team must
-  // not be on two active missions. The server-side guard replaces the old
-  // client-only "available" filter that two operators could race past.
-  const missionTeamId = `${parsed.data.type}:${parsed.data.teamNameAr}`
-    .toLowerCase()
-    .replace(/[^a-z0-9_\u0600-\u06FF:]+/g, "-")
-    .slice(0, 120);
+
+  // Team Mode path: dispatching a REGISTERED team. The team entity is the
+  // source of truth for names/type, and the mission lock doc id is the teamId
+  // itself — the same doc the team's heartbeat responses read back.
+  let dispatchItem: Record<string, any>;
+  let missionTeamId: string;
+  if (parsed.data.teamId) {
+    const team = await docGet("teams", parsed.data.teamId);
+    if (!team || team.active === false) {
+      res.status(404).json({ error: "Team not found" });
+      return;
+    }
+    dispatchItem = {
+      teamId: team.teamId || parsed.data.teamId,
+      type: team.type,
+      teamNameAr: team.nameAr,
+      teamNameFr: team.name,
+      dispatchedAt: new Date().toISOString(),
+      status: "en_route",
+      notes: parsed.data.notes || "",
+    };
+    missionTeamId = dispatchItem.teamId;
+  } else {
+    if (!parsed.data.type || !parsed.data.teamNameAr || !parsed.data.teamNameFr) {
+      res.status(400).json({ error: "Missing required fields" });
+      return;
+    }
+    dispatchItem = {
+      type: parsed.data.type,
+      teamNameAr: parsed.data.teamNameAr,
+      teamNameFr: parsed.data.teamNameFr,
+      dispatchedAt: new Date().toISOString(),
+      status: "en_route",
+      notes: parsed.data.notes || "",
+    };
+    // ARC-H8 fix: the mission identity is the team, not the SOS — one team must
+    // not be on two active missions. The server-side guard replaces the old
+    // client-only "available" filter that two operators could race past.
+    missionTeamId = `${parsed.data.type}:${parsed.data.teamNameAr}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_\u0600-\u06FF:]+/g, "-")
+      .slice(0, 120);
+  }
 
   let outcome: Awaited<ReturnType<typeof appendSosDispatch>>;
   try {
