@@ -13,7 +13,11 @@ primary_region = 'ams'
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  # Owner decision 1 (Round B): keep ONE machine always warm. At 0, every
+  # idle-stop and every deploy wiped the in-memory GPS registry — last-known
+  # field-team positions vanished mid-shift, and only ≤5-min-old snapshots
+  # survived. Cost of the floor is one shared-cpu-1x/512mb VM.
+  min_machines_running = 1
   processes = ['app']
 
 [[vm]]

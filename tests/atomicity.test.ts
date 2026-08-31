@@ -14,7 +14,9 @@ vi.mock("../server/firebase.js", () => ({
 vi.mock("firebase-admin/firestore", () => ({
   FieldValue: {
     arrayUnion: (...values: any[]) => ({ __op: "arrayUnion", values }),
+    arrayRemove: (...values: any[]) => ({ __op: "arrayRemove", values }),
     increment: (amount: number) => ({ __op: "increment", amount }),
+    delete: () => ({ __op: "fieldDelete" }),
   },
 }));
 
@@ -23,12 +25,21 @@ function snapshot(path: string) {
   return { exists: Boolean(data), id: path.split("/").at(-1), data: () => data };
 }
 
+const DELETE_FIELD = Symbol("delete-field");
+
 function resolveSentinel(old: any, value: any): any {
   if (value && typeof value === "object" && (value as any).__op === "arrayUnion") {
     return [...(Array.isArray(old) ? old : []), ...((value as any).values ?? [])];
   }
+  if (value && typeof value === "object" && (value as any).__op === "arrayRemove") {
+    const remove = new Set((value as any).values ?? []);
+    return (Array.isArray(old) ? old : []).filter((v: any) => !remove.has(v));
+  }
   if (value && typeof value === "object" && (value as any).__op === "increment") {
     return (Number(old) || 0) + (value as any).amount;
+  }
+  if (value && typeof value === "object" && (value as any).__op === "fieldDelete") {
+    return DELETE_FIELD;
   }
   return value;
 }
@@ -36,7 +47,11 @@ function resolveSentinel(old: any, value: any): any {
 /** Firestore update/merge-set semantics: listed fields change, siblings survive. */
 function applyMerge(old: Doc | undefined, data: Doc): Doc {
   const out: Doc = { ...(old || {}) };
-  for (const [k, v] of Object.entries(data)) out[k] = resolveSentinel(out[k], v);
+  for (const [k, v] of Object.entries(data)) {
+    const resolved = resolveSentinel(out[k], v);
+    if (resolved === DELETE_FIELD) delete out[k];
+    else out[k] = resolved;
+  }
   return out;
 }
 
@@ -55,6 +70,11 @@ function createDb() {
   return {
     collection(name: string) {
       return {
+        // Equality-only query stand-in: enough for resolveSosAtomically's
+        // in-transaction `where("sosId", "==", sosId)` mission sweep.
+        where(field: string, op: string, value: any) {
+          return { __query: { name, field, op, value } };
+        },
         doc(id: string) {
           const path = `${name}/${id}`;
           return {
@@ -78,7 +98,17 @@ function createDb() {
       await previous;
       const writes: Write[] = [];
       const tx = {
-        get: async (ref: { path: string }) => snapshot(ref.path),
+        get: async (ref: any) => {
+          if (ref && ref.__query) {
+            const q = ref.__query as { name: string; field: string; value: any };
+            const prefix = `${q.name}/`;
+            const docs = [...state.docs.entries()]
+              .filter(([path, data]) => path.startsWith(prefix) && data && data[q.field] === q.value)
+              .map(([path, data]) => ({ id: path.slice(prefix.length), ref: { path }, data: () => data }));
+            return { empty: docs.length === 0, docs, forEach: (cb: (d: any) => void) => docs.forEach(cb) };
+          }
+          return snapshot(ref.path);
+        },
         create: (ref: { path: string }, data: Doc) => writes.push({ kind: "create", path: ref.path, data }),
         set: (ref: { path: string }, data: Doc, opts?: { merge?: boolean }) =>
           writes.push({ kind: "set", path: ref.path, data, merge: Boolean(opts?.merge) }),
@@ -102,7 +132,8 @@ const {
   createVolunteerRegistrationAtomically,
   joinTeamAtomically,
 } = await import("../server/atomic.js");
-const { docMergeSet, docSet, appendSosDispatch } = await import("../server/fs.js");
+const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields } = await import("../server/fs.js");
+const { clearTeamMissionAtomically, setPrincipalBlocked } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
 const registration = (id: string) => ({ id, status: "pending", wilaya: "Bordj Bou Arreridj", createdAt: "2026-08-24T00:00:00.000Z" });
@@ -359,6 +390,7 @@ describe("Team join transaction — real-logic coverage (ARC-T1 first slice)", (
       principal: "p",
       joinedAt: 555,
       active: false,
+      tokenGen: 4, // removed once under B1: the generation bump is on the doc
     });
     const r = await joinTeamAtomically("REJOINC1", "tm-rejoin00000001", { memberId: "tm-rejoin00000001", teamId: "team-rj", name: "ن", principal: "p" });
     expect(r.status).toBe("joined");
@@ -366,6 +398,32 @@ describe("Team join transaction — real-logic coverage (ARC-T1 first slice)", (
     expect(member.joinedAt).toBe(555);
     expect(member.active).toBe(true);
     expect(member.rejoinCount).toBe(1);
+    // B1: the rejoin PRESERVES the bumped generation (else reactivation would
+    // undo the removal's revocation) and returns it for the fresh token mint.
+    expect(member.tokenGen).toBe(4);
+    expect((r as any).tokenGen).toBe(4);
+  });
+
+  it("B2: rejects a principal the dispatcher explicitly blocked (inside the tx)", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamJoinCodes/BLOCKCOD1", {
+      code: "BLOCKCOD1",
+      teamId: "team-bl",
+      expiresAt: Date.now() + 3_600_000,
+      maxUses: 10,
+      uses: 0,
+      revoked: false,
+    });
+    state.docs.set("teams/team-bl", { teamId: "team-bl", active: true, blockedPrincipals: ["lost-device-principal"] });
+    const r = await joinTeamAtomically("BLOCKCOD1", "tm-bl00000000000001", { memberId: "tm-bl00000000000001", teamId: "team-bl", name: "م", principal: "lost-device-principal" });
+    expect(r.status).toBe("principal-blocked");
+    // The code budget is untouched by the rejection — blocking is not a use.
+    expect(state.docs.get("teamJoinCodes/BLOCKCOD1")!.uses).toBe(0);
+    expect(state.docs.has("teamMembers/tm-bl00000000000001")).toBe(false);
+    // An unblocked principal on the SAME code joins normally.
+    const ok = await joinTeamAtomically("BLOCKCOD1", "tm-bl00000000000002", { memberId: "tm-bl00000000000002", teamId: "team-bl", name: "م2", principal: "good-device-principal" });
+    expect(ok.status).toBe("joined");
   });
 
   it("rejects a revoked code and never touches the budget", async () => {
@@ -384,5 +442,125 @@ describe("Team join transaction — real-logic coverage (ARC-T1 first slice)", (
     expect(r.status).toBe("code-invalid");
     expect(state.docs.get("teamJoinCodes/REVOKED1")!.uses).toBe(0);
     expect(state.docs.has("teamMembers/tm-rv0000000000001")).toBe(false);
+  });
+});
+
+describe("B4 — resolveSosAtomically: resolve + mission clear in ONE transaction", () => {
+  function seedResolve() {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("trappedSos/sos-b4", { id: "sos-b4", status: "active", name: "مختبر" });
+    state.docs.set("teamMissions/team-b4a", { teamId: "team-b4a", sosId: "sos-b4", phase: "on_scene", since: 1 });
+    state.docs.set("teamMissions/team-b4b", { teamId: "team-b4b", sosId: "sos-b4", phase: "en_route", since: 2 });
+    state.docs.set("teamMissions/team-other", { teamId: "team-other", sosId: "sos-OTHER", phase: "en_route", since: 3 });
+  }
+
+  it("resolves the SOS and clears ONLY its missions, returning the count", async () => {
+    seedResolve();
+    const r = await resolveSosAtomically("sos-b4");
+    expect(r).toEqual({ status: "resolved", missionsCleared: 2 });
+    expect(state.docs.get("trappedSos/sos-b4")!.status).toBe("resolved");
+    expect(state.docs.get("teamMissions/team-b4a")!.phase).toBe("cleared");
+    expect(state.docs.get("teamMissions/team-b4b")!.phase).toBe("cleared");
+    // A mission on a DIFFERENT SOS is untouched.
+    expect(state.docs.get("teamMissions/team-other")!.phase).toBe("en_route");
+  });
+
+  it("reports missing for an unknown SOS and clears nothing", async () => {
+    seedResolve();
+    const r = await resolveSosAtomically("sos-gone");
+    expect(r).toEqual({ status: "missing" });
+    expect(state.docs.get("teamMissions/team-b4a")!.phase).toBe("on_scene");
+  });
+
+  it("closing the dispatch race: a mission committed by a concurrent dispatch tx BEFORE the resolve tx runs is still cleared", async () => {
+    // This is the orphaned-mission scenario from the critique: resolve used to
+    // be docUpdate + a separate non-transactional sweep that could miss a
+    // dispatch committing in between. Both are transactions on the same queue
+    // now — dispatch first, resolve second reads the fresh mission and clears it.
+    seedResolve();
+    const dispatch = appendSosDispatch("sos-b4", { teamId: "team-b4c", teamNameAr: "ج", teamNameFr: "C", type: "volunteers", dispatchedAt: new Date().toISOString(), status: "en_route", notes: "" }, "team-b4c");
+    const resolve = resolveSosAtomically("sos-b4");
+    const [dispatchResult] = await Promise.all([dispatch, resolve]);
+    expect(state.docs.get("trappedSos/sos-b4")!.status).toBe("resolved");
+    expect(state.docs.get("teamMissions/team-b4a")!.phase).toBe("cleared");
+    expect(state.docs.get("teamMissions/team-b4b")!.phase).toBe("cleared");
+    // The INVARIANT (whichever tx wins the queue): no ACTIVE mission ever
+    // points at a resolved SOS. Dispatch-first → its mission is cleared;
+    // resolve-first → the dispatch is rejected as "resolved" (409 upstream).
+    const late = state.docs.get("teamMissions/team-b4c");
+    if (late) expect(late.phase).toBe("cleared");
+    else expect(dispatchResult).toBe("resolved");
+  });
+});
+
+describe("B3 — clearTeamMissionAtomically: the stuck-mission lever", () => {
+  it("clears an active mission and records clearedBy:admin", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamMissions/team-stuck", { teamId: "team-stuck", sosId: "sos-x", phase: "on_scene", since: 9 });
+    const r = await clearTeamMissionAtomically("team-stuck");
+    expect(r.status).toBe("cleared");
+    const mission = state.docs.get("teamMissions/team-stuck")!;
+    expect(mission.phase).toBe("cleared");
+    expect(mission.clearedBy).toBe("admin");
+  });
+
+  it("refuses to double-clear and reports no-active-mission", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamMissions/team-stuck", { teamId: "team-stuck", sosId: "sos-x", phase: "cleared", since: 9 });
+    const r = await clearTeamMissionAtomically("team-stuck");
+    expect(r.status).toBe("no-active-mission");
+  });
+});
+
+describe("B2 — setPrincipalBlocked: the device blocklist lever", () => {
+  it("blocks, is idempotent, unblocks, and reports a missing team", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teams/team-bp", { teamId: "team-bp", active: true });
+
+    expect(await setPrincipalBlocked("team-bp", "dev-1", true)).toBe("blocked");
+    expect(state.docs.get("teams/team-bp")!.blockedPrincipals).toEqual(["dev-1"]);
+    expect(await setPrincipalBlocked("team-bp", "dev-1", true)).toBe("blocked"); // idempotent, no duplicate
+    expect(state.docs.get("teams/team-bp")!.blockedPrincipals).toEqual(["dev-1"]);
+
+    expect(await setPrincipalBlocked("team-bp", "dev-2", true)).toBe("blocked");
+    expect(state.docs.get("teams/team-bp")!.blockedPrincipals).toEqual(["dev-1", "dev-2"]);
+
+    expect(await setPrincipalBlocked("team-bp", "dev-1", false)).toBe("unblocked");
+    expect(state.docs.get("teams/team-bp")!.blockedPrincipals).toEqual(["dev-2"]);
+    expect(await setPrincipalBlocked("team-bp", "dev-1", false)).toBe("unblocked"); // idempotent
+
+    expect(await setPrincipalBlocked("team-gone", "dev-1", true)).toBe("missing");
+  });
+});
+
+describe("B2 — docDeleteFields: GPS purge on removal (owner decision 4)", () => {
+  it("deletes exactly the listed fields and keeps the audit shell", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamMembers/tm-purge000000001", {
+      memberId: "tm-purge000000001",
+      teamId: "team-p",
+      principal: "p",
+      joinedAt: 1,
+      removedAt: 2,
+      active: false,
+      lastKnownLat: 36.7,
+      lastKnownLng: 5.0,
+      lastSeenAt: 3,
+    });
+    const ok = await docDeleteFields("teamMembers", "tm-purge000000001", ["lastKnownLat", "lastKnownLng", "lastSeenAt"]);
+    expect(ok).toBe(true);
+    expect(state.docs.get("teamMembers/tm-purge000000001")).toEqual({
+      memberId: "tm-purge000000001",
+      teamId: "team-p",
+      principal: "p",
+      joinedAt: 1,
+      removedAt: 2,
+      active: false,
+    });
   });
 });

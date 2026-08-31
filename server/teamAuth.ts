@@ -11,6 +11,12 @@ import config from "./config.js";
  * operational shift; a device that keeps the join code valid re-joins to
  * refresh. The server independently fail-closes on the member record
  * (deactivated member or deactivated team → token is dead even if unexpired).
+ *
+ * B1 revocation: every token carries `gen` — the member's token generation
+ * at mint time. Dispatcher removal bumps `teamMembers/{id}.tokenGen`, so ALL
+ * previously issued tokens of that member go stale instantly (403
+ * MEMBER_REVOKED at the gates) even while unexpired, and even if the member
+ * row is later reactivated by a legitimate rejoin.
  */
 const TEAM_TOKEN_TTL_SECONDS = 12 * 60 * 60; // one shift
 
@@ -18,11 +24,24 @@ export interface TeamMemberTokenPayload {
   scope: "team-member";
   memberId: string;
   teamId: string;
+  gen?: number;
 }
 
-export function createTeamMemberToken(memberId: string, teamId: string): string {
-  const payload: TeamMemberTokenPayload = { scope: "team-member", memberId, teamId };
+export function createTeamMemberToken(memberId: string, teamId: string, tokenGen = 0): string {
+  const payload: TeamMemberTokenPayload = { scope: "team-member", memberId, teamId, gen: tokenGen };
   return jwt.sign(payload, config.jwtSecret, { expiresIn: TEAM_TOKEN_TTL_SECONDS });
+}
+
+/**
+ * Token-generation gate: TRUE means the token predates (or postdates) the
+ * member's current generation — i.e. it was issued before a removal bump and
+ * must be rejected. Tokens minted before B1 carry no `gen` and are treated
+ * as generation 0, which still mismatches any bumped member (≥1).
+ */
+export function isTokenGenerationStale(token: TeamMemberTokenPayload, member: { tokenGen?: unknown } | null): boolean {
+  const tokenGen = Number(token.gen ?? 0);
+  const memberGen = Number(member?.tokenGen) || 0;
+  return tokenGen !== memberGen;
 }
 
 export function verifyTeamMemberToken(token: string): TeamMemberTokenPayload | null {
@@ -36,6 +55,9 @@ export function verifyTeamMemberToken(token: string): TeamMemberTokenPayload | n
       typeof decoded.teamId !== "string" ||
       !decoded.teamId
     ) {
+      return null;
+    }
+    if (decoded.gen !== undefined && (typeof decoded.gen !== "number" || !Number.isFinite(decoded.gen) || decoded.gen < 0)) {
       return null;
     }
     return decoded;

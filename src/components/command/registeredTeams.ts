@@ -33,6 +33,11 @@ export interface RegisteredTeam {
   type: "protection_civile" | "volunteers";
   baseLat: number | null;
   baseLng: number | null;
+  /** B3: false only when the roster is fetched with includeInactive — a
+   * deactivated team renders greyed-out with a re-activate lever. */
+  active: boolean;
+  /** B2: principals (devices) blocked from re-joining this team. */
+  blockedPrincipals: string[];
   members: TeamMemberLive[];
   activeMission: ActiveMission | null;
 }

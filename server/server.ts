@@ -6,7 +6,8 @@ import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
 import cookieParser from "cookie-parser";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import jwt from "jsonwebtoken";
 import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
@@ -54,7 +55,36 @@ app.use(cookieParser());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: config.generalLimitMax, standardHeaders: true, legacyHeaders: false, message: { error: "Too many requests, please try again later." }, skip: (req) => !req.path.startsWith("/api") });
+// B7 (CGNAT residual): the general limiter used to key EVERYTHING by IP, so
+// ~3 command-center tabs (32 req/min each) behind one office address hit the
+// 100/min wall during an emergency. Authenticated identities now key their
+// own buckets: staff sessions by agentId, team devices by memberId. Everyone
+// else — anonymous clients, citizens on the public-principal cookie, legacy
+// role-only admin tokens — stays on the IP bucket (a per-subject citizen
+// bucket would grow the limiter's memory unboundedly; spoofing an identity
+// key requires a VALID signature, and an invalid token falls back to IP).
+function generalLimiterKey(req: express.Request): string {
+  try {
+    const auth = req.headers.authorization;
+    const bearer = typeof auth === "string" && auth.startsWith("Bearer ") ? auth.slice("Bearer ".length).trim() : null;
+    const cookieToken = (req as any).cookies?.admin_token || (req as any).cookies?.staff_token;
+    const token = bearer || (typeof cookieToken === "string" && cookieToken ? cookieToken : null);
+    if (token) {
+      const decoded = jwt.verify(token, config.jwtSecret) as { scope?: string; memberId?: string; agentId?: string };
+      if (decoded?.scope === "team-member" && typeof decoded.memberId === "string" && decoded.memberId) {
+        return `member:${decoded.memberId}`;
+      }
+      if (!decoded?.scope && typeof decoded?.agentId === "string" && decoded.agentId) {
+        return `staff:${decoded.agentId}`;
+      }
+    }
+  } catch {
+    // invalid/expired token → ordinary IP bucket
+  }
+  const ip = req.ip ?? "unknown";
+  return `ip:${ip === "unknown" ? ip : ipKeyGenerator(ip)}`;
+}
+const generalLimiter = rateLimit({ windowMs: 60 * 1000, max: config.generalLimitMax, standardHeaders: true, legacyHeaders: false, keyGenerator: generalLimiterKey, message: { error: "Too many requests, please try again later." }, skip: (req) => !req.path.startsWith("/api") });
 // ARC-L02 fix: the `//`-prefix normalization used to run AFTER generalLimiter,
 // so a request to "//api/health" skipped the general rate limit entirely (its
 // path did not start with "/api" yet) and was then normalized into a real API
@@ -86,8 +116,17 @@ app.use(csrfProtection);
 // asset, every swagger fetch, every favicon probe — drowning the /api traffic
 // it existed to observe. The app's contract is API-first, so log API paths
 // (and the root shell) only.
+// ARC-L07 + B6 (owner decision 2): log API paths — but the team GPS
+// heartbeat is 4 req/min/member (~288k lines/day at 50 members) and carries
+// zero investigative value per line. Its per-request log is demoted to
+// DEBUG; security-relevant rejections (401/403/429 gates) are logged
+// explicitly with warn inside routes/teams.ts instead.
 app.use((req, _res, next) => {
-  if (req.path.startsWith("/api") || req.path === "/") logger.info({ req }, "Request");
+  if (req.path === "/api/teams/heartbeat") {
+    logger.debug({ req }, "Request");
+  } else if (req.path.startsWith("/api") || req.path === "/") {
+    logger.info({ req }, "Request");
+  }
   next();
 });
 if (!isProduction || process.env.ENABLE_SWAGGER === "true") app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));

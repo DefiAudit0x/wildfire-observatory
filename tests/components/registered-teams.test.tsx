@@ -15,6 +15,8 @@ const TEAM_A: RegisteredTeam = {
   type: "protection_civile",
   baseLat: null,
   baseLng: null,
+  active: true,
+  blockedPrincipals: [],
   members: [
     {
       memberId: "tm-m1",
@@ -42,7 +44,7 @@ const SOS = [
   { id: "sos-77", status: "active", name: "المحتجز أحمد", lat: 36.8, lng: 5.1, timestamp: new Date().toISOString() },
 ] as any;
 
-function setup(teams: RegisteredTeam[] = [TEAM_A]) {
+function setup(teams: RegisteredTeam[] = [TEAM_A], opts: { refreshing?: boolean } = {}) {
   const onDispatch = vi.fn(async () => true);
   const onTeamsChanged = vi.fn(async () => {});
   const notify = vi.fn();
@@ -52,6 +54,8 @@ function setup(teams: RegisteredTeam[] = [TEAM_A]) {
       teams={teams}
       sosCalls={SOS}
       dispatchLoading={false}
+      refreshing={opts.refreshing ?? false}
+      lastUpdated={opts.refreshing ? null : 1_700_000_000_000}
       onDispatch={onDispatch}
       onTargetMember={vi.fn()}
       onTeamsChanged={onTeamsChanged}
@@ -134,5 +138,68 @@ describe("RegisteredTeams", () => {
     setup([busy]);
     expect(screen.getByText(/مهمة جارية على بلاغ/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /توجيه/ })).not.toBeInTheDocument();
+  });
+
+  it("B3: busy team exposes the force-clear-mission lever and calls DELETE on confirm", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const busy = { ...TEAM_A, activeMission: { sosId: "sos-77", phase: "en_route", since: 123 } };
+    const { onTeamsChanged } = setup([busy]);
+    fireEvent.click(screen.getByRole("button", { name: /إلغاء المهمة/ }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/mission", expect.objectContaining({ method: "DELETE" })));
+    await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
+    confirmSpy.mockRestore();
+  });
+
+  it("B3: deactivate lever PATCHes active:false after confirm", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { onTeamsChanged } = setup();
+    fireEvent.click(screen.getByTitle("تعطيل الفريق"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1", expect.objectContaining({ method: "PATCH", body: expect.stringContaining('"active":false') })));
+    await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
+    confirmSpy.mockRestore();
+  });
+
+  it("B2: blocked devices render with an unblock lever that POSTs blocked:false", async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const blockedTeam = { ...TEAM_A, blockedPrincipals: ["principal-blocked-one"] };
+    const { onTeamsChanged } = setup([blockedTeam]);
+    expect(screen.getByText(/أجهزة محجوبة \(1\)/)).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("فك الحجب"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/block-principal", expect.objectContaining({ method: "POST", body: expect.stringContaining("principal-blocked-one") })));
+    await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
+  });
+
+  it("B1/B2: member removal offers the block step and sends blockPrincipal:true when confirmed", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { onTeamsChanged } = setup();
+    fireEvent.click(screen.getAllByTitle("إزالة العضو")[0]);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/members/tm-m1", expect.objectContaining({ method: "DELETE", body: expect.stringContaining("blockPrincipal") })));
+    await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
+    confirmSpy.mockRestore();
+  });
+
+  it("W4: shows the refreshing indicator only while a roster fetch is in flight", () => {
+    setup([TEAM_A], { refreshing: true });
+    expect(screen.getByTestId("teams-refreshing")).toBeInTheDocument();
+  });
+
+  it("W5: an expired join code renders the منتهي state, a live one shows the countdown", () => {
+    const expired = { ...TEAM_A };
+    setup([expired]);
+    // no code minted yet — mint one that is already expired
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify({ code: "EXPIRED1", teamId: "team-a1", expiresAt: Date.now() - 1000, maxUses: 12 }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    fireEvent.click(screen.getByRole("button", { name: /رمز انضمام/ }));
+    return waitFor(() => {
+      expect(screen.getByText("EXPIRED1")).toBeInTheDocument();
+      expect(screen.getByText("منتهي")).toBeInTheDocument();
+    });
   });
 });
