@@ -1,5 +1,5 @@
 import logger from "./logger.js";
-import { docSet } from "./fs.js";
+import { docMergeSet } from "./fs.js";
 import { getHaversineDistance } from "./geo.js";
 
 /**
@@ -113,13 +113,19 @@ function toPublic(entry: RegistryEntry): TeamMemberPosition {
 /**
  * Firestore snapshot, at most one write per member per SNAPSHOT_MIN_INTERVAL_MS.
  * Fire-and-forget: GPS must never block on, or fail with, the durable layer.
+ *
+ * ARC-R1: this MUST stay a MERGE write. A full-replacement docSet here raced
+ * a dispatcher's member removal (snapshot lands after active:false → removal
+ * silently undone, device back on the map) and wiped the join-time audit
+ * binding (principal, joinedAt, rejoinCount) every 5 minutes of heartbeating.
+ * The payload deliberately carries NO authority fields — only display data.
  */
 export function snapshotIfDue(memberId: string, teamId: string, now = Date.now()): void {
   const entry = registry.get(memberId);
   if (!entry) return;
   if (now - entry.lastSnapshotAt < SNAPSHOT_MIN_INTERVAL_MS) return;
   entry.lastSnapshotAt = now;
-  void docSet("teamMembers", memberId, {
+  void docMergeSet("teamMembers", memberId, {
     memberId,
     teamId,
     name: entry.name,

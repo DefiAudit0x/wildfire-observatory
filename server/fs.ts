@@ -121,6 +121,34 @@ export async function docSet(collectionName: string, id: string, data: any): Pro
   }
 }
 
+/**
+ * ARC-R1: merge variant of docSet. The team-position snapshot used to go
+ * through docSet (full-document replacement), which destroyed every field it
+ * did not carry — an in-flight snapshot racing a dispatcher's member removal
+ * resurrected the removed member (active:false erased), and principal/joinedAt
+ * were wiped 5 minutes into every shift. Merge-set touches ONLY the fields the
+ * caller lists and never resurrects erased ones.
+ */
+export async function docMergeSet(collectionName: string, id: string, data: any): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    const clean = stripUndefinedDeep(data);
+    if (isAdminDb(db)) {
+      await db.collection(collectionName).doc(id).set(clean, { merge: true });
+    } else {
+      const { doc, setDoc } = await loadClientSdk();
+      await setDoc(doc(db, collectionName, id), clean, { merge: true });
+    }
+    invalidateCollectionCache(collectionName);
+    invalidateDocCache(collectionName, id);
+    return true;
+  } catch (err) {
+    logger.error({ err, collectionName, id }, "Firestore doc merge-set failed");
+    return false;
+  }
+}
+
 export type SosAdmissionResult = "created" | "duplicate" | "unavailable";
 
 /**
@@ -223,12 +251,14 @@ export async function appendSosDispatch(
         const [sosSnap, missionSnap] = await Promise.all([tx.get(sosRef), tx.get(missionRef)]);
         if (!sosSnap.exists) return "missing" as const;
         if (sosSnap.data()?.status === "resolved") return "resolved" as const;
-        if (
-          missionSnap.exists &&
-          missionSnap.data()?.phase !== "cleared" &&
-          missionSnap.data()?.sosId !== sosId
-        ) {
-          return "team_busy" as const;
+        const missionData = missionSnap.exists ? missionSnap.data() || {} : null;
+        if (missionData && missionData.phase !== "cleared") {
+          if (missionData.sosId !== sosId) return "team_busy" as const;
+          // ARC-R4: idempotent re-dispatch — this team is already locked on
+          // THIS SOS. Re-appending would duplicate the dispatch log and
+          // regress on_scene back to en_route (two 15s-stale operator tabs
+          // double-clicking the same dispatch). Return ok with zero writes.
+          return "ok" as const;
         }
         tx.update(sosRef, { dispatchedTeams: FieldValue.arrayUnion(dispatchItem) });
         tx.set(
@@ -252,12 +282,11 @@ export async function appendSosDispatch(
       const [sosSnap, missionSnap] = await Promise.all([tx.get(sosRef), tx.get(missionRef)]);
       if (!sosSnap.exists()) return "missing" as const;
       if (sosSnap.data()?.status === "resolved") return "resolved" as const;
-      if (
-        missionSnap.exists() &&
-        missionSnap.data()?.phase !== "cleared" &&
-        missionSnap.data()?.sosId !== sosId
-      ) {
-        return "team_busy" as const;
+      const missionData = missionSnap.exists() ? missionSnap.data() || {} : null;
+      if (missionData && missionData.phase !== "cleared") {
+        if (missionData.sosId !== sosId) return "team_busy" as const;
+        // ARC-R4: idempotent re-dispatch — see the admin branch above.
+        return "ok" as const;
       }
       tx.update(sosRef, { dispatchedTeams: arrayUnion(dispatchItem) });
       tx.set(

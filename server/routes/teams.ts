@@ -91,12 +91,20 @@ const joinLimiter = rateLimit({
   message: { error: "Too many join attempts. Try again later." },
 });
 
-// GPS streaming: generous per-IP, plus a per-member minimum interval below.
+// GPS streaming: ARC-R3 — co-located teams (CGNAT egress, station Wi-Fi) share
+// one public IP; an IP-keyed bucket 429s the ~16th member's GPS stream
+// mid-operation. Authenticated members are therefore keyed PER-MEMBER, and the
+// IP bucket remains only as the backstop for unauthenticated noise. The
+// per-member 3s floor below is the real anti-storm control.
 const heartbeatLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    const token = teamTokenFromRequest(req);
+    return token ? `member:${token.memberId}` : `ip:${req.ip ?? "unknown"}`;
+  },
   message: { error: "Too many team heartbeats from this address." },
 });
 
@@ -433,6 +441,11 @@ router.post("/leave", async (req: Request, res: Response) => {
 /**
  * POST /api/teams/mission/phase — field team reports arrival (on_scene).
  * Clearing a mission stays admin-only (SOS resolve frees teams).
+ *
+ * ARC-R2: this route used to trust the 12h JWT alone — a REMOVED member (or a
+ * member of a deactivated team) kept a valid token and could flip its former
+ * team's mission phase at will, misleading dispatch. The gate mirrors the
+ * heartbeat route exactly: per-request, fail-closed on live Firestore state.
  */
 router.post("/mission/phase", async (req: Request, res: Response) => {
   const token = teamTokenFromRequest(req);
@@ -443,6 +456,20 @@ router.post("/mission/phase", async (req: Request, res: Response) => {
   const parsed = missionPhaseSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid mission phase" });
+    return;
+  }
+  const member = await docGet("teamMembers", token.memberId);
+  if (!member || member.teamId !== token.teamId) {
+    res.status(403).json({ code: "MEMBER_INVALID", error: "Team membership not found" });
+    return;
+  }
+  if (member.active === false) {
+    res.status(403).json({ code: "MEMBER_INACTIVE", error: "Membership is deactivated" });
+    return;
+  }
+  const team = await docGet("teams", token.teamId);
+  if (!team || team.active === false) {
+    res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
     return;
   }
   const result = await setMissionPhaseAtomically(token.teamId, parsed.data.phase);
