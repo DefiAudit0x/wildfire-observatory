@@ -117,29 +117,42 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   }, [onRefresh]);
 
   const teamsFetchSeq = useRef(0);
-  const fetchRegisteredTeams = useCallback(async () => {
+  // B3 + W4: the panel can request inactive teams (deactivate/activate levers),
+  // and the header shows whether a roster fetch is in flight + when data last
+  // landed — an operator staring at a stale map mid-emergency can tell.
+  const [showInactiveTeams, setShowInactiveTeams] = useState(false);
+  const [teamsRefreshing, setTeamsRefreshing] = useState(false);
+  const [teamsLastUpdated, setTeamsLastUpdated] = useState<number | null>(null);
+  const fetchRegisteredTeams = useCallback(async (includeInactive?: boolean) => {
     if (!unlocked) return;
+    const wantInactive = includeInactive ?? showInactiveTeams;
     // ARC-W1: this fetcher fires from three unsynchronized paths (the 15s
     // interval, post-dispatch refresh, onTeamsChanged). A slow response from
     // an EARLIER fetch used to land last and clobber fresher state — hiding a
     // just-reported mission, resurrecting a removed member chip. Only the
     // latest-issued fetch may commit state.
     const seq = ++teamsFetchSeq.current;
+    setTeamsRefreshing(true);
     try {
-      const res = await apiFetch("/api/teams", "GET");
+      const res = await apiFetch(`/api/teams${wantInactive ? "?includeInactive=1" : ""}`, "GET");
       if (seq !== teamsFetchSeq.current) return;
       if (res.ok) {
         const data = (await res.json()) as RegisteredTeam[];
         if (seq !== teamsFetchSeq.current) return;
-        if (Array.isArray(data)) setRegisteredTeams(data);
+        if (Array.isArray(data)) {
+          setRegisteredTeams(data);
+          setTeamsLastUpdated(Date.now());
+        }
       } else if (isSessionExpiry(res)) {
         setUnlocked(false);
       }
       // Silent on transient errors: the next 15s poll recovers on its own.
     } catch {
       // Network hiccup — the poll loop retries.
+    } finally {
+      if (seq === teamsFetchSeq.current) setTeamsRefreshing(false);
     }
-  }, [unlocked]);
+  }, [unlocked, showInactiveTeams]);
 
   useEffect(() => {
     if (unlocked) {
@@ -449,6 +462,14 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         teams={registeredTeams}
         sosCalls={fullSos}
         dispatchLoading={dispatchLoading}
+        refreshing={teamsRefreshing}
+        lastUpdated={teamsLastUpdated}
+        showInactive={showInactiveTeams}
+        onToggleInactive={() => {
+          const next = !showInactiveTeams;
+          setShowInactiveTeams(next);
+          void fetchRegisteredTeams(next);
+        }}
         onDispatch={handleDispatchRegistered}
         onTargetMember={handleTargetMember}
         onTeamsChanged={fetchRegisteredTeams}

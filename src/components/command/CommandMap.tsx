@@ -33,6 +33,11 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
+  // W6: the 15s roster poll rebuilds every marker layer — an operator reading
+  // a member's popup used to have it vanish mid-read, every 15 seconds, all
+  // shift. The open popup's logical key is tracked; after each rebuild the
+  // marker that owns that key re-opens its (refreshed) popup in place.
+  const openPopupKeyRef = useRef<string | null>(null);
   // ARC-H9 fix: a 4s ticker used to sit in the marker effect's dependency
   // array, forcing a full teardown/rebuild of EVERY marker (and a fitBounds
   // viewport steal) every 4 seconds even with zero data changes — yanking the
@@ -60,6 +65,15 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
     mapInstance.current = map;
     markersLayer.current = L.layerGroup().addTo(map);
 
+    // W6: remember WHICH popup is open (by logical key attached to the popup
+    // at bind time) so the rebuild effect can re-open it.
+    map.on("popupopen", (e) => {
+      openPopupKeyRef.current = (e.popup as unknown as { __cmdKey?: string }).__cmdKey ?? null;
+    });
+    map.on("popupclose", () => {
+      openPopupKeyRef.current = null;
+    });
+
     map.invalidateSize();
     const t1 = setTimeout(() => map.invalidateSize(), 200);
 
@@ -83,6 +97,17 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
   useEffect(() => {
     if (!markersLayer.current) return;
     const layer = markersLayer.current;
+    // W6: capture the open popup key BEFORE clearing (clearLayers fires
+    // popupclose and would wipe the ref), then re-open the owning marker.
+    const reopenKey = openPopupKeyRef.current;
+    const trackPopup = (lyr: L.Layer, key: string) => {
+      const popup = (lyr as unknown as { getPopup?: () => L.Popup | null }).getPopup?.();
+      if (popup) (popup as unknown as { __cmdKey?: string }).__cmdKey = key;
+      if (reopenKey === key && typeof (lyr as unknown as { openPopup?: () => void }).openPopup === "function") {
+        (lyr as unknown as { openPopup: () => void }).openPopup();
+      }
+      return lyr;
+    };
     layer.clearLayers();
 
     // Satellite hotspots as circles
@@ -100,6 +125,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           ${isArabic ? "وقت المسح" : "Scan"}: ${new Date(sat.scanTime).toLocaleTimeString()}
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `sat:${sat.satellite}:${sat.lat},${sat.lng}`);
     });
 
     // User locations
@@ -126,6 +152,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           ${isArabic ? "آخر ظهور" : "Dernière vue"}: ${new Date(u.lastSeen).toLocaleTimeString()}
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `user:${u.role}:${u.lat},${u.lng}`);
     });
 
     // Reports
@@ -153,6 +180,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           ${esc(rep.description.substring(0, 80))}
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `report:${rep.lat},${rep.lng}`);
     });
 
     // Active SOS Calls
@@ -184,6 +212,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           </div>
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `sos:${sos.id}`);
     });
 
     // Team Mode (Phase 1): REAL field-team member positions from the live
@@ -246,6 +275,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           <span class="text-gray-500">GPS: ${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</span>
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `member:${m.memberId}`);
     });
 
     // Active Teams (Civil Protection & Volunteers) — SIMULATED legacy rows
@@ -282,6 +312,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           </div>
         </div>
       `).addTo(layer);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `team:${t.id ?? t.teamNameFr}:${t.currentLat},${t.currentLng}`);
     });
 
     // ARC-H9 fix: fitBounds only ONCE on first data arrival — the operator

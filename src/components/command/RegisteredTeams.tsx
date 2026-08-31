@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Shield, HeartHandshake, KeyRound, MapPin, Plus, Radio, Search, Truck, Users, Copy, RefreshCw, UserMinus, X } from "lucide-react";
+import { Shield, HeartHandshake, KeyRound, MapPin, Plus, Radio, Search, Truck, Users, Copy, RefreshCw, UserMinus, X, Ban, Power, Pencil, Trash2 } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { apiFetch, isSessionExpiry } from "../../utils/adminApi";
 import { RegisteredTeam, JoinCodeIssued } from "./registeredTeams";
@@ -10,6 +10,11 @@ import { RegisteredTeam, JoinCodeIssued } from "./registeredTeams";
  * it (TeamsTable keeps rendering the legacy simulated rows until every
  * operation migrates). Dispatch here sends teamId; the server resolves the
  * team entity inside the dispatch transaction.
+ *
+ * Round B: dispatcher LEVERS (force-clear mission, deactivate/activate,
+ * rename, device blocklist) land beside dispatch — every lever maps to a
+ * server endpoint added in the same round; W4 adds the roster freshness
+ * indicator; W5 turns the join-code expiry into a live countdown.
  */
 
 interface RegisteredTeamsProps {
@@ -17,6 +22,13 @@ interface RegisteredTeamsProps {
   teams: RegisteredTeam[];
   sosCalls: TrappedSOS[];
   dispatchLoading: boolean;
+  /** W4: a roster fetch is currently in flight. */
+  refreshing?: boolean;
+  /** W4: timestamp of the last successful roster commit. */
+  lastUpdated?: number | null;
+  /** B3: deactivated teams are included in the roster. */
+  showInactive?: boolean;
+  onToggleInactive?: () => void;
   onDispatch: (teamId: string, sosId: string, notes: string) => Promise<boolean>;
   onTargetMember: (teamId: string, memberId: string) => void;
   onTeamsChanged: () => Promise<void> | void;
@@ -29,7 +41,27 @@ function formatExpiry(ts: number, isArabic: boolean): string {
   return isArabic ? d.toLocaleString("ar", { hour12: false }) : d.toLocaleString("fr", { hour12: false });
 }
 
-export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoading, onDispatch, onTargetMember, onTeamsChanged, onSessionExpired, notify }: RegisteredTeamsProps) {
+/**
+ * W5: a raw wall-clock expiry timestamp made an operator do the countdown
+ * math mid-shift — and an expired code looked identical to a live one. The
+ * chip now shows remaining time; "منتهي" renders red, <30min renders amber.
+ */
+function expiryCountdown(expiresAt: number, isArabic: boolean): { text: string; expired: boolean; soon: boolean } {
+  const ms = expiresAt - Date.now();
+  if (ms <= 0) return { text: isArabic ? "منتهي" : "Expiré", expired: true, soon: false };
+  const totalMins = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMins / 60);
+  const days = Math.floor(hours / 24);
+  if (days >= 1) {
+    return { text: isArabic ? `ينتهي خلال ${days}ي ${hours % 24}س` : `Expire dans ${days}j ${hours % 24}h`, expired: false, soon: false };
+  }
+  if (hours >= 1) {
+    return { text: isArabic ? `ينتهي خلال ${hours}س ${totalMins % 60}د` : `Expire dans ${hours}h ${totalMins % 60}min`, expired: false, soon: false };
+  }
+  return { text: isArabic ? `ينتهي خلال ${totalMins}د` : `Expire dans ${totalMins}min`, expired: false, soon: totalMins < 30 };
+}
+
+export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoading, refreshing = false, lastUpdated = null, showInactive = false, onToggleInactive, onDispatch, onTargetMember, onTeamsChanged, onSessionExpired, notify }: RegisteredTeamsProps) {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -41,6 +73,8 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
   const [dispatchNotes, setDispatchNotes] = useState<Record<string, string>>({});
   const [dispatchingTeam, setDispatchingTeam] = useState<string | null>(null);
   const [teamSearch, setTeamSearch] = useState("");
+  // B3 levers: one in-flight lever per team at a time.
+  const [leverBusy, setLeverBusy] = useState<string | null>(null);
   // ARC pattern (TeamsTable): result chips self-expire instead of sticking.
   const [resultChip, setResultChip] = useState<Record<string, { ok: boolean; text: string }>>({});
   const resultTimers = useRef<Record<string, number>>({});
@@ -158,10 +192,27 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
 
   const handleRemoveMember = async (teamId: string, memberId: string, name: string) => {
     if (!window.confirm(isArabic ? `إزالة العضو «${name}» من الفريق؟` : `Retirer le membre « ${name} » ?`)) return;
+    // B1/B2: removal revokes the device's token (server-side). Offer the
+    // lost-device blocklist step explicitly — a blocked device cannot come
+    // back via a join code either.
+    const block = window.confirm(
+      isArabic
+        ? "هل تريد أيضًا حجب هذا الجهاز من إعادة الانضمام؟ (لجهاز مفقود أو مُسحوب)"
+        : "Bloquer aussi cet appareil de toute réadhésion ? (appareil perdu/réassigné)"
+    );
     try {
-      const res = await apiFetch(`/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`, "DELETE");
+      const res = await apiFetch(
+        `/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`,
+        "DELETE",
+        block ? { blockPrincipal: true } : undefined
+      );
       if (res.ok) {
-        notify(isArabic ? `تمت إزالة ${name}` : `${name} retiré`, "success");
+        notify(
+          block
+            ? (isArabic ? `تمت إزالة ${name} وحجب جهازه` : `${name} retiré et appareil bloqué`)
+            : (isArabic ? `تمت إزالة ${name}` : `${name} retiré`),
+          "success"
+        );
         await onTeamsChanged();
       } else if (isSessionExpiry(res)) {
         onSessionExpired();
@@ -170,6 +221,96 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
       }
     } catch {
       notify(isArabic ? "تعذرت إزالة العضو" : "Échec du retrait du membre", "error");
+    }
+  };
+
+  /** B3: force-clear a wedged mission — the lever that did not exist. */
+  const handleClearMission = async (teamId: string) => {
+    if (leverBusy) return;
+    if (!window.confirm(isArabic ? "إلغاء المهمة الجارية لهذا الفريق وتحريره؟" : "Annuler la mission en cours et libérer l'équipe ?")) return;
+    setLeverBusy(teamId);
+    try {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(teamId)}/mission`, "DELETE");
+      if (res.ok) {
+        notify(isArabic ? "تم إلغاء المهمة وتحرير الفريق" : "Mission annulée, équipe libérée", "success");
+        await onTeamsChanged();
+      } else if (isSessionExpiry(res)) {
+        onSessionExpired();
+      } else {
+        notify(isArabic ? "لا توجد مهمة نشطة لإلغائها" : "Aucune mission active à annuler", "warning");
+      }
+    } catch {
+      notify(isArabic ? "تعذر إلغاء المهمة" : "Échec de l'annulation", "error");
+    } finally {
+      setLeverBusy(null);
+    }
+  };
+
+  /** B3: activate/deactivate a team (deactivation was previously dead code). */
+  const handleSetTeamActive = async (teamId: string, active: boolean) => {
+    if (leverBusy) return;
+    if (!active && !window.confirm(isArabic ? "تعطيل هذا الفريق؟ لن يستقبل توجيهات ولن تنطلق نبضات أعضائه." : "Désactiver cette équipe ? Plus de dépêches ni de GPS.")) return;
+    setLeverBusy(teamId);
+    try {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(teamId)}`, "PATCH", { active });
+      if (res.ok) {
+        notify(active ? (isArabic ? "تم تفعيل الفريق" : "Équipe activée") : (isArabic ? "تم تعطيل الفريق" : "Équipe désactivée"), "success");
+        await onTeamsChanged();
+      } else if (isSessionExpiry(res)) {
+        onSessionExpired();
+      } else {
+        notify(isArabic ? "تعذر تحديث حالة الفريق" : "Échec de la mise à jour", "error");
+      }
+    } catch {
+      notify(isArabic ? "تعذر تحديث حالة الفريق" : "Échec de la mise à jour", "error");
+    } finally {
+      setLeverBusy(null);
+    }
+  };
+
+  /** B3: rename — names used to be immutable after registration. */
+  const handleRenameTeam = async (team: RegisteredTeam) => {
+    if (leverBusy) return;
+    const field = isArabic ? "nameAr" : "name";
+    const current = isArabic ? team.nameAr : team.name;
+    const next = window.prompt(isArabic ? "الاسم الجديد للفريق:" : "Nouveau nom de l'équipe :", current);
+    if (next === null || next.trim() === "" || next.trim() === current) return;
+    setLeverBusy(team.teamId);
+    try {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(team.teamId)}`, "PATCH", { [field]: next.trim() });
+      if (res.ok) {
+        notify(isArabic ? "تم تحديث الاسم" : "Nom mis à jour", "success");
+        await onTeamsChanged();
+      } else if (isSessionExpiry(res)) {
+        onSessionExpired();
+      } else {
+        notify(isArabic ? "تعذر تحديث الاسم" : "Échec du renommage", "error");
+      }
+    } catch {
+      notify(isArabic ? "تعذر تحديث الاسم" : "Échec du renommage", "error");
+    } finally {
+      setLeverBusy(null);
+    }
+  };
+
+  /** B2: unblock a previously blocked device. */
+  const handleUnblockPrincipal = async (teamId: string, principal: string) => {
+    if (leverBusy) return;
+    setLeverBusy(teamId);
+    try {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(teamId)}/block-principal`, "POST", { principal, blocked: false });
+      if (res.ok) {
+        notify(isArabic ? "تم فك الحجب عن الجهاز" : "Appareil débloqué", "success");
+        await onTeamsChanged();
+      } else if (isSessionExpiry(res)) {
+        onSessionExpired();
+      } else {
+        notify(isArabic ? "تعذر فك الحجب" : "Échec du déblocage", "error");
+      }
+    } catch {
+      notify(isArabic ? "تعذر فك الحجب" : "Échec du déblocage", "error");
+    } finally {
+      setLeverBusy(null);
     }
   };
 
@@ -186,6 +327,14 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
           <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2 py-0.5 rounded-full text-[10px] font-bold">
             {onlineMembers} {isArabic ? "عضو متصل" : "en ligne"}
           </span>
+          {/* W4: roster freshness — a spinning indicator while the fetch is in
+              flight plus the time the current data landed. */}
+          {refreshing && <RefreshCw className="h-3 w-3 animate-spin text-amber-400" data-testid="teams-refreshing" />}
+          {lastUpdated !== null && !refreshing && (
+            <span className="text-[9px] text-gray-500" title={isArabic ? "آخر تحديث للقائمة" : "Dernière mise à jour"}>
+              {isArabic ? "آخر تحديث" : "MAJ"} {new Date(lastUpdated).toLocaleTimeString(isArabic ? "ar" : "fr", { hour12: false })}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <div className="relative">
@@ -198,6 +347,18 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
               className="w-40 bg-zinc-950 border border-white/10 rounded-lg py-1.5 pl-9 pr-3 text-[11px] text-slate-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
             />
           </div>
+          <button
+            type="button"
+            onClick={() => onToggleInactive?.()}
+            aria-pressed={showInactive}
+            className={`flex items-center gap-1 px-2 py-1.5 border text-[10px] font-bold rounded-lg transition-all cursor-pointer ${
+              showInactive ? "bg-amber-600/20 border-amber-500/50 text-amber-300" : "bg-zinc-900 border-white/10 text-gray-400 hover:text-slate-200"
+            }`}
+            title={isArabic ? "عرض الفرق المعطلة" : "Afficher les équipes désactivées"}
+          >
+            <Power className="h-3 w-3" />
+            {isArabic ? "المعطلة" : "Désactivées"}
+          </button>
           <button
             type="button"
             onClick={() => setShowCreate((v) => !v)}
@@ -261,8 +422,9 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
             const chip = resultChip[team.teamId];
             const selectedSosId = dispatchSos[team.teamId] || "";
             const busy = !!team.activeMission;
+            const countdown = issued ? expiryCountdown(issued.expiresAt, isArabic) : null;
             return (
-              <div key={team.teamId} className="px-4 py-3">
+              <div key={team.teamId} className={`px-4 py-3 ${team.active === false ? "opacity-60" : ""}`}>
                 <div className="flex items-start justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-2.5">
                     <span className="text-lg">{isPC ? "🚒" : "💚"}</span>
@@ -276,18 +438,49 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       {isPC ? <Shield className="h-2.5 w-2.5" /> : <HeartHandshake className="h-2.5 w-2.5" />}
                       {isPC ? (isArabic ? "حماية مدنية" : "Protection Civile") : (isArabic ? "متطوعون" : "Volontaires")}
                     </span>
+                    {team.active === false && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border bg-zinc-700/40 text-gray-300 border-white/15">
+                        <Ban className="h-2.5 w-2.5" />
+                        {isArabic ? "معطّل" : "Désactivée"}
+                      </span>
+                    )}
+                    {/* B3 levers: rename / deactivate / re-activate. */}
+                    <button
+                      type="button"
+                      disabled={leverBusy !== null}
+                      onClick={() => handleRenameTeam(team)}
+                      className="text-gray-500 hover:text-amber-300 cursor-pointer disabled:opacity-40"
+                      title={isArabic ? "إعادة تسمية الفريق" : "Renommer l'équipe"}
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={leverBusy !== null}
+                      onClick={() => handleSetTeamActive(team.teamId, team.active === false)}
+                      className={`cursor-pointer disabled:opacity-40 ${team.active === false ? "text-emerald-400 hover:text-emerald-300" : "text-gray-500 hover:text-red-400"}`}
+                      title={team.active === false ? (isArabic ? "تفعيل الفريق" : "Activer l'équipe") : (isArabic ? "تعطيل الفريق" : "Désactiver l'équipe")}
+                    >
+                      <Power className="h-3 w-3" />
+                    </button>
                   </div>
 
                   {/* Join code management */}
                   <div className="flex items-center gap-2">
                     {issued && (
-                      <div className="flex items-center gap-1.5 bg-zinc-950 border border-amber-500/30 rounded px-2 py-1">
-                        <KeyRound className="h-3 w-3 text-amber-400" />
-                        <span className="font-mono font-extrabold text-amber-300 text-xs tracking-[0.2em]">{issued.code}</span>
+                      <div className={`flex items-center gap-1.5 border rounded px-2 py-1 ${countdown?.expired ? "bg-red-950/40 border-red-500/40" : countdown?.soon ? "bg-amber-950/30 border-amber-500/40" : "bg-zinc-950 border-amber-500/30"}`}>
+                        <KeyRound className={`h-3 w-3 ${countdown?.expired ? "text-red-400" : "text-amber-400"}`} />
+                        <span className={`font-mono font-extrabold text-xs tracking-[0.2em] ${countdown?.expired ? "text-red-300 line-through" : "text-amber-300"}`}>{issued.code}</span>
                         <button type="button" onClick={() => handleCopyCode(team.teamId)} className="text-gray-400 hover:text-amber-300 cursor-pointer" title={isArabic ? "نسخ" : "Copier"}>
                           <Copy className="h-3 w-3" />
                         </button>
-                        <span className="text-[9px] text-gray-500">{formatExpiry(issued.expiresAt, isArabic)}</span>
+                        {/* W5: live countdown — expired renders red, <30min amber. */}
+                        <span
+                          className={`text-[9px] font-bold ${countdown?.expired ? "text-red-400" : countdown?.soon ? "text-amber-300" : "text-gray-500"}`}
+                          title={formatExpiry(issued.expiresAt, isArabic)}
+                        >
+                          {countdown?.text}
+                        </span>
                       </div>
                     )}
                     <button
@@ -334,15 +527,37 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                 </div>
 
                 {/* Mission / dispatch row */}
+                {team.active === false ? (
+                  <div className="mt-2">
+                    <p className="text-[11px] text-gray-400 flex items-center gap-1">
+                      <Ban className="h-3 w-3" />
+                      {isArabic ? "الفريق معطّل — لن يستقبل توجيهات حتى إعادة تفعيله" : "Équipe désactivée — aucune dépêche tant qu'elle n'est pas réactivée"}
+                    </p>
+                  </div>
+                ) : (
                 <div className="mt-2 flex items-center justify-between flex-wrap gap-2">
                   {busy ? (
-                    <p className="text-[11px] text-amber-400 flex items-center gap-1 font-bold">
-                      <Truck className="h-3 w-3" />
-                      {isArabic ? "مهمة جارية على بلاغ" : "Mission active sur SOS"} {team.activeMission!.sosId}
-                      <span className="text-[10px] text-gray-400 font-normal">
-                        ({team.activeMission!.phase === "on_scene" ? (isArabic ? "في الموقع" : "Sur site") : isArabic ? "في الطريق" : "En route"})
-                      </span>
-                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="text-[11px] text-amber-400 flex items-center gap-1 font-bold">
+                        <Truck className="h-3 w-3" />
+                        {isArabic ? "مهمة جارية على بلاغ" : "Mission active sur SOS"} {team.activeMission!.sosId}
+                        <span className="text-[10px] text-gray-400 font-normal">
+                          ({team.activeMission!.phase === "on_scene" ? (isArabic ? "في الموقع" : "Sur site") : isArabic ? "في الطريق" : "En route"})
+                        </span>
+                      </p>
+                      {/* B3: force-clear a wedged mission (the lever that did
+                          not exist — busy-forever teams had no escape). */}
+                      <button
+                        type="button"
+                        disabled={leverBusy !== null}
+                        onClick={() => handleClearMission(team.teamId)}
+                        className="flex items-center gap-1 px-2 py-1 bg-red-950/40 hover:bg-red-900/50 border border-red-500/40 text-[10px] font-bold text-red-300 rounded transition-all cursor-pointer disabled:opacity-50"
+                        title={isArabic ? "إلغاء المهمة قسرًا وتحرير الفريق" : "Forcer l'annulation et libérer l'équipe"}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        {isArabic ? "إلغاء المهمة" : "Annuler la mission"}
+                      </button>
+                    </div>
                   ) : (
                     <div className="flex flex-wrap items-center gap-2">
                       <select
@@ -383,6 +598,31 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                     </div>
                   )}
                 </div>
+                )}
+
+                {/* B2: blocked devices — with the unblock lever. */}
+                {team.blockedPrincipals.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <span className="text-[9px] font-bold text-gray-500 flex items-center gap-1">
+                      <Ban className="h-2.5 w-2.5" />
+                      {isArabic ? `أجهزة محجوبة (${team.blockedPrincipals.length}):` : `Appareils bloqués (${team.blockedPrincipals.length}) :`}
+                    </span>
+                    {team.blockedPrincipals.map((principal) => (
+                      <span key={principal} className="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full border bg-red-500/5 text-red-300/80 border-red-500/25">
+                        {principal.slice(0, 14)}…
+                        <button
+                          type="button"
+                          disabled={leverBusy !== null}
+                          onClick={() => handleUnblockPrincipal(team.teamId, principal)}
+                          className="text-gray-500 hover:text-emerald-300 cursor-pointer disabled:opacity-40"
+                          title={isArabic ? "فك الحجب" : "Débloquer"}
+                        >
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}
