@@ -1,9 +1,9 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
 import { encryptAead, decryptAead } from "../crypto.js";
-import { collectionGet, createSosWithAdmission, docSet, docUpdate, docGet, appendSosDispatch, clearTeamMissionsForSos } from "../fs.js";
+import { collectionGet, createSosWithAdmission, docSet, docGet, appendSosDispatch, resolveSosAtomically } from "../fs.js";
 import { requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
@@ -100,7 +100,12 @@ const sosPostLimiter = rateLimit({
   max: 2,
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req: Request) => `sos:${String((req.body as any)?.deviceId || req.ip || "unknown")}`,
+  keyGenerator: (req: Request) => {
+    const deviceId = (req.body as any)?.deviceId;
+    if (deviceId) return `sos:${String(deviceId)}`;
+    const ip = req.ip ?? "unknown";
+    return `sos:${ip === "unknown" ? ip : ipKeyGenerator(ip)}`;
+  },
   message: { error: "Too many SOS requests. Try again shortly." },
 });
 
@@ -358,16 +363,28 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
 
 router.post("/:id/resolve", requireAdmin, async (req: Request, res: Response) => {
   const id = str(req.params.id);
-  const persisted = await docUpdate("trappedSos", id, { status: "resolved" });
-  if (!persisted) {
+  // B4: resolve is now ONE transaction — the status flip and the team-mission
+  // clear read/write together, so a dispatch racing the resolve can no longer
+  // orphan an active mission on a resolved SOS (team busy forever). The
+  // cleared count is surfaced and a zero-clear resolve is logged loudly:
+  // that used to be a silent `.catch(() => false)`.
+  const outcome = await resolveSosAtomically(id);
+  if (outcome.status === "missing") {
+    res.status(404).json({ error: "SOS not found" });
+    return;
+  }
+  if (outcome.status !== "resolved") {
     res.status(503).json({ code: "SOS_STORAGE_UNAVAILABLE", error: "SOS storage unavailable" });
     return;
   }
-  // ARC-H8 companion: free the teams whose missions pointed at this SOS.
-  await clearTeamMissionsForSos(id).catch(() => false);
+  if (outcome.missionsCleared === 0) {
+    logger.warn({ sosId: id }, "SOS resolved but cleared ZERO team missions — verify no team is stuck busy");
+  } else {
+    logger.info({ sosId: id, missionsCleared: outcome.missionsCleared }, "SOS resolved, team missions cleared");
+  }
   const sos = memorySos.find((s: any) => s.id === id);
   if (sos) sos.status = "resolved";
-  res.json({ success: true });
+  res.json({ success: true, missionsCleared: outcome.missionsCleared });
 });
 
 router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) => {

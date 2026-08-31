@@ -311,11 +311,12 @@ export async function approveVolunteerAtomically(registrationId: string, registr
 }
 
 export type TeamJoinResult =
-  | { status: "joined"; member: Record<string, any> }
+  | { status: "joined"; member: Record<string, any>; tokenGen: number }
   | { status: "code-invalid" }
   | { status: "code-expired" }
   | { status: "code-exhausted" }
   | { status: "team-inactive" }
+  | { status: "principal-blocked" }
   | { status: "unavailable" };
 
 /**
@@ -326,6 +327,12 @@ export type TeamJoinResult =
  * re-validated (revocation, expiry, use budget), the budget is incremented,
  * and the member record is upserted — so re-joining the same team from the
  * same principal reactivates the same member instead of duplicating it.
+ *
+ * B1 revocation: the redemption re-reads the member's `tokenGen` inside the
+ * transaction and returns it so the route mints a token with the CURRENT
+ * generation. B2 blocking: a principal the dispatcher explicitly blocked
+ * (lost device) is rejected here INSIDE the transaction — no route-level
+ * race can slip a blocked device back onto the map.
  */
 export async function joinTeamAtomically(
   code: string,
@@ -354,9 +361,14 @@ export async function joinTeamAtomically(
         const teamSnap = await tx.get(teamRef);
         if (!teamSnap.exists) return { status: "code-invalid" };
         if (teamSnap.data()?.active === false) return { status: "team-inactive" };
+        const blocked = teamSnap.data()?.blockedPrincipals;
+        if (Array.isArray(blocked) && memberData.principal && blocked.includes(memberData.principal)) {
+          return { status: "principal-blocked" };
+        }
 
         const memberRef = db.collection("teamMembers").doc(memberId);
         const memberSnap = await tx.get(memberRef);
+        const tokenGen = Number(memberSnap.data()?.tokenGen) || 0;
         const member = {
           ...memberData,
           // First join stamps joinedAt; a rejoin keeps the original (undefined
@@ -365,10 +377,14 @@ export async function joinTeamAtomically(
           rejoinCount: (Number(memberSnap.data()?.rejoinCount) || 0) + 1,
           lastSeenAt: now,
           active: true,
+          // tokenGen is PRESERVED on rejoin: a bump applied while the member
+          // was removed must survive the reactivation, or the removal's
+          // revocation would be undone by the very act of rejoining.
+          tokenGen: undefined,
         };
         tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
         tx.update(codeRef, { uses: FieldValue.increment(1), lastUsedAt: now });
-        return { status: "joined", member };
+        return { status: "joined", member, tokenGen };
       });
     }
 
@@ -390,19 +406,25 @@ export async function joinTeamAtomically(
       const teamSnap = await tx.get(teamRef);
       if (!teamSnap.exists()) return { status: "code-invalid" };
       if (teamSnap.data()?.active === false) return { status: "team-inactive" };
+      const blocked = teamSnap.data()?.blockedPrincipals;
+      if (Array.isArray(blocked) && memberData.principal && blocked.includes(memberData.principal)) {
+        return { status: "principal-blocked" };
+      }
 
       const memberRef = doc(db, "teamMembers", memberId);
       const memberSnap = await tx.get(memberRef);
+      const tokenGen = Number(memberSnap.data()?.tokenGen) || 0;
       const member = {
         ...memberData,
         joinedAt: memberSnap.exists() ? undefined : now,
         rejoinCount: (Number(memberSnap.data()?.rejoinCount) || 0) + 1,
         lastSeenAt: now,
         active: true,
+        tokenGen: undefined,
       };
       tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
       tx.update(codeRef, { uses: increment(1), lastUsedAt: now });
-      return { status: "joined", member };
+      return { status: "joined", member, tokenGen };
     });
   } catch (err) {
     logger.error({ err, code: "[join-code]", memberId }, "Atomic team join failed");
@@ -455,5 +477,109 @@ export async function setMissionPhaseAtomically(
   } catch (err) {
     logger.error({ err, teamId, phase }, "Atomic mission phase update failed");
     return { status: "unavailable" };
+  }
+}
+
+export type MissionClearResult =
+  | { status: "cleared"; mission: Record<string, any> }
+  | { status: "no-active-mission" }
+  | { status: "unavailable" };
+
+/**
+ * B3 admin lever: force-clear a stuck team mission. Until now the ONLY thing
+ * that freed a dispatched team was resolving its SOS — a mission whose SOS
+ * record was deleted, or that raced a resolve, wedged the team as
+ * "busy forever" with no operator escape. This is the same write SOS-resolve
+ * performs, exposed as a deliberate dispatcher action inside a transaction so
+ * a team racing a phase flip cannot resurrect the mission (same guard as
+ * setMissionPhaseAtomically: cleared stays cleared).
+ */
+export async function clearTeamMissionAtomically(
+  teamId: string,
+  now = Date.now()
+): Promise<MissionClearResult> {
+  const db = getDb();
+  if (!db) return { status: "unavailable" };
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any): Promise<MissionClearResult> => {
+        const missionRef = db.collection("teamMissions").doc(teamId);
+        const missionSnap = await tx.get(missionRef);
+        if (!missionSnap.exists || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
+          return { status: "no-active-mission" };
+        }
+        tx.update(missionRef, { phase: "cleared", clearedAt: now, clearedBy: "admin" });
+        return { status: "cleared", mission: { ...missionSnap.data(), phase: "cleared", clearedAt: now } };
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any): Promise<MissionClearResult> => {
+      const missionRef = doc(db, "teamMissions", teamId);
+      const missionSnap = await tx.get(missionRef);
+      if (!missionSnap.exists() || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
+        return { status: "no-active-mission" };
+      }
+      tx.update(missionRef, { phase: "cleared", clearedAt: now, clearedBy: "admin" });
+      return { status: "cleared", mission: { ...missionSnap.data(), phase: "cleared", clearedAt: now } };
+    });
+  } catch (err) {
+    logger.error({ err, teamId }, "Atomic mission clear failed");
+    return { status: "unavailable" };
+  }
+}
+
+export type PrincipalBlockResult = "blocked" | "unblocked" | "missing" | "unavailable";
+
+/**
+ * B2 device blocking: add/remove a principal on the team's blocklist. A
+ * REMOVED member's device keeps its public principal (cookie) forever —
+ * tokenGen revocation kills its token, but with a live join code it could
+ * still mint a fresh one. A blocked principal is rejected INSIDE the join
+ * transaction (joinTeamAtomically), so no route race can re-enroll it.
+ * Read-modify-write inside one transaction keeps the list collision-free
+ * against concurrent block/unblock calls.
+ */
+export async function setPrincipalBlocked(
+  teamId: string,
+  principal: string,
+  blocked: boolean
+): Promise<PrincipalBlockResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    if (isAdminDb(db)) {
+      return await db.runTransaction(async (tx: any): Promise<PrincipalBlockResult> => {
+        const teamRef = db.collection("teams").doc(teamId);
+        const teamSnap = await tx.get(teamRef);
+        if (!teamSnap.exists) return "missing";
+        const data = teamSnap.data() || {};
+        const current: string[] = Array.isArray(data.blockedPrincipals)
+          ? data.blockedPrincipals.filter((p: unknown) => typeof p === "string")
+          : [];
+        if (blocked && current.includes(principal)) return "blocked"; // idempotent
+        if (!blocked && !current.includes(principal)) return "unblocked"; // idempotent
+        const next = blocked ? [...current, principal] : current.filter((p) => p !== principal);
+        tx.update(teamRef, { blockedPrincipals: next });
+        return blocked ? "blocked" : "unblocked";
+      });
+    }
+    const { doc, runTransaction } = await import("firebase/firestore");
+    return await runTransaction(db, async (tx: any): Promise<PrincipalBlockResult> => {
+      const teamRef = doc(db, "teams", teamId);
+      const teamSnap = await tx.get(teamRef);
+      if (!teamSnap.exists()) return "missing";
+      const data = teamSnap.data() || {};
+      const current: string[] = Array.isArray(data.blockedPrincipals)
+        ? data.blockedPrincipals.filter((p: unknown) => typeof p === "string")
+        : [];
+      if (blocked && current.includes(principal)) return "blocked";
+      if (!blocked && !current.includes(principal)) return "unblocked";
+      const next = blocked ? [...current, principal] : current.filter((p) => p !== principal);
+      tx.update(teamRef, { blockedPrincipals: next });
+      return blocked ? "blocked" : "unblocked";
+    });
+  } catch (err) {
+    logger.error({ err, teamId, principal: "[principal]" }, "Atomic principal block update failed");
+    return "unavailable";
   }
 }

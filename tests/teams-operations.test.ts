@@ -25,13 +25,17 @@ const fsMock = vi.hoisted(() => ({
   docSet: vi.fn(async (..._a: any[]) => true as any),
   docMergeSet: vi.fn(async (..._a: any[]) => true as any),
   docUpdate: vi.fn(async (..._a: any[]) => true as any),
+  docDeleteFields: vi.fn(async (..._a: any[]) => true as any),
+  incrementDocField: vi.fn(async (..._a: any[]) => true as any),
   invalidateCollectionCache: vi.fn(),
   invalidateDocCache: vi.fn(),
 }));
 
 const atomicMock = vi.hoisted(() => ({
-  joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {} }) as any),
+  joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {}, tokenGen: 0 }) as any),
   setMissionPhaseAtomically: vi.fn(async (..._a: any[]) => ({ status: "updated", mission: { sosId: "sos-1", phase: "on_scene" } }) as any),
+  clearTeamMissionAtomically: vi.fn(async (..._a: any[]) => ({ status: "cleared", mission: {} }) as any),
+  setPrincipalBlocked: vi.fn(async (..._a: any[]) => "blocked" as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -58,8 +62,8 @@ function nextIp() {
 }
 
 const adminAuth = () => ({ authorization: `Bearer ${generateAdminToken()}` });
-const memberAuth = (memberId: string, teamId = "team-a1") => ({
-  authorization: `Bearer ${createTeamMemberToken(memberId, teamId)}`,
+const memberAuth = (memberId: string, teamId = "team-a1", tokenGen = 0) => ({
+  authorization: `Bearer ${createTeamMemberToken(memberId, teamId, tokenGen)}`,
 });
 
 function memberFixture(memberId: string) {
@@ -73,7 +77,11 @@ beforeEach(() => {
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docMergeSet.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
+  fsMock.docDeleteFields.mockReset().mockResolvedValue(true);
+  fsMock.incrementDocField.mockReset().mockResolvedValue(true);
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
+  atomicMock.clearTeamMissionAtomically.mockReset().mockResolvedValue({ status: "cleared", mission: {} });
+  atomicMock.setPrincipalBlocked.mockReset().mockResolvedValue("blocked");
 });
 
 function heartbeatableMocks(memberId: string) {
@@ -191,6 +199,24 @@ describe("POST /api/teams/heartbeat", () => {
     expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
   });
 
+  it("B1: rejects a token minted BEFORE the member's current tokenGen (MEMBER_REVOKED)", async () => {
+    // The dispatcher removed this member once: tokenGen was bumped to 2.
+    // Tokens from gen 0 (and gen 1) are dead even though active is true again.
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-gen"), tokenGen: 2 };
+      if (collection === "teams") return { teamId: "team-a1", name: "U", nameAr: "و", type: "protection_civile", active: true };
+      return null;
+    });
+    const app = createApp();
+    const stale = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-gen", "team-a1", 1)).set(nextIp()).send({ lat: 36.7, lng: 5.0 });
+    expect(stale.status).toBe(403);
+    expect(stale.body.code).toBe("MEMBER_REVOKED");
+    // A token carrying the CURRENT generation passes and records the ping.
+    const fresh = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-gen", "team-a1", 2)).set(nextIp()).send({ lat: 36.7, lng: 5.0 });
+    expect(fresh.status).toBe(200);
+    expect(listPositions({ teamId: "team-a1" })).toHaveLength(1);
+  });
+
   it("maintains a bounded trail and rejects absurd payloads", async () => {
     heartbeatableMocks("tm-payload");
     const app = createApp();
@@ -277,6 +303,81 @@ describe("POST /api/teams/mission/phase", () => {
     expect(deadTeam.body.code).toBe("TEAM_INACTIVE");
     expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
   });
+
+  it("B1: a stale-generation token cannot flip the mission phase either", async () => {
+    // The removal happened AFTER this token was minted (tokenGen bumped to 3,
+    // token still says gen 2). active:true again would not save it.
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-phase-gen"), tokenGen: 3 };
+      if (collection === "teams") return { teamId: "team-a1", name: "U", nameAr: "و", type: "protection_civile", active: true };
+      return null;
+    });
+    const res = await supertest(createApp()).post("/api/teams/mission/phase").set(memberAuth("tm-phase-gen", "team-a1", 2)).set(nextIp()).send({ phase: "on_scene" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("MEMBER_REVOKED");
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
+  });
+});
+
+describe("PATCH /api/teams/:id — dispatcher levers (B3)", () => {
+  it("renames a team and persists only the given fields", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string, id: string) => {
+      if (collection === "teams") return { teamId: id, name: "Old", nameAr: "قديم", type: "volunteers", active: true };
+      return null;
+    });
+    const res = await supertest(createApp()).patch("/api/teams/team-a1").set(adminAuth()).set(nextIp()).send({ nameAr: "جديد" });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(fsMock.docUpdate).toHaveBeenCalledWith("teams", "team-a1", expect.objectContaining({ nameAr: "جديد" }));
+    expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teams", "team-a1");
+  });
+
+  it("deactivates a team (the previously dead active:false guard becomes reachable)", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string, id: string) => {
+      if (collection === "teams") return { teamId: id, name: "U", nameAr: "و", type: "volunteers", active: false };
+      return null;
+    });
+    const res = await supertest(createApp()).patch("/api/teams/team-a1").set(adminAuth()).set(nextIp()).send({ active: false });
+    expect(res.status).toBe(200);
+    expect(fsMock.docUpdate).toHaveBeenCalledWith("teams", "team-a1", expect.objectContaining({ active: false }));
+  });
+
+  it("404 for an unknown team, 400 for an empty or invalid update, 401 unauthenticated", async () => {
+    fsMock.docGet.mockResolvedValue(null);
+    const app = createApp();
+    expect((await supertest(app).patch("/api/teams/team-a1").set(adminAuth()).set(nextIp()).send({ name: "XY" })).status).toBe(404);
+    fsMock.docGet.mockResolvedValue({ teamId: "team-a1", name: "U", nameAr: "و", type: "volunteers", active: true });
+    expect((await supertest(app).patch("/api/teams/team-a1").set(adminAuth()).set(nextIp()).send({})).status).toBe(400);
+    expect((await supertest(app).patch("/api/teams/team-a1").set(adminAuth()).set(nextIp()).send({ active: "yes" })).status).toBe(400);
+    expect((await supertest(app).patch("/api/teams/team-a1").send({ active: false })).status).toBe(401);
+  });
+});
+
+describe("DELETE /api/teams/:id/mission — force-clear lever (B3)", () => {
+  it("clears a stuck mission transactionally and 404s when none is active", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams") return { teamId: "team-a1", name: "U", nameAr: "و", type: "volunteers", active: true };
+      return null;
+    });
+    const app = createApp();
+    const ok = await supertest(app).delete("/api/teams/team-a1/mission").set(adminAuth()).set(nextIp());
+    expect(ok.status).toBe(200);
+    expect(ok.body.ok).toBe(true);
+    expect(atomicMock.clearTeamMissionAtomically).toHaveBeenCalledWith("team-a1");
+    expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teamMissions", "team-a1");
+
+    atomicMock.clearTeamMissionAtomically.mockResolvedValueOnce({ status: "no-active-mission" });
+    const none = await supertest(app).delete("/api/teams/team-a1/mission").set(adminAuth()).set(nextIp());
+    expect(none.status).toBe(404);
+    expect(none.body.code).toBe("NO_ACTIVE_MISSION");
+  });
+
+  it("401 without admin and 404 for an unknown team", async () => {
+    fsMock.docGet.mockResolvedValue(null);
+    const app = createApp();
+    expect((await supertest(app).delete("/api/teams/team-a1/mission").set(nextIp())).status).toBe(401);
+    expect((await supertest(app).delete("/api/teams/team-a1/mission").set(adminAuth()).set(nextIp())).status).toBe(404);
+  });
 });
 
 describe("POST /api/teams — team registration", () => {
@@ -328,6 +429,21 @@ describe("DELETE /api/teams/:id/members/:memberId — dispatcher removes a membe
     expect(ok.status).toBe(200);
     expect(listPositions()).toHaveLength(0);
     expect(fsMock.docUpdate).toHaveBeenCalledWith("teamMembers", memberId, expect.objectContaining({ active: false }));
+    // B1: the generation bump — every token of this member dies at the gates.
+    expect(fsMock.incrementDocField).toHaveBeenCalledWith("teamMembers", memberId, "tokenGen", 1);
+    // B2 (owner decision 4): last-known GPS is purged from the member doc.
+    expect(fsMock.docDeleteFields).toHaveBeenCalledWith("teamMembers", memberId, ["lastKnownLat", "lastKnownLng", "lastSeenAt"]);
+
+    // B2: blockPrincipal:true also bars the device from re-joining via code.
+    atomicMock.setPrincipalBlocked.mockClear();
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture(memberId), principal: "principal-abc123" };
+      return null;
+    });
+    const blocked = await supertest(app).delete(`/api/teams/team-a1/members/${memberId}`).set(adminAuth()).set(nextIp()).send({ blockPrincipal: true });
+    expect(blocked.status).toBe(200);
+    expect(blocked.body.blockedPrincipal).toBe(true);
+    expect(atomicMock.setPrincipalBlocked).toHaveBeenCalledWith("team-a1", "principal-abc123", true);
 
     // foreign member (different team) → 404, nothing written
     fsMock.docGet.mockImplementation(async (collection: string) => {
@@ -407,5 +523,25 @@ describe("GET /api/teams — command-center roster", () => {
 
   it("requires admin", async () => {
     expect((await supertest(createApp()).get("/api/teams").set(nextIp())).status).toBe(401);
+  });
+
+  it("B3: includeInactive=1 exposes deactivated teams (with the active flag) for the re-activate lever", async () => {
+    fsMock.collectionGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams")
+        return [
+          { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true, blockedPrincipals: ["p-1"] },
+          { teamId: "team-dead", name: "Gone", nameAr: "منحل", type: "volunteers", active: false, blockedPrincipals: [] },
+        ];
+      return [];
+    });
+    fsMock.docGet.mockResolvedValue(null);
+    const app = createApp();
+    const hidden = await supertest(app).get("/api/teams").set(adminAuth()).set(nextIp());
+    expect(hidden.body).toHaveLength(1);
+    expect(hidden.body[0].blockedPrincipals).toEqual(["p-1"]);
+    const shown = await supertest(app).get("/api/teams?includeInactive=1").set(adminAuth()).set(nextIp());
+    expect(shown.body).toHaveLength(2);
+    const dead = shown.body.find((t: any) => t.teamId === "team-dead");
+    expect(dead.active).toBe(false);
   });
 });

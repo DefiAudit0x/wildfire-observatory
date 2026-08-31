@@ -13,6 +13,7 @@ const fsMock = vi.hoisted(() => ({
   createSosWithAdmission: vi.fn(async (..._a: any[]) => "created" as any),
   appendSosDispatch: vi.fn(async (..._a: any[]) => "ok" as any),
   clearTeamMissionsForSos: vi.fn(async (..._a: any[]) => true as any),
+  resolveSosAtomically: vi.fn(async (..._a: any[]) => ({ status: "resolved", missionsCleared: 1 }) as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -58,6 +59,8 @@ beforeEach(() => {
   fsMock.appendSosDispatch.mockResolvedValue("ok");
   fsMock.clearTeamMissionsForSos.mockReset();
   fsMock.clearTeamMissionsForSos.mockResolvedValue(true);
+  fsMock.resolveSosAtomically.mockReset();
+  fsMock.resolveSosAtomically.mockResolvedValue({ status: "resolved", missionsCleared: 1 });
 });
 
 describe("POST /api/sos", () => {
@@ -194,10 +197,37 @@ describe("POST /api/sos rate limiting", () => {
 describe("SOS durable lifecycle mutations", () => {
   const adminAuth = () => ({ authorization: `Bearer ${generateAdminToken()}` });
 
+  it("B4: resolve runs the atomic tx and surfaces the cleared-mission count", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "resolved", missionsCleared: 2 });
+
+    const resolve = await supertest(app)
+      .post(`/api/sos/${created.body.id}/resolve`)
+      .set(adminAuth());
+
+    expect(resolve.status).toBe(200);
+    expect(resolve.body.success).toBe(true);
+    expect(resolve.body.missionsCleared).toBe(2);
+    expect(fsMock.resolveSosAtomically).toHaveBeenCalledWith(created.body.id);
+  });
+
+  it("B4: 404 when the SOS doc is missing (the tx knows, no silent guess)", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "missing" });
+
+    const resolve = await supertest(app)
+      .post(`/api/sos/${created.body.id}/resolve`)
+      .set(adminAuth());
+
+    expect(resolve.status).toBe(404);
+  });
+
   it("does not claim resolve success when durable update fails", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
-    fsMock.docUpdate.mockResolvedValueOnce(false);
+    fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "unavailable" });
 
     const resolve = await supertest(app)
       .post(`/api/sos/${created.body.id}/resolve`)

@@ -23,8 +23,10 @@ const fsMock = vi.hoisted(() => ({
 }));
 
 const atomicMock = vi.hoisted(() => ({
-  joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {} }) as any),
+  joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {}, tokenGen: 0 }) as any),
   setMissionPhaseAtomically: vi.fn(async (..._a: any[]) => ({ status: "updated", mission: {} }) as any),
+  clearTeamMissionAtomically: vi.fn(async (..._a: any[]) => ({ status: "cleared", mission: {} }) as any),
+  setPrincipalBlocked: vi.fn(async (..._a: any[]) => "blocked" as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -55,7 +57,7 @@ beforeEach(() => {
   fsMock.docGet.mockReset().mockResolvedValue(null);
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
-  atomicMock.joinTeamAtomically.mockReset().mockResolvedValue({ status: "joined", member: {} });
+  atomicMock.joinTeamAtomically.mockReset().mockResolvedValue({ status: "joined", member: {}, tokenGen: 0 });
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
 });
 
@@ -91,6 +93,32 @@ describe("POST /api/teams/join — happy path", () => {
     expect(memberId).toBe(res.body.memberId);
     expect(memberData).toMatchObject({ teamId: "team-a1", name: "فريق الجبل" });
     expect(memberData.principal).toMatch(/[0-9a-f-]{36}/);
+  });
+
+  it("B1: mints the token with the tokenGen read inside the redemption transaction", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamJoinCodes") return { teamId: "team-a1", revoked: false, expiresAt: Date.now() + 3_600_000, uses: 0, maxUses: 12 };
+      if (collection === "teams") return { teamId: "team-a1", name: "T", nameAr: "ت", active: true };
+      return null;
+    });
+    // A member removed once and now legitimately re-joining: tokenGen 1.
+    atomicMock.joinTeamAtomically.mockResolvedValueOnce({ status: "joined", member: {}, tokenGen: 1 });
+    const res = await supertest(createApp()).post("/api/teams/join").set(nextIp()).send({ code: "ABCD2345", name: "فريق" });
+    expect(res.status).toBe(200);
+    expect(verifyTeamMemberToken(res.body.token)?.gen).toBe(1);
+  });
+
+  it("B2: a blocked principal is rejected with 403 and never receives a token", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamJoinCodes") return { teamId: "team-a1", revoked: false, expiresAt: Date.now() + 3_600_000, uses: 0, maxUses: 12 };
+      if (collection === "teams") return { teamId: "team-a1", name: "T", nameAr: "ت", active: true };
+      return null;
+    });
+    atomicMock.joinTeamAtomically.mockResolvedValueOnce({ status: "principal-blocked" });
+    const res = await supertest(createApp()).post("/api/teams/join").set(nextIp()).send({ code: "ABCD2345", name: "فريق" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("principal-blocked");
+    expect(res.body.token).toBeUndefined();
   });
 
   it("produces the SAME memberId for the same principal+team and a different one per team", async () => {
@@ -201,6 +229,24 @@ describe("POST /api/teams/join — failure paths", () => {
     expect(fsMock.invalidateCollectionCache).toHaveBeenCalledWith("teamJoinCodes");
     expect(fsMock.invalidateCollectionCache).toHaveBeenCalledWith("teamMembers");
     expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teamMembers", expect.stringMatching(/^tm-/));
+  });
+
+  it("T2: 429s the 11th join attempt from one address inside the hour window", async () => {
+    // Online code guessing is what this limiter exists to kill: 10/h/IP.
+    fsMock.docGet.mockResolvedValue(null); // every attempt 404s (still consumes the bucket)
+    const app = createApp();
+    const sameIp = { "X-Forwarded-For": "10.78.77.77" };
+    for (let i = 0; i < 10; i += 1) {
+      const res = await supertest(app).post("/api/teams/join").set(sameIp).send({ code: `ZZZZ${1000 + i}`, name: "فريق" });
+      expect(res.status).toBe(404);
+    }
+    const eleventh = await supertest(app).post("/api/teams/join").set(sameIp).send({ code: "ZZZZ9999", name: "فريق" });
+    expect(eleventh.status).toBe(429);
+    // A different address still gets a normal (404) answer — the bucket is per-IP.
+    // (A literal, not nextIp(): the module-level limiter is shared across this
+    // file's tests and nextIp() values collide across createApp() resets.)
+    const otherIp = await supertest(app).post("/api/teams/join").set({ "X-Forwarded-For": "10.78.55.55" }).send({ code: "ZZZZ9999", name: "فريق" });
+    expect(otherIp.status).toBe(404);
   });
 });
 
