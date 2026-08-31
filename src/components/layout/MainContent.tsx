@@ -9,6 +9,7 @@ import AICopilot from "../AICopilot";
 import SafetyGuides from "../SafetyGuides";
 import EvacuationRadar from "../EvacuationRadar";
 import VolunteerRegistration from "../VolunteerRegistration";
+import TeamPanel from "../TeamPanel";
 import SafeEvacuation from "../SafeEvacuation";
 import HomeHub from "../HomeHub";
 import EmergencyContactsCard from "./EmergencyContactsCard";
@@ -126,6 +127,13 @@ export default function MainContent({
         </div>
       )}
 
+      {/* Team member panel (Phase 2): join by code, GPS heartbeat, mission state */}
+      {activeTab === "team" && (
+        <div className="col-span-12 animate-fadeIn">
+          <TeamPanel lang={lang} />
+        </div>
+      )}
+
       {/* Central Command - full-screen command dashboard */}
       {activeTab === "command" && privilegedTabVisible && (
         <Suspense fallback={<PanelFallback isArabic={isArabic} labelAr="غرفة القيادة" labelFr="commandement central" />}>
@@ -165,7 +173,7 @@ export default function MainContent({
       )}
 
       {/* Normal layout columns */}
-      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && activeTab !== "roster" && activeTab !== "report" && (
+      {activeTab !== "radar" && activeTab !== "admin" && activeTab !== "volunteer" && activeTab !== "command" && activeTab !== "evac" && activeTab !== "home" && activeTab !== "roster" && activeTab !== "report" && activeTab !== "team" && (
         <>
           {/* Live statistics summary cards */}
           {activeTab === "map" && (
