@@ -4,6 +4,7 @@ import { MapPin, Users } from "lucide-react";
 import { Report, SatelliteHotspot, TrappedSOS } from "../../types";
 import { TeamStatus, getTeamStatusBadge } from "./teams";
 import { UserLocationData } from "./StatCards";
+import { MapTeamMember } from "./registeredTeams";
 
 interface FocusTarget {
   lat: number;
@@ -18,6 +19,7 @@ interface CommandMapProps {
   reports: Report[];
   sosCalls: TrappedSOS[];
   teams: TeamStatus[];
+  teamMembers: MapTeamMember[];
   focus: FocusTarget | null;
 }
 
@@ -27,7 +29,7 @@ function esc(value: unknown): string {
   return div.innerHTML;
 }
 
-export default function CommandMap({ isArabic, satellites, activeUsers, reports, sosCalls, teams, focus }: CommandMapProps) {
+export default function CommandMap({ isArabic, satellites, activeUsers, reports, sosCalls, teams, teamMembers, focus }: CommandMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
@@ -184,7 +186,69 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       `).addTo(layer);
     });
 
-    // Active Teams (Civil Protection & Volunteers)
+    // Team Mode (Phase 1): REAL field-team member positions from the live
+    // registry (GET /api/teams) — breadcrumb trail, accuracy circle, and a
+    // labelled marker per member. Distinct from the simulated team markers
+    // below (square badge + name chip instead of emoji roundel).
+    teamMembers.forEach((m) => {
+      const color = m.teamType === "protection_civile" ? "#ef4444" : "#10b981";
+      if (m.trail.length >= 2) {
+        L.polyline(m.trail.map((p) => [p.lat, p.lng] as [number, number]), {
+          color,
+          weight: 2,
+          opacity: 0.55,
+          dashArray: "4 6",
+        }).addTo(layer);
+      }
+      if (m.online && m.accuracy !== null && m.accuracy > 0) {
+        L.circle([m.lat, m.lng], {
+          radius: m.accuracy,
+          color,
+          weight: 1,
+          opacity: 0.35,
+          fillOpacity: 0.06,
+        }).addTo(layer);
+      }
+      L.marker([m.lat, m.lng], {
+        icon: L.divIcon({
+          className: "",
+          html: `
+            <div style="position:relative; width:120px;">
+              <div style="
+                width:26px;height:26px;border-radius:8px;
+                display:flex;align-items:center;justify-content:center;
+                font-size:12px;font-weight:900;color:#000;
+                background:${color};
+                border:2px solid rgba(255,255,255,0.85);
+                box-shadow:0 0 14px rgba(0,0,0,0.5);
+                ${m.online ? "" : "opacity:0.45;"}
+              ">⌖</div>
+              <div style="
+                position:absolute;top:-16px;left:50%;transform:translateX(-50%);
+                white-space:nowrap;font-size:9px;font-weight:700;
+                background:rgba(9,9,11,0.85);color:#e4e4e7;
+                padding:1px 5px;border-radius:4px;border:1px solid rgba(255,255,255,0.12);
+                max-width:118px;overflow:hidden;text-overflow:ellipsis;
+              ">${esc(m.name)}</div>
+            </div>
+          `,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13],
+        }),
+      }).bindPopup(`
+        <div class="text-xs font-mono p-1 space-y-1" dir="${isArabic ? "rtl" : "ltr"}">
+          <strong style="color:${color};">⌖ ${esc(m.name)}</strong><br/>
+          <span class="text-slate-300">${esc(m.teamName)}</span><br/>
+          ${isArabic ? "الحالة" : "Statut"}: ${m.online ? (isArabic ? "متصل" : "En ligne") : isArabic ? "غير متصل" : "Hors ligne"}<br/>
+          ${m.speed !== null ? `${isArabic ? "السرعة" : "Vitesse"}: ${(m.speed * 3.6).toFixed(0)} km/h<br/>` : ""}
+          ${m.batteryPct !== null ? `${isArabic ? "البطارية" : "Batterie"}: ${Math.round(m.batteryPct)}%<br/>` : ""}
+          ${m.lastSeen ? `${isArabic ? "آخر نبضة" : "Dernier ping"}: ${new Date(m.lastSeen).toLocaleTimeString()}<br/>` : ""}
+          <span class="text-gray-500">GPS: ${m.lat.toFixed(5)}, ${m.lng.toFixed(5)}</span>
+        </div>
+      `).addTo(layer);
+    });
+
+    // Active Teams (Civil Protection & Volunteers) — SIMULATED legacy rows
     teams.forEach((t) => {
       const badge = getTeamStatusBadge(t, isArabic);
 
@@ -228,7 +292,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       mapInstance.current.fitBounds(group.getBounds().pad(0.2));
       didFitRef.current = true;
     }
-  }, [activeUsers, satellites, reports, sosCalls, isArabic, teams]);
+  }, [activeUsers, satellites, reports, sosCalls, isArabic, teams, teamMembers]);
 
   // External focus target (e.g. from table "تحديد" buttons)
   useEffect(() => {
