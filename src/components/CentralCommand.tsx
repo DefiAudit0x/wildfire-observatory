@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Report, SatelliteHotspot, Language, TrappedSOS } from "../types";
 import { Crown, RefreshCw } from "lucide-react";
 import CommandLock from "./command/CommandLock";
@@ -7,12 +7,15 @@ import CommandMap from "./command/CommandMap";
 import SosPanel from "./command/SosPanel";
 import ActivityFeed from "./command/ActivityFeed";
 import TeamsTable from "./command/TeamsTable";
+import RegisteredTeams from "./command/RegisteredTeams";
 import ActiveUsersTable from "./command/ActiveUsersTable";
 import ReportsTable from "./command/ReportsTable";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
 import { getTeamsStatusAndPositions, getTeamNames, getTeamStatusBadge, TeamStatus } from "./command/teams";
+import { RegisteredTeam, MapTeamMember } from "./command/registeredTeams";
+import { apiFetch, isSessionExpiry } from "../utils/adminApi";
 
 interface CentralCommandProps {
   reports: Report[];
@@ -43,6 +46,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const [dispatchLoading, setDispatchLoading] = useState(false);
   const [focus, setFocus] = useState<FocusTarget | null>(null);
   const [fullSos, setFullSos] = useState<TrappedSOS[]>(sosCalls);
+  const [registeredTeams, setRegisteredTeams] = useState<RegisteredTeam[]>([]);
   const isArabic = lang === "ar";
   const [confirmResolve, setConfirmResolve] = useState<TrappedSOS | null>(null);
   const { toasts, push } = useToasts();
@@ -112,17 +116,35 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRefresh]);
 
+  const fetchRegisteredTeams = useCallback(async () => {
+    if (!unlocked) return;
+    try {
+      const res = await apiFetch("/api/teams", "GET");
+      if (res.ok) {
+        const data = (await res.json()) as RegisteredTeam[];
+        if (Array.isArray(data)) setRegisteredTeams(data);
+      } else if (isSessionExpiry(res)) {
+        setUnlocked(false);
+      }
+      // Silent on transient errors: the next 15s poll recovers on its own.
+    } catch {
+      // Network hiccup — the poll loop retries.
+    }
+  }, [unlocked]);
+
   useEffect(() => {
     if (unlocked) {
       fetchFullSos();
       fetchUserLocations();
+      fetchRegisteredTeams();
       const interval = setInterval(() => {
         fetchFullSos();
         fetchUserLocations();
+        fetchRegisteredTeams();
       }, 15000);
       return () => clearInterval(interval);
     }
-  }, [unlocked, fetchFullSos, fetchUserLocations]);
+  }, [unlocked, fetchFullSos, fetchUserLocations, fetchRegisteredTeams]);
 
   useEffect(() => {
     let cancelled = false;
@@ -146,6 +168,31 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   }, []);
 
   const teams = getTeamsStatusAndPositions(fullSos);
+  // Memoized: the map's marker effect rebuilds on identity change — without
+  // this, every unrelated CentralCommand render would churn the layer too.
+  const mapTeamMembers: MapTeamMember[] = useMemo(
+    () =>
+      registeredTeams.flatMap((team) =>
+        team.members
+          .filter((m) => m.lat !== null && m.lng !== null)
+          .map((m) => ({
+            memberId: m.memberId,
+            name: m.name,
+            online: m.online,
+            lat: m.lat as number,
+            lng: m.lng as number,
+            accuracy: m.accuracy,
+            speed: m.speed,
+            batteryPct: m.batteryPct,
+            lastSeen: m.lastSeenAt,
+            trail: m.trail,
+            teamId: team.teamId,
+            teamName: isArabic ? team.nameAr : team.name,
+            teamType: team.type,
+          }))
+      ),
+    [registeredTeams, isArabic]
+  );
 
   const handleUnlocked = () => {
     setUnlocked(true);
@@ -196,6 +243,35 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     } finally {
       setDispatchLoading(false);
     }
+  };
+
+  // Team Mode: dispatch a REGISTERED team by its server identity.
+  const handleDispatchRegistered = async (teamId: string, sosId: string, notes: string): Promise<boolean> => {
+    setDispatchLoading(true);
+    try {
+      const ok = await sendDispatchRequest(sosId, { teamId, notes: notes || "" });
+      if (ok) await fetchRegisteredTeams(); // mission state changes → refresh roster
+      return ok;
+    } finally {
+      setDispatchLoading(false);
+    }
+  };
+
+  const handleTargetMember = (teamId: string, memberId: string) => {
+    const team = registeredTeams.find((t) => t.teamId === teamId);
+    const member = team?.members.find((m) => m.memberId === memberId);
+    if (!team || !member || member.lat === null || member.lng === null) return;
+    setFocus({
+      lat: member.lat,
+      lng: member.lng,
+      html: `
+        <div class="text-xs font-mono p-1 text-slate-100" dir="${isArabic ? "rtl" : "ltr"}">
+          <strong class="text-amber-400">⌖ ${esc(member.name)}</strong><br/>
+          <span class="text-slate-300">${esc(isArabic ? team.nameAr : team.name)}</span><br/>
+          <span class="text-gray-500 text-[10px]">GPS: ${member.lat.toFixed(5)}, ${member.lng.toFixed(5)}</span>
+        </div>
+      `,
+    });
   };
 
   const handleDirectDispatch = async (teamId: string, sosId: string, notes: string): Promise<boolean> => {
@@ -334,6 +410,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           reports={reports}
           sosCalls={fullSos}
           teams={teams}
+          teamMembers={mapTeamMembers}
           focus={focus}
         />
 
@@ -353,6 +430,17 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       </div>
 
       {/* Rescue & Support Teams Panel & Dispatcher Table */}
+      <RegisteredTeams
+        isArabic={isArabic}
+        teams={registeredTeams}
+        sosCalls={fullSos}
+        dispatchLoading={dispatchLoading}
+        onDispatch={handleDispatchRegistered}
+        onTargetMember={handleTargetMember}
+        onTeamsChanged={fetchRegisteredTeams}
+        onSessionExpired={() => setUnlocked(false)}
+        notify={push}
+      />
       <TeamsTable
         isArabic={isArabic}
         teams={teams}

@@ -48,5 +48,25 @@ service cloud.firestore {
     match /units/{unit}/rosterDays/{date} {
       allow read, write: if false;
     }
+
+    // Team Mode (Phase 1): registered field teams, their join codes, their
+    // members (including GPS snapshots) and mission locks. All four are
+    // server-only — member positions and principal bindings never become
+    // client-readable through the public SDK.
+    match /teams/{team} {
+      allow read, write: if false;
+    }
+
+    match /teamJoinCodes/{code} {
+      allow read, write: if false;
+    }
+
+    match /teamMembers/{member} {
+      allow read, write: if false;
+    }
+
+    match /teamMissions/{mission} {
+      allow read, write: if false;
+    }
   }
 }

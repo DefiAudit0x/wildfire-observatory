@@ -62,11 +62,17 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   try {
     const decoded = jwt.verify(token, config.jwtSecret) as AuthPayload;
 
-    // C2 fix: strict scope separation — a mesh token is issued anonymously to
-    // any visitor for the /ws relay only. It is NOT a session credential and
-    // must never pass the staff/admin authentication gate.
-    if ((decoded as any).scope === "mesh") {
+    // C2 fix (extended by Team Mode): strict scope separation. Anonymous and
+    // capability tokens — mesh relay, public principal, team-member GPS — are
+    // issued for one narrow channel each. None of them is a session credential
+    // and none may pass the staff/admin authentication gate.
+    const scope = (decoded as { scope?: unknown }).scope;
+    if (scope === "mesh") {
       res.status(403).json({ error: "Forbidden: mesh tokens are not session credentials" });
+      return;
+    }
+    if (scope === "team-member" || scope === "public-principal") {
+      res.status(403).json({ error: "Forbidden: this token scope is not a session credential" });
       return;
     }
 
