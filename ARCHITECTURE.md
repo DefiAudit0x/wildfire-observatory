@@ -125,6 +125,21 @@ The member-facing half of Team Mode ships in two surfaces that share one session
 
 The FGS allow-list deliberately uses the UNION of the two existing native trust sets (WebAppInterface's production host + MainActivity's `APP_URL` host — the Railway and Fly deploy targets historically diverged); unifying those two lists into one shared constant is left as tracked tech debt so this PR stays additive.
 
+### 5.5 Mission navigation & verified auto-arrival (roadmap Phase 3) / الملاحة والوصول المؤكد
+
+Phase 3 closes the field loop: the member receives the mission, navigates to it with one tap, and the phase flips to `on_scene` WITHOUT touching the screen (gloves on, smoke, night). Three layers keep a false "arrived" out of the dispatch picture:
+
+- **Mission target**: the dispatch transaction stamps `sosLat`/`sosLng` (sanitized by `saneCoord` — numeric strings coerced, anything non-finite degrades to `null`, never `NaN`, never `0,0`) onto `teamMissions/{teamId}`. `activeMissionOf` carries them into every heartbeat/session/join response, so the web panel AND the native FGS learn the target from the traffic they already receive — no new endpoint, no extra reads. Missions dispatched before this deploy carry `null` coordinates: navigation and auto-arrival simply stay disabled for them and the Phase-1 self-report button remains the only path.
+- **Navigation deep-link**: the panel renders a "فتح الملاحة" button whenever the mission has a usable target. On Android it routes through the origin-gated bridge (`openNavigation(targetJson)`): the payload is re-validated NATIVELY (finite doubles inside the NA coverage bounds — the server's `NA_BOUNDS` mirror) and the `geo:` intent is BUILT from those doubles only, so the WebView never hands a raw URL across the bridge; `startActivity` failures (including the API-30+ package-visibility gap — deliberately no `resolveActivity` probing, no `<queries>` entries) fall back to the Google Maps web URL and finally surface an honest error. In a plain browser it opens the universal `google.com/maps/dir/?api=1` URL with `noopener`.
+- **Verified auto-arrival** (the doctrine both clients mirror — `ARRIVAL_RADIUS_M = 50`, `ARRIVAL_STREAK_NEEDED = 2`):
+  1. *Client streak*: the web JS loop (only while the native FGS is NOT active) and the native service each count CONSECUTIVE fixes inside the 50 m radius; a mission change or one out-of-range fix resets the streak to zero — a single stray GPS jump is not an arrival.
+  2. *One evidence flip per mission*: at streak ≥ 2 the client sends `POST /mission/phase {phase:"on_scene", lat, lng, accuracy}` — the fix itself rides as evidence. The native service marks the mission done (`arrivalFlipDone`), retries only on transport/429/5xx, and treats a 400 verdict as final for that mission (the manual button stays available). The JS loop commits the flip response under its parent beat's sequence number (F7 discipline — fresher than the beat, discarded if any newer source lands first).
+  3. *Server geometry* (`/mission/phase`, behind a new 10/min per-member limiter): evidence coordinates must be inside the coverage bounds, within 50 m of the mission target (haversine on the server — the client's math is never trusted), and CONSISTENT with the member's live registry position (≤300 m mismatch — a device cannot claim on-target coordinates while its real heartbeats come from kilometres away; this is the anti-fabrication net). Evidence-less flips keep the exact Phase-1 self-report contract; a 400 `ARRIVAL_*` is transient-class on the client (never kills a session — fatalFromStatus doctrine).
+
+  The native flip reuses the beat's hardened HTTP path (extracted `postJson`: redirect pin, 10 s timeouts, Bearer token, 4 KB bounded read) and confirms arrival to the panel through the same `beat` event channel plus an "arrived" notification line.
+
+- **Round-C passenger**: `teamJoinCodes` was grow-only; the mint route's existing rotation scan now also sweeps code docs dead (revoked or expired) for more than 7 days (`docDelete`). Deletion is redemption-safe — the join reads by doc id and reports 404 for anything absent.
+
 ---
 
 ## 6. Evolution Plan / خطة التطور

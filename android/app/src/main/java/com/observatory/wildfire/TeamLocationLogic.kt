@@ -17,6 +17,16 @@ object TeamLocationLogic {
     const val MAX_HEARTBEAT_MS = 60_000L
 
     /**
+     * Phase 3 — arrival doctrine (ARCHITECTURE.md §5.5): the FGS may ATTEMPT
+     * an arrival flip only after TWO consecutive fixes inside the radius; the
+     * server re-verifies the geometry against the mission target before
+     * accepting. Mirrors ARRIVAL_RADIUS_M in server/routes/teams.ts and
+     * teamSession.ts.
+     */
+    const val ARRIVAL_RADIUS_M = 50.0
+    const val ARRIVAL_STREAK_NEEDED = 2
+
+    /**
      * Outbound base-URL allow-list for the FGS. This is the UNION of the two
      * native trust sets (WebAppInterface.isTrustedOrigin's production host +
      * MainActivity's APP_URL host — they cover the Railway and Fly deploy
@@ -47,6 +57,73 @@ object TeamLocationLogic {
         if (ms < MIN_HEARTBEAT_MS) MIN_HEARTBEAT_MS
         else if (ms > MAX_HEARTBEAT_MS) MAX_HEARTBEAT_MS
         else ms
+
+    // ========================
+    // PHASE 3 — ARRIVAL GEOMETRY (pure, JVM-testable)
+    // ========================
+
+    /**
+     * Great-circle distance in METERS (haversine) — the native mirror of
+     * server/geo.ts's getHaversineDistance (km) and teamSession.ts's
+     * distanceMeters (meters). Same R = 6371 km everywhere.
+     */
+    fun haversineMeters(lat1: Double, lng1: Double, lat2: Double, lng2: Double): Double {
+        val r = 6_371_000.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLng = Math.toRadians(lng2 - lng1)
+        val a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+            Math.sin(dLng / 2) * Math.sin(dLng / 2)
+        return r * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+    }
+
+    /** One more link in the arrival chain — or a full reset when the fix fell out. */
+    fun nextArrivalStreak(current: Int, distanceM: Double): Int =
+        if (distanceM <= ARRIVAL_RADIUS_M) current + 1 else 0
+
+    fun shouldAutoArrive(streak: Int): Boolean = streak >= ARRIVAL_STREAK_NEEDED
+
+    /**
+     * Mission target from the raw mission JSON substring the beat extractor
+     * produced. Regex-based on purpose (house rule: no org.json in JVM unit
+     * tests — same as parseHeartbeatIntervalMs). Null = no usable target:
+     * the service must SKIP arrival logic (legacy mission / garbled coords),
+     * never treat a missing coordinate as 0,0.
+     */
+    fun parseMissionCoords(missionJson: String?): Pair<Double, Double>? {
+        if (missionJson.isNullOrBlank()) return null
+        val lat = Regex("\"sosLat\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)").find(missionJson)
+            ?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
+        val lng = Regex("\"sosLng\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)").find(missionJson)
+            ?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
+        if (!lat.isFinite() || !lng.isFinite()) return null
+        return lat to lng
+    }
+
+    fun parseMissionPhase(missionJson: String?): String? {
+        if (missionJson.isNullOrBlank()) return null
+        return Regex("\"phase\"\\s*:\\s*\"([a-z_]+)\"").find(missionJson)?.groupValues?.get(1)
+    }
+
+    fun parseMissionSosId(missionJson: String?): String? {
+        if (missionJson.isNullOrBlank()) return null
+        return Regex("\"sosId\"\\s*:\\s*\"([^\"]+)\"").find(missionJson)?.groupValues?.get(1)
+    }
+
+    /**
+     * Evidence flip body: the phase AND the fix that justifies it — the
+     * server re-checks this geometry (radius + coverage + live-position
+     * consistency) before accepting. Non-finite doubles degrade to null and
+     * then the zod gate rejects the flip outright, exactly like the beat.
+     */
+    fun buildPhaseFlipBodyJson(lat: Double, lng: Double, accuracy: Double?): String {
+        val sb = StringBuilder(120)
+        sb.append("{\"phase\":\"on_scene\",\"lat\":").append(jsonNumber(lat))
+        sb.append(",\"lng\":").append(jsonNumber(lng))
+        if (accuracy != null && accuracy.isFinite()) sb.append(",\"accuracy\":").append(jsonNumber(accuracy))
+        sb.append('}')
+        return sb.toString()
+    }
 
     private val MEMBER_ID_REGEX = Regex("^tm-[0-9a-f]{16}$")
     private val TEAM_ID_REGEX = Regex("^[A-Za-z0-9_-]{3,64}$")

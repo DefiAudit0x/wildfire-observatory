@@ -219,4 +219,86 @@ class TeamLocationLogicTest {
         // unterminated object → no balanced close → null (bounded scan)
         assertNull(TeamLocationLogic.extractMissionJson("{\"mission\":{\"sosId\":\"sos-1\""))
     }
+
+    // ========================
+    // PHASE 3 — ARRIVAL GEOMETRY (haversine, streak, target parsing, flip body)
+    // ========================
+
+    @Test
+    fun `haversine matches known distances`() {
+        // Same point → zero
+        assertEquals(0.0, TeamLocationLogic.haversineMeters(36.75, 5.07, 36.75, 5.07), 1e-9)
+        // One degree of latitude ≈ 111.19 km
+        val perDegree = TeamLocationLogic.haversineMeters(36.0, 5.07, 37.0, 5.07)
+        assertEquals(111_190.0, perDegree, 200.0)
+        // Symmetry
+        assertEquals(
+            TeamLocationLogic.haversineMeters(36.75, 5.07, 36.7601, 5.07),
+            TeamLocationLogic.haversineMeters(36.7601, 5.07, 36.75, 5.07),
+            1e-6
+        )
+    }
+
+    @Test
+    fun `arrival streak counts consecutive in-range fixes and fully resets on one miss`() {
+        assertEquals(TeamLocationLogic.ARRIVAL_RADIUS_M, 50.0, 1e-9)
+        assertEquals(TeamLocationLogic.ARRIVAL_STREAK_NEEDED, 2)
+        var s = 0
+        s = TeamLocationLogic.nextArrivalStreak(s, 49.9)
+        assertEquals(1, s)
+        s = TeamLocationLogic.nextArrivalStreak(s, 0.0)
+        assertEquals(2, s)
+        assertTrue(TeamLocationLogic.shouldAutoArrive(s))
+        // boundary: exactly at the radius counts as in range
+        s = TeamLocationLogic.nextArrivalStreak(0, 50.0)
+        assertEquals(1, s)
+        // one stray jump → full reset, not a decrement
+        s = TeamLocationLogic.nextArrivalStreak(s, 50.1)
+        assertEquals(0, s)
+        assertFalse(TeamLocationLogic.shouldAutoArrive(0))
+        assertFalse(TeamLocationLogic.shouldAutoArrive(1))
+    }
+
+    @Test
+    fun `mission target coords parse from the extracted mission object`() {
+        val mission = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42,\"sosLat\":36.7503,\"sosLng\":5.0703"
+        val target = TeamLocationLogic.parseMissionCoords(mission)
+        assertEquals(36.7503, target?.first!!, 1e-9)
+        assertEquals(5.0703, target.second, 1e-9)
+        assertEquals("sos-9", TeamLocationLogic.parseMissionSosId(mission))
+        assertEquals("en_route", TeamLocationLogic.parseMissionPhase(mission))
+    }
+
+    @Test
+    fun `missing or garbage target coords yield null (never 0,0)`() {
+        // Legacy mission without coordinates
+        assertNull(TeamLocationLogic.parseMissionCoords("\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42"))
+        assertNull(TeamLocationLogic.parseMissionCoords(null))
+        assertNull(TeamLocationLogic.parseMissionCoords(""))
+        // Garbage coordinates — a string value is not a number token
+        assertNull(TeamLocationLogic.parseMissionCoords("\"sosLat\":\"abc\",\"sosLng\":5.07"))
+        // Negative coordinates are legitimate (western longitudes)
+        val west = TeamLocationLogic.parseMissionCoords("\"sosLat\":35.1,\"sosLng\":-6.2")
+        assertEquals(-6.2, west?.second!!, 1e-9)
+        // Null/blank ids and phases
+        assertNull(TeamLocationLogic.parseMissionSosId(null))
+        assertNull(TeamLocationLogic.parseMissionPhase("\"sosId\":\"sos-9\""))
+    }
+
+    @Test
+    fun `phase flip body carries the phase and the evidence fix`() {
+        assertEquals(
+            "{\"phase\":\"on_scene\",\"lat\":36.7503,\"lng\":5.0703,\"accuracy\":8.0}",
+            TeamLocationLogic.buildPhaseFlipBodyJson(36.7503, 5.0703, 8.0)
+        )
+        assertEquals(
+            "{\"phase\":\"on_scene\",\"lat\":36.7503,\"lng\":5.0703}",
+            TeamLocationLogic.buildPhaseFlipBodyJson(36.7503, 5.0703, null)
+        )
+        // Non-finite evidence degrades to null — the zod gate will refuse it
+        assertEquals(
+            "{\"phase\":\"on_scene\",\"lat\":null,\"lng\":5.0703}",
+            TeamLocationLogic.buildPhaseFlipBodyJson(Double.NaN, 5.0703, 8.0)
+        )
+    }
 }
