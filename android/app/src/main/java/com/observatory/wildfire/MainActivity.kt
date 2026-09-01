@@ -83,6 +83,12 @@ class MainActivity : AppCompatActivity() {
     // every unbind.
     private var meshMessageListener: ((String) -> Unit)? = null
 
+    // Phase 2: forwards TeamLocationService state changes into the WebView as
+    // `teamTrackingState` CustomEvents (F3 adds the optional mission-JSON
+    // payload). Kept as a field so onDestroy removes THE EXACT instance (same
+    // leak lesson as meshMessageListener below).
+    private var teamStateListener: ((String, String?) -> Unit)? = null
+
     // Audit round 11: the connectivity callback is kept as a field and
     // unregistered in onDestroy — the old code registered a fresh anonymous
     // callback per activity instance and never unregistered it, stacking a
@@ -157,6 +163,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // F13 (A7): the team-state forwarder is registered ONCE per activity —
+        // setupWebView() also runs on renderer recovery, and registering there
+        // stacked duplicate listeners (every state event dispatched twice per
+        // recovery). The dispatch itself is renderer-agnostic (guarded on
+        // webView initialization and re-reads the CURRENT webView), so this
+        // listener safely outlives individual WebView instances and keeps the
+        // panel in sync after every recovery too.
+        val teamListener: (String, String?) -> Unit = { state, payload ->
+            dispatchTeamTrackingState(state, payload)
+        }
+        teamStateListener = teamListener
+        TeamLocationService.addStateListener(teamListener)
+
         // The PWA is useful even when optional mesh permissions are denied.
         // Create it before registering callbacks so network events cannot touch
         // an uninitialized WebView during the permission dialog.
@@ -212,6 +231,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        // Phase 2: remove the EXACT team-state listener instance registered in
+        // setupWebView — a fresh lambda would never match (leak lesson above).
+        teamStateListener?.let { TeamLocationService.removeStateListener(it) }
+        teamStateListener = null
         if (meshBound || meshBindingInProgress) {
             meshMessageListener?.let { meshService?.removeMessageListener(it) }
         synchronized(meshUiQueueLock) {
@@ -361,10 +384,18 @@ class MainActivity : AppCompatActivity() {
                 meshProvider = { meshService },
                 urlProvider = { webView.url ?: "" },
                 deviceIdProvider = { stableDeviceId() },
-                    capabilityProvider = { hasMeshRuntimeCapability() }
+                    capabilityProvider = { hasMeshRuntimeCapability() },
+                appContext = applicationContext
             ),
             "AndroidBridge"
         )
+
+        // Mirror the team-tracking FGS state into the WebView. F13 (A7): the
+        // listener itself is registered ONCE in onCreate — this comment marks
+        // the deliberate absence of a registration here, because setupWebView
+        // also runs on renderer recovery and would stack duplicates.
+        // The service outlives the WebView; the panel re-syncs from events
+        // after every renderer recovery via the single onCreate listener.
 
         // Install the progress observer before starting navigation so a fast
         // load cannot finish before the bridge injection callback exists.
@@ -613,6 +644,32 @@ class MainActivity : AppCompatActivity() {
         runOnUiThread {
             if (::webView.isInitialized) {
                 webView.evaluateJavascript("window.dispatchEvent(new Event('$event'));", null)
+            }
+        }
+    }
+
+    /**
+     * Phase 2: forward a TeamLocationService state change (started / stopped /
+     * revoked / error / beat) into the WebView. The panel never guesses the
+     * native service's state — it asks isTeamTrackingActive() on mount and
+     * listens for these events afterwards.
+     *
+     * F3/S5: for the "beat" state the optional payload is the RAW mission JSON
+     * extracted from the server's heartbeat response. It crosses into the
+     * WebView as a QUOTED string (JSONObject.quote) — the panel JSON.parses it
+     * and re-normalizes it through its own field allow-list — never interpolated
+     * as raw markup, so server-origin text cannot become executable content.
+     */
+    private fun dispatchTeamTrackingState(state: String, payload: String? = null) {
+        if (!::webView.isInitialized) return
+        val escapedState = JSONObject.quote(state)
+        val payloadJs = if (payload != null) ", missionJson: ${JSONObject.quote(payload)}" else ""
+        runOnUiThread {
+            if (::webView.isInitialized) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('teamTrackingState', { detail: { state: $escapedState$payloadJs } }));",
+                    null
+                )
             }
         }
     }

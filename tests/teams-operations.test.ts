@@ -545,3 +545,99 @@ describe("GET /api/teams — command-center roster", () => {
     expect(dead.active).toBe(false);
   });
 });
+
+describe("POST /api/teams/session — Phase 2 resume probe", () => {
+  it("resumes a valid session with team identity, member name and active mission (no GPS required)", async () => {
+    heartbeatableMocks("tm-sess1");
+    const res = await supertest(createApp())
+      .post("/api/teams/session")
+      .set(memberAuth("tm-sess1"))
+      .set(nextIp())
+      .send();
+    expect(res.status).toBe(200);
+    expect(res.body.memberId).toBe("tm-sess1");
+    expect(res.body.teamId).toBe("team-a1");
+    expect(res.body.teamName).toBe("Unité 1");
+    expect(res.body.teamNameAr).toBe("وحدة 1");
+    expect(res.body.name).toContain("عضو");
+    expect(res.body.heartbeatIntervalMs).toBe(15000);
+    expect(res.body.mission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000 });
+  });
+
+  it("401 without a team token", async () => {
+    heartbeatableMocks("tm-sess2");
+    const res = await supertest(createApp()).post("/api/teams/session").set(nextIp()).send();
+    expect(res.status).toBe(401);
+  });
+
+  it("403 MEMBER_INVALID when the membership record vanished or belongs to another team", async () => {
+    // doc-id-agnostic mock: a missing member record IS the ghost-member case.
+    fsMock.docGet.mockResolvedValue(null);
+    const noMember = await supertest(createApp()).post("/api/teams/session").set(memberAuth("tm-ghost")).set(nextIp()).send();
+    expect(noMember.status).toBe(403);
+    expect(noMember.body.code).toBe("MEMBER_INVALID");
+  });
+
+  it("403 MEMBER_REVOKED when the token predates the member's current tokenGen (B1)", async () => {
+    heartbeatableMocks("tm-sess4");
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-sess4"), tokenGen: 3 };
+      if (collection === "teams") return { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true };
+      return null;
+    });
+    // token minted with gen 0 vs member tokenGen 3 → stale
+    const res = await supertest(createApp()).post("/api/teams/session").set(memberAuth("tm-sess4", "team-a1", 0)).set(nextIp()).send();
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("MEMBER_REVOKED");
+  });
+
+  it("403 MEMBER_INACTIVE for a deactivated membership and 403 TEAM_INACTIVE for a dead team", async () => {
+    const app = createApp();
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-sess5"), active: false };
+      return null;
+    });
+    const deactivated = await supertest(app).post("/api/teams/session").set(memberAuth("tm-sess5")).set(nextIp()).send();
+    expect(deactivated.status).toBe(403);
+    expect(deactivated.body.code).toBe("MEMBER_INACTIVE");
+
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return memberFixture("tm-sess6");
+      if (collection === "teams") return { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", active: false };
+      return null;
+    });
+    const deadTeam = await supertest(app).post("/api/teams/session").set(memberAuth("tm-sess6")).set(nextIp()).send();
+    expect(deadTeam.status).toBe(403);
+    expect(deadTeam.body.code).toBe("TEAM_INACTIVE");
+  });
+
+  it("gate PRECEDENCE: inactive member + stale token together → MEMBER_INACTIVE wins by order (P9)", async () => {
+    // The panel classifies by code NAME, not position, so a reorder is
+    // behavior-compatible for the client — but the contract is still pinned:
+    // membership-state gates run BEFORE the revocation gate, mirroring the
+    // heartbeat route byte-for-byte.
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-sess8"), active: false, tokenGen: 3 };
+      return null;
+    });
+    const res = await supertest(createApp())
+      .post("/api/teams/session")
+      .set(memberAuth("tm-sess8", "team-a1", 0))
+      .set(nextIp())
+      .send();
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("MEMBER_INACTIVE");
+  });
+
+  it("returns a null mission when the team has no active mission", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return memberFixture("tm-sess7");
+      if (collection === "teams") return { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true };
+      if (collection === "teamMissions") return { teamId: "team-a1", sosId: "sos-77", phase: "cleared", since: 1000 };
+      return null;
+    });
+    const res = await supertest(createApp()).post("/api/teams/session").set(memberAuth("tm-sess7")).set(nextIp()).send();
+    expect(res.status).toBe(200);
+    expect(res.body.mission).toBeNull();
+  });
+});
