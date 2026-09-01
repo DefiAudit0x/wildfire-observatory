@@ -70,20 +70,33 @@ class TeamLocationService : Service(), LocationListener {
         // State listeners are registered by MainActivity and forwarded into
         // the WebView as `teamTrackingState` CustomEvents. CopyOnWrite: the
         // service thread may emit while the main thread registers/unregisters.
-        private val stateListeners = CopyOnWriteArrayList<(String) -> Unit>()
+        // F3: the second parameter carries an OPTIONAL raw-JSON payload (the
+        // native beat's mission object — see runBeat); every other state
+        // passes null.
+        private val stateListeners = CopyOnWriteArrayList<(String, String?) -> Unit>()
 
-        fun addStateListener(listener: (String) -> Unit) {
+        // F4 (A3/P3): the panel must ASK for the service state, not guess it.
+        // A panel re-mount (tab switch and back) has no "started" event to
+        // listen for — the event fired long ago. This flag is set true only
+        // after every start gate passed, and cleared in onDestroy (which every
+        // stopSelf path funnels through), so it answers "is the FGS alive and
+        // owning the stream" exactly.
+        private val serviceActive = AtomicBoolean(false)
+
+        fun isServiceActive(): Boolean = serviceActive.get()
+
+        fun addStateListener(listener: (String, String?) -> Unit) {
             stateListeners.add(listener)
         }
 
-        fun removeStateListener(listener: (String) -> Unit) {
+        fun removeStateListener(listener: (String, String?) -> Unit) {
             stateListeners.remove(listener)
         }
 
-        private fun emitState(state: String) {
+        private fun emitState(state: String, payload: String? = null) {
             for (listener in stateListeners) {
                 try {
-                    listener(state)
+                    listener(state, payload)
                 } catch (e: Exception) {
                     Log.w(TAG, "state listener threw", e)
                 }
@@ -118,6 +131,19 @@ class TeamLocationService : Service(), LocationListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // F1 (S1/A1): startForegroundService() puts the system on a clock —
+        // startForeground() MUST happen before ANY early exit, or Android 12+
+        // throws ForegroundServiceDidNotStartInTimeException and kills the
+        // whole PROCESS (mesh service included). The old code called stopSelf()
+        // before ever reaching startForeground() on three common first-run
+        // paths (ACTION_STOP, invalid config, FINE permission denied — the
+        // last one being the DEFAULT state on S+ until the user grants it),
+        // i.e. the most ordinary "member presses start without permission"
+        // scenario was a guaranteed crash. The neutral notification goes up
+        // FIRST on every path; only then do we validate and stop cleanly.
+        createNotificationChannel()
+        startInForeground()
+
         if (intent?.action == ACTION_STOP) {
             stopSelf()
             return START_NOT_STICKY
@@ -130,7 +156,7 @@ class TeamLocationService : Service(), LocationListener {
             return START_NOT_STICKY
         }
         if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            // The bridge checks this too — this is the last-line defense.
+            // The bridge checks this too (S3) — this is the last-line defense.
             Log.w(TAG, "Team tracking start rejected: fine location not granted")
             emitState("error")
             stopSelf()
@@ -138,10 +164,9 @@ class TeamLocationService : Service(), LocationListener {
         }
 
         config.set(parsed)
-        createNotificationChannel()
-        startInForeground()
         registerLocationUpdates(parsed.intervalMs)
         scheduleBeats(parsed.intervalMs)
+        serviceActive.set(true)
         emitState("started")
         return START_REDELIVER_INTENT
     }
@@ -159,6 +184,10 @@ class TeamLocationService : Service(), LocationListener {
         latestFix.set(null)
         config.set(null)
         stopForeground(STOP_FOREGROUND_REMOVE)
+        // F4: every stop path (ACTION_STOP, fatal verdict, bridge stopService,
+        // system kill) funnels through onDestroy — this is the single point
+        // where "the FGS owns the stream" becomes false.
+        serviceActive.set(false)
         emitState("stopped")
         super.onDestroy()
     }
@@ -268,6 +297,13 @@ class TeamLocationService : Service(), LocationListener {
             val http = URL(cfg.baseUrl + "/api/teams/heartbeat").openConnection() as HttpURLConnection
             try {
                 http.requestMethod = "POST"
+                // F8 (S2): the JDK silently follows redirects by default. A
+                // 30x from an allow-listed host must NEVER carry the member's
+                // Bearer token (or a replayed POST) to a host the allow-list
+                // did not vet. With the pin, a redirect surfaces as its raw
+                // status → classifyVerdict → RETRY, which is exactly the
+                // doctrine verdict for anything that is not 2xx/401/403.
+                http.instanceFollowRedirects = false
                 http.connectTimeout = 10_000
                 http.readTimeout = 10_000
                 http.doOutput = true
@@ -285,6 +321,17 @@ class TeamLocationService : Service(), LocationListener {
                             config.set(cfg.copy(intervalMs = serverInterval))
                             scheduleBeats(serverInterval)
                         }
+                        // F3 (A2/P2): while the FGS owns the stream the panel's
+                        // JS loop is suspended — the mission verdict MUST ride
+                        // the native beats, or a fresh dispatch never reaches
+                        // the member's screen while they watch the panel. The
+                        // payload travels as a RAW JSON string here; MainActivity
+                        // quotes it into the event (S5) and the panel re-normalizes
+                        // it through the same field allow-list as server traffic.
+                        // A "beat" with a null payload is equally meaningful:
+                        // it tells the panel the server cleared the mission and
+                        // refreshes the last-beat line (P12).
+                        emitState("beat", TeamLocationLogic.extractMissionJson(responseBody))
                     }
                     TeamLocationLogic.Verdict.RETRY -> Unit // next tick retries
                     TeamLocationLogic.Verdict.FATAL_REVOKED -> {

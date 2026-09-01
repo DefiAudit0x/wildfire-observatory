@@ -2,6 +2,7 @@ package com.observatory.wildfire
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -131,6 +132,17 @@ class TeamLocationLogicTest {
     }
 
     @Test
+    fun `redirect statuses are retry-class (F8 pin makes them surface raw)`() {
+        // With instanceFollowRedirects=false (S2), a 30x is never silently
+        // chased to another host — it surfaces as its status, and the doctrine
+        // verdict for "not 2xx/401/403" is RETRY, never a session death.
+        assertEquals(TeamLocationLogic.Verdict.RETRY, TeamLocationLogic.classifyVerdict(301, ""))
+        assertEquals(TeamLocationLogic.Verdict.RETRY, TeamLocationLogic.classifyVerdict(302, ""))
+        assertEquals(TeamLocationLogic.Verdict.RETRY, TeamLocationLogic.classifyVerdict(307, "{\"mission\":{}}"))
+        assertEquals(TeamLocationLogic.Verdict.RETRY, TeamLocationLogic.classifyVerdict(308, ""))
+    }
+
+    @Test
     fun `403 gate codes map to their precise fatal verdicts`() {
         assertEquals(
             TeamLocationLogic.Verdict.FATAL_REVOKED,
@@ -166,5 +178,43 @@ class TeamLocationLogicTest {
         assertEquals(15_000L, TeamLocationLogic.parseHeartbeatIntervalMs("not json"))
         assertEquals(10_000L, TeamLocationLogic.parseHeartbeatIntervalMs("{\"heartbeatIntervalMs\":3000}"))
         assertEquals(60_000L, TeamLocationLogic.parseHeartbeatIntervalMs("{\"heartbeatIntervalMs\":999999}"))
+    }
+
+    // ========================
+    // MISSION EXTRACTION (F3 — native beat → panel mission channel)
+    // ========================
+
+    @Test
+    fun `mission object is extracted verbatim from a heartbeat body`() {
+        val body = "{\"ok\":true,\"serverTime\":1,\"heartbeatIntervalMs\":15000," +
+            "\"mission\":{\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42}}"
+        assertEquals(
+            "{\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42}",
+            TeamLocationLogic.extractMissionJson(body)
+        )
+    }
+
+    @Test
+    fun `mission null, absent mission and non-JSON bodies yield null`() {
+        assertNull(TeamLocationLogic.extractMissionJson("{\"ok\":true,\"mission\":null}"))
+        assertNull(TeamLocationLogic.extractMissionJson("{\"ok\":true,\"serverTime\":1}"))
+        assertNull(TeamLocationLogic.extractMissionJson("not json"))
+        assertNull(TeamLocationLogic.extractMissionJson(""))
+        // a string (non-object) mission value is not extractable — panel keeps state
+        assertNull(TeamLocationLogic.extractMissionJson("{\"mission\":\"weird\"}"))
+    }
+
+    @Test
+    fun `mission extraction survives braces inside strings and nested objects`() {
+        assertEquals(
+            "{\"sosId\":\"a}b\",\"note\":\"x{y\"}",
+            TeamLocationLogic.extractMissionJson("{\"mission\":{\"sosId\":\"a}b\",\"note\":\"x{y\"},\"ok\":true}")
+        )
+        assertEquals(
+            "{\"sosId\":\"sos-1\",\"meta\":{\"nested\":{\"deep\":2}}}",
+            TeamLocationLogic.extractMissionJson("{\"mission\":{\"sosId\":\"sos-1\",\"meta\":{\"nested\":{\"deep\":2}}},\"ok\":true}")
+        )
+        // unterminated object → no balanced close → null (bounded scan)
+        assertNull(TeamLocationLogic.extractMissionJson("{\"mission\":{\"sosId\":\"sos-1\""))
     }
 }

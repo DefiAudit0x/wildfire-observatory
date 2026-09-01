@@ -328,6 +328,12 @@ class WebAppInterface(
      * interval clamp) inside TeamLocationService.parseConfig — a false return
      * here means "refused", and the panel shows the prerequisite hint.
      *
+     * S3 (defense in depth): the FINE-location check happens HERE, before the
+     * FGS clock starts — returning true for a start that could only die inside
+     * onStartCommand was a false promise to the panel. The service keeps its
+     * own last-line check (F1) because the permission state can change between
+     * this call and the service's entry.
+     *
      * The token travels this bridge exactly once; the service keeps it in
      * memory only and the beats go directly to the server from native code,
      * so no heartbeat (and no token) ever round-trips through JS again.
@@ -337,6 +343,10 @@ class WebAppInterface(
         if (!isTrustedOrigin()) return false
         val context = appContext ?: return false
         if (configJson.length > 4096) return false
+        val fineGranted = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted) return false
         val intent = Intent(context, TeamLocationService::class.java)
             .setAction(TeamLocationService.ACTION_START)
             .putExtra(TeamLocationService.EXTRA_CONFIG, configJson)
@@ -351,6 +361,18 @@ class WebAppInterface(
             Log.w(TAG, "startTeamTracking refused", e)
             false
         }
+    }
+
+    /**
+     * F4 (A3/P3): synchronous answer to "is the FGS alive and owning the GPS
+     * stream right now". A re-mounted panel queries this on mount — the
+     * "started" event fired long ago and the panel must not double-stream
+     * beside the native service while guessing.
+     */
+    @JavascriptInterface
+    fun isTeamTrackingActive(): Boolean {
+        if (!isTrustedOrigin()) return false
+        return TeamLocationService.isServiceActive()
     }
 
     /** Stop the team-location FGS (panel button or member leaving the team). */

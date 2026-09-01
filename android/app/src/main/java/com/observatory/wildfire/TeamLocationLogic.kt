@@ -128,4 +128,52 @@ object TeamLocationLogic {
         val match = Regex("\"heartbeatIntervalMs\"\\s*:\\s*([0-9]+)").find(body) ?: return DEFAULT_HEARTBEAT_MS
         return clampIntervalMs(match.groupValues[1].toLongOrNull() ?: DEFAULT_HEARTBEAT_MS)
     }
+
+    /**
+     * F3 (A2/P2): extracts the `mission` OBJECT from a heartbeat response body
+     * as a raw JSON substring, or null when the response carries no mission
+     * (`"mission":null` / key absent). A brace-counting scan (string-aware) is
+     * used instead of a `[^}]*` regex so braces inside string values or nested
+     * objects cannot truncate the extraction; the scan is bounded by the
+     * response body itself, which the service caps at 4KB.
+     *
+     * Trust note (S5): the string returned here is forwarded verbatim to the
+     * WebView as a QUOTED JSON string inside `teamTrackingState`; the panel
+     * JSON.parses it and re-normalizes it through its own field allow-list
+     * (normalizeMission) — extra or hostile fields can only fail to parse,
+     * never execute. This function decides NOTHING about validity; it only
+     * extracts what the server sent.
+     */
+    fun extractMissionJson(body: String): String? {
+        val keyIndex = body.indexOf("\"mission\"")
+        if (keyIndex < 0) return null
+        val colon = body.indexOf(':', keyIndex + "\"mission\"".length)
+        if (colon < 0) return null
+        var i = colon + 1
+        while (i < body.length && body[i].isWhitespace()) i++
+        if (i >= body.length || body[i] != '{') return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (j in i until body.length) {
+            val c = body[j]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+                continue
+            }
+            when (c) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return body.substring(i, j + 1)
+                }
+            }
+        }
+        return null
+    }
 }
