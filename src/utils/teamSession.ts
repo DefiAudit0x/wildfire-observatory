@@ -157,6 +157,24 @@ function normalizeMission(raw: any): TeamMissionState | null {
   };
 }
 
+/**
+ * F3 (A2/P2/S5): parse the mission JSON string that rides the native FGS
+ * `beat` events. The native side quotes the raw server substring once
+ * (JSONObject.quote) so it crosses the JS boundary as a STRING; this function
+ * JSON.parses it and runs it through the SAME field allow-list as every
+ * server response — extra or hostile fields can only fail to parse, never
+ * execute, and a malformed payload degrades to "no mission" instead of
+ * crashing the panel.
+ */
+export function normalizeNativeMission(missionJson: string | null | undefined): TeamMissionState | null {
+  if (typeof missionJson !== "string" || !missionJson) return null;
+  try {
+    return normalizeMission(JSON.parse(missionJson));
+  } catch {
+    return null;
+  }
+}
+
 export function clampHeartbeatInterval(ms: unknown): number {
   const n = Number(ms);
   if (!Number.isFinite(n)) return DEFAULT_HEARTBEAT_MS;
@@ -334,6 +352,8 @@ export async function leaveTeam(token: string): Promise<LeaveResult> {
 export interface TeamTrackingBridge {
   isTeamTrackingSupported(): boolean;
   teamTrackingPrerequisite?(): string;
+  /** F4 (A3/P3): optional so older bridge builds stay feature-detected. */
+  isTeamTrackingActive?(): boolean;
   startTeamTracking(configJson: string): boolean;
   stopTeamTracking(): void;
 }

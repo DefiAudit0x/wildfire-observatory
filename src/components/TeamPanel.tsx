@@ -12,6 +12,7 @@ import {
   joinTeam,
   leaveTeam,
   loadTeamSession,
+  normalizeNativeMission,
   probeTeamSession,
   saveTeamSession,
   sendTeamHeartbeat,
@@ -93,7 +94,16 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   const [flipBusy, setFlipBusy] = useState(false);
   const [flipNote, setFlipNote] = useState<string | null>(null);
 
-  const [nativeActive, setNativeActive] = useState(false);
+  // F4 (A3/P3): the panel ASKS the bridge for the live FGS state, and it asks
+  // SYNCHRONOUSLY at first render — an effect-based query would race the
+  // heartbeat loop's immediate first tick (effects run in declaration order,
+  // and the loop's mount tick would fire exactly one JS beat beside the FGS
+  // on every re-mount). Absent bridge / absent method → false, matching the
+  // feature-detection doctrine.
+  const [nativeActive, setNativeActive] = useState<boolean>(() => {
+    const bridge = getTeamTrackingBridge();
+    return typeof bridge?.isTeamTrackingActive === "function" && bridge.isTeamTrackingActive() === true;
+  });
   const [nativeHint, setNativeHint] = useState<string | null>(null);
 
   // Overlap guard: one in-flight beat at a time — a slow 15s request must not
@@ -101,6 +111,13 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   const beatBusyRef = useRef(false);
   const sessionRef = useRef<TeamSessionState | null>(session);
   sessionRef.current = session;
+
+  // F7 (P6): monotonic mission-source sequence — join/probe/beat/flip/native-
+  // beat each take a number when they START and may only commit setMission
+  // while still the newest source. A heartbeat launched before the member
+  // pressed "وصلت إلى الموقع" must never flash its older en_route verdict
+  // over the on_scene answer (the W1 family, applied inside the panel).
+  const missionSeqRef = useRef(0);
 
   // ======================
   // RESUME: validate the persisted token once on mount. The server verdict is
@@ -110,12 +127,19 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   useEffect(() => {
     if (!session) return;
     let cancelled = false;
+    const seq = ++missionSeqRef.current; // F7: probe is a mission source
     (async () => {
       const result = await probeTeamSession(session.token);
       if (cancelled) return;
       setResuming(false);
+      // F5 (P4): stale-probe guard — this verdict belongs to the session that
+      // was current AT MOUNT. If the session changed mid-flight (the native
+      // revoked event cleared it and a fresh join landed, or leave happened),
+      // applying it would wipe the NEW session and burn another join code —
+      // the same W1 discipline the beat path already has.
+      if (sessionRef.current !== session) return;
       if (result.ok) {
-        setMission(result.mission ?? null);
+        if (missionSeqRef.current === seq) setMission(result.mission ?? null);
         if (result.heartbeatIntervalMs) setIntervalMs(result.heartbeatIntervalMs);
         const refreshed: TeamSessionState = {
           ...session,
@@ -164,6 +188,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
             setBeat("waiting-gps");
             return;
           }
+          const seq = ++missionSeqRef.current; // F7: this beat is the newest mission source
           try {
             const verdict = await sendTeamHeartbeat(current.token, {
               lat,
@@ -174,7 +199,11 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
             });
             if (sessionRef.current !== current) return; // stale beat — session changed mid-flight
             if (verdict.ok) {
-              setMission(verdict.mission);
+              // F7 (P6): only commit while still the newest source — a flip
+              // (or join/probe/native beat) that started after this beat was
+              // launched is the fresher authority; the older en_route response
+              // must not flash over on_scene on a field screen.
+              if (missionSeqRef.current === seq) setMission(verdict.mission);
               if (verdict.heartbeatIntervalMs) setIntervalMs(verdict.heartbeatIntervalMs);
               setBeat("live");
               setLastBeatAt(Date.now());
@@ -206,8 +235,9 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   }, [session, nativeActive, intervalMs]);
 
   // ======================
-  // NATIVE STATE EVENTS — the FGS reports started/stopped/revoked so the
-  // panel never guesses what the service is doing.
+  // NATIVE STATE EVENTS — the FGS reports started/stopped/revoked/error/beat;
+  // combined with the synchronous isTeamTrackingActive() mount query (F4),
+  // the panel never guesses what the service is doing.
   // ======================
   useEffect(() => {
     const handler = (event: Event) => {
@@ -224,7 +254,59 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
         setSession(null);
         setSessionFatal("MEMBER_REVOKED");
       } else if (state === "error") {
-        setNativeHint(isArabic ? "تعذّر إرسال نبضة من خدمة التتبع — سيُعاد تلقائياً." : "Échec d'un battement natif — nouvelle tentative automatique.");
+        // F2 (P1): the service emits "error" right before stopSelf for EVERY
+        // fatal verdict except MEMBER_REVOKED (expired 12h token, MEMBER_-
+        // INACTIVE/INVALID, TEAM_INACTIVE). The old text ("سيُعاد تلقائياً")
+        // was a lie — the service is DEAD — and leaving nativeActive=true
+        // suspended the JS loop forever: a green "تتبع خلفي نشط" chip over a
+        // dead stream while the member silently dropped off the command map
+        // after the 90s online window. Honest reset: stop the mirror, then
+        // let the server's verdict name the real reason (expired token ≠
+        // network blip) without needing a GPS fix.
+        setNativeActive(false);
+        setNativeHint(
+          isArabic
+            ? "توقفت خدمة التتبع الخلفي — جارٍ التحقق من الجلسة..."
+            : "Le suivi natif s'est arrêté — vérification de la session..."
+        );
+        const probedToken = sessionRef.current?.token;
+        if (!probedToken) return;
+        void probeTeamSession(probedToken).then((result) => {
+          // F5 doctrine: the probe was launched for THIS token; a session
+          // change mid-flight (fresh join / leave) makes the verdict stale.
+          if (sessionRef.current?.token !== probedToken) return;
+          if (result.fatal) {
+            setNativeHint(null);
+            clearTeamSession();
+            setSession(null);
+            setSessionFatal(result.fatal);
+          } else if (result.ok) {
+            // Session alive — the JS loop has already resumed (nativeActive
+            // flipped false above); the member may re-start the FGS.
+            setNativeHint(
+              isArabic
+                ? "توقفت خدمة التتبع الخلفي والجلسة سليمة — تُستأنف النبضات داخل التطبيق، ويمكنك إعادة تشغيل الخدمة."
+                : "Suivi natif arrêté, session intacte — reprise intégrée; vous pouvez relancer le service."
+            );
+          } else {
+            setNativeHint(
+              isArabic
+                ? "توقفت خدمة التتبع الخلفي (مشكلة شبكة) — تُستأنف النبضات داخل التطبيق تلقائياً."
+                : "Suivi natif arrêté (réseau) — reprise automatique intégrée."
+            );
+          }
+        });
+      } else if (state === "beat") {
+        // F3 (A2/P2): native beats carry the mission verdict while the FGS
+        // owns the stream — without this channel a fresh dispatch NEVER
+        // reached the member's screen (frozen "لا توجد مهمة" card through the
+        // whole shift). S5: the payload crossed the bridge as a quoted JSON
+        // STRING; JSON.parse + the same field allow-list as server responses,
+        // never raw interpolation. A null/absent payload means "no mission"
+        // and clears a stale card; the last-beat line refreshes too (P12).
+        missionSeqRef.current++; // the native stream is the newest authority now
+        setMission(normalizeNativeMission(typeof detail.missionJson === "string" ? detail.missionJson : null));
+        setLastBeatAt(Date.now());
       }
     };
     window.addEventListener("teamTrackingState", handler);
@@ -245,6 +327,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       return;
     }
     setJoining(true);
+    const seq = ++missionSeqRef.current; // F7: join is a mission source
     const result = await joinTeam(code, name);
     setJoining(false);
     if (!result.ok || !result.session) {
@@ -257,7 +340,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     }
     saveTeamSession(result.session);
     setSession(result.session);
-    setMission(result.mission ?? null);
+    if (missionSeqRef.current === seq) setMission(result.mission ?? null);
     if (result.heartbeatIntervalMs) setIntervalMs(result.heartbeatIntervalMs);
     setJoinCode("");
     setJoinName("");
@@ -268,10 +351,14 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     if (!current || flipBusy) return;
     setFlipBusy(true);
     setFlipNote(null);
+    const seq = ++missionSeqRef.current; // F7: the flip is now the newest mission source
     const result = await flipMissionOnScene(current.token);
     setFlipBusy(false);
     if (result.ok) {
-      setMission(result.mission ?? null);
+      // F7 (P6): a heartbeat launched BEFORE the flip still carries the older
+      // en_route verdict — it must not flash over the on_scene answer the
+      // member just earned.
+      if (missionSeqRef.current === seq) setMission(result.mission ?? null);
     } else if (result.code === "NO_ACTIVE_MISSION") {
       setFlipNote(isArabic ? "لا توجد مهمة نشطة لتحديثها." : "Aucune mission active.");
     } else if (result.code === "fatal" && result.fatal) {
@@ -291,9 +378,17 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     const result = await leaveTeam(current.token);
     setLeaving(false);
     if (result.ok) {
+      // F6 (P5): leaving the team must also kill the native FGS — the stop
+      // control is about to vanish with the session card, and an orphaned
+      // service keeps collecting GPS + showing the notification AFTER the
+      // member withdrew consent. Without a GPS fix no beat is ever sent, so
+      // without this stop the orphan window is not 60s — it is indefinite.
+      getTeamTrackingBridge()?.stopTeamTracking();
       clearTeamSession();
       setSession(null);
       setMission(null);
+      setNativeActive(false);
+      setNativeHint(null);
       setConfirmingLeave(false);
       setLastBeatAt(null);
       setBeat("idle");
@@ -345,7 +440,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
           </div>
           <div>
             <h2 className="font-bold text-slate-100 text-base">
-              {isArabic ? "فريقي — وضع الفريق الميداني" : "Mon Équipe — Mode Terrain"}
+              {isArabic ? "فريقي الميداني" : "Mon Équipe Terrain"}
             </h2>
             <p className="text-[11px] text-gray-400 mt-0.5">
               {isArabic
@@ -379,7 +474,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
           </h3>
           <div>
             <label htmlFor="team-code" className="block text-[11px] font-black text-gray-400 mb-1.5">
-              {isArabic ? "رمز الفريق (8 أحرف من قيادة الحملة)" : "Code d'équipe (8 caractères du commandement)"}
+              {isArabic ? "رمز الفريق (8 أحرف من قيادة الحملة)" : "Code d'équipe (fourni par le commandement)"}
             </label>
             <input
               id="team-code"
@@ -387,9 +482,13 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
               inputMode="text"
               autoComplete="off"
               autoCapitalize="characters"
-              maxLength={12}
+              // F11 (P10): a 12-char ceiling silently truncated longer pastes
+              // (code + separators + context) into a corrupted submission.
+              // 20 chars of headroom + strip-on-change keeps what the member
+              // sees honest: separators are visible, junk never enters.
+              maxLength={20}
               value={joinCode}
-              onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+              onChange={(e) => setJoinCode(e.target.value.toUpperCase().replace(/[^0-9A-Z\s-]/g, ""))}
               placeholder="A2B4C6D8"
               className="w-full bg-black/40 border border-white/10 rounded-lg px-3.5 py-3 text-sm font-mono font-black tracking-[0.3em] text-slate-100 placeholder:text-gray-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/60 text-left"
               dir="ltr"
@@ -426,7 +525,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
             className="w-full py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black text-sm transition-all cursor-pointer flex items-center justify-center gap-2"
           >
             <CheckCircle2 className="h-4 w-4" />
-            <span>{joining ? (isArabic ? "جارٍ الانضمام..." : "Connexion...") : (isArabic ? "انضمام إلى الفريق" : "Rejoindre l'équipe")}</span>
+            <span>{joining ? (isArabic ? "جارٍ الانضمام..." : "Adhésion...") : (isArabic ? "انضمام إلى الفريق" : "Rejoindre l'équipe")}</span>
           </button>
         </div>
       )}
@@ -518,7 +617,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
                     className="w-full py-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black text-sm transition-all cursor-pointer flex items-center justify-center gap-2"
                   >
                     <Navigation className="h-4 w-4" />
-                    <span>{flipBusy ? (isArabic ? "جارٍ الإرسال..." : "Envoi...") : (isArabic ? "وصلت إلى الموقع (on_scene)" : "Arrivé sur les lieux (on_scene)")}</span>
+                    <span>{flipBusy ? (isArabic ? "جارٍ الإرسال..." : "Envoi...") : (isArabic ? "وصلت إلى الموقع" : "Arrivé sur les lieux")}</span>
                   </button>
                 )}
                 {flipNote && (
@@ -607,7 +706,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
                     disabled={leaving}
                     className="flex-1 py-2.5 rounded-lg bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-black text-xs transition-all cursor-pointer"
                   >
-                    {leaving ? (isArabic ? "جارٍ الانسحاب..." : "Retrait...") : (isArabic ? "نعم، انسحاب" : "Oui, quitter")}
+                    {leaving ? (isArabic ? "جارٍ الانسحاب..." : "Départ...") : (isArabic ? "نعم، انسحاب" : "Oui, quitter")}
                   </button>
                   <button
                     type="button"

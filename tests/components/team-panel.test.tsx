@@ -77,6 +77,9 @@ beforeEach(() => {
   vi.restoreAllMocks();
   sessionStorage.clear();
   routeFetch();
+  // count-based specs must never see ANOTHER spec's fetch ledger — restoreAllMocks
+  // clears spy history but does not reset a bare vi.fn() call ledger.
+  fetchMock.mockClear();
   vi.stubGlobal("fetch", fetchMock);
   stubGeolocation();
   (globalThis as any).AndroidBridge = undefined;
@@ -247,5 +250,260 @@ describe("TeamPanel — native FGS integration", () => {
     window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "revoked" } }));
     await waitFor(() => expect(screen.getByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeTruthy());
     expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+  });
+
+  it("does NOT offer the stop control before the native 'started' confirmation (no guessing, P7a)", async () => {
+    const startTeamTracking = vi.fn(() => true);
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking,
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    expect(startTeamTracking).toHaveBeenCalledTimes(1);
+    // the panel never GUESSES the service state: startTeamTracking returning
+    // true means only "the broadcast was accepted", NOT "the service is live"
+    expect(screen.queryByRole("button", { name: /إيقاف التتبع الخلفي/ })).toBeNull();
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    expect(await screen.findByRole("button", { name: /إيقاف التتبع الخلفي/ })).toBeTruthy();
+  });
+
+  it("renders no native tracking card when the bridge is absent (P7b)", async () => {
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(screen.getByText("وحدة بجاية")).toBeTruthy());
+    expect(screen.queryByText(/التتبع الخلفي \(خدمة النظام\)/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /تشغيل التتبع الخلفي/ })).toBeNull();
+  });
+
+  it("resets nativeActive on the native 'error' event and probes for the honest verdict (F2/P1: expired token → join form)", async () => {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    expect(await screen.findByRole("button", { name: /إيقاف التتبع الخلفي/ })).toBeTruthy();
+
+    // the 12h token expires mid-shift: the service dies with "error" and the
+    // panel must ask the server immediately (no GPS fix needed for /session)
+    fetchMock.mockClear();
+    fetchMock.mockImplementation(async (url: string) =>
+      url === "/api/teams/session" ? jsonRes(401, { error: "token expired" }) : jsonRes(404, { error: "no route" })
+    );
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "error" } }));
+
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    expect(screen.getByText(/انتهت جلسة الفريق/)).toBeTruthy();
+    expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+    // the FGS mirror is off — the panel never shows a green chip over a dead stream
+    expect(screen.queryByRole("button", { name: /إيقاف التتبع الخلفي/ })).toBeNull();
+  });
+
+  it("keeps the session and resumes the JS loop when the error-probe confirms it alive (F2: transient vs fatal)", async () => {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    // the FGS takes over: the JS loop is suspended (mutual exclusion)
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    await screen.findByRole("button", { name: /إيقاف التتبع الخلفي/ });
+    fetchMock.mockClear();
+    // the service dies with "error" (transport-class failure, not a verdict):
+    // the panel resets the mirror and probes — the session is ALIVE
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "error" } }));
+    await waitFor(() => expect(screen.getByText(/الجلسة سليمة/)).toBeTruthy());
+    // the browser loop RESUMED (nativeActive false + session intact): a beat fires
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(true);
+    });
+    expect(sessionStorage.getItem("observatory_team_session")).not.toBeNull();
+  });
+
+  it("adopts the mission carried by native beats and refreshes the last-beat line (F3/P2 + P12)", async () => {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    await screen.findByRole("button", { name: /إيقاف التتبع الخلفي/ });
+
+    // a dispatch lands WHILE the FGS owns the stream: the beat event carries it
+    window.dispatchEvent(new CustomEvent("teamTrackingState", {
+      detail: { state: "beat", missionJson: '{"sosId":"sos-99","phase":"en_route","since":5000}' },
+    }));
+    await waitFor(() => expect(screen.getByText(/في الطريق إلى الموقع/)).toBeTruthy());
+    expect(screen.getByText(/SOS #/)).toBeTruthy();
+    expect(screen.getByText(/آخر نبضة:/)).toBeTruthy();
+
+    // the server clears the mission: a null payload clears the stale card
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "beat" } }));
+    await waitFor(() => expect(screen.getByText(/لا توجد مهمة موجهة إليك حالياً/)).toBeTruthy());
+  });
+
+  it("ignores a malformed native beat payload instead of crashing (F3/S5 hardening)", async () => {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", {
+      detail: { state: "beat", missionJson: "{corrupted json" },
+    }));
+    await waitFor(() => expect(screen.getByText(/لا توجد مهمة موجهة إليك حالياً/)).toBeTruthy());
+  });
+
+  it("asks the bridge for the live FGS state on mount and stays out of the stream (F4/P3 mutual exclusion)", async () => {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      isTeamTrackingActive: () => true, // FGS already running (panel re-mount scenario)
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    // the panel mirrors the asked state immediately — no "started" event needed
+    await waitFor(() => expect(screen.getByText(/تتبع خلفي نشط/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /إيقاف التتبع الخلفي/ })).toBeTruthy();
+    // and NO JS heartbeats beside the native stream
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(false);
+  });
+
+  it("does not let a stale resume probe wipe a freshly joined session (F5/P4 probe-vs-join race)", async () => {
+    let releaseProbe!: (v: unknown) => void;
+    const probeGate = new Promise((resolve) => { releaseProbe = resolve; });
+    let probeCount = 0;
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        probeCount += 1;
+        if (probeCount === 1) return await probeGate; // the MOUNT probe hangs in flight
+        return jsonRes(200, { ...SESSION, mission: null, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/join") {
+        return jsonRes(200, { ...SESSION, token: "tok-2", memberId: "tm-2", mission: null, heartbeatIntervalMs: 15000 });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    // while the mount probe is in flight, the native service reports revocation
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "revoked" } }));
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    // the member re-joins with a fresh (valid) code
+    fireEvent.change(screen.getByLabelText(/رمز الفريق/), { target: { value: "A2B4C6D8" } });
+    fireEvent.change(screen.getByLabelText(/الاسم الظاهر/), { target: { value: "عارة 1" } });
+    fireEvent.click(screen.getByRole("button", { name: /انضمام إلى الفريق/ }));
+    await waitFor(() => expect(sessionStorage.getItem("observatory_team_session")).not.toBeNull());
+
+    // NOW the stale probe for the OLD session lands with a fatal verdict
+    releaseProbe(jsonRes(403, { code: "MEMBER_REVOKED", error: "revoked" }));
+    await new Promise((r) => setTimeout(r, 25));
+    // the FRESH session survives: no wipe, no burned join code, no false "revoked"
+    expect(JSON.parse(sessionStorage.getItem("observatory_team_session") || "{}").token).toBe("tok-2");
+    expect(screen.queryByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeNull();
+  });
+
+  it("does not let a stale in-flight heartbeat regress on_scene after the flip (F7/P6 W1 sequencing)", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseBeat!: (v: unknown) => void;
+      const beatGate = new Promise((resolve) => { releaseBeat = resolve; });
+      let beatCount = 0;
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === "/api/teams/session") {
+          return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+        }
+        if (url === "/api/teams/heartbeat") {
+          beatCount += 1;
+          if (beatCount === 1) return jsonRes(200, { ok: true, heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+          // the SECOND beat hangs in flight until the flip has landed
+          return await beatGate.then(() => jsonRes(200, { ok: true, heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } }));
+        }
+        if (url === "/api/teams/mission/phase") {
+          return jsonRes(200, { ok: true, mission: { sosId: "sos-77", phase: "on_scene", since: 1000 } });
+        }
+        return jsonRes(404, { error: "no route" });
+      });
+
+      seedSession();
+      render(<TeamPanel lang="ar" />);
+      await vi.advanceTimersByTimeAsync(0); // probe + mount beat resolve → en_route committed
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByRole("button", { name: /وصلت إلى الموقع/ })).toBeTruthy();
+
+      await vi.advanceTimersByTimeAsync(15_000); // the 15s tick launches beat #2 — it HANGS
+      fireEvent.click(screen.getByRole("button", { name: /وصلت إلى الموقع/ }));
+      await vi.advanceTimersByTimeAsync(0); // the flip response lands: on_scene committed
+      await vi.advanceTimersByTimeAsync(0);
+      expect(screen.getByText(/في موقع الحادث/)).toBeTruthy();
+
+      // NOW the pre-flip heartbeat lands with the OLDER en_route verdict
+      releaseBeat(undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      // the arrival state survives: no "فشل الوصول" flash on a field screen
+      expect(screen.getByText(/في موقع الحادث/)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /وصلت إلى الموقع/ })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops the native FGS when the member leaves the team (F6/P5: no orphaned GPS after consent withdrawal)", async () => {
+    const stopTeamTracking = vi.fn();
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking,
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    await screen.findByRole("button", { name: /إيقاف التتبع الخلفي/ });
+
+    fireEvent.click(screen.getByRole("button", { name: /الانسحاب من الفريق/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /نعم، انسحاب/ }));
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+    // the orphaned-service window is zero: the FGS is stopped IN the leave path
+    expect(stopTeamTracking).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-creates the loop when the server re-paces the interval (P7d: heartbeatIntervalMs ≠ 15s)", async () => {
+    // /heartbeat always answers 30s: the loop must honor the re-pace by
+    // re-creating itself — observable as an immediate re-tick (beat #2) right
+    // after beat #1. A loop that ignores the answer stays at exactly 1 beat
+    // here (its next would come at the stale 15s cadence).
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") return jsonRes(200, { ...SESSION, mission: null, heartbeatIntervalMs: 15000 });
+      if (url === "/api/teams/heartbeat") return jsonRes(200, { ok: true, heartbeatIntervalMs: 30000, mission: null });
+      return jsonRes(404, { error: "no route" });
+    });
+    seedSession();
+    const beatCalls = () => fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/heartbeat").length;
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(beatCalls()).toBe(2));
+    // and no leaked 15s timer fires another beat in the window
+    await new Promise((r) => setTimeout(r, 300));
+    expect(beatCalls()).toBe(2);
   });
 });

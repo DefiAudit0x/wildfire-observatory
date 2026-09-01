@@ -8,6 +8,7 @@ import {
   joinTeam,
   leaveTeam,
   loadTeamSession,
+  normalizeNativeMission,
   probeTeamSession,
   saveTeamSession,
   sendTeamHeartbeat,
@@ -91,6 +92,33 @@ describe("clampHeartbeatInterval", () => {
     expect(clampHeartbeatInterval(120_000)).toBe(60_000);
     expect(clampHeartbeatInterval("abc")).toBe(15_000);
     expect(clampHeartbeatInterval(undefined)).toBe(15_000);
+  });
+});
+
+describe("normalizeNativeMission (F3/S5 — native beat payload channel)", () => {
+  it("parses the quoted mission JSON through the same allow-list as server responses", () => {
+    expect(normalizeNativeMission('{"sosId":"sos-9","phase":"on_scene","since":77}')).toEqual({
+      sosId: "sos-9",
+      phase: "on_scene",
+      since: 77,
+    });
+    // cleared missions normalize to null, exactly like server traffic
+    expect(normalizeNativeMission('{"sosId":"sos-9","phase":"cleared","since":77}')).toBeNull();
+    // extra hostile fields are dropped by the allow-list, never propagated
+    expect(normalizeNativeMission('{"sosId":"sos-9","phase":"en_route","since":1,"__proto__":{"x":1},"html":"<img>"}')).toEqual({
+      sosId: "sos-9",
+      phase: "en_route",
+      since: 1,
+    });
+  });
+
+  it("degrades null/absent/malformed payloads to null instead of crashing the panel", () => {
+    expect(normalizeNativeMission(null)).toBeNull();
+    expect(normalizeNativeMission(undefined)).toBeNull();
+    expect(normalizeNativeMission("")).toBeNull();
+    expect(normalizeNativeMission("{not json")).toBeNull();
+    expect(normalizeNativeMission('{"no sosId":true}')).toBeNull();
+    expect(normalizeNativeMission("42")).toBeNull();
   });
 });
 
