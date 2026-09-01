@@ -80,7 +80,7 @@ describe("POST /api/teams/join — happy path", () => {
     expect(res.body.teamId).toBe("team-a1");
     expect(res.body.teamName).toBe("Unité Béjaïa");
     expect(res.body.teamNameAr).toBe("وحدة بجاية");
-    expect(res.body.mission).toEqual({ sosId: "sos-9", phase: "en_route", since: 123 });
+    expect(res.body.mission).toEqual({ sosId: "sos-9", phase: "en_route", since: 123, sosLat: null, sosLng: null });
 
     const payload = verifyTeamMemberToken(res.body.token);
     expect(payload?.scope).toBe("team-member");

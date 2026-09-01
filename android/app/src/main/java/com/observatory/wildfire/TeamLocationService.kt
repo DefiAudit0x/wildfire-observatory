@@ -30,6 +30,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -110,6 +111,12 @@ class TeamLocationService : Service(), LocationListener {
     private val config = AtomicReference<Config?>(null)
     private val latestFix = AtomicReference<Location?>(null)
     private val posting = AtomicBoolean(false)
+    // Phase 3 — auto-arrival chain state. Touched only on the beat scheduler
+    // thread (single-flight via `posting`), but atomics keep that invariant
+    // explicit and reviewable.
+    private val arrivalStreak = AtomicInteger(0)
+    private val arrivalMissionKey = AtomicReference<String?>(null)
+    private val arrivalFlipDone = AtomicReference<String?>(null)
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "team-location-beats").apply { isDaemon = false }
     }
@@ -297,66 +304,139 @@ class TeamLocationService : Service(), LocationListener {
                 speed = if (fix.hasSpeed()) fix.speed.toDouble() else null,
                 batteryPct = readBatteryPct(),
             )
-            val http = URL(cfg.baseUrl + "/api/teams/heartbeat").openConnection() as HttpURLConnection
-            try {
-                http.requestMethod = "POST"
-                // F8 (S2): the JDK silently follows redirects by default. A
-                // 30x from an allow-listed host must NEVER carry the member's
-                // Bearer token (or a replayed POST) to a host the allow-list
-                // did not vet. With the pin, a redirect surfaces as its raw
-                // status → classifyVerdict → RETRY, which is exactly the
-                // doctrine verdict for anything that is not 2xx/401/403.
-                http.instanceFollowRedirects = false
-                http.connectTimeout = 10_000
-                http.readTimeout = 10_000
-                http.doOutput = true
-                http.setRequestProperty("Content-Type", "application/json")
-                http.setRequestProperty("Authorization", "Bearer ${cfg.token}")
-                OutputStreamWriter(http.outputStream, StandardCharsets.UTF_8).use { it.write(body) }
-                val status = http.responseCode
-                val responseBody = readBody(http, status)
-                when (TeamLocationLogic.classifyVerdict(status, responseBody)) {
-                    TeamLocationLogic.Verdict.OK -> {
-                        val serverInterval = TeamLocationLogic.parseHeartbeatIntervalMs(responseBody)
-                        if (serverInterval != cfg.intervalMs) {
-                            // Server re-paced the loop — follow it without
-                            // tearing the service down.
-                            config.set(cfg.copy(intervalMs = serverInterval))
-                            scheduleBeats(serverInterval)
-                        }
-                        // F3 (A2/P2): while the FGS owns the stream the panel's
-                        // JS loop is suspended — the mission verdict MUST ride
-                        // the native beats, or a fresh dispatch never reaches
-                        // the member's screen while they watch the panel. The
-                        // payload travels as a RAW JSON string here; MainActivity
-                        // quotes it into the event (S5) and the panel re-normalizes
-                        // it through the same field allow-list as server traffic.
-                        // A "beat" with a null payload is equally meaningful:
-                        // it tells the panel the server cleared the mission and
-                        // refreshes the last-beat line (P12).
-                        emitState("beat", TeamLocationLogic.extractMissionJson(responseBody))
+            val outcome = postJson("/api/teams/heartbeat", body, cfg)
+            if (outcome == null) return // transport failure: retry next tick — never a session verdict
+            val (status, responseBody) = outcome
+            when (TeamLocationLogic.classifyVerdict(status, responseBody)) {
+                TeamLocationLogic.Verdict.OK -> {
+                    val serverInterval = TeamLocationLogic.parseHeartbeatIntervalMs(responseBody)
+                    if (serverInterval != cfg.intervalMs) {
+                        // Server re-paced the loop — follow it without
+                        // tearing the service down.
+                        config.set(cfg.copy(intervalMs = serverInterval))
+                        scheduleBeats(serverInterval)
                     }
-                    TeamLocationLogic.Verdict.RETRY -> Unit // next tick retries
-                    TeamLocationLogic.Verdict.FATAL_REVOKED -> {
-                        Log.w(TAG, "Beat verdict MEMBER_REVOKED — stopping team tracking")
-                        emitState("revoked")
-                        stopSelf()
-                    }
-                    else -> {
-                        // AUTH / MEMBER / TEAM — session death per gate chain.
-                        Log.w(TAG, "Beat fatal verdict (status=$status) — stopping team tracking")
-                        emitState("error")
-                        stopSelf()
-                    }
+                    // F3 (A2/P2): while the FGS owns the stream the panel's
+                    // JS loop is suspended — the mission verdict MUST ride
+                    // the native beats, or a fresh dispatch never reaches
+                    // the member's screen while they watch the panel. The
+                    // payload travels as a RAW JSON string here; MainActivity
+                    // quotes it into the event (S5) and the panel re-normalizes
+                    // it through the same field allow-list as server traffic.
+                    // A "beat" with a null payload is equally meaningful:
+                    // it tells the panel the server cleared the mission and
+                    // refreshes the last-beat line (P12).
+                    val missionJson = TeamLocationLogic.extractMissionJson(responseBody)
+                    emitState("beat", missionJson)
+                    // Phase 3: two consecutive in-range fixes flip the phase
+                    // with evidence — the member never touches the screen.
+                    handleAutoArrival(missionJson, fix, cfg)
                 }
-            } finally {
-                http.disconnect()
+                TeamLocationLogic.Verdict.RETRY -> Unit // next tick retries
+                TeamLocationLogic.Verdict.FATAL_REVOKED -> {
+                    Log.w(TAG, "Beat verdict MEMBER_REVOKED — stopping team tracking")
+                    emitState("revoked")
+                    stopSelf()
+                }
+                else -> {
+                    // AUTH / MEMBER / TEAM — session death per gate chain.
+                    Log.w(TAG, "Beat fatal verdict (status=$status) — stopping team tracking")
+                    emitState("error")
+                    stopSelf()
+                }
             }
         } catch (e: Exception) {
             // Transport failure: retry next tick — never a session verdict.
             Log.w(TAG, "Beat transport failure", e)
         } finally {
             posting.set(false)
+        }
+    }
+
+    /**
+     * One authenticated JSON POST to the team API. Returns (status, body) or
+     * null on transport failure. Both call sites (beat, arrival flip) share
+     * the exact same hardening: redirect pin (F8/S2), 10s timeouts, Bearer
+     * token, bounded 4KB read.
+     */
+    private fun postJson(path: String, bodyJson: String, cfg: Config): Pair<Int, String>? {
+        val http = URL(cfg.baseUrl + path).openConnection() as HttpURLConnection
+        return try {
+            http.requestMethod = "POST"
+            // F8 (S2): the JDK silently follows redirects by default. A
+            // 30x from an allow-listed host must NEVER carry the member's
+            // Bearer token (or a replayed POST) to a host the allow-list
+            // did not vet. With the pin, a redirect surfaces as its raw
+            // status → classifyVerdict → RETRY, which is exactly the
+            // doctrine verdict for anything that is not 2xx/401/403.
+            http.instanceFollowRedirects = false
+            http.connectTimeout = 10_000
+            http.readTimeout = 10_000
+            http.doOutput = true
+            http.setRequestProperty("Content-Type", "application/json")
+            http.setRequestProperty("Authorization", "Bearer ${cfg.token}")
+            OutputStreamWriter(http.outputStream, StandardCharsets.UTF_8).use { it.write(bodyJson) }
+            val status = http.responseCode
+            status to readBody(http, status)
+        } catch (e: Exception) {
+            Log.w(TAG, "Team API transport failure ($path)", e)
+            null
+        } finally {
+            http.disconnect()
+        }
+    }
+
+    /**
+     * Phase 3 — auto-arrival. Runs on the beat scheduler thread right after a
+     * successful beat. Doctrine (ARCHITECTURE.md §5.5):
+     *  - the streak counts CONSECUTIVE fixes inside ARRIVAL_RADIUS_M and is
+     *    reset on dispatch-leg change and every out-of-range fix;
+     *  - reaching ARRIVAL_STREAK_NEEDED fires ONE evidence flip per dispatch
+     *    leg (arrivalFlipDone, keyed sosId:since) — the server re-verifies
+     *    geometry before accepting, and a 400-class rejection is final for
+     *    this leg (the member can still use the panel's manual button);
+     *  - transport/5xx/429 failures leave the attempt retryable on a later
+     *    streak; the phase response carries the fresh mission so the panel
+     *    updates instantly via the same "beat" channel.
+     */
+    private fun handleAutoArrival(missionJson: String?, fix: Location, cfg: Config) {
+        // The key is sosId:since — one DISPATCH LEG. A force-clear + re-dispatch
+        // to the same sos mints a fresh `since` and re-arms auto-arrival.
+        val missionKey = TeamLocationLogic.missionKey(missionJson)
+        if (missionKey != arrivalMissionKey.get()) {
+            arrivalMissionKey.set(missionKey)
+            arrivalStreak.set(0)
+        }
+        if (TeamLocationLogic.parseMissionPhase(missionJson) != "en_route") {
+            arrivalStreak.set(0)
+            return
+        }
+        if (missionKey == null || missionKey == arrivalFlipDone.get()) return
+        val target = TeamLocationLogic.parseMissionCoords(missionJson) ?: return
+        val distanceM = TeamLocationLogic.haversineMeters(fix.latitude, fix.longitude, target.first, target.second)
+        val streak = TeamLocationLogic.nextArrivalStreak(arrivalStreak.get(), distanceM)
+        arrivalStreak.set(streak)
+        if (!TeamLocationLogic.shouldAutoArrive(streak)) return
+        arrivalStreak.set(0)
+        val body = TeamLocationLogic.buildPhaseFlipBodyJson(
+            lat = fix.latitude,
+            lng = fix.longitude,
+            accuracy = if (fix.hasAccuracy()) fix.accuracy.toDouble() else null,
+        )
+        val outcome = postJson("/api/teams/mission/phase", body, cfg)
+        val (status, responseBody) = outcome ?: return // transport — a later streak retries
+        if (status in 200..299) {
+            arrivalFlipDone.set(missionKey)
+            Log.i(TAG, "Auto-arrival confirmed for mission $missionKey")
+            emitState("beat", TeamLocationLogic.extractMissionJson(responseBody))
+            updateNotification(notificationText("arrived"))
+        } else if (status == 429 || status >= 500) {
+            // Transient — a later streak retries.
+        } else {
+            // 400 evidence rejected (too far / conflict / coverage) or the
+            // gate chain went fatal (the next beat self-stops anyway). Do
+            // not hammer the tx for this mission.
+            arrivalFlipDone.set(missionKey)
         }
     }
 
@@ -414,6 +494,7 @@ class TeamLocationService : Service(), LocationListener {
 
     private fun notificationText(state: String?): String = when (state) {
         "waiting-gps" -> "بانتظار إشارة GPS..."
+        "arrived" -> "تم تأكيد الوصول إلى موقع المهمة"
         else -> "يتم إرسال موقعك إلى قيادة الحملة بشكل دوري"
     }
 

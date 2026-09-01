@@ -8,6 +8,19 @@ import logger from "./logger.js";
  */
 export const NA_BOUNDS = { minLat: 19, maxLat: 38, minLng: -18, maxLng: 25 } as const;
 
+/**
+ * Phase 3: one canonical coordinate sanitizer for mission targets. SOS docs
+ * historically accepted numeric STRINGS (the SOS schema is a union), and a
+ * NaN/Infinity coordinate silently poisons every haversine it feeds. Anything
+ * that is not a finite number (or a plain numeric string) degrades to null,
+ * which callers must treat as "no verification possible" — never as 0,0.
+ */
+export function saneCoord(v: unknown): number | null {
+  if (typeof v === "boolean" || v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 export function getHaversineDistance(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;

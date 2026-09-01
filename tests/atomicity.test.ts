@@ -564,3 +564,45 @@ describe("B2 — docDeleteFields: GPS purge on removal (owner decision 4)", () =
     });
   });
 });
+
+// ========================
+// PHASE 3 — the dispatch transaction stamps the mission's TARGET coordinates
+// ========================
+describe("Phase 3 — appendSosDispatch writes arrival-target coordinates", () => {
+  function seedFresh(sos: Record<string, any>) {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("trappedSos/sos-p3", { id: "sos-p3", status: "active", ...sos });
+    // no mission doc yet — a genuine first dispatch
+  }
+
+  const dispatchItem = {
+    teamId: "team-p3",
+    type: "volunteers",
+    teamNameAr: "فريق",
+    teamNameFr: "T",
+    dispatchedAt: new Date().toISOString(),
+    status: "en_route",
+    notes: "",
+  };
+
+  it("stamps sosLat/sosLng from the SOS doc onto the mission (numeric fix)", async () => {
+    seedFresh({ lat: 36.7503, lng: 5.0703 });
+    const result = await appendSosDispatch("sos-p3", dispatchItem, "team-p3");
+    expect(result).toBe("ok");
+    const mission = state.docs.get("teamMissions/team-p3")!;
+    expect(mission.phase).toBe("en_route");
+    expect(mission.sosLat).toBe(36.7503);
+    expect(mission.sosLng).toBe(5.0703);
+  });
+
+  it("coerces numeric-string SOS coordinates and degrades garbage to null (never NaN, never 0,0)", async () => {
+    seedFresh({ lat: "36.7503", lng: "not-a-number" });
+    const result = await appendSosDispatch("sos-p3", dispatchItem, "team-p3");
+    expect(result).toBe("ok");
+    const mission = state.docs.get("teamMissions/team-p3")!;
+    expect(mission.sosLat).toBe(36.7503);
+    expect(mission.sosLat).not.toBeNaN();
+    expect(mission.sosLng).toBeNull();
+  });
+});

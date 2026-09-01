@@ -3,13 +3,13 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import logger from "../logger.js";
-import { collectionGet, docGet, docSet, docUpdate, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache } from "../fs.js";
+import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache } from "../fs.js";
 import { joinTeamAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { getPublicPrincipal, issuePublicPrincipal } from "../public-principal.js";
 import { createTeamMemberToken, isTokenGenerationStale, teamTokenFromRequest } from "../teamAuth.js";
 import { isOnline, listPositions, recordHeartbeat, removeMember, snapshotIfDue } from "../teamRegistry.js";
-import { NA_BOUNDS } from "../geo.js";
+import { NA_BOUNDS, getHaversineDistance, saneCoord } from "../geo.js";
 
 /**
  * Team Mode (Phase 1) — registered field teams, join codes, member GPS.
@@ -76,9 +76,39 @@ const heartbeatSchema = z.object({
   batteryPct: z.coerce.number().finite().min(0).max(100).optional(),
 });
 
-const missionPhaseSchema = z.object({
-  phase: z.literal("on_scene"),
-});
+const missionPhaseSchema = z
+  .object({
+    phase: z.literal("on_scene"),
+    // Phase 3 — optional arrival evidence. When present, the route verifies
+    // the geometry SERVER-side against the mission target before flipping;
+    // the bare {phase} body keeps the Phase-1 self-report contract (manual
+    // button, dispatcher-verified on the map).
+    lat: z.coerce.number().finite().min(-90).max(90).optional(),
+    lng: z.coerce.number().finite().min(-180).max(180).optional(),
+    accuracy: z.coerce.number().finite().min(0).max(10_000).optional(),
+  })
+  .refine((v) => (v.lat === undefined) === (v.lng === undefined), {
+    message: "Arrival coordinates must come in pairs",
+  });
+
+/**
+ * Phase 3 — arrival radius. Deliberately tight: GPS at a wildfire scene reads
+ * 20–40m under smoke/terrain, so 50m admits honest fixes while a parking-lot
+ * mistake or a driving-by fix stays out. The client (web + native) must see
+ * TWO consecutive in-range fixes before it even attempts the flip — one stray
+ * GPS jump is not an arrival. Mirror constants live in teamSession.ts and
+ * TeamLocationLogic.kt; ARCHITECTURE.md §5.5 documents the doctrine.
+ */
+const ARRIVAL_RADIUS_M = 50;
+/**
+ * Phase 3 — anti-fabrication slack: the evidence fix must be consistent with
+ * the member's LIVE registry position (the one the heartbeat route just
+ * recorded server-side). A client fabricating an on-target fix while its real
+ * beats come from kilometres away fails this check. 300m absorbs a walking
+ * member's drift between the beat and the flip; it cannot absorb a fabricated
+ * fix from another wilaya.
+ */
+const ARRIVAL_EVIDENCE_MATCH_M = 300;
 
 const updateTeamSchema = z.object({
   name: z.string().trim().min(2).max(80).optional(),
@@ -146,6 +176,26 @@ const heartbeatSweep = setInterval(() => {
 }, 60 * 1000);
 heartbeatSweep.unref();
 
+/**
+ * Phase 3: the phase route gained an evidence-verified arrival path — a
+ * transaction behind it. Beats are single-flight on the client and the flip
+ * fires at most once per mission per member, but a buggy client looping on a
+ * 400 would otherwise hammer the tx; 10/min per member is ~6× the honest rate.
+ */
+const phaseLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const token = teamTokenFromRequest(req);
+    if (token) return `member:${token.memberId}`;
+    const ip = req.ip ?? "unknown";
+    return `ip:${ip === "unknown" ? ip : ipKeyGenerator(ip)}`;
+  },
+  message: { error: "Too many mission updates from this address." },
+});
+
 function inNorthAfricaBounds(lat: number, lng: number): boolean {
   return (
     lat >= NA_BOUNDS.minLat && lat <= NA_BOUNDS.maxLat &&
@@ -153,9 +203,19 @@ function inNorthAfricaBounds(lat: number, lng: number): boolean {
   );
 }
 
-function activeMissionOf(mission: any): { sosId: string; phase: string; since: number } | null {
+function activeMissionOf(mission: any): { sosId: string; phase: string; since: number; sosLat: number | null; sosLng: number | null } | null {
   if (!mission || !mission.sosId || mission.phase === "cleared") return null;
-  return { sosId: mission.sosId, phase: mission.phase, since: Number(mission.since) || 0 };
+  return {
+    sosId: mission.sosId,
+    phase: mission.phase,
+    since: Number(mission.since) || 0,
+    // Phase 3: mission target — null on legacy missions (created before the
+    // dispatch write gained coordinates) or when the SOS doc held no usable
+    // fix. Null disables arrival VERIFICATION; the self-report path is not
+    // affected.
+    sosLat: saneCoord(mission.sosLat),
+    sosLng: saneCoord(mission.sosLng),
+  };
 }
 
 /**
@@ -278,9 +338,23 @@ router.post("/:id/join-code", requireAdmin, async (req: Request, res: Response) 
   const expiresAt = now + ttlHours * 60 * 60 * 1000;
 
   const existing = (await collectionGet("teamJoinCodes")) || [];
+  // Phase 3 (Round-C passenger): the codes collection was grow-only — expired
+  // and revoked docs accumulated forever. Minting already scans the whole
+  // collection for rotation; the same pass now sweeps docs that died more
+  // than 7 days ago. Deletion is safe for redemption: the join reads by doc
+  // id and reports 404 for anything absent.
+  const staleCutoff = now - 7 * 24 * 60 * 60 * 1000;
   for (const old of existing) {
+    const id = typeof (old?.code || old?.id) === "string" ? old.code || old.id : "";
+    if (!id) continue;
+    const dead = old?.revoked === true || Number(old?.expiresAt ?? 0) < now;
+    const deadSince = Number(old?.revokedAt ?? old?.expiresAt ?? 0);
+    if (dead && deadSince > 0 && deadSince < staleCutoff) {
+      await docDelete("teamJoinCodes", id);
+      continue;
+    }
     if (old?.teamId === teamId && old?.revoked !== true) {
-      await docUpdate("teamJoinCodes", old.code || old.id, { revoked: true, revokedAt: now });
+      await docUpdate("teamJoinCodes", id, { revoked: true, revokedAt: now });
     }
   }
   const stored = await docSet("teamJoinCodes", code, {
@@ -568,7 +642,7 @@ router.post("/leave", async (req: Request, res: Response) => {
  * team's mission phase at will, misleading dispatch. The gate mirrors the
  * heartbeat route exactly: per-request, fail-closed on live Firestore state.
  */
-router.post("/mission/phase", async (req: Request, res: Response) => {
+router.post("/mission/phase", phaseLimiter, async (req: Request, res: Response) => {
   const token = teamTokenFromRequest(req);
   if (!token) {
     res.status(401).json({ error: "Team session required" });
@@ -597,6 +671,58 @@ router.post("/mission/phase", async (req: Request, res: Response) => {
     res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
     return;
   }
+  // Phase 3 — evidence-verified arrival. When the request carries a GPS fix,
+  // the SERVER checks the geometry before flipping (the member's device is
+  // never the sole authority on arrival):
+  //  1. evidence must sit inside the coverage bounds,
+  //  2. evidence must be within ARRIVAL_RADIUS_M of the mission target
+  //     (haversine — a GPS drift or a bad fix cannot declare arrival),
+  //  3. evidence must be consistent with the member's LIVE registry fix
+  //     (anti-fabrication: a device cannot claim on-target coordinates while
+  //     its real heartbeats come from kilometres away).
+  // Legacy missions (no usable target coords) and evidence-less flips keep
+  // the Phase-1 self-report contract — dispatcher-visible on the map either
+  // way. The two-consecutive-fixes discipline lives client-side (web loop +
+  // native FGS) and is documented in ARCHITECTURE.md §5.5.
+  const evidenceLat = parsed.data.lat;
+  const evidenceLng = parsed.data.lng;
+  if (evidenceLat !== undefined && evidenceLng !== undefined) {
+    if (!inNorthAfricaBounds(evidenceLat, evidenceLng)) {
+      res.status(400).json({ code: "ARRIVAL_OUT_OF_COVERAGE", error: "Coordinates are outside the coverage area" });
+      return;
+    }
+    const target = activeMissionOf(await docGet("teamMissions", token.teamId));
+    if (target && target.sosLat !== null && target.sosLng !== null) {
+      const distanceM = getHaversineDistance(evidenceLat, evidenceLng, target.sosLat, target.sosLng) * 1000;
+      if (distanceM > ARRIVAL_RADIUS_M) {
+        logger.info(
+          { memberId: token.memberId, teamId: token.teamId, distanceM: Math.round(distanceM) },
+          "Arrival evidence rejected: too far from mission target"
+        );
+        res.status(400).json({
+          code: "ARRIVAL_TOO_FAR",
+          error: "أنت لا تزال بعيداً عن موقع البلاغ (Arrival evidence is too far from the SOS location)",
+        });
+        return;
+      }
+      const live = listPositions({ teamId: token.teamId }).find((p) => p.memberId === token.memberId);
+      if (live && isOnline(live.lastSeen)) {
+        const mismatchM = getHaversineDistance(evidenceLat, evidenceLng, live.lat, live.lng) * 1000;
+        if (mismatchM > ARRIVAL_EVIDENCE_MATCH_M) {
+          logger.warn(
+            { memberId: token.memberId, teamId: token.teamId, mismatchM: Math.round(mismatchM) },
+            "Arrival evidence rejected: conflicts with live registry position"
+          );
+          res.status(400).json({
+            code: "ARRIVAL_EVIDENCE_CONFLICT",
+            error: "إحداثيات الوصول لا تطابق نبضات موقعك (Arrival evidence conflicts with your live position)",
+          });
+          return;
+        }
+      }
+    }
+  }
+
   const result = await setMissionPhaseAtomically(token.teamId, parsed.data.phase);
   if (result.status === "no-active-mission") {
     res.status(409).json({ code: "NO_ACTIVE_MISSION", error: "No active mission for this team" });

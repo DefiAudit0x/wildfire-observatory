@@ -25,6 +25,7 @@ const fsMock = vi.hoisted(() => ({
   docSet: vi.fn(async (..._a: any[]) => true as any),
   docMergeSet: vi.fn(async (..._a: any[]) => true as any),
   docUpdate: vi.fn(async (..._a: any[]) => true as any),
+  docDelete: vi.fn(async (..._a: any[]) => true as any),
   docDeleteFields: vi.fn(async (..._a: any[]) => true as any),
   incrementDocField: vi.fn(async (..._a: any[]) => true as any),
   invalidateCollectionCache: vi.fn(),
@@ -77,6 +78,7 @@ beforeEach(() => {
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docMergeSet.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
+  fsMock.docDelete.mockReset().mockResolvedValue(true);
   fsMock.docDeleteFields.mockReset().mockResolvedValue(true);
   fsMock.incrementDocField.mockReset().mockResolvedValue(true);
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
@@ -104,7 +106,7 @@ describe("POST /api/teams/heartbeat", () => {
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.heartbeatIntervalMs).toBe(15000);
-    expect(res.body.mission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000 });
+    expect(res.body.mission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000, sosLat: null, sosLng: null });
 
     const live = listPositions({ teamId: "team-a1" });
     expect(live).toHaveLength(1);
@@ -502,7 +504,7 @@ describe("GET /api/teams — command-center roster", () => {
     expect(member.online).toBe(true);
     expect(member.lat).toBeCloseTo(36.755);
     expect(member.trail.length).toBe(2); // two heartbeats, second moved > 20 m
-    expect(team.activeMission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000 });
+    expect(team.activeMission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000, sosLat: null, sosLng: null });
   });
 
   it("marks members offline without a live position and reports last-known coords", async () => {
@@ -561,7 +563,7 @@ describe("POST /api/teams/session — Phase 2 resume probe", () => {
     expect(res.body.teamNameAr).toBe("وحدة 1");
     expect(res.body.name).toContain("عضو");
     expect(res.body.heartbeatIntervalMs).toBe(15000);
-    expect(res.body.mission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000 });
+    expect(res.body.mission).toEqual({ sosId: "sos-77", phase: "en_route", since: 1000, sosLat: null, sosLng: null });
   });
 
   it("401 without a team token", async () => {
@@ -639,5 +641,127 @@ describe("POST /api/teams/session — Phase 2 resume probe", () => {
     const res = await supertest(createApp()).post("/api/teams/session").set(memberAuth("tm-sess7")).set(nextIp()).send();
     expect(res.status).toBe(200);
     expect(res.body.mission).toBeNull();
+  });
+});
+
+// ========================
+// PHASE 3 — evidence-verified arrival (server-side geometry)
+// ========================
+describe("POST /api/teams/mission/phase — Phase 3 arrival evidence", () => {
+  const TARGET = { sosLat: 36.7503, sosLng: 5.0703 };
+
+  function missionMocks(memberId: string, mission: Record<string, any> | null) {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return memberFixture(memberId);
+      if (collection === "teams") return { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true };
+      if (collection === "teamMissions") return mission;
+      return null;
+    });
+  }
+
+  it("accepts an evidence flip inside the radius and consistent with the live registry", async () => {
+    missionMocks("tm-arr1", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000, ...TARGET });
+    const app = createApp();
+    // The member's REAL heartbeat fix lands at the target (recorded server-side).
+    const hb = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-arr1")).set(nextIp())
+      .send({ lat: 36.7503, lng: 5.0703, accuracy: 8 });
+    expect(hb.status).toBe(200);
+    const res = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-arr1")).set(nextIp())
+      .send({ phase: "on_scene", lat: 36.7503, lng: 5.0703, accuracy: 8 });
+    expect(res.status).toBe(200);
+    expect(atomicMock.setMissionPhaseAtomically).toHaveBeenCalledWith("team-a1", "on_scene");
+  });
+
+  it("rejects evidence farther than the arrival radius with ARRIVAL_TOO_FAR and never reaches the tx", async () => {
+    missionMocks("tm-arr2", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000, ...TARGET });
+    const res = await supertest(createApp()).post("/api/teams/mission/phase").set(memberAuth("tm-arr2")).set(nextIp())
+      .send({ phase: "on_scene", lat: 36.9, lng: 5.3 }); // ~17 km from the target
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("ARRIVAL_TOO_FAR");
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
+  });
+
+  it("rejects evidence that conflicts with the member's live registry position (anti-fabrication)", async () => {
+    missionMocks("tm-arr3", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000, ...TARGET });
+    const app = createApp();
+    // Real beats put the member ~1.1 km away; the flip then claims on-target
+    // coordinates — check 2 passes, check 3 (registry consistency) must fire.
+    const hb = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-arr3")).set(nextIp())
+      .send({ lat: 36.76, lng: 5.0703, accuracy: 8 });
+    expect(hb.status).toBe(200);
+    const res = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-arr3")).set(nextIp())
+      .send({ phase: "on_scene", lat: 36.7503, lng: 5.0703 });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("ARRIVAL_EVIDENCE_CONFLICT");
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
+  });
+
+  it("400s evidence outside the coverage bounds and unpaired coordinates", async () => {
+    missionMocks("tm-arr4", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000, ...TARGET });
+    const app = createApp();
+    const out = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-arr4")).set(nextIp())
+      .send({ phase: "on_scene", lat: 51.5, lng: -0.1 });
+    expect(out.status).toBe(400);
+    const pair = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-arr4")).set(nextIp())
+      .send({ phase: "on_scene", lat: 36.7503 });
+    expect(pair.status).toBe(400);
+    expect(atomicMock.setMissionPhaseAtomically).not.toHaveBeenCalled();
+  });
+
+  it("skips geometry for LEGACY missions without coords — evidence still accepted (self-report contract)", async () => {
+    missionMocks("tm-arr5", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000 });
+    const res = await supertest(createApp()).post("/api/teams/mission/phase").set(memberAuth("tm-arr5")).set(nextIp())
+      .send({ phase: "on_scene", lat: 36.9, lng: 5.3 }); // far — but there is no target to check against
+    expect(res.status).toBe(200);
+    expect(atomicMock.setMissionPhaseAtomically).toHaveBeenCalled();
+  });
+
+  it("keeps the evidence-less flip working exactly as Phase 1 shipped it", async () => {
+    missionMocks("tm-arr6", { teamId: "team-a1", sosId: "sos-77", phase: "en_route", since: 1000, ...TARGET });
+    const res = await supertest(createApp()).post("/api/teams/mission/phase").set(memberAuth("tm-arr6")).set(nextIp())
+      .send({ phase: "on_scene" });
+    expect(res.status).toBe(200);
+  });
+});
+
+// ========================
+// PHASE 3 — teamJoinCodes sweep (Round-C passenger: collection was grow-only)
+// ========================
+describe("POST /api/teams/:id/join-code — Phase 3 dead-code sweep", () => {
+  function mintMocks() {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams") return { teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true };
+      return null;
+    });
+  }
+
+  it("deletes codes dead for more than 7 days, keeps fresh ones, revokes live same-team codes", async () => {
+    mintMocks();
+    const now = Date.now();
+    const DAY = 24 * 60 * 60 * 1000;
+    fsMock.collectionGet.mockResolvedValue([
+      { code: "OLDREV01", teamId: "team-a1", revoked: true, revokedAt: now - 8 * DAY, expiresAt: now + DAY },
+      { code: "OLDEXP001", teamId: "team-b2", revoked: false, expiresAt: now - 9 * DAY },
+      { code: "FRESHDEAD", teamId: "team-a1", revoked: true, revokedAt: now - 1 * DAY, expiresAt: now + DAY },
+      { code: "LIVEOTHR1", teamId: "team-b2", revoked: false, expiresAt: now + DAY },
+      { code: "LIVESAMA1", teamId: "team-a1", revoked: false, expiresAt: now + DAY },
+    ]);
+    const res = await supertest(createApp())
+      .post("/api/teams/team-a1/join-code")
+      .set(adminAuth())
+      .set(nextIp())
+      .send({});
+    expect(res.status).toBe(201);
+    // Dead > 7 days → swept
+    expect(fsMock.docDelete).toHaveBeenCalledWith("teamJoinCodes", "OLDREV01");
+    expect(fsMock.docDelete).toHaveBeenCalledWith("teamJoinCodes", "OLDEXP001");
+    expect(fsMock.docDelete).not.toHaveBeenCalledWith("teamJoinCodes", "FRESHDEAD");
+    // Live codes on OTHER teams survive untouched
+    expect(fsMock.docUpdate).not.toHaveBeenCalledWith("teamJoinCodes", "LIVEOTHR1", expect.anything());
+    // Live code on THIS team is rotated (revoked) by the mint
+    expect(fsMock.docUpdate).toHaveBeenCalledWith("teamJoinCodes", "LIVESAMA1", { revoked: true, revokedAt: expect.any(Number) });
+    // Freshly minted code still comes back with its budget
+    expect(res.body.code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
+    expect(res.body.maxUses).toBe(12);
   });
 });

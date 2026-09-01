@@ -2,10 +2,12 @@ package com.observatory.wildfire
 
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.Manifest
+import android.net.Uri
 import android.os.Build
 import androidx.core.content.ContextCompat
 import org.json.JSONArray
@@ -384,6 +386,54 @@ class WebAppInterface(
             context.stopService(Intent(context, TeamLocationService::class.java))
         } catch (e: Exception) {
             Log.w(TAG, "stopTeamTracking error", e)
+        }
+    }
+
+    /**
+     * Phase 3: open the mission target in the device's navigation app. The
+     * JSON payload is validated NATIVELY — finite doubles inside the
+     * North-Africa coverage bounds (the server's NA_BOUNDS mirror) — and the
+     * geo: intent is BUILT from those doubles only; the WebView never hands a
+     * raw URL across this bridge. Fallback to the Google Maps web URL when no
+     * geo-capable activity resolves; both startActivity calls catch their own
+     * failure so the panel can surface an honest message (no
+     * resolveActivity probing — API 30+ package-visibility filtering makes it
+     * unreliable, and the manifest stays free of <queries> entries).
+     */
+    @JavascriptInterface
+    fun openNavigation(targetJson: String): Boolean {
+        if (!isTrustedOrigin()) return false
+        if (targetJson.length > 256) return false
+        val context = appContext ?: return false
+        return try {
+            val json = JSONObject(targetJson)
+            val lat = json.optDouble("lat", Double.NaN)
+            val lng = json.optDouble("lng", Double.NaN)
+            if (!lat.isFinite() || !lng.isFinite()) return false
+            if (lat < 19.0 || lat > 38.0 || lng < -18.0 || lng > 25.0) return false
+            try {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lng?q=$lat,$lng"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                true
+            } catch (e: ActivityNotFoundException) {
+                try {
+                    context.startActivity(
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("https://www.google.com/maps/dir/?api=1&destination=$lat,$lng&travelmode=driving")
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                    true
+                } catch (e2: Exception) {
+                    Log.w(TAG, "openNavigation: no navigation target available", e2)
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "openNavigation refused", e)
+            false
         }
     }
 }
