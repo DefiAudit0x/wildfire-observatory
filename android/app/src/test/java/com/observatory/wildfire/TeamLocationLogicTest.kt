@@ -107,8 +107,10 @@ class TeamLocationLogicTest {
             "{\"lat\":null,\"lng\":5.07}",
             TeamLocationLogic.buildHeartbeatBodyJson(Double.NaN, 5.07, null, null, null, null)
         )
+        // never-CI-tested typo caught by the first real gradle run: an
+        // Infinity lng degrades to null (the doctrine), not to 5.07
         assertEquals(
-            "{\"lat\":36.75,\"lng\":5.07}",
+            "{\"lat\":36.75,\"lng\":null}",
             TeamLocationLogic.buildHeartbeatBodyJson(36.75, Double.POSITIVE_INFINITY, null, null, null, null)
         )
         // out-of-range battery is dropped, not sent
