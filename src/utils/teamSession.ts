@@ -19,6 +19,11 @@ export interface TeamMissionState {
   sosId: string;
   phase: string;
   since: number;
+  /** Phase 3: mission target (null on legacy missions) — powers navigation
+   *  and the auto-arrival gate. Never used as an authority: the SERVER
+   *  re-verifies every evidence flip against the same doc it dispatched. */
+  sosLat: number | null;
+  sosLng: number | null;
 }
 
 export interface TeamSessionState {
@@ -46,6 +51,16 @@ const REQUEST_CEILING_MS = 15_000; // house ceiling (adminApi, W7)
 const DEFAULT_HEARTBEAT_MS = 15_000;
 export const MIN_HEARTBEAT_MS = 10_000;
 export const MAX_HEARTBEAT_MS = 60_000;
+
+/**
+ * Phase 3 — arrival doctrine (ARCHITECTURE.md §5.5): the member's device may
+ * ATTEMPT an arrival flip only after TWO consecutive fixes inside the radius
+ * (one stray GPS jump is not an arrival); the SERVER re-verifies the geometry
+ * against the mission target before accepting. Mirrors ARRIVAL_RADIUS_M in
+ * server/routes/teams.ts and TeamLocationLogic.kt.
+ */
+export const ARRIVAL_RADIUS_M = 50;
+export const ARRIVAL_STREAK_NEEDED = 2;
 
 /**
  * Dual-env safe storage access (house pattern from utils/device.ts): this
@@ -154,7 +169,16 @@ function normalizeMission(raw: any): TeamMissionState | null {
     sosId: raw.sosId,
     phase: raw.phase === "on_scene" ? "on_scene" : "en_route",
     since: Number(raw.since) || 0,
+    sosLat: saneCoord(raw?.sosLat),
+    sosLng: saneCoord(raw?.sosLng),
   };
+}
+
+/** Mission targets are numbers or numeric strings; anything else is "unknown". */
+function saneCoord(v: unknown): number | null {
+  if (typeof v === "boolean" || v === null || v === undefined || v === "") return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -296,29 +320,50 @@ export async function sendTeamHeartbeat(
 
 export interface PhaseResult {
   ok: boolean;
-  code?: "NO_ACTIVE_MISSION" | "not-joined" | "transient" | "fatal";
+  code?: "NO_ACTIVE_MISSION" | "not-joined" | "transient" | "fatal" | "rejected";
   fatal?: TeamFatalCode;
   mission?: TeamMissionState | null;
 }
 
-/** POST /api/teams/mission/phase — the only field-flippable phase: on_scene. */
-export async function flipMissionOnScene(token: string): Promise<PhaseResult> {
+/**
+ * POST /api/teams/mission/phase — flips the phase to on_scene.
+ * Phase 3: `arrival` evidence is optional but REQUIRED for the automated
+ * path — the server re-checks the geometry (radius, coverage, live-position
+ * consistency) and answers 400 ARRIVAL_* when the evidence fails, mapped to
+ * `code: "rejected"` so callers can reset their streak without touching the
+ * session (400 never kills a session per the fatalFromStatus doctrine).
+ */
+export async function flipMissionOnScene(
+  token: string,
+  arrival?: { lat: number; lng: number; accuracy?: number | null }
+): Promise<PhaseResult> {
+  const body = arrival
+    ? {
+        phase: "on_scene",
+        lat: arrival.lat,
+        lng: arrival.lng,
+        ...(arrival.accuracy != null ? { accuracy: arrival.accuracy } : {}),
+      }
+    : { phase: "on_scene" };
   let res: Response;
   try {
-    res = await teamFetch("/api/teams/mission/phase", "POST", { phase: "on_scene" }, token);
+    res = await teamFetch("/api/teams/mission/phase", "POST", body, token);
   } catch {
     return { ok: false, code: "transient" };
   }
-  let body: any = null;
-  try { body = await res.json(); } catch { body = null; }
+  let payload: any = null;
+  try { payload = await res.json(); } catch { payload = null; }
   if (!res.ok) {
     if (res.status === 409) return { ok: false, code: "NO_ACTIVE_MISSION" };
     if (res.status === 429 || res.status >= 500) return { ok: false, code: "transient" };
-    const fatal = fatalFromStatus(res.status, body);
+    if (res.status === 400 && typeof payload?.code === "string" && payload.code.startsWith("ARRIVAL_")) {
+      return { ok: false, code: "rejected" };
+    }
+    const fatal = fatalFromStatus(res.status, payload);
     if (fatal) return { ok: false, code: "fatal", fatal };
     return { ok: false, code: "transient" };
   }
-  return { ok: true, mission: normalizeMission(body.mission) };
+  return { ok: true, mission: normalizeMission(payload.mission) };
 }
 
 export interface LeaveResult {
@@ -339,6 +384,64 @@ export async function leaveTeam(token: string): Promise<LeaveResult> {
 }
 
 // ========================
+// PHASE 3 — GEOMETRY + NAVIGATION
+// ========================
+
+/**
+ * Great-circle distance in METERS (haversine) — the client-side mirror of
+ * server/geo.ts's getHaversineDistance (which returns km). Pure so the
+ * arrival-gate rules stay unit-testable without a geolocation fixture.
+ */
+export function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 1000;
+}
+
+/** One more link in the arrival chain — or a full reset when the fix fell out. */
+export function updateArrivalStreak(current: number, inRange: boolean): number {
+  return inRange ? current + 1 : 0;
+}
+
+/**
+ * Universal Google Maps navigation deep-link (official cross-platform URL:
+ * resolves to the native app on Android/iOS, the web map elsewhere).
+ */
+export function buildNavigationUrl(lat: number, lng: number): string {
+  return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=driving`;
+}
+
+/**
+ * Opens the mission target in the device's navigation app. On Android the
+ * origin-gated bridge builds a geo: intent from NATIVELY re-validated
+ * doubles (the WebView never hands a raw URL across); in a plain browser it
+ * opens the Google Maps URL in a new tab. Returns false when nothing could
+ * be opened so the panel can say so honestly.
+ */
+export function openMissionNavigation(mission: Pick<TeamMissionState, "sosLat" | "sosLng">): boolean {
+  if (mission.sosLat === null || mission.sosLng === null) return false;
+  if (!Number.isFinite(mission.sosLat) || !Number.isFinite(mission.sosLng)) return false;
+  try {
+    const bridge = getTeamTrackingBridge();
+    if (bridge && typeof bridge.openNavigation === "function") {
+      return bridge.openNavigation(JSON.stringify({ lat: mission.sosLat, lng: mission.sosLng })) === true;
+    }
+  } catch {
+    // bridge call refused — fall through to the web path
+  }
+  try {
+    if (typeof window === "undefined" || typeof window.open !== "function") return false;
+    return window.open(buildNavigationUrl(mission.sosLat, mission.sosLng), "_blank", "noopener,noreferrer") !== null;
+  } catch {
+    return false;
+  }
+}
+
+// ========================
 // NATIVE (ANDROID FGS) BRIDGE
 // ========================
 
@@ -356,6 +459,8 @@ export interface TeamTrackingBridge {
   isTeamTrackingActive?(): boolean;
   startTeamTracking(configJson: string): boolean;
   stopTeamTracking(): void;
+  /** Phase 3: optional — older bridge builds fall back to window.open. */
+  openNavigation?(targetJson: string): boolean;
 }
 
 export function getTeamTrackingBridge(): TeamTrackingBridge | null {

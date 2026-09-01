@@ -2,20 +2,25 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Users, Radio, Navigation, LogOut, MapPin, ShieldAlert, Smartphone, CheckCircle2 } from "lucide-react";
 import { Language } from "../types";
 import {
+  ARRIVAL_RADIUS_M,
+  ARRIVAL_STREAK_NEEDED,
   TeamFatalCode,
   TeamMissionState,
   TeamSessionState,
   buildNativeTrackingConfig,
   clearTeamSession,
+  distanceMeters,
   flipMissionOnScene,
   getTeamTrackingBridge,
   joinTeam,
   leaveTeam,
   loadTeamSession,
   normalizeNativeMission,
+  openMissionNavigation,
   probeTeamSession,
   saveTeamSession,
   sendTeamHeartbeat,
+  updateArrivalStreak,
 } from "../utils/teamSession";
 
 /**
@@ -119,6 +124,13 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   // over the on_scene answer (the W1 family, applied inside the panel).
   const missionSeqRef = useRef(0);
 
+  // Phase 3 — auto-arrival chain: which mission the streak belongs to, and
+  // how many CONSECUTIVE fixes have landed inside the radius. Reset on every
+  // mission change and every out-of-range fix (one stray GPS jump is not an
+  // arrival — ARCHITECTURE.md §5.5).
+  const arrivalStreakRef = useRef(0);
+  const arrivalMissionRef = useRef<string | null>(null);
+
   // ======================
   // RESUME: validate the persisted token once on mount. The server verdict is
   // the only authority — a network hiccup keeps the session (retry happens
@@ -203,7 +215,39 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
               // (or join/probe/native beat) that started after this beat was
               // launched is the fresher authority; the older en_route response
               // must not flash over on_scene on a field screen.
-              if (missionSeqRef.current === seq) setMission(verdict.mission);
+              if (missionSeqRef.current === seq) {
+                setMission(verdict.mission);
+                // Phase 3 — auto-arrival (JS loop only; the native FGS runs
+                // its own chain). TWO consecutive fixes inside the radius
+                // fire ONE evidence flip; the server re-verifies the
+                // geometry before accepting. The flip commits under the
+                // SAME seq as its parent beat: it is fresher than that
+                // beat, and any newer source (next beat / join) correctly
+                // discards it.
+                const m = verdict.mission;
+                if (arrivalMissionRef.current !== (m?.sosId ?? null)) {
+                  arrivalMissionRef.current = m?.sosId ?? null;
+                  arrivalStreakRef.current = 0;
+                }
+                if (m && m.phase === "en_route" && m.sosLat !== null && m.sosLng !== null) {
+                  const dist = distanceMeters(lat, lng, m.sosLat, m.sosLng);
+                  arrivalStreakRef.current = updateArrivalStreak(arrivalStreakRef.current, dist <= ARRIVAL_RADIUS_M);
+                  if (arrivalStreakRef.current >= ARRIVAL_STREAK_NEEDED) {
+                    arrivalStreakRef.current = 0;
+                    void flipMissionOnScene(current.token, {
+                      lat,
+                      lng,
+                      accuracy: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : null,
+                    }).then((res) => {
+                      if (sessionRef.current !== current) return;
+                      if (res.ok && missionSeqRef.current === seq) setMission(res.mission ?? null);
+                      // rejected/transient: the streak is already zero — two
+                      // fresh in-range beats will re-attempt; the manual
+                      // button stays available either way.
+                    });
+                  }
+                }
+              }
               if (verdict.heartbeatIntervalMs) setIntervalMs(verdict.heartbeatIntervalMs);
               setBeat("live");
               setLastBeatAt(Date.now());
@@ -369,6 +413,18 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       setFlipNote(isArabic ? "تعذر الإرسال — أعد المحاولة." : "Échec d'envoi — réessayez.");
     }
   }, [flipBusy, isArabic]);
+
+  const handleOpenNavigation = useCallback(() => {
+    if (!mission || mission.sosLat === null || mission.sosLng === null) return;
+    const opened = openMissionNavigation(mission);
+    if (!opened) {
+      setFlipNote(
+        isArabic
+          ? "تعذر فتح تطبيق الملاحة على هذا الجهاز."
+          : "Impossible d'ouvrir la navigation sur cet appareil."
+      );
+    }
+  }, [mission, isArabic]);
 
   const handleLeave = useCallback(async () => {
     const current = sessionRef.current;
@@ -619,6 +675,25 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
                     <Navigation className="h-4 w-4" />
                     <span>{flipBusy ? (isArabic ? "جارٍ الإرسال..." : "Envoi...") : (isArabic ? "وصلت إلى الموقع" : "Arrivé sur les lieux")}</span>
                   </button>
+                )}
+                {mission.sosLat !== null && mission.sosLng !== null && (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      onClick={handleOpenNavigation}
+                      className="w-full py-2.5 rounded-lg bg-sky-600/80 hover:bg-sky-500 text-white font-black text-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Navigation className="h-3.5 w-3.5" />
+                      <span>{isArabic ? "فتح الملاحة إلى الموقع" : "Ouvrir la navigation"}</span>
+                    </button>
+                    {mission.phase === "en_route" && (
+                      <p className="text-[10px] text-gray-500 text-center">
+                        {isArabic
+                          ? `يُؤكَّد الوصول تلقائياً بعد نبضتين داخل ${ARRIVAL_RADIUS_M}م من الموقع — الزر أعلاه للتأكيد اليدوي عند الحاجة.`
+                          : `Arrivée confirmée automatiquement après deux battements dans un rayon de ${ARRIVAL_RADIUS_M} m — le bouton ci-dessus reste pour une confirmation manuelle.`}
+                      </p>
+                    )}
+                  </div>
                 )}
                 {flipNote && (
                   <p role="status" className="text-[11px] font-bold text-amber-300 bg-amber-950/20 border border-amber-500/20 rounded-lg px-3 py-2">

@@ -507,3 +507,117 @@ describe("TeamPanel — native FGS integration", () => {
     expect(beatCalls()).toBe(2);
   });
 });
+
+// ========================
+// PHASE 3 — mission navigation button + JS-loop auto-arrival
+// ========================
+describe("TeamPanel — Phase 3 navigation button", () => {
+  function routeWithCoords(coords: { sosLat: number | null; sosLng: number | null }) {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000, ...coords }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000, ...coords } });
+      }
+      if (url === "/api/teams/mission/phase") {
+        return jsonRes(200, { ok: true, mission: { sosId: "sos-77", phase: "on_scene", since: 1000, ...coords } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+  }
+
+  it("renders the navigation button for a mission with coordinates and routes it through the bridge", async () => {
+    routeWithCoords({ sosLat: 36.7503, sosLng: 5.0702 });
+    const openNavigation = vi.fn((..._args: any[]) => true);
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+      openNavigation,
+    };
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    const nav = await screen.findByRole("button", { name: /فتح الملاحة/ });
+    fireEvent.click(nav);
+    expect(openNavigation).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(openNavigation.mock.calls[0][0])).toEqual({ lat: 36.7503, lng: 5.0702 });
+    delete (globalThis as any).AndroidBridge;
+  });
+
+  it("falls back to window.open with noopener when the bridge lacks openNavigation", async () => {
+    routeWithCoords({ sosLat: 36.7503, sosLng: 5.0702 });
+    const openSpy = vi.fn((..._args: any[]) => ({} as Window));
+    vi.stubGlobal("open", openSpy);
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /فتح الملاحة/ }));
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+    expect(String(openSpy.mock.calls[0][0])).toContain("destination=36.7503,5.0702");
+    expect(openSpy.mock.calls[0][1]).toBe("_blank");
+    expect(String(openSpy.mock.calls[0][2])).toContain("noopener");
+    vi.unstubAllGlobals();
+  });
+
+  it("offers NO navigation button on a legacy mission without coordinates", async () => {
+    routeWithCoords({ sosLat: null, sosLng: null });
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(screen.getByText(/في الطريق إلى الموقع/)).toBeTruthy());
+    expect(screen.queryByRole("button", { name: /فتح الملاحة/ })).toBeNull();
+  });
+});
+
+describe("TeamPanel — Phase 3 auto-arrival (JS loop)", () => {
+  const TARGET = { sosLat: 36.75, sosLng: 5.07 }; // = the stubbed geolocation fix → distance 0
+
+  function routeArrival(missionCoords: { sosLat: number | null; sosLng: number | null }) {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000, ...missionCoords }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/heartbeat") {
+        // Re-pace to the 10s floor: the loop effect re-creates and fires the
+        // next beat immediately — two beats without waiting 15s of wall clock
+        // (the P7d discriminator pattern).
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 10000, mission: { sosId: "sos-77", phase: "en_route", since: 1000, ...missionCoords } });
+      }
+      if (url === "/api/teams/mission/phase") {
+        expect(body.phase).toBe("on_scene");
+        return jsonRes(200, { ok: true, mission: { sosId: "sos-77", phase: "on_scene", since: 1000, ...missionCoords } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+  }
+
+  it("fires ONE evidence flip after TWO consecutive in-range fixes", async () => {
+    routeArrival(TARGET);
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => {
+      const flip = fetchMock.mock.calls.find(([u]: any[]) => u === "/api/teams/mission/phase");
+      expect(flip).toBeTruthy();
+    }, { timeout: 3000 });
+    const [, init] = fetchMock.mock.calls.find(([u]: any[]) => u === "/api/teams/mission/phase")!;
+    const body = JSON.parse(String(init?.body));
+    expect(body.phase).toBe("on_scene");
+    expect(body.lat).toBeCloseTo(36.75, 3);
+    expect(body.lng).toBeCloseTo(5.07, 3);
+    expect(body.accuracy).toBe(8);
+    // the mission card reflects the confirmed arrival
+    await waitFor(() => expect(screen.getByText(/في موقع الحادث/)).toBeTruthy());
+  });
+
+  it("never flips while the fixes stay outside the radius", async () => {
+    routeArrival({ sosLat: 36.9, sosLng: 5.3 }); // ~17 km away from the stubbed fix
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => {
+      const beats = fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/heartbeat");
+      expect(beats.length).toBeGreaterThanOrEqual(2); // two far beats, streak kept resetting
+    }, { timeout: 3000 });
+    expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/mission/phase")).toBe(false);
+  });
+});

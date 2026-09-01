@@ -1,17 +1,23 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  ARRIVAL_RADIUS_M,
+  ARRIVAL_STREAK_NEEDED,
+  buildNavigationUrl,
   buildNativeTrackingConfig,
   clampHeartbeatInterval,
   clearTeamSession,
+  distanceMeters,
   flipMissionOnScene,
   getTeamTrackingBridge,
   joinTeam,
   leaveTeam,
   loadTeamSession,
   normalizeNativeMission,
+  openMissionNavigation,
   probeTeamSession,
   saveTeamSession,
   sendTeamHeartbeat,
+  updateArrivalStreak,
   TeamSessionState,
 } from "../src/utils/teamSession";
 
@@ -101,6 +107,8 @@ describe("normalizeNativeMission (F3/S5 — native beat payload channel)", () =>
       sosId: "sos-9",
       phase: "on_scene",
       since: 77,
+      sosLat: null,
+      sosLng: null,
     });
     // cleared missions normalize to null, exactly like server traffic
     expect(normalizeNativeMission('{"sosId":"sos-9","phase":"cleared","since":77}')).toBeNull();
@@ -109,6 +117,8 @@ describe("normalizeNativeMission (F3/S5 — native beat payload channel)", () =>
       sosId: "sos-9",
       phase: "en_route",
       since: 1,
+      sosLat: null,
+      sosLng: null,
     });
   });
 
@@ -147,7 +157,7 @@ describe("joinTeam", () => {
       teamNameAr: "وحدة 1",
       name: "عارة 1",
     });
-    expect(result.mission).toEqual({ sosId: "sos-1", phase: "en_route", since: 42 });
+    expect(result.mission).toEqual({ sosId: "sos-1", phase: "en_route", since: 42, sosLat: null, sosLng: null });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/teams/join");
     expect(init.method).toBe("POST");
@@ -188,7 +198,7 @@ describe("probeTeamSession verdicts", () => {
     );
     const result = await probeTeamSession(SESSION.token);
     expect(result.ok).toBe(true);
-    expect(result.mission).toEqual({ sosId: "sos-9", phase: "on_scene", since: 7 });
+    expect(result.mission).toEqual({ sosId: "sos-9", phase: "on_scene", since: 7, sosLat: null, sosLng: null });
     expect(result.heartbeatIntervalMs).toBe(30_000);
     const [, init] = fetchMock.mock.calls[0];
     expect(init.headers.Authorization).toBe(`Bearer ${SESSION.token}`);
@@ -222,7 +232,11 @@ describe("sendTeamHeartbeat verdicts", () => {
       jsonResponse(200, { ok: true, serverTime: 1, heartbeatIntervalMs: 15_000, mission: { sosId: "sos-1", phase: "en_route", since: 42 } })
     );
     const result = await sendTeamHeartbeat(SESSION.token, fix);
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({
+      ok: true,
+      mission: { sosId: "sos-1", phase: "en_route", since: 42, sosLat: null, sosLng: null },
+      heartbeatIntervalMs: 15_000,
+    });
     const [, init] = fetchMock.mock.calls[0];
     const body = JSON.parse(init.body);
     expect(body).toEqual({ lat: 36.75, lng: 5.07, accuracy: 8, heading: 90, speed: 4.2 });
@@ -261,12 +275,31 @@ describe("flipMissionOnScene + leaveTeam", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true, mission: { sosId: "sos-1", phase: "on_scene", since: 42 } }));
     const good = await flipMissionOnScene(SESSION.token);
     expect(good.ok).toBe(true);
-    expect(good.mission).toEqual({ sosId: "sos-1", phase: "on_scene", since: 42 });
+    expect(good.mission).toEqual({ sosId: "sos-1", phase: "on_scene", since: 42, sosLat: null, sosLng: null });
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(init.body)).toEqual({ phase: "on_scene" });
 
     fetchMock.mockResolvedValueOnce(jsonResponse(409, { code: "NO_ACTIVE_MISSION", error: "none" }));
     expect((await flipMissionOnScene(SESSION.token)).code).toBe("NO_ACTIVE_MISSION");
+  });
+
+  it("Phase 3: the evidence flip carries the fix, and a 400 ARRIVAL_* maps to rejected (never fatal)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true, mission: { sosId: "sos-1", phase: "on_scene", since: 42 } }));
+    const good = await flipMissionOnScene(SESSION.token, { lat: 36.7501, lng: 5.0702, accuracy: 9.5 });
+    expect(good.ok).toBe(true);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body)).toEqual({ phase: "on_scene", lat: 36.7501, lng: 5.0702, accuracy: 9.5 });
+
+    // accuracy: null must be OMITTED (same omit-optional doctrine as the beat)
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true, mission: null }));
+    await flipMissionOnScene(SESSION.token, { lat: 36.7501, lng: 5.0702, accuracy: null });
+    const [, init2] = fetchMock.mock.calls[1];
+    expect(JSON.parse(init2.body)).toEqual({ phase: "on_scene", lat: 36.7501, lng: 5.0702 });
+
+    // Server-side geometry rejected the evidence — transient-class, session intact
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { code: "ARRIVAL_TOO_FAR", error: "أنت لا تزال بعيداً عن موقع البلاغ" }));
+    const rejected = await flipMissionOnScene(SESSION.token, { lat: 36.7, lng: 5.07 });
+    expect(rejected).toEqual({ ok: false, code: "rejected" });
   });
 
   it("leaveTeam: ok on success AND on already-gone gates; transient on network death", async () => {
@@ -303,5 +336,107 @@ describe("native FGS bridge detection", () => {
     expect(config.teamId).toBe(SESSION.teamId);
     expect(typeof config.baseUrl).toBe("string");
     delete (globalThis as any).AndroidBridge;
+  });
+});
+
+// ========================
+// PHASE 3 — arrival geometry + mission navigation
+// ========================
+describe("Phase 3 — arrival geometry", () => {
+  it("distanceMeters: zero at the same point, ~1112m per 0.01° latitude, server-parity", () => {
+    expect(distanceMeters(36.75, 5.07, 36.75, 5.07)).toBe(0);
+    // One degree of latitude ≈ 111.19 km → 0.01° ≈ 1111.9 m
+    const perCent = distanceMeters(36.75, 5.07, 36.76, 5.07);
+    expect(perCent).toBeGreaterThan(1100);
+    expect(perCent).toBeLessThan(1125);
+    // Symmetric
+    expect(distanceMeters(36.75, 5.07, 36.7601, 5.07)).toBeCloseTo(distanceMeters(36.7601, 5.07, 36.75, 5.07), 6);
+  });
+
+  it("arrival streak counts consecutive in-range fixes and resets on any out-of-range fix", () => {
+    expect(ARRIVAL_STREAK_NEEDED).toBe(2);
+    expect(ARRIVAL_RADIUS_M).toBe(50);
+    let s = 0;
+    s = updateArrivalStreak(s, true); // fix 1 in range
+    expect(s).toBe(1);
+    s = updateArrivalStreak(s, true); // fix 2 in range → gate opens
+    expect(s).toBe(2);
+    s = updateArrivalStreak(s, true); // (already arrived — caller resets, streak still counts)
+    expect(s).toBe(3);
+    s = updateArrivalStreak(s, false); // one stray jump → full reset, NOT decrement
+    expect(s).toBe(0);
+    s = updateArrivalStreak(s, true);
+    expect(s).toBe(1);
+  });
+
+  it("normalizeMission sanitizes mission target coords (numbers, numeric strings, garbage → null)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        ok: true,
+        serverTime: 1,
+        mission: { sosId: "sos-9", phase: "en_route", since: 7, sosLat: "36.7503", sosLng: 5.07 },
+      })
+    );
+    const ok = await probeTeamSession(SESSION.token);
+    expect(ok.mission?.sosLat).toBe(36.7503);
+    expect(ok.mission?.sosLng).toBe(5.07);
+
+    for (const bad of [Number.NaN, Infinity, "", "abc", true, {}, null]) {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(200, { ok: true, serverTime: 1, mission: { sosId: "sos-9", phase: "en_route", since: 7, sosLat: bad, sosLng: bad } })
+      );
+      const res = await probeTeamSession(SESSION.token);
+      expect(res.mission?.sosLat).toBeNull();
+      expect(res.mission?.sosLng).toBeNull();
+    }
+  });
+});
+
+describe("Phase 3 — mission navigation", () => {
+  it("builds the universal Google Maps directions URL", () => {
+    expect(buildNavigationUrl(36.7503, 5.0702)).toBe(
+      "https://www.google.com/maps/dir/?api=1&destination=36.7503,5.0702&travelmode=driving"
+    );
+  });
+
+  it("prefers the origin-gated bridge when it exposes openNavigation", () => {
+    const bridgeNav = vi.fn((..._args: any[]) => true);
+    const openSpy = vi.fn((..._args: any[]) => null as unknown as Window);
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+      openNavigation: bridgeNav,
+    };
+    vi.stubGlobal("open", openSpy);
+    try {
+      const opened = openMissionNavigation({ sosLat: 36.7503, sosLng: 5.0702 });
+      expect(opened).toBe(true);
+      expect(bridgeNav).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(bridgeNav.mock.calls[0][0])).toEqual({ lat: 36.7503, lng: 5.0702 });
+      expect(openSpy).not.toHaveBeenCalled(); // the WebView never window.opens across the bridge
+    } finally {
+      delete (globalThis as any).AndroidBridge;
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to window.open(noopener) in a plain browser, honestly reporting failure", () => {
+    const openSpy = vi.fn((..._args: any[]) => null as unknown as Window); // popup blocked
+    // Dual-env safe: node has no window — openMissionNavigation must find
+    // window.open through the SAME stubbed global in BOTH suites.
+    vi.stubGlobal("window", { open: openSpy });
+    try {
+      expect(openMissionNavigation({ sosLat: 36.7503, sosLng: 5.0702 })).toBe(false);
+      expect(openSpy.mock.calls[0][1]).toBe("_blank");
+      expect(openSpy.mock.calls[0][2]).toContain("noopener");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("refuses to navigate without a usable target (legacy mission)", () => {
+    expect(openMissionNavigation({ sosLat: null, sosLng: null })).toBe(false);
+    expect(openMissionNavigation({ sosLat: Number.NaN, sosLng: 5.07 })).toBe(false);
   });
 });
