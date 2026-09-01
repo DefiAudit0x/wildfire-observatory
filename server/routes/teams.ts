@@ -109,7 +109,12 @@ const joinLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { error: "Too many join attempts. Try again later." },
+  // F12 (P11): this is the ONLY limiter message that reaches an end user
+  // (the join form passes body.error through verbatim) — it must speak the
+  // member's language like every other join error, not raw English.
+  message: {
+    error: "محاولات انضمام كثيرة جداً — انتظر قليلاً قبل إعادة المحاولة (Too many join attempts, try again later).",
+  },
 });
 
 // GPS streaming: ARC-R3 — co-located teams (CGNAT egress, station Wi-Fi) share

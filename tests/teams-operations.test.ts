@@ -611,6 +611,24 @@ describe("POST /api/teams/session — Phase 2 resume probe", () => {
     expect(deadTeam.body.code).toBe("TEAM_INACTIVE");
   });
 
+  it("gate PRECEDENCE: inactive member + stale token together → MEMBER_INACTIVE wins by order (P9)", async () => {
+    // The panel classifies by code NAME, not position, so a reorder is
+    // behavior-compatible for the client — but the contract is still pinned:
+    // membership-state gates run BEFORE the revocation gate, mirroring the
+    // heartbeat route byte-for-byte.
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamMembers") return { ...memberFixture("tm-sess8"), active: false, tokenGen: 3 };
+      return null;
+    });
+    const res = await supertest(createApp())
+      .post("/api/teams/session")
+      .set(memberAuth("tm-sess8", "team-a1", 0))
+      .set(nextIp())
+      .send();
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("MEMBER_INACTIVE");
+  });
+
   it("returns a null mission when the team has no active mission", async () => {
     fsMock.docGet.mockImplementation(async (collection: string) => {
       if (collection === "teamMembers") return memberFixture("tm-sess7");
