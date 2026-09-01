@@ -3,24 +3,49 @@ plugins {
     id 'kotlin-android'
 }
 
+// Release signing: credentials live in android/keystore.properties
+// (gitignored — see keystore.properties.example for the shape). Without
+// that file the release build type stays UNSIGNED, mirroring CI's
+// no-secrets path — the build must never fail merely because a release
+// certificate is not mounted (fork PRs, fresh checkouts).
+def keystorePropertiesFile = rootProject.file('keystore.properties')
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+    keystorePropertiesFile.withInputStream { keystoreProperties.load(it) }
+}
+
 android {
     namespace 'com.observatory.wildfire'
-    compileSdk 34
+    compileSdk 36
 
     defaultConfig {
         applicationId 'com.observatory.wildfire'
         minSdk 26
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName '1.0.0'
 
         vectorDrawables.useSupportLibrary = true
     }
 
+    signingConfigs {
+        if (keystorePropertiesFile.exists()) {
+            release {
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
         }
         debug {
             minifyEnabled false

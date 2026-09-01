@@ -17,9 +17,67 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v3
       - name: Install Android SDK packages
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.5"
+          gradle-version: "8.11.1"
       - name: Build and test Android app
         run: gradle -p android test assembleDebug --stacktrace
+
+  # Release build: signs when the keystore secrets are present (they are
+  # for same-repo runs; fork PRs have no secrets and fall back to an
+  # UNSIGNED release — the job still verifies compile+R8 health, which is
+  # the point of running it on every PR). Produces APK + AAB (Play path)
+  # with sha256 checksums as downloadable artifacts.
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0" "platform-tools"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Restore signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.jks
+            printf 'storeFile=release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+              "$KEYSTORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/keystore.properties
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "SIGNED=false" >> "$GITHUB_ENV"
+            echo "::warning::Signing secrets absent — release build will be UNSIGNED"
+          fi
+      - name: Build release (APK + AAB)
+        run: gradle -p android assembleRelease bundleRelease --stacktrace
+      - name: Verify APK signature
+        if: env.SIGNED == 'true'
+        run: |
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          "$APKSIGNER" verify --print-certs android/app/build/outputs/apk/release/app-release.apk
+      - name: SHA-256 checksums
+        run: |
+          cd android/app/build/outputs
+          find apk/release bundle/release -type f \( -name '*.apk' -o -name '*.aab' \) -exec sha256sum {} \; > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            android/app/build/outputs/apk/release/*.apk
+            android/app/build/outputs/bundle/release/*.aab
+            android/app/build/outputs/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 30

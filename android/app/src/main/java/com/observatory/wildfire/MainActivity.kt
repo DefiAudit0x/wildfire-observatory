@@ -26,6 +26,10 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -292,6 +296,27 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         webView = WebView(this)
         setContentView(webView)
+
+        // TargetSdk 36: edge-to-edge is ENFORCED (the opt-out attribute is
+        // gone on Android 16, and status/navigation-bar colors in the theme
+        // are ignored) — the WebView would draw under the system bars and
+        // the RTL panel header would be unreachable behind the status bar.
+        // We draw edge-to-edge deliberately and pad the WebView with the
+        // real insets (system bars + display cutout + IME), which also
+        // gives us keyboard-resize behavior consistently across API 26–36.
+        // Re-registered on every setupWebView() call because renderer
+        // recovery swaps the WebView instance (same listener-per-instance
+        // lesson as the teamListener in onCreate).
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        ViewCompat.setOnApplyWindowInsetsListener(webView) { v, insets ->
+            val bars: Insets = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars()
+                    or WindowInsetsCompat.Type.displayCutout()
+                    or WindowInsetsCompat.Type.ime()
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
 
         webView.settings.apply {
             javaScriptEnabled = true
