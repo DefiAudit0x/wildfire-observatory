@@ -1,6 +1,7 @@
 import { getDb, isAdminDb } from "./firebase.js";
 import logger from "./logger.js";
 import { stripUndefinedDeep } from "./clean.js";
+import { saneCoord } from "./geo.js";
 
 async function loadClientSdk() {
   return import("firebase/firestore");
@@ -250,7 +251,8 @@ export async function appendSosDispatch(
         const missionRef = db.collection("teamMissions").doc(missionTeamId);
         const [sosSnap, missionSnap] = await Promise.all([tx.get(sosRef), tx.get(missionRef)]);
         if (!sosSnap.exists) return "missing" as const;
-        if (sosSnap.data()?.status === "resolved") return "resolved" as const;
+        const sosData = sosSnap.data() || {};
+        if (sosData.status === "resolved") return "resolved" as const;
         const missionData = missionSnap.exists ? missionSnap.data() || {} : null;
         if (missionData && missionData.phase !== "cleared") {
           if (missionData.sosId !== sosId) return "team_busy" as const;
@@ -261,9 +263,21 @@ export async function appendSosDispatch(
           return "ok" as const;
         }
         tx.update(sosRef, { dispatchedTeams: FieldValue.arrayUnion(dispatchItem) });
+        // Phase 3: the mission doc carries its TARGET coordinates so the
+        // mission/phase route can verify arrival geometry server-side. A
+        // missing/garbled SOS coordinate degrades to null — verification is
+        // then skipped (Phase-1 self-report contract) instead of poisoning
+        // every haversine with NaN.
         tx.set(
           missionRef,
-          { teamId: missionTeamId, sosId, phase: "en_route", since: Date.now() },
+          {
+            teamId: missionTeamId,
+            sosId,
+            phase: "en_route",
+            since: Date.now(),
+            sosLat: saneCoord(sosData.lat),
+            sosLng: saneCoord(sosData.lng),
+          },
           { merge: true }
         );
         return "ok" as const;
@@ -281,7 +295,8 @@ export async function appendSosDispatch(
       const missionRef = doc(db, "teamMissions", missionTeamId);
       const [sosSnap, missionSnap] = await Promise.all([tx.get(sosRef), tx.get(missionRef)]);
       if (!sosSnap.exists()) return "missing" as const;
-      if (sosSnap.data()?.status === "resolved") return "resolved" as const;
+      const sosData = sosSnap.data() || {};
+      if (sosData.status === "resolved") return "resolved" as const;
       const missionData = missionSnap.exists() ? missionSnap.data() || {} : null;
       if (missionData && missionData.phase !== "cleared") {
         if (missionData.sosId !== sosId) return "team_busy" as const;
@@ -289,9 +304,17 @@ export async function appendSosDispatch(
         return "ok" as const;
       }
       tx.update(sosRef, { dispatchedTeams: arrayUnion(dispatchItem) });
+      // Phase 3: target coordinates ride the mission doc — see admin branch.
       tx.set(
         missionRef,
-        { teamId: missionTeamId, sosId, phase: "en_route", since: Date.now() },
+        {
+          teamId: missionTeamId,
+          sosId,
+          phase: "en_route",
+          since: Date.now(),
+          sosLat: saneCoord(sosData.lat),
+          sosLng: saneCoord(sosData.lng),
+        },
         { merge: true }
       );
       return "ok" as const;
