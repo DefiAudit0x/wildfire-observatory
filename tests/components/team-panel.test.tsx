@@ -621,3 +621,59 @@ describe("TeamPanel — Phase 3 auto-arrival (JS loop)", () => {
     expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/mission/phase")).toBe(false);
   });
 });
+
+describe("TeamPanel — Phase 3 auto-arrival discipline", () => {
+  it("does NOT flip after a single in-range beat (streak needs two)", async () => {
+    // The mount probe hits a TRANSIENT failure: no setSession(refreshed) → no
+    // second immediate beat. With the interval left at the server default the
+    // loop fires exactly ONE beat and nothing re-creates it inside the test.
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url === "/api/teams/session") {
+        return jsonRes(500, { error: "storage" });
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000, sosLat: 36.75, sosLng: 5.07 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => {
+      const beats = fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/heartbeat");
+      expect(beats.length).toBeGreaterThanOrEqual(1);
+    }, { timeout: 3000 });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/mission/phase")).toBe(false);
+  });
+
+  it("recovers: after a rejected flip, two fresh in-range beats re-attempt (rejected is transient-class)", async () => {
+    let phaseCalls = 0;
+    let hbCalls = 0;
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000, sosLat: 36.75, sosLng: 5.07 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/heartbeat") {
+        // Alternate 15000/10000: every response re-creates the loop effect
+        // and fires the next beat immediately — a deterministic beat chain.
+        hbCalls += 1;
+        const interval = hbCalls % 2 === 1 ? 15000 : 10000;
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: interval, mission: { sosId: "sos-77", phase: "en_route", since: 1000, sosLat: 36.75, sosLng: 5.07 } });
+      }
+      if (url === "/api/teams/mission/phase") {
+        phaseCalls += 1;
+        // FIRST flip rejected by the server geometry; SECOND flip accepted.
+        return phaseCalls === 1
+          ? jsonRes(400, { code: "ARRIVAL_EVIDENCE_CONFLICT", error: "conflict" })
+          : jsonRes(200, { ok: true, mission: { sosId: "sos-77", phase: "on_scene", since: 1000, sosLat: 36.75, sosLng: 5.07 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(screen.getByText(/في موقع الحادث/)).toBeTruthy(), { timeout: 4000 });
+    expect(phaseCalls).toBe(2);
+  });
+});

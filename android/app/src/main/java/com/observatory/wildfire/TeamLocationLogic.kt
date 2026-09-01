@@ -111,6 +111,24 @@ object TeamLocationLogic {
     }
 
     /**
+     * Mission `since` (ms epoch of the current dispatch leg). The service keys
+     * its arrival state on "sosId:since" — a dispatcher force-clear + RE-dispatch
+     * to the SAME sos mints a fresh `since`, and that must re-arm auto-arrival
+     * (the member walks again) instead of staying gated by the old flip-done
+     * marker. Missing since → "0" (still a stable key for a legacy mission).
+     */
+    fun parseMissionSince(missionJson: String?): Long {
+        if (missionJson.isNullOrBlank()) return 0L
+        return Regex("\"since\"\\s*:\\s*([0-9]+)").find(missionJson)?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+    }
+
+    /** Composite mission key: identifies one DISPATCH LEG, not just one SOS. */
+    fun missionKey(missionJson: String?): String? {
+        val sosId = parseMissionSosId(missionJson) ?: return null
+        return "$sosId:${parseMissionSince(missionJson)}"
+    }
+
+    /**
      * Evidence flip body: the phase AND the fix that justifies it — the
      * server re-checks this geometry (radius + coverage + live-position
      * consistency) before accepting. Non-finite doubles degrade to null and

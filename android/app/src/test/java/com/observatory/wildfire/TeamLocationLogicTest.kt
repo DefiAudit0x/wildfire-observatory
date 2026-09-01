@@ -2,6 +2,7 @@ package com.observatory.wildfire
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -263,7 +264,8 @@ class TeamLocationLogicTest {
     fun `mission target coords parse from the extracted mission object`() {
         val mission = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42,\"sosLat\":36.7503,\"sosLng\":5.0703"
         val target = TeamLocationLogic.parseMissionCoords(mission)
-        assertEquals(36.7503, target?.first!!, 1e-9)
+        assertNotNull(target)
+        assertEquals(36.7503, target!!.first, 1e-9)
         assertEquals(5.0703, target.second, 1e-9)
         assertEquals("sos-9", TeamLocationLogic.parseMissionSosId(mission))
         assertEquals("en_route", TeamLocationLogic.parseMissionPhase(mission))
@@ -300,5 +302,23 @@ class TeamLocationLogicTest {
             "{\"phase\":\"on_scene\",\"lat\":null,\"lng\":5.0703}",
             TeamLocationLogic.buildPhaseFlipBodyJson(Double.NaN, 5.0703, 8.0)
         )
+    }
+
+    @Test
+    fun `mission key identifies one dispatch leg — fresh since re-arms arrival`() {
+        val leg1 = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":1000"
+        val leg2 = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":2000"
+        assertEquals("sos-9:1000", TeamLocationLogic.missionKey(leg1))
+        assertEquals("sos-9:2000", TeamLocationLogic.missionKey(leg2))
+        // different sos → different key even with equal since
+        assertEquals(
+            "sos-OTHER:1000",
+            TeamLocationLogic.missionKey("\"sosId\":\"sos-OTHER\",\"phase\":\"en_route\",\"since\":1000")
+        )
+        // missing since degrades to a stable 0 (legacy mission)
+        assertEquals("sos-9:0", TeamLocationLogic.missionKey("\"sosId\":\"sos-9\",\"phase\":\"en_route\""))
+        assertEquals(0L, TeamLocationLogic.parseMissionSince(null))
+        assertNull(TeamLocationLogic.missionKey(null))
+        assertNull(TeamLocationLogic.missionKey("\"since\":1000"))
     }
 }

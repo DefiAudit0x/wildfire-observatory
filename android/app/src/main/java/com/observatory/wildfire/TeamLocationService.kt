@@ -390,26 +390,28 @@ class TeamLocationService : Service(), LocationListener {
      * Phase 3 — auto-arrival. Runs on the beat scheduler thread right after a
      * successful beat. Doctrine (ARCHITECTURE.md §5.5):
      *  - the streak counts CONSECUTIVE fixes inside ARRIVAL_RADIUS_M and is
-     *    reset on mission change and every out-of-range fix;
-     *  - reaching ARRIVAL_STREAK_NEEDED fires ONE evidence flip per mission
-     *    (arrivalFlipDone) — the server re-verifies geometry before
-     *    accepting, and a 400-class rejection is final for this mission
-     *    (the member can still use the panel's manual button);
+     *    reset on dispatch-leg change and every out-of-range fix;
+     *  - reaching ARRIVAL_STREAK_NEEDED fires ONE evidence flip per dispatch
+     *    leg (arrivalFlipDone, keyed sosId:since) — the server re-verifies
+     *    geometry before accepting, and a 400-class rejection is final for
+     *    this leg (the member can still use the panel's manual button);
      *  - transport/5xx/429 failures leave the attempt retryable on a later
      *    streak; the phase response carries the fresh mission so the panel
      *    updates instantly via the same "beat" channel.
      */
     private fun handleAutoArrival(missionJson: String?, fix: Location, cfg: Config) {
-        val sosId = TeamLocationLogic.parseMissionSosId(missionJson)
-        if (sosId != arrivalMissionKey.get()) {
-            arrivalMissionKey.set(sosId)
+        // The key is sosId:since — one DISPATCH LEG. A force-clear + re-dispatch
+        // to the same sos mints a fresh `since` and re-arms auto-arrival.
+        val missionKey = TeamLocationLogic.missionKey(missionJson)
+        if (missionKey != arrivalMissionKey.get()) {
+            arrivalMissionKey.set(missionKey)
             arrivalStreak.set(0)
         }
         if (TeamLocationLogic.parseMissionPhase(missionJson) != "en_route") {
             arrivalStreak.set(0)
             return
         }
-        if (sosId == null || sosId == arrivalFlipDone.get()) return
+        if (missionKey == null || missionKey == arrivalFlipDone.get()) return
         val target = TeamLocationLogic.parseMissionCoords(missionJson) ?: return
         val distanceM = TeamLocationLogic.haversineMeters(fix.latitude, fix.longitude, target.first, target.second)
         val streak = TeamLocationLogic.nextArrivalStreak(arrivalStreak.get(), distanceM)
@@ -424,8 +426,8 @@ class TeamLocationService : Service(), LocationListener {
         val outcome = postJson("/api/teams/mission/phase", body, cfg)
         val (status, responseBody) = outcome ?: return // transport — a later streak retries
         if (status in 200..299) {
-            arrivalFlipDone.set(sosId)
-            Log.i(TAG, "Auto-arrival confirmed for mission $sosId")
+            arrivalFlipDone.set(missionKey)
+            Log.i(TAG, "Auto-arrival confirmed for mission $missionKey")
             emitState("beat", TeamLocationLogic.extractMissionJson(responseBody))
             updateNotification(notificationText("arrived"))
         } else if (status == 429 || status >= 500) {
@@ -434,7 +436,7 @@ class TeamLocationService : Service(), LocationListener {
             // 400 evidence rejected (too far / conflict / coverage) or the
             // gate chain went fatal (the next beat self-stops anyway). Do
             // not hammer the tx for this mission.
-            arrivalFlipDone.set(sosId)
+            arrivalFlipDone.set(missionKey)
         }
     }
 
