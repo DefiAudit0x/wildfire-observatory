@@ -298,8 +298,10 @@ class TeamLocationLogicTest {
             TeamLocationLogic.buildPhaseFlipBodyJson(36.7503, 5.0703, null)
         )
         // Non-finite evidence degrades to null — the zod gate will refuse it
+        // (accuracy 8.0 is still finite, so it rides along — CI run 1 caught
+        // this spec's own omitted accuracy expectation, the e81d06a lesson).
         assertEquals(
-            "{\"phase\":\"on_scene\",\"lat\":null,\"lng\":5.0703}",
+            "{\"phase\":\"on_scene\",\"lat\":null,\"lng\":5.0703,\"accuracy\":8.0}",
             TeamLocationLogic.buildPhaseFlipBodyJson(Double.NaN, 5.0703, 8.0)
         )
     }
