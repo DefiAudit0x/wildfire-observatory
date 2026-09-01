@@ -256,8 +256,11 @@ class TeamLocationService : Service(), LocationListener {
 
     @Deprecated("Needed for API < 31 compat; no-op — onLocationChanged covers fixes")
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
-    override fun onProviderEnabled(provider: String?) = Unit
-    override fun onProviderDisabled(provider: String?) = Unit
+    // android-34 stubs annotate these providers @NonNull — a `String?` override
+    // is "overrides nothing" at compile time; non-null matches and is safe
+    // (the framework never passes a null provider name).
+    override fun onProviderEnabled(provider: String) = Unit
+    override fun onProviderDisabled(provider: String) = Unit
 
     // ========================
     // BEATS
