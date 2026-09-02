@@ -5,7 +5,7 @@
 <p align="center">Algerian Wildfire and Disaster Observatory — Community-Driven Early Warning System</p>
 
 [![CI](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml/badge.svg)](https://github.com/DefiAudit0x/wildfire-observatory/actions/workflows/ci.yml)
-[![Live Demo](https://img.shields.io/badge/Live%20Demo-Railway-brightgreen)](https://wildfire-observatory-production.up.railway.app/)
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Render-brightgreen)](https://wildfire-observatory.onrender.com/)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
 ![Express](https://img.shields.io/badge/Express-5-green)
@@ -224,7 +224,7 @@ pnpm run dev
 
 Open http://localhost:3000 in your browser.
 
-> 🌐 **Live deployment (Railway):** https://wildfire-observatory-production.up.railway.app/
+> 🌐 **Live deployment (Render free tier):** https://wildfire-observatory.onrender.com/ — the free instance sleeps after ~15 min idle; the first request wakes it in ~50 s.
 
 ### Environment Variables / متغيرات البيئة
 
