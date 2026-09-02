@@ -26,7 +26,16 @@ export interface ThreatAnalysis {
   nearbySources: ThreatSource[];
 }
 
-export const THREAT_MAX_AGE_MS = 3 * 60_000;
+// v1.0.4: widened from 3 min to 30 min. The old 3-minute window contradicted
+// the data it gated: FIRMS satellite scan times are the OVERPASS moment
+// (typically 10+ minutes old by the time they are fetched), so real satellite
+// hotspots were NEVER "active threats" and the SOS flow kept saying "no active
+// fires near you" while the proximity banner (which had NO freshness filter at
+// all) still screamed about stale seed data — the contradictory UI the owner
+// reported. 30 min matches how long a fire stays operationally "active" after
+// a satellite pass or a citizen report, and both surfaces now share THIS
+// constant through isFreshThreatTimestamp.
+export const THREAT_MAX_AGE_MS = 30 * 60_000;
 export const THREAT_MAX_FUTURE_SKEW_MS = 2 * 60_000;
 const NEARBY_RADIUS_KM = 10;
 const SATELLITE_MIN_CONFIDENCE = 70;

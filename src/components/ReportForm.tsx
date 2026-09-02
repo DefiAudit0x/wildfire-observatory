@@ -211,6 +211,39 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
     }
   }, [mapClickedCoords]);
 
+  // v1.0.4 field fix: a confirmed GPS fix or map click now ALSO fills the
+  // place-name field automatically (Nominatim reverse geocoding, keyless) —
+  // the owner should never re-type what the device already knows. The user's
+  // own text is NEVER overwritten: the lookup only fills an EMPTY field.
+  // Debounced + aborted so fast coordinate churn (map dragging) does not spam
+  // the free API; offline/rate-limited failures degrade to typing by hand.
+  useEffect(() => {
+    const parsedLat = Number(lat);
+    const parsedLng = Number(lng);
+    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${parsedLat}&lon=${parsedLng}&zoom=14&accept-language=ar`,
+        { signal: controller.signal, headers: { Accept: "application/json" } }
+      )
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: { name?: string; display_name?: string } | null) => {
+          if (!data) return;
+          const place = (data.name || data.display_name || "").trim();
+          if (!place) return;
+          setLocationName((current) => (current.trim() === "" ? place : current));
+        })
+        .catch(() => {
+          /* offline or throttled: typing the place name by hand still works */
+        });
+    }, 800);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [lat, lng]);
+
   // Bind the selected region to the coordinates (mirror of the server's
   // geofence): suggest the wilaya on GPS fix, warn on wilaya mismatch so the
   // submission is not silently rejected by the server after the fact.

@@ -22,7 +22,7 @@ import { SyncState } from "../utils/datasetHealth";
 import { EMERGENCY_CONTACTS, formatDistanceKm } from "../utils/emergency";
 
 interface HomeHubProps {
-  onNavigate: (tab: "home" | "map" | "report" | "copilot" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
+  onNavigate: (tab: "home" | "map" | "report" | "guides" | "radar" | "admin" | "volunteer" | "command" | "evac") => void;
   onTriggerSOS: () => void;
   lang: Language;
   reportsCount: number;
@@ -93,15 +93,9 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
       color: "border-purple-500/20 hover:border-purple-500/40 text-purple-400 bg-purple-950/20",
       icon: <BookOpen className="h-6 w-6 text-purple-400" />
     },
-    {
-      id: "copilot" as const,
-      titleAr: "مساعد الطوارئ بالذكاء الاصطناعي",
-      titleFr: "Assistant Gemini IA Urgence",
-      descAr: "توجيهات ذكية فورية مخصصة لحالتك الجغرافية ومحيطك",
-      descFr: "Conseils immédiats basés sur votre position géographique",
-      color: "border-fuchsia-500/20 hover:border-fuchsia-500/40 text-fuchsia-400 bg-fuchsia-950/20",
-      icon: <Sparkles className="h-6 w-6 text-fuchsia-400" />
-    },
+    // v1.0.4: the "مساعد الطوارئ بالذكاء الاصطناعي" card was REMOVED
+    // (owner decision) — the home hub now advertises only actionable
+    // emergency tools.
     {
       id: "command" as const,
       titleAr: "غرفة القيادة المركزية وتتبع الفرق",
@@ -313,8 +307,8 @@ export default function HomeHub({ onNavigate, onTriggerSOS, lang, reportsCount, 
             </h3>
             <p className="text-xs text-gray-400 leading-relaxed">
               {isArabic 
-                ? (syncState === "live" ? "تصفح الخريطة المحدثة، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA." : "تصفح الخريطة، مسارات الإخلاء، دليل النجاة، التطوع ومساعد IA مع حالة التحديث في الأعلى.")
-                : "Consultez la carte, les routes d'évacuation, le guide de survie et l'IA."}
+                ? (syncState === "live" ? "تصفح الخريطة المحدثة، مسارات الإخلاء، دليل النجاة وحالة التحديث في الأعلى." : "تصفح الخريطة، مسارات الإخلاء، دليل النجاة وحالة التحديث في الأعلى.")
+                : "Consultez la carte, les routes d'évacuation, le guide de survie et l'état de synchronisation."}
             </p>
           </div>
           <div className="pt-2 flex items-center justify-between text-xs font-bold text-sky-400 border-t border-sky-500/20">

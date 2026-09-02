@@ -5,7 +5,6 @@ import { GeoPoint } from "../../hooks/useProximityAlerts";
 import ReportForm from "../ReportForm";
 import StatisticsPanel from "../StatisticsPanel";
 import WilayaList from "../WilayaList";
-import AICopilot from "../AICopilot";
 import SafetyGuides from "../SafetyGuides";
 import EvacuationRadar from "../EvacuationRadar";
 import VolunteerRegistration from "../VolunteerRegistration";
@@ -106,7 +105,7 @@ export default function MainContent({
       {/* Safe Evacuation Radar View */}
       {activeTab === "radar" && (
         <div className="col-span-12">
-          <EvacuationRadar reports={reports} userLocation={userLocation} lang={lang} />
+          <EvacuationRadar reports={reports} satellites={satellites} userLocation={userLocation} lang={lang} />
         </div>
       )}
 
@@ -153,7 +152,7 @@ export default function MainContent({
       {/* Safe Evacuation View */}
       {activeTab === "evac" && (
         <div className="col-span-12 animate-fadeIn">
-          <SafeEvacuation lang={lang} userLocation={userLocation} />
+          <SafeEvacuation lang={lang} userLocation={userLocation} reports={reports} satellites={satellites} />
         </div>
       )}
 
@@ -312,10 +311,10 @@ export default function MainContent({
               <WilayaList wilayas={wilayas} lang={lang} />
             </div>
 
-            {/* AI Copilot Responder tab on mobile / Sidebar on desktop */}
-            <div className={`${activeTab === "copilot" ? "block" : "hidden md:block"}`}>
-              <AICopilot mapClickedCoords={mapClickedCoords} lang={lang} />
-            </div>
+            {/* v1.0.4: the AI Copilot sidebar mount was REMOVED (owner decision)
+                — the emergency sidebar now leads with live wilaya status and
+                the emergency call card. The server /api/ai/guidance route is
+                untouched and can serve future programmatic callers. */}
 
             {/* Printable Emergency Call Card */}
             <EmergencyContactsCard isArabic={isArabic} />

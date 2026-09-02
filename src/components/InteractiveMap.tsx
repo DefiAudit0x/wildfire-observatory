@@ -102,7 +102,22 @@ export default function InteractiveMap({
       if (mapRef.current) mapRef.current.invalidateSize();
     }, 100);
 
+    // v1.0.4 field fix ("الخريطة لم تعد تظهر"): the one-shot 100 ms timeout
+    // could not recover from a 0-size mount (fast tab switch, WebView resume,
+    // late layout). Leaflet then initialized at 0×0 and never self-corrected
+    // — a permanently grey container. Continuous observation keeps the canvas
+    // in sync with real layout changes (same pattern CommandMap already had).
+    const container = mapContainerRef.current;
+    let resizeObserver: ResizeObserver | null = null;
+    if (container && typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        mapRef.current?.invalidateSize();
+      });
+      resizeObserver.observe(container);
+    }
+
     return () => {
+      resizeObserver?.disconnect();
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Report } from "../types";
 import { haversineKm } from "../utils/geo";
+import { isFreshThreatTimestamp } from "../utils/threats";
 
 export interface GeoPoint {
   lat: number;
@@ -306,6 +307,12 @@ export function useProximityAlerts(
         .filter(
           (rep) =>
             isReportEligibleForAlert(rep, "proximity-siren") &&
+            // v1.0.4: SAME freshness authority as the SOS flow / Home banner
+            // (isFreshThreatTimestamp from threats.ts). The banner used to
+            // announce reports of ANY age — including the server's stale seed
+            // rows — while the SOS modal filtered them out: the contradictory
+            // "تنبيه قريب منك / لا توجد حرائق نشطة" pair the owner reported.
+            isFreshThreatTimestamp(rep.timestamp) &&
             Number.isFinite(rep.lat) &&
             Number.isFinite(rep.lng) &&
             getProximityThreshold(rep.severity) !== undefined
