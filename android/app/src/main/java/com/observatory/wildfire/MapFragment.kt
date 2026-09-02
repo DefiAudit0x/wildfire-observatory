@@ -17,18 +17,22 @@ import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 
 /**
- * v2.0.0 — the native map. The owner's field report "الخريطة لا تعرض" died
- * with the WebView: this is osmdroid on real map tiles with an on-device
- * sqlite tile cache (visited tiles survive offline), FIRMS hotspots, verified
- * fires, safezones, mesh intel and the user marker — plus the hybrid
- * evacuation promised in v1.0.4, now native: OSRM real-road geometry to the
- * nearest safezone, with a per-vertex fire-proximity check that paints the
- * route red and warns when it passes within 2.5 km of a fresh threat.
+ * v2.1.0 — the field map, rescued from the "API KEY REQUIRED" disaster:
+ * v2.0.0 rode CartoDarkMatter, and CARTO started serving anonymous clients
+ * placeholder tiles stamped "API KEY REQUIRED" — the owner's device showed a
+ * black map drowning in watermarks (the "prehistoric" verdict). Now standard
+ * OpenStreetMap raster tiles: no key, no registration, valid UA below, and
+ * the sqlite cache still keeps visited tiles offline. osmdroid's stock white
+ * zoom buttons are hidden and replaced with styled in-layout controls.
+ * Everything else from v2.0.0 stands: FIRMS hotspots, verified fires,
+ * safezones, mesh intel, user marker, and the hybrid OSRM evacuation with
+ * the per-vertex 2.5 km fire-corridor red warning.
  */
 class MapFragment : Fragment() {
 
@@ -75,10 +79,15 @@ class MapFragment : Fragment() {
         map = mv
         mv.setTileSource(
             XYTileSource(
-                "CartoDarkMatter", 1, 19, 256, ".png",
-                arrayOf("https://basemaps.cartocdn.com/dark_all/")
+                "OpenStreetMap", 1, 19, 256, ".png",
+                arrayOf("https://tile.openstreetmap.org/")
             )
         )
+        // Stock white +/- squares belong to the stone age — styled controls
+        // live in fragment_map.xml and call controller.zoomIn/zoomOut below.
+        mv.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
+        view.findViewById<View>(R.id.zoom_in).setOnClickListener { mv.controller.zoomIn() }
+        view.findViewById<View>(R.id.zoom_out).setOnClickListener { mv.controller.zoomOut() }
         mv.controller.setZoom(DEFAULT_ZOOM)
         // Cold start over Algiers until the first fix arrives.
         mv.controller.setCenter(GeoPoint(36.7538, 3.0588))

@@ -67,9 +67,11 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
       zoomControl: true,
       attributionControl: true,
     });
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: "abcd",
+    // v2.1.0: off CARTO (anonymous clients get "API KEY REQUIRED" watermark
+    // tiles now) — standard keyless OSM raster keeps roads + labels readable
+    // for an evacuation run.
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 19,
     }).addTo(map);
     layerRef.current = L.layerGroup().addTo(map);

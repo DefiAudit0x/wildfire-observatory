@@ -126,6 +126,15 @@ class ObservatoryFragment : Fragment() {
             snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
         )
         riskScoreText?.text = score.toString()
+        // v2.1.0: band the number's color — a calm 6/100 must never scream red.
+        riskScoreText?.setTextColor(
+            when {
+                score < 25 -> 0xFF10B981.toInt()
+                score < 50 -> 0xFFF59E0B.toInt()
+                score < 75 -> 0xFFF97316.toInt()
+                else -> 0xFFEF4444.toInt()
+            }
+        )
         riskLabelText?.text = RiskScore.labelAr(score)
         riskDetailText?.text = getString(
             R.string.risk_detail_fmt,

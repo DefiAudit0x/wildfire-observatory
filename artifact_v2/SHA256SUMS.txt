@@ -1,0 +1,2 @@
+f8a702a52c68e82c775233b993dba01195a60e9adbb0ad34bca98d980755a494  apk/release/app-release.apk
+eb96d46d82c9e49175676620fdfb9562229ab1419f468ed054899e1f948bffd0  bundle/release/app-release.aab
