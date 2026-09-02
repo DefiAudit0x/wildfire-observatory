@@ -17,7 +17,8 @@ class RiskScoreTest {
         val verified = RiskScore.score(listOf("critical" to true), 0)
         val pending = RiskScore.score(listOf("critical" to false), 0)
         assertEquals(RiskScore.W_VERIFIED_CRITICAL, verified)
-        assertEquals((RiskScore.W_VERIFIED_CRITICAL * RiskScore.PENDING_FACTOR).toInt(), pending)
+        // Math.round half-UP: 25 * 0.5 = 12.5 → 13.
+        assertEquals(Math.round(RiskScore.W_VERIFIED_CRITICAL * RiskScore.PENDING_FACTOR).toInt(), pending)
         assertTrue(verified > pending)
     }
 

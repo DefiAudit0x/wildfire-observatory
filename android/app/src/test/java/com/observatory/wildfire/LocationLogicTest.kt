@@ -63,7 +63,9 @@ class LocationLogicTest {
         val network = fix(ageMs = 5_000, accuracyM = 80f)   // fresh + coarse
         val gps = fix(ageMs = 200_000, accuracyM = 5f)      // stale + fine
         val best = LocationLogic.chooseBest(listOf(gps, network), now)
-        assertEquals("network", best?.provider)
+        // The helper names every snapshot "gps" — assert on the CHOSEN
+        // accuracy (80 = the fresh coarse one), not the provider string.
+        assertEquals(80f, best?.accuracyM)
     }
 
     @Test
