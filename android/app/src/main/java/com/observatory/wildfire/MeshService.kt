@@ -359,13 +359,16 @@ class MeshService : Service() {
     // ========================
 
     private fun initCrypto() {
-        try {
-            java.security.Security.insertProviderAt(org.bouncycastle.jce.provider.BouncyCastleProvider(), 1)
-        } catch (e: Exception) {
-            // Security provider already installed
-        }
-        // The identity key pair is now durable (SharedPreferences) so the
-        // "persistent per install" identity actually survives restarts.
+        // Provider note (v1.0.3 field crash): the old code tried to insert the
+        // bundled full BouncyCastle provider at priority 1 here. On Android
+        // that call ALWAYS no-ops — Security.insertProviderAt returns -1
+        // WITHOUT throwing when a provider named "BC" already exists, and the
+        // OS ships a stripped one under exactly that name — so the catch
+        // block below mislabeled the failure "already installed" for two
+        // releases while every getInstance(.., "BC") resolved to the OS's
+        // stripped provider and MeshService.onCreate died with
+        // NoSuchAlgorithmException. CryptoEngine no longer pins any provider
+        // (see its class kdoc): Conscrypt resolves the full algorithm set.
         CryptoEngine.initialize(applicationContext)
     }
 

@@ -22,8 +22,8 @@ android {
         applicationId 'com.observatory.wildfire'
         minSdk 26
         targetSdk 36
-        versionCode 3
-        versionName '1.0.2'
+        versionCode 4
+        versionName '1.0.3'
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -78,10 +78,13 @@ dependencies {
     // Google Nearby Connections for Bluetooth mesh
     implementation 'com.google.android.gms:play-services-nearby:19.0.0'
 
-    // Bouncy Castle for crypto on Android. The official JDK 1.8-and-later
-    // line currently publishes 1.85.2; validate the Android release build
-    // outside this sandbox because no Gradle wrapper is checked in here.
-    implementation 'org.bouncycastle:bcprov-jdk18on:1.85.2'
+    // NOTE (v1.0.3): no bundled BouncyCastle. The old bcprov-jdk18on
+    // dependency was dead weight AND a trap: Android's OS-level stripped
+    // provider already owns the name "BC", so insertProviderAt(bundled BC)
+    // always returned -1 and pinned getInstance(..., "BC") calls resolved
+    // to the OS provider — which lacks EC KeyPairGenerator — crashing
+    // MeshService.onCreate on real devices. CryptoEngine now uses the
+    // default provider list (Conscrypt). See CryptoProviderContractTest.
 
     // Kotlin coroutines
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3'

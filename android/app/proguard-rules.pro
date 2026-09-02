@@ -14,14 +14,9 @@
     public <init>();
 }
 
-# Bouncy Castle (bundled JCE provider, registered programmatically in
-# MeshService via Security.insertProviderAt): the provider resolves its
-# algorithm implementations by CLASS NAME — string-driven reflective
-# instantiation inside the provider itself and in the JCA framework's
-# service lookup. R8 renaming/stripping these trees produces an app that
-# builds clean and breaks at FIRST crypto use — invisible to the debug
-# build (minifyEnabled false), which is exactly why these rules must
-# live here and be exercised by the CI release job.
--keep class org.bouncycastle.jce.provider.** { *; }
--keep class org.bouncycastle.jcajce.provider.** { *; }
--dontwarn org.bouncycastle.**
+# NOTE (v1.0.3): the org.bouncycastle keep rules were removed together with
+# the bundled bcprov dependency — no bouncycastle classes ship in the APK
+# anymore. History for future maintainers: those rules guarded the bundled
+# provider that was registered via Security.insertProviderAt in MeshService;
+# the registration always silently failed on Android (duplicate "BC" name)
+# and the dependency is gone — see CryptoProviderContractTest.
