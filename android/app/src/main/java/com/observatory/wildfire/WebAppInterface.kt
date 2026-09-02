@@ -77,7 +77,7 @@ class WebAppInterface(
             null
         } ?: return false
 
-        val productionHost = "wildfire-observatory-production.up.railway.app"
+        val productionHost = "wildfire-observatory.onrender.com"
         if (host == productionHost) {
             // Production PWA is served over HTTPS only.
             return scheme == "https"

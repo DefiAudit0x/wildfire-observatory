@@ -29,11 +29,16 @@ object TeamLocationLogic {
     /**
      * Outbound base-URL allow-list for the FGS. This is the UNION of the two
      * native trust sets (WebAppInterface.isTrustedOrigin's production host +
-     * MainActivity's APP_URL host — they cover the Railway and Fly deploy
-     * targets) plus the local-dev loopback hosts. The FGS posts the member's
+     * MainActivity's APP_URL host — they cover the Render deploy target)
+     * plus the local-dev loopback hosts. The FGS posts the member's
      * Bearer token to `baseUrl + /api/teams/heartbeat`, so anything that is
      * not an exact match here is a hard NO — the service must never become a
      * token-exfiltration channel, no matter what a compromised WebView sends.
+     *
+     * 2026-09 host migration: the retired Railway/Fly hosts are deliberately
+     * NOT kept here — expired-trial subdomains can be re-registered by
+     * strangers on their platforms, and an exact match against a recycled
+     * host would happily exfiltrate the bearer token to them.
      */
     fun isAllowedBaseUrl(url: String): Boolean {
         if (url.isBlank()) return false
@@ -42,8 +47,7 @@ object TeamLocationLogic {
             val host = uri.host?.lowercase() ?: return false
             val scheme = uri.scheme?.lowercase() ?: return false
             when (host) {
-                "wildfire-observatory-odcibw.fly.dev",
-                "wildfire-observatory-production.up.railway.app" -> scheme == "https"
+                "wildfire-observatory.onrender.com" -> scheme == "https"
                 "localhost", "127.0.0.1", "10.0.2.2" -> scheme == "https" || scheme == "http"
                 else -> false
             }

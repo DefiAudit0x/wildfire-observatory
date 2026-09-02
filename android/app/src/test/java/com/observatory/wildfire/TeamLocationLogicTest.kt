@@ -22,9 +22,12 @@ class TeamLocationLogicTest {
 
     @Test
     fun `allow-list accepts production HTTPS hosts`() {
-        assertTrue(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory-odcibw.fly.dev"))
-        assertTrue(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory-odcibw.fly.dev/api/teams/heartbeat"))
-        assertTrue(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory-production.up.railway.app"))
+        assertTrue(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory.onrender.com"))
+        assertTrue(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory.onrender.com/api/teams/heartbeat"))
+        // retired hosts (expired trials) must be rejected even over HTTPS —
+        // released subdomains can be re-registered by strangers
+        assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory-odcibw.fly.dev"))
+        assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory-production.up.railway.app"))
     }
 
     @Test
@@ -37,10 +40,10 @@ class TeamLocationLogicTest {
     @Test
     fun `allow-list rejects cleartext production and every foreign host`() {
         // production hosts must be HTTPS
-        assertFalse(TeamLocationLogic.isAllowedBaseUrl("http://wildfire-observatory-odcibw.fly.dev"))
-        assertFalse(TeamLocationLogic.isAllowedBaseUrl("http://wildfire-observatory-production.up.railway.app"))
+        assertFalse(TeamLocationLogic.isAllowedBaseUrl("http://wildfire-observatory.onrender.com"))
         // lookalikes: substring and userinfo tricks must never pass
-        assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://evil-wildfire-observatory-odcibw.fly.dev.example.com"))
+        assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://evil-wildfire-observatory.onrender.com.example.com"))
+        assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://wildfire-observatory.onrender.com.evil.com"))
         assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://localhost.evil.com"))
         assertFalse(TeamLocationLogic.isAllowedBaseUrl("https://localhost@evil.com"))
         assertFalse(TeamLocationLogic.isAllowedBaseUrl("ftp://localhost"))

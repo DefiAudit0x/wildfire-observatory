@@ -58,11 +58,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // PWA URL — the deploy target is Fly (see fly.toml: app
-        // wildfire-observatory-odcibw). ARC-M38: this used to point at the old
+        // PWA URL — the deploy target is Render (free tier, service
+        // wildfire-observatory). ARC-M38: this used to point at the old
         // Railway origin, so the packaged app booted a host the server no
-        // longer serves and the allowlist below rejected it.
-        private const val APP_URL = "https://wildfire-observatory-odcibw.fly.dev"
+        // longer serves and the allowlist below rejected it. 2026-09: the
+        // Railway/Fly trials expired — the app now boots the Render origin
+        // and the dead hosts were REMOVED from every native trust set
+        // (released *.onrender.com/*.fly.dev subdomains can be re-registered
+        // by strangers; trusting them would be a token-exfil channel).
+        private const val APP_URL = "https://wildfire-observatory.onrender.com"
     }
 
     private var meshService: MeshService? = null
@@ -289,7 +293,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             null
         } ?: return false
-        if (host == "wildfire-observatory-odcibw.fly.dev") return scheme == "https"
+        if (host == "wildfire-observatory.onrender.com") return scheme == "https"
         return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
     }
 
