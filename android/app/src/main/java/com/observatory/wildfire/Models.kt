@@ -74,6 +74,35 @@ object Parsers {
     private fun safeDouble(o: JSONObject, key: String): Double? =
         if (o.has(key) && !o.isNull(key)) runCatching { o.getDouble(key) }.getOrNull() else null
 
+    /**
+     * v2.1.1 — /api/config → {"cartoKey":"…"|null}. Hand-rolled scan (house
+     * pattern: no org.json here so the function stays JVM-testable) — the
+     * payload is a flat one-key object. Defensive: strict quote shape,
+     * empty string is no key, values over 128 chars are refused.
+     */
+    fun parseCartoKey(body: String): String? {
+        val keyIdx = body.indexOf("\"cartoKey\"")
+        if (keyIdx < 0) return null
+        val colon = body.indexOf(':', keyIdx + 10)
+        if (colon < 0) return null
+        var i = colon + 1
+        while (i < body.length && body[i].isWhitespace()) i++
+        if (i >= body.length || body[i] != '"') return null
+        i++
+        val sb = StringBuilder()
+        while (i < body.length && sb.length <= 128) {
+            val c = body[i]
+            if (c == '"') return sb.toString().takeIf { it.isNotEmpty() }
+            if (c == '\\') {
+                i += 2
+                continue
+            }
+            sb.append(c)
+            i++
+        }
+        return null
+    }
+
     fun parseReports(body: String): List<ThreatReport> {
         val arr = runCatching { JSONArray(body) }.getOrNull() ?: return emptyList()
         val out = ArrayList<ThreatReport>(arr.length())

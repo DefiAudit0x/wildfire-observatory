@@ -93,6 +93,32 @@ class MapFragment : Fragment() {
         mv.controller.setCenter(GeoPoint(36.7538, 3.0588))
         mapReady = true
 
+        // v2.1.1: if the server carries a CARTO basemap key (Render env
+        // CARTO_BASEMAP_KEY → GET /api/config), upgrade the basemap to the
+        // keyed voyager style (sunlight-readable, richer labels). Until a key
+        // is confirmed live the app stays on keyless OSM above — the
+        // watermark era can never return by default, key or no key.
+        viewLifecycleOwner.lifecycleScope.launch {
+            val key = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                when (val r = app.api.get("/api/config")) {
+                    is ObservatoryApi.Result.Ok -> Parsers.parseCartoKey(r.body)
+                    else -> null
+                }
+            }
+            val mv2 = map ?: return@launch
+            if (!isAdded || key.isNullOrEmpty()) return@launch
+            // Key-derived source name: rotating the key starts a fresh
+            // tile-cache namespace so watermarked responses from a dead-key
+            // episode are never resurrected offline.
+            mv2.setTileSource(
+                XYTileSource(
+                    "CartoVoyager-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
+                    arrayOf("https://basemaps.cartocdn.com/")
+                )
+            )
+            mv2.invalidate()
+        }
+
         routeButton?.setOnClickListener { fetchEvacuationRoute() }
 
         app.locationEngine.addListener { state ->
