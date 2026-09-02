@@ -11,6 +11,7 @@ import java.security.KeyAgreement
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
+import java.security.NoSuchAlgorithmException
 import java.security.Provider
 import java.security.Security
 import java.security.Signature
