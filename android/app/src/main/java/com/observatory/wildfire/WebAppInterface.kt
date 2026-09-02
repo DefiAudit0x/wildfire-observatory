@@ -77,11 +77,20 @@ class WebAppInterface(
             null
         } ?: return false
 
+        // v1.0.4: the production host is the Render deployment. This gate was
+        // still expecting the RETIRED Railway origin through v1.0.1–v1.0.3 —
+        // the bridge answered NOTHING in the field because the WebView was
+        // loading a third (also retired) host. All native trust sets now
+        // agree on one origin.
         val productionHost = "wildfire-observatory.onrender.com"
         if (host == productionHost) {
             // Production PWA is served over HTTPS only.
             return scheme == "https"
         }
+        // Retired hosts (Railway/Fly) are deliberately absent: expired-trial
+        // subdomains can be re-registered by strangers, and this gate guards
+        // the native JS bridge — an exact match against a recycled host would
+        // hand mesh/deviceId APIs to whatever lands on the old name.
         // Local development hosts (emulator loopback): http/https both fine.
         return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
     }
