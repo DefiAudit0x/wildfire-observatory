@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:id="@+id/nav_observatory"
+        android:icon="@drawable/ic_nav_radar"
+        android:title="المرصد" />
+    <item
+        android:id="@+id/nav_map"
+        android:icon="@drawable/ic_nav_map"
+        android:title="الخريطة" />
+    <item
+        android:id="@+id/nav_report"
+        android:icon="@drawable/ic_nav_report"
+        android:title="بلاغ" />
+    <item
+        android:id="@+id/nav_sos"
+        android:icon="@drawable/ic_nav_sos"
+        android:title="استغاثة" />
+    <item
+        android:id="@+id/nav_team"
+        android:icon="@drawable/ic_nav_team"
+        android:title="الفريق" />
+</menu>

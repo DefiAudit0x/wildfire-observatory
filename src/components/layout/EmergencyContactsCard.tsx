@@ -15,7 +15,10 @@ function EmergencyContactsCard({ isArabic, compact = false }: EmergencyContactsC
         <Phone className="h-4 w-4 text-red-500" />
         {isArabic ? "أرقام النجدة الرسمية — شمال إفريقيا" : "Numéros de Secours — Afrique du Nord"}
       </h4>
-      <div className={`grid gap-2 text-xs font-mono ${compact ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-2"}`}>
+      {/* grid-cols-2 forced two tracks even on 360dp phones, wrapping each
+          country label into a vertical strip; collapse to one column on
+          phones in BOTH compact and full modes. */}
+      <div className={`grid gap-2 text-xs font-mono ${compact ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1 sm:grid-cols-2"}`}>
         {EMERGENCY_CONTACTS.map((c) => (
           <a
             key={`${c.countryFr}-${c.phone}`}
