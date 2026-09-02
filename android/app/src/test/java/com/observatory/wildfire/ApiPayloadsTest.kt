@@ -14,13 +14,14 @@ class ApiPayloadsTest {
 
     @Test
     fun `report body happy path shape`() {
-        val (body, err) = ApiPayloads.buildReportJson(
+        val pair = ApiPayloads.buildReportJson(
             lat = 36.75, lng = 3.05,
             locationName = "غابة بابازور", wilaya = "الجزائر",
             description = "دخان كثيف يتصاعد من التل", severity = "high",
             deviceId = "dev-1", clientGeneratedId = "abcd1234abcd1234abcd1234abcd1234"
         )
-        assertNull(err)
+        assertNull(pair?.second)
+        val body = pair?.first
         assertNotNull(body)
         body!!
         assertTrue(body.contains("\"lat\":36.75"))
@@ -57,12 +58,13 @@ class ApiPayloadsTest {
 
     @Test
     fun `sos body clamps duration truncates text omits empties`() {
-        val (body, err) = ApiPayloads.buildSosJson(
+        val pair = ApiPayloads.buildSosJson(
             deviceId = "dev-1", lat = 36.75, lng = 3.05,
             name = "  أحمد  ", phone = "", textMessage = "x".repeat(900),
             audioDataUri = "data:audio/mp4;base64,AAAA", audioDurationSec = 99
         )
-        assertNull(err)
+        assertNull(pair?.second)
+        val body = pair?.first
         assertNotNull(body)
         body!!
         assertTrue(body.contains("\"audioDuration\":20"))
