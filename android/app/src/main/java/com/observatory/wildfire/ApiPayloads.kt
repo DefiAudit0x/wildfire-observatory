@@ -3,7 +3,8 @@ package com.observatory.wildfire
 /**
  * v2.0.0 (native UI) — request payload + URL builders, Android-free.
  *
- * Every builder mirrors the SERVER's zod gate EXACTLY (server/routes/*):
+ * Every builder mirrors the SERVER's zod gate EXACTLY (the schema files in
+ * the server routes package):
  * a payload this object refuses to build would be a guaranteed 400, and a
  * payload it does build must be accepted. JSON is assembled with manual
  * StringBuilder escaping (same house pattern as TeamLocationLogic) so the

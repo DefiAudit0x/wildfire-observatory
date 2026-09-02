@@ -94,43 +94,43 @@ class RadarView @JvmOverloads constructor(
     }
     private val hotspotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFFFF8C42 // FIRMS orange
+        color = 0xFFFF8C42.toInt() // FIRMS orange
     }
     private val pendingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFFFBBF24 // amber
+        color = 0xFFFBBF24.toInt() // amber
         strokeWidth = 4f
     }
     private val verifiedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFFEF4444 // red
+        color = 0xFFEF4444.toInt() // red
     }
     private val safezonePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFF10B981 // green
+        color = 0xFF10B981.toInt() // green
     }
     private val meshPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF22D3EE // cyan
+        color = 0xFF22D3EE.toInt() // cyan
         strokeWidth = 4f
     }
     private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFFE2E8F0
+        color = 0xFFE2E8F0.toInt()
     }
     private val windPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF94A3B8
+        color = 0xFF94A3B8.toInt()
         strokeWidth = 5f
     }
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF3B4F6B
+        color = 0xFF3B4F6B.toInt()
         strokeWidth = 3f
     }
     private val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF94A3B8
+        color = 0xFF94A3B8.toInt()
         strokeWidth = 5f
     }
     private val rectF = RectF()

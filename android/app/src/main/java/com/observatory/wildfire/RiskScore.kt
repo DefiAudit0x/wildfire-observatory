@@ -25,12 +25,14 @@ object RiskScore {
     const val HOTSPOT_BONUS_MAX = 25
 
     fun severityWeight(severity: String, verified: Boolean): Double {
+        // All branches Int (a mixed Int/Double `when` would infer a useless
+        // common supertype and break toDouble() — the CI round-1 lesson).
         val base = when (severity) {
             "critical" -> W_VERIFIED_CRITICAL
             "high" -> W_VERIFIED_HIGH
             "medium" -> W_VERIFIED_MEDIUM
             "low" -> W_VERIFIED_LOW
-            else -> 0.0
+            else -> 0
         }
         return if (verified) base.toDouble() else base * PENDING_FACTOR
     }

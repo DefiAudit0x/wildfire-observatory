@@ -79,7 +79,6 @@ class MapFragment : Fragment() {
                 arrayOf("https://basemaps.cartocdn.com/dark_all/")
             )
         )
-        mv.setMultiUseControls(true)
         mv.controller.setZoom(DEFAULT_ZOOM)
         // Cold start over Algiers until the first fix arrives.
         mv.controller.setCenter(GeoPoint(36.7538, 3.0588))

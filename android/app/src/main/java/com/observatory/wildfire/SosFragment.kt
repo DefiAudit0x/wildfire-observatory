@@ -216,7 +216,9 @@ class SosFragment : Fragment() {
         }
     }
 
-    private fun Parsers.SosOutcome?.priorityLabel(): String = when (this?.priority) {
+    // SosOutcome is a TOP-LEVEL model (Models.kt), not nested in Parsers —
+    // the nullable receiver extension must name it directly.
+    private fun SosOutcome?.priorityLabel(): String = when (this?.priority) {
         "critical" -> getString(R.string.priority_critical)
         "high" -> getString(R.string.priority_high)
         "medium" -> getString(R.string.priority_medium)
