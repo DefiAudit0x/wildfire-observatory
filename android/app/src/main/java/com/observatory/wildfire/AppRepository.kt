@@ -226,11 +226,11 @@ class AppRepository(
             lat, lng, locationName, wilaya, description, severity,
             deviceId = deviceId, clientGeneratedId = key, imageDataUri = imageDataUri
         )
-        if (built?.first == null) {
+        val body = built?.first
+        if (body == null) {
             onDone(false, built?.second ?: "بيانات غير صالحة")
             return
         }
-        val body = built.first
         scope.launch {
             val result = io { api.post("/api/reports", body) }
             when {
@@ -261,11 +261,11 @@ class AppRepository(
         onDone: (ok: Boolean, outcome: SosOutcome?, userError: String?) -> Unit
     ) {
         val built = ApiPayloads.buildSosJson(deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec)
-        if (built?.first == null) {
+        val body = built?.first
+        if (body == null) {
             onDone(false, null, built?.second ?: "بيانات غير صالحة")
             return
         }
-        val body = built.first
         _state.value = _state.value.copy(sos = SosUiState(sending = true))
         broadcastMeshIntel("sos", textMessage ?: "نداء استغاثة!", lat, lng)
         scope.launch {
@@ -299,12 +299,14 @@ class AppRepository(
         code: String, name: String, deviceId: String,
         onDone: (ok: Boolean, teamNameAr: String?, error: String?) -> Unit
     ) {
-        val built = ApiPayloads.buildJoinJson(code, name) ?: run {
-            onDone(false, null, "رمز أو اسم غير صالح")
+        val built = ApiPayloads.buildJoinJson(code, name)
+        val joinBody = built?.first
+        if (joinBody == null) {
+            onDone(false, null, built?.second ?: "رمز أو اسم غير صالح")
             return
         }
         scope.launch {
-            val result = io { api.post("/api/teams/join", built.first) }
+            val result = io { api.post("/api/teams/join", joinBody) }
             if (!result.is2xx) {
                 val msg = (result as? ObservatoryApi.Result.HttpError)
                     ?.let { extractServerError(it.body) } ?: "تعذر الاتصال بالخادم"

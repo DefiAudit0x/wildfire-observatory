@@ -58,7 +58,7 @@ object ApiPayloads {
         deviceId: String,
         clientGeneratedId: String,
         imageDataUri: String? = null
-    ): Pair<String, String>? { // Pair(body, error) — body null when error != null
+    ): Pair<String?, String?>? { // (body, error) — exactly one side is null
         if (!lat.isFinite() || lat < -90.0 || lat > 90.0) return null to "إحداثيات غير صالحة"
         if (!lng.isFinite() || lng < -180.0 || lng > 180.0) return null to "إحداثيات غير صالحة"
         val name = locationName.trim()
@@ -106,7 +106,7 @@ object ApiPayloads {
         textMessage: String?,
         audioDataUri: String?,
         audioDurationSec: Int?
-    ): Pair<String, String>? {
+    ): Pair<String?, String?>? {
         if (deviceId.isBlank() || deviceId.length > 128) return null to "معرّف الجهاز غير صالح"
         if (!lat.isFinite() || lat < -90.0 || lat > 90.0) return null to "إحداثيات غير صالحة"
         if (!lng.isFinite() || lng < -180.0 || lng > 180.0) return null to "إحداثيات غير صالحة"
@@ -137,7 +137,7 @@ object ApiPayloads {
     }
 
     /** POST /api/teams/join body — code 4..24, name 2..40 after trim. */
-    fun buildJoinJson(code: String, name: String): Pair<String, String>? {
+    fun buildJoinJson(code: String, name: String): Pair<String?, String?>? {
         val c = code.trim()
         if (c.length !in 4..24) return null to "رمز الانضمام غير صالح"
         val n = name.trim()
