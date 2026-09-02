@@ -109,11 +109,13 @@ class MapFragment : Fragment() {
             if (!isAdded || key.isNullOrEmpty()) return@launch
             // Key-derived source name: rotating the key starts a fresh
             // tile-cache namespace so watermarked responses from a dead-key
-            // episode are never resurrected offline.
+            // episode are never resurrected offline. The "-rt-" slot bumps the
+            // namespace again for v2.1.2 (rastertiles/voyager path fix — the
+            // v2.1.1 base URL lacked the style segment and 404'd every tile).
             mv2.setTileSource(
                 XYTileSource(
-                    "CartoVoyager-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
-                    arrayOf("https://basemaps.cartocdn.com/")
+                    "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
+                    arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
                 )
             )
             mv2.invalidate()
