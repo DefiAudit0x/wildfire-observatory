@@ -2,7 +2,6 @@ package com.observatory.wildfire
 
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -103,17 +102,21 @@ class CryptoProviderContractTest {
         assertArrayEquals(bob.public.encoded, bobDecoded.encoded)
 
         // --- ECDH agreement (CryptoEngine.ecdhKeyAgreement) ------------------
+        // NOTE: KeyAgreement.generateSecret() RESETS the object (JCA spec) —
+        // capture the secret ONCE per agreement (CryptoEngine does exactly
+        // this; a second generateSecret() throws IllegalStateException).
         val kaA = KeyAgreement.getInstance("ECDH")
         kaA.init(alice.private)
         kaA.doPhase(bobDecoded, true)
         val kaB = KeyAgreement.getInstance("ECDH")
         kaB.init(bob.private)
         kaB.doPhase(alice.public, true)
-        assertArrayEquals(kaA.generateSecret(), kaB.generateSecret())
+        val sharedSecret = kaA.generateSecret()
+        assertArrayEquals(sharedSecret, kaB.generateSecret())
 
         // --- key derive (CryptoEngine.deriveAESKey) ---------------------------
         val aesKey = MessageDigest.getInstance("SHA-256")
-            .digest(kaA.generateSecret()).copyOf(256 / 8)
+            .digest(sharedSecret).copyOf(256 / 8)
 
         // --- AES-256-GCM round trip (CryptoEngine.encrypt/decryptFromPeer) ---
         val iv = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
@@ -136,8 +139,11 @@ class CryptoProviderContractTest {
         assertTrue(ver.verify(signature))
 
         // --- PKCS#8 decode path (CryptoEngine legacy identity load) ----------
+        // Compare ENCODINGS, not object identity/equals: JCA Key.equals
+        // semantics are implementation-defined, while getEncoded() of a
+        // spec-decoded key deterministically reflects the stored bytes.
         val privDecoded = KeyFactory.getInstance("EC")
             .generatePrivate(PKCS8EncodedKeySpec(alice.private.encoded))
-        assertEquals(alice.private, privDecoded)
+        assertArrayEquals(alice.private.encoded, privDecoded.encoded)
     }
 }
