@@ -75,7 +75,7 @@
         android:layout_height="wrap_content"
         android:gravity="center"
         android:padding="2dp"
-        android:text="© OpenStreetMap contributors"
+        android:text="© OpenStreetMap · CARTO"
         android:textColor="#FF556070"
         android:textSize="9sp" />
 

@@ -26,3 +26,6 @@ android/app/build/
 android/.idea/
 android/captures/
 android/.kotlin/
+
+# Local pipeline credentials — NEVER commit (token protocol: chmod 600, user deletes at end)
+scripts/.gh_token

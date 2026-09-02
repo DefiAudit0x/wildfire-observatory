@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { getCartoKey, cartoUrl } from "../lib/basemap";
 import L from "leaflet";
 import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, Car, Compass, Activity, Flame } from "lucide-react";
 import { Report, SatelliteHotspot } from "../types";
@@ -55,6 +56,7 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const layerRef = useRef<L.LayerGroup | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
   const zoomedRef = useRef(false);
 
   useEffect(() => {
@@ -70,12 +72,32 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     // v2.1.0: off CARTO (anonymous clients get "API KEY REQUIRED" watermark
     // tiles now) — standard keyless OSM raster keeps roads + labels readable
     // for an evacuation run.
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    const osm = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       maxZoom: 19,
     }).addTo(map);
+    tileLayerRef.current = osm;
     layerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
+
+    // v2.1.1: if the server carries a CARTO basemap key (Render env
+    // CARTO_BASEMAP_KEY → GET /api/config), upgrade to the keyed voyager
+    // style. Until a key is confirmed live the keyless OSM layer above stays
+    // — the watermark era can never return by default, key or no key.
+    let basemapSwapDisposed = false;
+    getCartoKey().then((key) => {
+      if (basemapSwapDisposed || !key) return;
+      const live = mapRef.current;
+      if (!live) return;
+      const voyager = L.tileLayer(cartoUrl("voyager", key), {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 19,
+      });
+      voyager.addTo(live);
+      if (tileLayerRef.current) live.removeLayer(tileLayerRef.current);
+      tileLayerRef.current = voyager;
+    });
 
     // Continuous size sync — the one-shot timeout pattern left grey maps when
     // the container mounted hidden or resized (same lesson as InteractiveMap).
@@ -83,10 +105,12 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     ro?.observe(container);
 
     return () => {
+      basemapSwapDisposed = true;
       ro?.disconnect();
       map.remove();
       mapRef.current = null;
       layerRef.current = null;
+      tileLayerRef.current = null;
       zoomedRef.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

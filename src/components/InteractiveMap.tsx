@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { getCartoKey, cartoUrl } from "../lib/basemap";
 import L from "leaflet";
 import { Report, SatelliteHotspot } from "../types";
 
@@ -50,6 +51,9 @@ export default function InteractiveMap({
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [heatEnabled, setHeatEnabled] = useState(false);
   const [mapReady, setMapReady] = useState(false);
+  // v2.1.1: bumped when the keyed CARTO basemap swap lands, so the layers
+  // control rebuilds with the new layer references.
+  const [cartoTick, setCartoTick] = useState(0);
 
   useEffect(() => {
     onMapClickRef.current = onMapClick;
@@ -99,6 +103,31 @@ export default function InteractiveMap({
 
     basemapsRef.current = { light: lightLayer, dark: darkLayer, voyager: voyagerLayer };
 
+    // v2.1.1: if the server carries a CARTO basemap key (Render env
+    // CARTO_BASEMAP_KEY → GET /api/config), swap light/dark to the keyed
+    // CARTO styles and rebuild the control. Until a key is confirmed live
+    // the keyless OSM layers above stay the default — the watermark era can
+    // never return by default, with or without a key. Terrain (OpenTopoMap)
+    // has no CARTO counterpart and stays keyless.
+    let basemapSwapDisposed = false;
+    getCartoKey().then((key) => {
+      if (basemapSwapDisposed || !key || !mapRef.current) return;
+      const current = basemapsRef.current;
+      if (!current.light || !current.dark || !current.voyager) return;
+      const cartoOptions = {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: "abcd" as const,
+        maxZoom: 19,
+      };
+      const keyedLight = L.tileLayer(cartoUrl("light_all", key), cartoOptions);
+      const keyedDark = L.tileLayer(cartoUrl("dark_all", key), cartoOptions);
+      mapRef.current.removeLayer(current.light);
+      mapRef.current.removeLayer(current.dark);
+      keyedLight.addTo(mapRef.current);
+      basemapsRef.current = { light: keyedLight, dark: keyedDark, voyager: current.voyager };
+      setCartoTick((t) => t + 1);
+    });
+
     // Click handler for coordinates reporting
     map.on("click", (e: L.LeafletMouseEvent) => {
       onMapClickRef.current(e.latlng.lat, e.latlng.lng);
@@ -129,6 +158,7 @@ export default function InteractiveMap({
     }
 
     return () => {
+      basemapSwapDisposed = true;
       resizeObserver?.disconnect();
       if (mapRef.current) {
         mapRef.current.remove();
@@ -165,7 +195,8 @@ export default function InteractiveMap({
       undefined,
       { position: "bottomright", collapsed: window.innerWidth >= 640 }
     ).addTo(map);
-  }, [isArabic, mapReady]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isArabic, mapReady, cartoTick]);
 
   // Single delegated listener for all popup confirm buttons (no per-popup DOM listeners)
   useEffect(() => {

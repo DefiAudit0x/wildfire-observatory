@@ -19,6 +19,7 @@ import { createMeshToken } from "./mesh-auth.js";
 import { getPublicPrincipal, issuePublicPrincipal } from "./public-principal.js";
 
 import { healthHandler } from "./routes/health.js";
+import { publicConfigHandler } from "./routes/public-config.js";
 import reportsRouter from "./routes/reports.js";
 import adminRouter from "./routes/admin.js";
 import satelliteRouter from "./routes/satellite.js";
@@ -46,7 +47,7 @@ const isProduction = config.nodeEnv === "production";
 app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { directives: {
   defaultSrc: ["'self'"], scriptSrc: isProduction ? ["'self'"] : ["'self'", "'unsafe-inline'"],
   styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", "data:", "https:"],
-  connectSrc: ["'self'", "wss:", "ws:", "https://firms.modaps.eosdis.nasa.gov", "https://tile.openstreetmap.org", "https://*.tile.opentopomap.org", "https://api.open-meteo.com", "https://router.project-osrm.org", "https://nominatim.openstreetmap.org"],
+  connectSrc: ["'self'", "wss:", "ws:", "https://firms.modaps.eosdis.nasa.gov", "https://tile.openstreetmap.org", "https://*.tile.opentopomap.org", "https://basemaps.cartocdn.com", "https://*.basemaps.cartocdn.com", "https://api.open-meteo.com", "https://router.project-osrm.org", "https://nominatim.openstreetmap.org"],
   fontSrc: ["'self'", "data:"]
 } } }));
 app.use(cors({ origin: config.corsOrigins, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
@@ -131,6 +132,7 @@ app.use((req, _res, next) => {
 });
 if (!isProduction || process.env.ENABLE_SWAGGER === "true") app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
 app.get("/api/health", healthHandler);
+app.get("/api/config", publicConfigHandler);
 
 const principalEnrollmentLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false, message: { error: "Too many principal enrollment requests" } });
 app.post("/api/public-principal", principalEnrollmentLimiter, (req, res) => {
