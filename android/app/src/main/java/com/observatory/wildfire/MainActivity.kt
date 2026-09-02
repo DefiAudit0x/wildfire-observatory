@@ -56,16 +56,25 @@ class MainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
             }
+            // v1.0.4: the WebView's getUserMedia({audio}) — the SOS voice
+            // message — needs RECORD_AUDIO at the OS level BEFORE the
+            // WebChromeClient can grant a WebView PermissionRequest. Without
+            // this runtime grant the mic bridge could never work on any
+            // device.
+            add(Manifest.permission.RECORD_AUDIO)
         }
 
-        // PWA URL — the deploy target is Render (free tier, service
-        // wildfire-observatory). ARC-M38: this used to point at the old
-        // Railway origin, so the packaged app booted a host the server no
-        // longer serves and the allowlist below rejected it. 2026-09: the
-        // Railway/Fly trials expired — the app now boots the Render origin
-        // and the dead hosts were REMOVED from every native trust set
-        // (released *.onrender.com/*.fly.dev subdomains can be re-registered
-        // by strangers; trusting them would be a token-exfil channel).
+        // PWA URL — the deploy target is Render (free tier, owner-owned):
+        // https://wildfire-observatory.onrender.com. History: this constant
+        // was still pointing at the DEAD Fly origin through v1.0.1–v1.0.3 —
+        // the v1.0.1 "migration" commit (PR #78) never actually landed on
+        // this file, so the WebView kept loading a dead host (the UI the
+        // owner saw was the PWA service worker's cached shell), the bridge
+        // stayed inert because its origin gate expected the even-older
+        // Railway host, and geolocation/mic/camera prompts were unreachable
+        // for the same reason. v1.0.4 completes the migration for real: URL,
+        // allow-list, bridge gate, FGS gate and the new WebChromeClient
+        // permission bridge now ALL point at the same origin.
         private const val APP_URL = "https://wildfire-observatory.onrender.com"
     }
 
@@ -294,6 +303,10 @@ class MainActivity : AppCompatActivity() {
             null
         } ?: return false
         if (host == "wildfire-observatory.onrender.com") return scheme == "https"
+        // The dead Fly origin is deliberately NOT in the allow-list: expired-
+        // trial subdomains can be re-registered by strangers, and this check
+        // guards WebView navigation, the JS bridge and the geolocation/media
+        // prompts — an exact match against a recycled host would leak trust.
         return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2"
     }
 
@@ -432,6 +445,44 @@ class MainActivity : AppCompatActivity() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (newProgress == 100) {
                     injectMeshBridge()
+                }
+            }
+
+            // v1.0.4 — the missing half of the permission story: the OS grants
+            // the APP camera/location/mic, but a WebView page asks the
+            // WebChromeClient, not the OS. These overrides never existed, so
+            // navigator.geolocation was permanently denied (no report could
+            // be filed, SOS could not locate the user, radar had no center)
+            // and getUserMedia was dead (SOS voice recording could never
+            // start). Both gates reuse isAllowedAppUrl — a prompt can only be
+            // granted on the same trusted origin that may navigate at all.
+            override fun onGeolocationPermissionsShowPrompt(
+                origin: String?,
+                callback: GeolocationPermissions.Callback?
+            ) {
+                val originAllowed = origin != null && isAllowedAppUrl(origin)
+                val locationGranted = ContextCompat.checkSelfPermission(
+                    this@MainActivity, Manifest.permission.ACCESS_FINE_LOCATION
+                ) == PackageManager.PERMISSION_GRANTED
+                callback?.invoke(origin, originAllowed && locationGranted, false)
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                val origin = request?.origin?.toString()
+                val originAllowed = origin != null && isAllowedAppUrl(origin)
+                val resources = request?.resources.orEmpty()
+                val wantsAudio = resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)
+                val wantsVideo = resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                val audioOk = !wantsAudio || ContextCompat.checkSelfPermission(
+                    this@MainActivity, Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+                val videoOk = !wantsVideo || ContextCompat.checkSelfPermission(
+                    this@MainActivity, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (originAllowed && (wantsAudio || wantsVideo) && audioOk && videoOk) {
+                    request.grant(resources)
+                } else {
+                    request?.deny()
                 }
             }
         }

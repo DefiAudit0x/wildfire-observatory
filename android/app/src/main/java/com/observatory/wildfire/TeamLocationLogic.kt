@@ -27,18 +27,15 @@ object TeamLocationLogic {
     const val ARRIVAL_STREAK_NEEDED = 2
 
     /**
-     * Outbound base-URL allow-list for the FGS. This is the UNION of the two
+     * Outbound base-URL allow-list for the FGS. This is the union of the two
      * native trust sets (WebAppInterface.isTrustedOrigin's production host +
-     * MainActivity's APP_URL host — they cover the Render deploy target)
-     * plus the local-dev loopback hosts. The FGS posts the member's
-     * Bearer token to `baseUrl + /api/teams/heartbeat`, so anything that is
-     * not an exact match here is a hard NO — the service must never become a
-     * token-exfiltration channel, no matter what a compromised WebView sends.
-     *
-     * 2026-09 host migration: the retired Railway/Fly hosts are deliberately
-     * NOT kept here — expired-trial subdomains can be re-registered by
-     * strangers on their platforms, and an exact match against a recycled
-     * host would happily exfiltrate the bearer token to them.
+     * MainActivity's APP_URL host — v1.0.4 aligns all of them on the Render
+     * deploy target) plus the local-dev loopback hosts. The FGS posts the
+     * member's Bearer token to `baseUrl + /api/teams/heartbeat`, so anything
+     * that is not an exact match here is a hard NO — the service must never
+     * become a token-exfiltration channel, no matter what a compromised
+     * WebView sends. The retired Railway/Fly hosts are deliberately absent:
+     * expired-trial subdomains can be re-registered by strangers.
      */
     fun isAllowedBaseUrl(url: String): Boolean {
         if (url.isBlank()) return false

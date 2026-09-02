@@ -31,6 +31,11 @@
     <!-- Camera for report images -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+    <!-- v1.0.4: microphone for the SOS voice message — the WebView's
+         getUserMedia({audio}) is granted by the WebChromeClient only when
+         the app itself holds this runtime permission. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- GPS for geolocation: the standard runtime permissions above
          (ACCESS_FINE/COARSE_LOCATION) are the real ones — ACCESS_GPS
          and ACCESS_LOCATION are not platform permissions (audit round 11). -->
