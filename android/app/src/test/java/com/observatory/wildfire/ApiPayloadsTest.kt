@@ -1,0 +1,144 @@
+package com.observatory.wildfire
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * Pins the client-side mirror of the server zod gates (reports/sos/teams-join)
+ * and every external URL builder the native app talks to.
+ */
+class ApiPayloadsTest {
+
+    @Test
+    fun `report body happy path shape`() {
+        val (body, err) = ApiPayloads.buildReportJson(
+            lat = 36.75, lng = 3.05,
+            locationName = "غابة بابازور", wilaya = "الجزائر",
+            description = "دخان كثيف يتصاعد من التل", severity = "high",
+            deviceId = "dev-1", clientGeneratedId = "abcd1234abcd1234abcd1234abcd1234"
+        )
+        assertNull(err)
+        assertNotNull(body)
+        body!!
+        assertTrue(body.contains("\"lat\":36.75"))
+        assertTrue(body.contains("\"severity\":\"high\""))
+        assertTrue(body.contains("\"reporterType\":\"citizen\""))
+        assertTrue(!body.contains("\"image\"")) // omitted when no photo
+    }
+
+    @Test
+    fun `report lat out of range returns error`() {
+        val r = ApiPayloads.buildReportJson(95.0, 3.0, "موقع صالح", "الجزائر", "وصف كافٍ للوصف الميداني", "low", deviceId = "d", clientGeneratedId = "12345678")
+        assertNull(r?.first)
+        assertNotNull(r?.second)
+    }
+
+    @Test
+    fun `report short description rejected`() {
+        val r = ApiPayloads.buildReportJson(36.0, 3.0, "موقع صالح", "الجزائر", "قصير", "low", deviceId = "d", clientGeneratedId = "12345678")
+        assertNull(r?.first)
+    }
+
+    @Test
+    fun `report unknown severity rejected`() {
+        val r = ApiPayloads.buildReportJson(36.0, 3.0, "موقع صالح", "الجزائر", "وصف كافٍ للوصف الميداني", "extreme", deviceId = "d", clientGeneratedId = "12345678")
+        assertNull(r?.first)
+    }
+
+    @Test
+    fun `report oversized image refused before the request`() {
+        val big = "data:image/jpeg;base64," + "A".repeat(600_000)
+        val r = ApiPayloads.buildReportJson(36.0, 3.0, "موقع صالح", "الجزائر", "وصف كافٍ للوصف الميداني", "low", deviceId = "d", clientGeneratedId = "12345678", imageDataUri = big)
+        assertNull(r?.first)
+    }
+
+    @Test
+    fun `sos body clamps duration truncates text omits empties`() {
+        val (body, err) = ApiPayloads.buildSosJson(
+            deviceId = "dev-1", lat = 36.75, lng = 3.05,
+            name = "  أحمد  ", phone = "", textMessage = "x".repeat(900),
+            audioDataUri = "data:audio/mp4;base64,AAAA", audioDurationSec = 99
+        )
+        assertNull(err)
+        assertNotNull(body)
+        body!!
+        assertTrue(body.contains("\"audioDuration\":20"))
+        assertTrue(body.contains("\"name\":\"أحمد\""))
+        assertTrue(!body.contains("\"phone\""))
+        assertTrue(body.contains("\"textMessage\""))
+        val textLen = Regex("\"textMessage\":\"([^\"]*)\"").find(body)!!.groupValues[1].length
+        assertEquals(500, textLen)
+    }
+
+    @Test
+    fun `sos oversized audio refused`() {
+        val big = "data:audio/mp4;base64," + "A".repeat(800_000)
+        val r = ApiPayloads.buildSosJson("d", 36.0, 3.0, null, null, null, big, 5)
+        assertNull(r?.first)
+    }
+
+    @Test
+    fun `join body validates code and name`() {
+        val ok = ApiPayloads.buildJoinJson("  AB12CD34  ", " عضو الفريق ")
+        assertEquals("{\"code\":\"AB12CD34\",\"name\":\"عضو الفريق\"}", ok?.first)
+        assertNull(ApiPayloads.buildJoinJson("ab", "اسم صحيح")?.first)
+        assertNull(ApiPayloads.buildJoinJson("AB12CD34", "أ")?.first)
+    }
+
+    @Test
+    fun `json escape survives quotes newlines and control chars`() {
+        assertEquals("a\\\"b", ApiPayloads.jsonEscape("a\"b"))
+        assertEquals("a\\nb", ApiPayloads.jsonEscape("a\nb"))
+        assertEquals("a\\\\b", ApiPayloads.jsonEscape("a\\b"))
+        assertEquals("a\\u0001b", ApiPayloads.jsonEscape("a\u0001b"))
+        // Round trip through org.json is impossible on the JVM test host —
+        // the escaped shape itself is the contract.
+    }
+
+    @Test
+    fun `client generated id is 32 hex chars`() {
+        val id = ApiPayloads.newClientGeneratedId()
+        assertEquals(32, id.length)
+        assertTrue(id.all { it in '0'..'9' || it in 'a'..'f' })
+        assertTrue(ApiPayloads.newClientGeneratedId() != id)
+    }
+
+    @Test
+    fun `osrm url uses lon lat order and full geometry`() {
+        val url = ApiPayloads.buildOsrmUrl(36.7538, 3.0588, 36.47, 2.82)
+        assertTrue(url.startsWith("https://router.project-osrm.org/route/v1/driving/"))
+        assertTrue(url.contains("3.058800,36.753800"))
+        assertTrue(url.contains("overview=full"))
+        assertTrue(url.contains("geometries=geojson"))
+    }
+
+    @Test
+    fun `nominatim url pins arabic and zoom`() {
+        val url = ApiPayloads.buildNominatimReverseUrl(36.7538, 3.0588)
+        assertTrue(url.contains("nominatim.openstreetmap.org/reverse"))
+        assertTrue(url.contains("accept-language=ar"))
+        assertTrue(url.contains("zoom=14"))
+    }
+
+    @Test
+    fun `open meteo url requests the four current fields`() {
+        val url = ApiPayloads.buildOpenMeteoUrl(36.0, 3.0)
+        assertTrue(url.contains("current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m"))
+    }
+
+    @Test
+    fun `mesh intel envelope is report or sos only`() {
+        val json = ApiPayloads.buildMeshIntelJson("sos", "أحتاج مساعدة \"الآن\"", 36.0, 3.0, 123L)
+        assertTrue(json.contains("\"kind\":\"sos\""))
+        assertTrue(json.contains("أحتاج مساعدة \\\"الآن\\\""))
+        try {
+            ApiPayloads.buildMeshIntelJson("chat", "hi", 36.0, 3.0, 1L)
+            throw AssertionError("kind must be whitelisted")
+        } catch (e: IllegalArgumentException) {
+            // expected
+        }
+    }
+}

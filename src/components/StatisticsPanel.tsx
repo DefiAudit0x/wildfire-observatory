@@ -157,7 +157,10 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4" dir={isArabic ? "rtl" : "ltr"}>
+      {/* Mobile-first columns: a forced 2-track grid on a 360dp phone squeezed
+          each card to ~124px, wrapping Arabic titles one word per line (the
+          "vertical strip" field report). Base 1 column, up from sm. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4" dir={isArabic ? "rtl" : "ltr"}>
         {stats.map((st) => (
           <div
             key={st.id}
@@ -165,8 +168,8 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
           >
             <div className="absolute top-0 right-0 w-12 h-12 bg-red-500/2 opacity-[0.02] group-hover:opacity-[0.08] transition-opacity rounded-bl-full"></div>
 
-            <div className="flex items-start justify-between">
-              <div className="space-y-1">
+            <div className="flex items-start justify-between gap-3">
+              <div className="space-y-1 min-w-0">
                 <p className="text-gray-400 text-[10px] uppercase tracking-widest font-bold leading-tight">
                   {isArabic ? st.titleAr : st.titleFr}
                 </p>
@@ -174,7 +177,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
                   {st.value}
                 </h4>
               </div>
-              <div className="p-2 bg-black/40 rounded-lg border border-white/5 flex items-center justify-center">
+              <div className="shrink-0 p-2 bg-black/40 rounded-lg border border-white/5 flex items-center justify-center">
                 {st.icon}
               </div>
             </div>
@@ -245,7 +248,9 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
         </div>
       </div>
 
-      <div className="flex items-center gap-3" dir={isArabic ? "rtl" : "ltr"}>
+      {/* flex-wrap: without it the two export buttons shrank to min-content
+          width on narrow screens and wrapped word-per-line. */}
+      <div className="flex flex-wrap items-center gap-3" dir={isArabic ? "rtl" : "ltr"}>
         <button
           type="button"
           onClick={() => downloadFile(reportsToCsv(reports), `reports_${new Date().toISOString().slice(0, 10)}.csv`, "text/csv;charset=utf-8")}
@@ -264,7 +269,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
           <Download className="h-3.5 w-3.5" />
           {isArabic ? "تصدير GeoJSON (خرائط GIS)" : "Exporter GeoJSON"}
         </button>
-        <span className="text-[10px] text-gray-500 font-light">
+        <span className="hidden sm:inline text-[10px] text-gray-500 font-light">
           {isArabic ? "بيانات حية كما تعرضها المنصة — متاحة للجميع" : "Données en direct, ouvertes à tous"}
         </span>
       </div>

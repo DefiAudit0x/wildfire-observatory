@@ -24,7 +24,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
-    <!-- Internet for WebView PWA -->
+    <!-- Internet for the native data sync (same API the web console uses) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
@@ -45,6 +45,7 @@
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
     <application
+        android:name=".ObservatoryApp"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="المرصد الجزائري لحرائق الغابات والكوارث"
@@ -54,8 +55,10 @@
         android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="36">
 
+        <!-- v2.0.0: PURE NATIVE activity — no WebView anywhere in the app.
+             The owner's directive: "تطبيق أندرويد خالص لا تغليف الموقع". -->
         <activity
-            android:name=".MainActivity"
+            android:name=".NativeMainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:launchMode="singleTask"

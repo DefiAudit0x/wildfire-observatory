@@ -142,6 +142,8 @@ export default function InteractiveMap({
       map.removeControl(layerControlRef.current);
     }
 
+    // The expanded layers control ate the bottom-right corner on phones and
+    // collided with the hint chip; collapse it below the sm breakpoint.
     layerControlRef.current = L.control.layers(
       {
         [isArabic ? "فاتحة" : "Clair"]: layers.light,
@@ -149,7 +151,7 @@ export default function InteractiveMap({
         [isArabic ? "داكنة" : "Sombre"]: layers.dark,
       },
       undefined,
-      { position: "bottomright", collapsed: false }
+      { position: "bottomright", collapsed: window.innerWidth >= 640 }
     ).addTo(map);
   }, [isArabic, mapReady]);
 
@@ -455,8 +457,11 @@ export default function InteractiveMap({
     <div className="relative w-full h-[300px] md:h-[450px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
       <div id="map-target" ref={mapContainerRef} className="absolute inset-0" />
       
-      {/* Absolute overlay indicator */}
-      <div className="absolute top-3 right-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur text-xs py-1.5 px-3 rounded-lg shadow-lg flex items-center gap-3 pointer-events-none">
+      {/* Legend overlay: on a 360dp map (328px inner) the legend's intrinsic
+          width collided with the filter panel on the same top row and both
+          clipped. Wrap + width cap; hide entirely on the smallest screens
+          (the severity colors are repeated inside the filter chips). */}
+      <div className="hidden sm:flex absolute top-3 right-3 z-[1000] max-w-[62%] bg-slate-950/95 border border-slate-800 backdrop-blur text-xs py-1.5 px-3 rounded-lg shadow-lg flex-wrap items-center gap-3 pointer-events-none">
         <div className="flex items-center gap-1.5">
           <span className="flex h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>
           <span className="text-slate-300 font-medium">
@@ -478,8 +483,10 @@ export default function InteractiveMap({
           : "💡 Cliquez sur la carte pour épingler un feu"}
       </div>
 
-      {/* Map Filters Toolbar */}
-      <div className="absolute top-3 left-3 z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur rounded-lg p-2 shadow-lg space-y-1.5 max-w-[210px]">
+      {/* Map Filters Toolbar: full-width strip on phones (the fixed 210px
+          max-width ate ~64% of a 328px map and its chips stacked into a
+          narrow column); docked panel from sm up. */}
+      <div className="absolute top-3 left-3 right-3 sm:right-auto z-[1000] bg-slate-950/95 border border-slate-800 backdrop-blur rounded-lg p-2 shadow-lg space-y-1.5 sm:max-w-[210px]">
         <p className="text-[9px] font-black uppercase tracking-wider text-slate-400">
           {isArabic ? "فلاتر العرض" : "Filtres"}
         </p>

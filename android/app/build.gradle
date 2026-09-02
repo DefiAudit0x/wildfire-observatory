@@ -22,8 +22,8 @@ android {
         applicationId 'com.observatory.wildfire'
         minSdk 26
         targetSdk 36
-        versionCode 5
-        versionName '1.0.4'
+        versionCode 6
+        versionName '2.0.0'
 
         vectorDrawables.useSupportLibrary = true
     }
@@ -72,8 +72,13 @@ dependencies {
     implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.22'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.core:core-ktx:1.12.0'
-    implementation 'androidx.webkit:webkit:1.10.0'
     implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0'
+
+    // v2.0.0 native UI: Material components (bottom nav, M3 theme) and
+    // osmdroid (offline-capable OSM map). androidx.webkit REMOVED with the
+    // WebView — nothing in the app touches a browser engine anymore.
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'org.osmdroid:osmdroid-android:6.1.18'
 
     // Google Nearby Connections for Bluetooth mesh
     implementation 'com.google.android.gms:play-services-nearby:19.0.0'

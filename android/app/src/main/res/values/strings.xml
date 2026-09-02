@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- v2.0.0 native app — Arabic-first strings (the field speaks Arabic;
+         the UI never depends on the device language). -->
+    <string name="app_title">المرصد الجزائري لحرائق الغابات</string>
+
+    <!-- Permission ladder -->
+    <string name="perm_location_title">إذن الموقع ضروري</string>
+    <string name="perm_location_rationale">يحتاج التطبيق إلى الموقع لتحديد قربك من الحرائق، وإرسال إحداثياتك مع البلاغات ونداءات الاستغاثة. بدون هذا الإذن لا يعمل الرصد الميداني ولا الاستغاثة.</string>
+    <string name="perm_grant">منح الإذن</string>
+    <string name="perm_later">لاحقًا</string>
+    <string name="perm_location_denied_hint">بدون إذن الموقع: لا تنبيه قرب، ولا بلاغ بإحداثيات، ولا نداء استغاثة محدد. يمكنك منحه من إعدادات التطبيق.</string>
+    <string name="perm_mesh_denied_hint">بدون أذونات البلوتوث لن يعمل التواصل دون إنترنت مع المحيطين.</string>
+    <string name="mic_denied_hint">بدون إذن الميكروفون لا يمكن إرفاق رسالة صوتية بالنداء.</string>
+
+    <!-- GPS verdicts (all come from LocationLogic — the single authority) -->
+    <string name="gps_no_permission">لا يوجد إذن الموقع — اضغط للسماح</string>
+    <string name="gps_providers_off">خدمة الموقع مغلقة في الجهاز</string>
+    <string name="gps_searching">جارٍ تحديد الموقع…</string>
+    <string name="gps_fixed_fmt">موقع محدد — دقة %1$d م</string>
+    <string name="gps_stale_fmt">آخر موقع معروف — دقة %1$d م</string>
+
+    <!-- Chips -->
+    <string name="net_online">متصل بالإنترنت</string>
+    <string name="net_offline">بلا إنترنت — يعمل دون اتصال</string>
+    <string name="mesh_state_fmt">الشبكة: %1$s · %2$d أجهزة</string>
+    <string name="mesh_connected">تعمل</string>
+    <string name="mesh_starting">تبدأ…</string>
+    <string name="mesh_down">متوقفة</string>
+    <string name="mesh_unavailable">غير متاحة</string>
+    <string name="mesh_unknown">—</string>
+
+    <!-- Risk -->
+    <string name="risk_title">مؤشر الخطر الحالي</string>
+    <string name="risk_detail_fmt">بلاغات موثقة: %1$d · بانتظار التوثيق: %2$d · بقع حرارية: %3$d</string>
+    <string name="observatory_hint">الرادار شمال-أعلى دائمًا — النطاق 30 كلم</string>
+
+    <!-- Weather -->
+    <string name="weather_fmt">الطقس: %1$d°م · رطوبة %2$d٪ · رياح %3$d كلم/س من %4$d°</string>
+    <string name="weather_note">اتجاه الرياح مرجعي وليس نموذج انتشار</string>
+
+    <!-- Proximity banner -->
+    <string name="proximity_critical_fmt">خطر مباشر: بؤرة على بُعد %1$.1f كلم منك فقط!</string>
+    <string name="proximity_warning_fmt">تنبيه: بؤر خطر قريبة — أقربها %1$.1f كلم</string>
+    <string name="proximity_watch_fmt">مراقبة: نشاط محتمل ضمن %1$.1f كلم</string>
+    <string name="proximity_action">عرض على الخريطة</string>
+
+    <!-- Map -->
+    <string name="map_title">الخريطة الميدانية</string>
+    <string name="map_you_marker">موقعك</string>
+    <string name="map_status_fix_fmt">دقة الموقع %1$d م (%2$s) — التحميل خارج الخطأ يعمل بالخرائط المخزنة</string>
+    <string name="map_status_sync_fmt">مرصد حي: %1$d بلاغ · %2$d بقعة حرارية</string>
+    <string name="map_status_offline_fmt">خارج الخطأ — آخر بيانات: %1$d بلاغ · %2$d بقعة</string>
+    <string name="map_hotspot_title">بقعة حرارية — ثقة %1$d٪</string>
+    <string name="map_hotspot_snippet">%1$s · ثقة %2$d٪</string>
+    <string name="map_fire_verified">حريق موثق</string>
+    <string name="map_fire_pending">بلاغ بانتظار التوثيق</string>
+    <string name="map_safezone_title">ملاذ آمن</string>
+    <string name="map_mesh_title">بلاغ عبر شبكة البلوتوث</string>
+    <string name="route_button">طريق إلى أقرب ملاذ آمن</string>
+    <string name="route_need_fix">تحديد موقعك أولًا لرسم الطريق</string>
+    <string name="route_no_safezones">لا توجد ملاذات آمنة مسجلة على الخادم بعد</string>
+    <string name="route_fetching">جارٍ حساب الطريق…</string>
+    <string name="route_offline_fmt">%1$s على بُعد %2$.1f كلم خط مستقيم — لا يمكن رسم الطريق بدون اتصال</string>
+    <string name="route_offline_toast">لا يوجد اتصال بخادم الطرق — عرض المسافة المستقيمة فقط</string>
+    <string name="route_ok_fmt">الطريق إلى %1$s: %2$.1f كلم — حوالي %3$d دقيقة · بعيد عن الحرائق</string>
+    <string name="route_warn_fmt">الطريق إلى %1$s: %2$.1f كلم — %3$d دقيقة · تحذير: يمر على %4$.1f كلم من بؤرة!</string>
+    <string name="route_note">الطريق عبر شبكة الطرق الحقيقية (OSRM)</string>
+
+    <!-- SOS -->
+    <string name="sos_title">نداء الاستغاثة</string>
+    <string name="sos_name_hint">الاسم الكامل</string>
+    <string name="sos_phone_hint">رقم الهاتف</string>
+    <string name="sos_message_hint">رسالة قصيرة (اختياري)</string>
+    <string name="sos_location_label">موقعك:</string>
+    <string name="sos_location_fmt">%1$.5f, %2$.5f — دقة %3$d م — منذ %4$d ث</string>
+    <string name="sos_record">تسجيل رسالة صوتية (حتى 20 ثانية)</string>
+    <string name="sos_recording">جارٍ التسجيل… اضغط للإيقاف</string>
+    <string name="sos_record_done">تم حفظ التسجيل — سيرافق النداء</string>
+    <string name="sos_record_failed">تعذر بدء التسجيل الصوتي</string>
+    <string name="sos_button_label">استغاثة</string>
+    <string name="sos_countdown_hint">سيُرسل النداء خلال… (إلغاء)</string>
+    <string name="sos_no_fix_title">لا يوجد موقع محدد</string>
+    <string name="sos_no_fix_message">هاتفك لم يتوصل بإشارة GPS بعد. سيُرسل النداء بعلامة «بدون تحديد GPS» وإحداثيات افتراضية — فرق الإنقاذ لن تعتمد عليها. الأفضل الانتظار لحظات حتى يظهر الموقع.</string>
+    <string name="sos_send_anyway">أرسل مع العلامة</string>
+    <string name="cancel">إلغاء</string>
+    <string name="sos_failed_fmt">فشل الإرسال: %1$s</string>
+    <string name="sos_sent_fire_fmt">أُرسل النداء — الأولوية: %1$s · أقرب حريق: %2$.1f كلم · تأكيد ميداني: %3$s</string>
+    <string name="sos_sent_simple">أُرسل النداء — فرق الإنقاذ تتابعه</string>
+    <string name="sos_queued">لا اتصال — حُفظ النداء وسيُرسل تلقائيًا، كما وصل عبر البلوتوث لمن حولك</string>
+    <string name="priority_critical">كارثية</string>
+    <string name="priority_high">مرتفعة</string>
+    <string name="priority_medium">متوسطة</string>
+    <string name="priority_low">منخفضة</string>
+    <string name="priority_unknown">غير محددة</string>
+    <string name="sos_mesh_note">يُرسل النداء أيضًا عبر البلوتوث لكل جهاز قريب — حتى بدون أي شبكة</string>
+
+    <!-- Report -->
+    <string name="report_title">بلاغ ميداني</string>
+    <string name="report_severity_label">درجة الخطورة</string>
+    <string name="sev_low">خفيف</string>
+    <string name="sev_medium">متوسط</string>
+    <string name="sev_high">مرتفع</string>
+    <string name="sev_critical">كارثي</string>
+    <string name="report_location_name_hint">اسم الموقع (يُملأ تلقائيًا)</string>
+    <string name="report_wilaya_hint">الولاية (تُملأ تلقائيًا)</string>
+    <string name="report_description_hint">الوصف — 10 أحرف على الأقل (دخان؟ لهب؟ اتجاه؟)</string>
+    <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$d م</string>
+    <string name="report_attach">إرفاق صورة</string>
+    <string name="report_photo_attached_fmt">صورة مرفقة (%1$d كيلوبايت)</string>
+    <string name="report_pick_photo">اختيار صورة</string>
+    <string name="report_no_gallery">لا يتوفر متصفح صور</string>
+    <string name="report_photo_too_big">الصورة أكبر من الحد المسموح حتى بعد الضغط</string>
+    <string name="report_photo_failed">تعذر قراءة الصورة</string>
+    <string name="report_need_fix">انتظر تحديد الموقع أولًا — البلاغ بدون إحداثيات مرفوض</string>
+    <string name="report_submit">إرسال البلاغ</string>
+    <string name="report_sent">تم إرسال البلاغ — شكرًا لك</string>
+    <string name="report_failed_fmt">تعذر الإرسال: %1$s</string>
+    <string name="report_queue_fmt">لديك %1$d بلاغ محفوظ بانتظار الشبكة</string>
+
+    <!-- Team / mesh -->
+    <string name="team_title">الفريق والشبكة</string>
+    <string name="team_code_hint">رمز الانضمام (من قائد الفريق)</string>
+    <string name="team_name_hint">اسمك في الفريق</string>
+    <string name="team_join">انضمام وبدء التتبع</string>
+    <string name="team_joined_fmt">تم الانضمام إلى %1$s — التتبع نشط</string>
+    <string name="team_active_fmt">متصل بفريق %1$s — الحالة: %2$s</string>
+    <string name="team_no_mission">لا مهمة حاليا — بانتظار التوجيه من القيادة</string>
+    <string name="team_mission_fmt">مهمة: %1$s %2$s</string>
+    <string name="team_mission_dist_fmt">— تبعد %1$.1f كلم</string>
+    <string name="team_stop">إيقاف التتبع</string>
+    <string name="team_open_console">فتح لوحة قيادة المرصد في المتصفح</string>
+    <string name="team_no_browser">لا يتوفر متصفح</string>
+    <string name="phase_en_route">في الطريق</string>
+    <string name="phase_on_scene">في الموقع</string>
+    <string name="mesh_panel_label">شبكة البلوتوث (تعمل دون إنترنت)</string>
+    <string name="mesh_panel_fmt">الحالة: %1$s · الأجهزة القريبة: %2$d</string>
+    <string name="mesh_input_hint">رسالة للأجهزة القريبة…</string>
+    <string name="mesh_send">إرسال</string>
+    <string name="mesh_entry_fmt">%1$s — %2$s</string>
+    <string name="mesh_entry_me_fmt">%1$s — أنت: %2$s</string>
+    <string name="mesh_queued_local">أُدرجت الرسالة في شبكة البلوتوث</string>
+    <string name="mesh_unavailable_toast">الشبكة غير متاحة حاليًا</string>
+    <string name="mesh_legend">الرسائل والبلاغات تنتقل بين الأجهزة عبر البلوتوث مع تشفير تام — بلوغت أجهزة دون إنترنت تظهر على رادارك وخرائطك</string>
+</resources>

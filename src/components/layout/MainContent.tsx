@@ -186,8 +186,8 @@ export default function MainContent({
             {/* Map Box */}
             {activeTab === "map" && (
               <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <h2 className="font-bold text-slate-100 flex items-center gap-1.5 text-base">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <h2 className="font-bold text-slate-100 flex items-center gap-1.5 text-base min-w-0">
                     <Navigation className="h-4 w-4 text-red-500 animate-bounce" />
                     <span>
                       {isArabic
