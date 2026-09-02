@@ -1,5 +1,14 @@
 import { Report, SatelliteHotspot, WilayaStatus } from "../src/types.js";
 
+// v1.0.4: seed/fallback rows carry DYNAMIC timestamps (minutes before the
+// server booted, inside the shared THREAT_MAX_AGE_MS window). The old fixed
+// 2026 dates meant the fallback data was born permanently stale: the
+// freshness-gated surfaces (SOS "no active fires", Home banner) and the
+// now-freshness-gated proximity banner could never agree — and demo/fallback
+// mode looked broken. Seed rows stay clearly synthetic via their ids/names.
+const minutesAgoIso = (m: number): string =>
+  new Date(Date.now() - m * 60_000).toISOString();
+
 export const citizenReports: Report[] = [
   {
     id: "rep-1", lat: 36.881, lng: 8.412,
@@ -7,7 +16,7 @@ export const citizenReports: Report[] = [
     wilaya: "الجزائر - الطارف (Algérie - El Tarf)",
     description: "النيران تنتشر بسرعة في أحراش البلوط، الرياح قوية ونناشد الحماية المدنية بالتدخل الطائرات ضرورية هنا.",
     severity: "critical", status: "verified",
-    timestamp: "2026-07-21T11:30:00Z", consensusCount: 15,
+    timestamp: minutesAgoIso(6), consensusCount: 15,
     reporterType: "official", reporterBadgeCode: "1021",
     aiVerification: {
       isVerified: true, confidence: 95,
@@ -22,7 +31,7 @@ export const citizenReports: Report[] = [
     wilaya: "الجزائر - سكيكدة (Algérie - Skikda)",
     description: "دخان كثيف يتصاعد من وسط الغابة. الحريق بدأ قبل نصف ساعة ويتسع الآن.",
     severity: "high", status: "verified",
-    timestamp: "2026-07-21T11:45:00Z", consensusCount: 8,
+    timestamp: minutesAgoIso(9), consensusCount: 8,
     reporterType: "volunteer", reporterBadgeCode: "777",
     aiVerification: {
       isVerified: true, confidence: 88,
@@ -37,7 +46,7 @@ export const citizenReports: Report[] = [
     wilaya: "الجزائر - عنابة (Algérie - Annaba)",
     description: "اندلاع حريق جانبي بجوار الطريق الجبلي سرايدي، نرجو الحذر من السائقين وتجنب الصعود حاليا.",
     severity: "medium", status: "pending",
-    timestamp: "2026-07-21T12:15:00Z", consensusCount: 3,
+    timestamp: minutesAgoIso(12), consensusCount: 3,
     reporterType: "citizen",
   },
   {
@@ -46,7 +55,7 @@ export const citizenReports: Report[] = [
     wilaya: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)",
     description: "نشوب بؤرة حريق صغيرة قرب الأحواش السكنية، الشباب هنا يقومون بمحاصرتها بالمياه والتراب، الحماية المدنية في طريقها للمكان.",
     severity: "high", status: "verified",
-    timestamp: "2026-07-21T12:05:00Z", consensusCount: 11,
+    timestamp: minutesAgoIso(14), consensusCount: 11,
     reporterType: "volunteer", reporterBadgeCode: "888",
     aiVerification: {
       isVerified: true, confidence: 90,
@@ -61,7 +70,7 @@ export const citizenReports: Report[] = [
     wilaya: "تونس - جندوبة (Tunisie - Jendouba)",
     description: "حريق غابي نشط في مرتفعات عين دراهم، فرق الإطفاء تحاول السيطرة عليه لمنع تمدده للمناطق المجاورة.",
     severity: "critical", status: "verified",
-    timestamp: "2026-07-21T12:20:00Z", consensusCount: 14,
+    timestamp: minutesAgoIso(7), consensusCount: 14,
     reporterType: "official", reporterBadgeCode: "198",
     aiVerification: {
       isVerified: true, confidence: 96,
@@ -76,7 +85,7 @@ export const citizenReports: Report[] = [
     wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)",
     description: "دخان مرئي من وسط غابة باب تازة الجبلية. السكان المحليون يشاركون في جهود الإطفاء والاحتواء.",
     severity: "high", status: "verified",
-    timestamp: "2026-07-21T11:55:00Z", consensusCount: 12,
+    timestamp: minutesAgoIso(10), consensusCount: 12,
     reporterType: "volunteer", reporterBadgeCode: "150",
     aiVerification: {
       isVerified: true, confidence: 91,
@@ -91,18 +100,18 @@ export const citizenReports: Report[] = [
     wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)",
     description: "تصاعد أعمدة دخان من الأحراش القريبة من غابات شحات بالجبل الأخضر، نسأل الله السلامة واللطف.",
     severity: "medium", status: "pending",
-    timestamp: "2026-07-21T12:10:00Z", consensusCount: 4,
+    timestamp: minutesAgoIso(16), consensusCount: 4,
     reporterType: "citizen",
   },
 ];
 
 export const satelliteHotspots: SatelliteHotspot[] = [
-  { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: "2026-08-08T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: "2026-08-08T10:15:00Z", satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: "2026-08-08T11:02:00Z", satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
-  { id: "sat-tn-1", lat: 36.650, lng: 8.780, brightness: 348.6, confidence: 94, scanTime: "2026-08-08T12:00:00Z", satellite: "VIIRS", wilaya: "تونس - جندوبة (Tunisie - Jendouba)" },
-  { id: "sat-ma-1", lat: 35.580, lng: -5.360, brightness: 339.2, confidence: 91, scanTime: "2026-08-08T11:50:00Z", satellite: "MODIS", wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)" },
-  { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: "2026-08-08T11:40:00Z", satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
+  { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: minutesAgoIso(4), satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
+  { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: minutesAgoIso(4), satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
+  { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: minutesAgoIso(8), satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
+  { id: "sat-tn-1", lat: 36.650, lng: 8.780, brightness: 348.6, confidence: 94, scanTime: minutesAgoIso(6), satellite: "VIIRS", wilaya: "تونس - جندوبة (Tunisie - Jendouba)" },
+  { id: "sat-ma-1", lat: 35.580, lng: -5.360, brightness: 339.2, confidence: 91, scanTime: minutesAgoIso(9), satellite: "MODIS", wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)" },
+  { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: minutesAgoIso(11), satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
 ];
 
 export const wilayasStatus: WilayaStatus[] = [

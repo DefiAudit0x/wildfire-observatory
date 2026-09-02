@@ -46,7 +46,7 @@ const isProduction = config.nodeEnv === "production";
 app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { directives: {
   defaultSrc: ["'self'"], scriptSrc: isProduction ? ["'self'"] : ["'self'", "'unsafe-inline'"],
   styleSrc: ["'self'", "'unsafe-inline'"], imgSrc: ["'self'", "data:", "https:"],
-  connectSrc: ["'self'", "wss:", "ws:", "https://firms.modaps.eosdis.nasa.gov", "https://*.basemaps.cartocdn.com", "https://tile.openstreetmap.org", "https://api.open-meteo.com", "https://router.project-osrm.org"],
+  connectSrc: ["'self'", "wss:", "ws:", "https://firms.modaps.eosdis.nasa.gov", "https://*.basemaps.cartocdn.com", "https://tile.openstreetmap.org", "https://api.open-meteo.com", "https://router.project-osrm.org", "https://nominatim.openstreetmap.org"],
   fontSrc: ["'self'", "data:"]
 } } }));
 app.use(cors({ origin: config.corsOrigins, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));

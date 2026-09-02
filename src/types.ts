@@ -60,7 +60,6 @@ export type TabId =
   | 'home'
   | 'map'
   | 'report'
-  | 'copilot'
   | 'guides'
   | 'radar'
   | 'admin'

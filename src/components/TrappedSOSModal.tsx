@@ -220,7 +220,16 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           source.connect(analyser);
 
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
+          let lastLevelUpdate = 0;
           const updateLevel = () => {
+            animFrameRef.current = requestAnimationFrame(updateLevel);
+            // v1.0.4 field fix: sample the analyser at ~10 fps instead of
+            // every animation frame — the old 60 fps setState re-rendered the
+            // ENTIRE SOS modal (header, steps, buttons) up to 60 times per
+            // second, stalling low-end WebView devices mid-recording.
+            const now = performance.now();
+            if (now - lastLevelUpdate < 100) return;
+            lastLevelUpdate = now;
             analyser.getByteFrequencyData(dataArray);
             let sum = 0;
             for (let i = 0; i < dataArray.length; i++) {
@@ -228,7 +237,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
             }
             const avg = sum / dataArray.length;
             setAudioLevel(avg);
-            animFrameRef.current = requestAnimationFrame(updateLevel);
           };
           updateLevel();
         } catch {
@@ -446,7 +454,12 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
   return (
     <div className="fixed inset-0 z-[2000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-zinc-900 border border-red-500/50 rounded-2xl w-full max-w-md shadow-[0_0_50px_rgba(220,38,38,0.2)] overflow-hidden">
+      {/* v1.0.4 field fix: the panel MUST scroll — the recording step alone is
+          taller than a small phone viewport (mic animation + timer + warning
+          block + 20-bar visualizer + send button), and with items-center +
+          overflow-hidden both ends were CLIPPED, so the send button was
+          unreachable (the owner could see "recording" but never send). */}
+      <div className="bg-zinc-900 border border-red-500/50 rounded-2xl w-full max-w-md shadow-[0_0_50px_rgba(220,38,38,0.2)] max-h-[88dvh] overflow-y-auto overscroll-contain">
         
         {/* Header */}
         <div className="bg-red-600 p-4 flex justify-between items-center text-white">
@@ -698,11 +711,14 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
               <div className="flex items-end justify-center gap-1 h-12 w-full max-w-xs bg-black/60 p-2 rounded-xl border border-white/10">
                 {Array.from({ length: 20 }).map((_, i) => {
                   const factor = Math.sin((i / 20) * Math.PI);
-                  const barHeight = Math.min(100, Math.max(15, (audioLevel * 1.5 * factor) + (Math.random() * 10)));
+                  // Deterministic height from the (throttled) audio level —
+                  // Math.random() inside render produced new bars on EVERY
+                  // unrelated re-render (visual noise, wasted paint).
+                  const barHeight = Math.min(100, Math.max(12, audioLevel * 1.6 * factor + 8));
                   return (
                     <div
                       key={i}
-                      className={`w-2 rounded-full transition-all duration-75 ${barHeight > 60 ? "bg-red-500" : barHeight > 30 ? "bg-amber-400" : "bg-emerald-400"}`}
+                      className={`w-2 rounded-full transition-all duration-150 ${barHeight > 60 ? "bg-red-500" : barHeight > 30 ? "bg-amber-400" : "bg-emerald-400"}`}
                       style={{ height: `${barHeight}%` }}
                     />
                   );

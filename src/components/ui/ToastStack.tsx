@@ -26,8 +26,14 @@ const STYLES: Record<ToastType, string> = {
 
 export default function ToastStack({ toasts }: ToastStackProps) {
   if (toasts.length === 0) return null;
+  // z-[3000]: toasts report the outcome of user actions (report sent, SOS
+  // dispatched). They must stay clickable/visible above EVERYTHING —
+  // previously z-[110] put them UNDER the SOS FAB (z-1500) and the SOS
+  // modal (z-2000), so action feedback vanished exactly when it mattered
+  // (field-reported overlap bug). Centered with left-1/2 -translate-x-1/2:
+  // direction-neutral in RTL.
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[110] flex flex-col items-center gap-2 w-full max-w-sm px-4">
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[3000] flex flex-col items-center gap-2 w-full max-w-sm px-4">
       {toasts.map((t) => (
         <div
           key={t.id}
