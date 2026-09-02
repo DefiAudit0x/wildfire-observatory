@@ -28,6 +28,19 @@ import javax.crypto.spec.SecretKeySpec
  * relay-invariant metadata field via MeshWire.buildSignedData — a relay can
  * no longer alter lat/lng/type/nonce/messageId/origPubKey on the wire while
  * the ECDSA signature stays valid.
+ *
+ * Provider policy (v1.0.3 field crash — NEVER pin a provider here): every
+ * JCA factory below resolves through the DEFAULT provider list. The old
+ * code pinned "BC" and MeshService.onCreate died on real devices with
+ * NoSuchAlgorithmException: Android ships a STRIPPED BouncyCastle under the
+ * name "BC" (no EC KeyPairGenerator), and the bundled full bcprov could
+ * never take the name — Security.insertProviderAt returns -1 silently when
+ * a provider with the same name exists — so getInstance("EC", "BC") always
+ * hit the stripped one. The default list's first member, AndroidOpenSSL
+ * (Conscrypt), provides EVERY algorithm used below — KeyPairGenerator EC,
+ * KeyFactory EC, KeyAgreement ECDH, Signature SHA256withECDSA,
+ * Cipher AES/GCM/NoPadding — hardware-accelerated on every API 26+ device.
+ * Regression gate: CryptoProviderContractTest (JVM, self-validating).
  */
 object CryptoEngine {
 
@@ -38,7 +51,8 @@ object CryptoEngine {
     private const val EC_ALGORITHM = "EC"
     private const val KEY_EXCHANGE_ALGORITHM = "ECDH"
     private const val SIGNATURE_ALGORITHM = "SHA256withECDSA"
-    private const val PROVIDER = "BC"
+    // Deliberately NO PROVIDER constant: see the class kdoc — pinning "BC"
+    // crashed every real device (stripped OS BouncyCastle squats the name).
 
     private const val IDENTITY_KEYSTORE_ALIAS = "wildfire_observatory_identity"
     private const val IDENTITY_PREFS = "mesh_crypto_identity"
@@ -148,9 +162,9 @@ object CryptoEngine {
         val legacyPubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
         if (legacyPrivB64 != null && legacyPubB64 != null) {
             try {
-                val pubKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
+                val pubKey = KeyFactory.getInstance(EC_ALGORITHM)
                     .generatePublic(X509EncodedKeySpec(Base64.decode(legacyPubB64, Base64.NO_WRAP)))
-                val privKey = KeyFactory.getInstance(EC_ALGORITHM, PROVIDER)
+                val privKey = KeyFactory.getInstance(EC_ALGORITHM)
                     .generatePrivate(PKCS8EncodedKeySpec(Base64.decode(legacyPrivB64, Base64.NO_WRAP)))
                 android.util.Log.i(
                     "CryptoEngine",
@@ -368,7 +382,7 @@ object CryptoEngine {
 
         // Encrypt
         val iv = ByteArray(GCM_IV_LENGTH).apply { protocolRandom.nextBytes(this) }
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
         val ciphertext = cipher.doFinal(payload)
         val nonce = protocolRandom.nextInt()
@@ -471,7 +485,7 @@ object CryptoEngine {
             try {
                 val sharedSecret = ecdhKeyAgreement(candidate.private, peerPublicKey)
                 val aesKey = deriveAESKey(sharedSecret)
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding", PROVIDER)
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
                 cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
                 return cipher.doFinal(ciphertext)
             } catch (_: Exception) {
@@ -517,7 +531,7 @@ object CryptoEngine {
     }
 
     private fun generateECKeyPair(): KeyPair {
-        val kpg = KeyPairGenerator.getInstance(EC_ALGORITHM, PROVIDER)
+        val kpg = KeyPairGenerator.getInstance(EC_ALGORITHM)
         kpg.initialize(ECGenParameterSpec("secp256r1"), SecureRandom())
         return kpg.generateKeyPair()
     }
@@ -525,11 +539,11 @@ object CryptoEngine {
     private fun decodePublicKey(base64: String): PublicKey {
         val keyBytes = Base64.decode(base64, Base64.NO_WRAP)
         val spec = X509EncodedKeySpec(keyBytes)
-        return KeyFactory.getInstance(EC_ALGORITHM, PROVIDER).generatePublic(spec)
+        return KeyFactory.getInstance(EC_ALGORITHM).generatePublic(spec)
     }
 
     private fun ecdhKeyAgreement(privateKey: PrivateKey, publicKey: PublicKey): ByteArray {
-        val ka = KeyAgreement.getInstance(KEY_EXCHANGE_ALGORITHM, PROVIDER)
+        val ka = KeyAgreement.getInstance(KEY_EXCHANGE_ALGORITHM)
         ka.init(privateKey)
         ka.doPhase(publicKey, true)
         return ka.generateSecret()
@@ -541,14 +555,14 @@ object CryptoEngine {
     }
 
     private fun signData(data: ByteArray, privateKey: PrivateKey): ByteArray {
-        val sig = Signature.getInstance(SIGNATURE_ALGORITHM, PROVIDER)
+        val sig = Signature.getInstance(SIGNATURE_ALGORITHM)
         sig.initSign(privateKey)
         sig.update(data)
         return sig.sign()
     }
 
     private fun verifySignature(data: ByteArray, signature: ByteArray, publicKey: PublicKey): Boolean {
-        val sig = Signature.getInstance(SIGNATURE_ALGORITHM, PROVIDER)
+        val sig = Signature.getInstance(SIGNATURE_ALGORITHM)
         sig.initVerify(publicKey)
         sig.update(data)
         return sig.verify(signature)
