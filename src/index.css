@@ -136,3 +136,12 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* Keyless dark basemap (v2.1.0): CARTO began serving anonymous clients
+   "API KEY REQUIRED" watermark tiles, so the dark basemap is standard OSM
+   recolored with this filter, applied via the Leaflet layer's className.
+   Tiles live in their own pane — markers, polylines and heat rings keep
+   their real colors. */
+.tiles-dark-filter {
+  filter: invert(1) hue-rotate(185deg) brightness(0.92) contrast(0.92) saturate(0.65);
+}

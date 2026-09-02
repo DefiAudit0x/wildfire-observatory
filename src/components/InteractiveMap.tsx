@@ -72,17 +72,29 @@ export default function InteractiveMap({
       zoomControl: true,
     });
 
+    // v2.1.0: CARTO started serving anonymous clients "API KEY REQUIRED"
+    // placeholder tiles (the same watermark disaster as the native map), so
+    // every basemap is now keyless: standard OSM raster for light + dark
+    // (dark recolored via the .tiles-dark-filter CSS class — tiles live in
+    // their own pane, markers keep their colors), OpenTopoMap for terrain.
+    const osmAttribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
     const tileOptions = {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-      subdomains: "abcd",
+      attribution: osmAttribution,
       maxZoom: 19,
     };
 
-    const lightLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", tileOptions);
-    const darkLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", tileOptions);
-    const voyagerLayer = L.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", tileOptions);
+    const lightLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", tileOptions);
+    const darkLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      ...tileOptions,
+      className: "tiles-dark-filter",
+    });
+    const voyagerLayer = L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+      ...tileOptions,
+      subdomains: "abc",
+      attribution: osmAttribution + ' &copy; <a href="https://www.opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+    });
 
-    // Default: light map (dark_all is nearly black, looks broken)
+    // Default: light map (the dark variant is one control-click away)
     lightLayer.addTo(map);
 
     basemapsRef.current = { light: lightLayer, dark: darkLayer, voyager: voyagerLayer };
@@ -147,7 +159,7 @@ export default function InteractiveMap({
     layerControlRef.current = L.control.layers(
       {
         [isArabic ? "فاتحة" : "Clair"]: layers.light,
-        [isArabic ? "ملونة" : "Voyager"]: layers.voyager,
+        [isArabic ? "تضاريس" : "Terrain"]: layers.voyager,
         [isArabic ? "داكنة" : "Sombre"]: layers.dark,
       },
       undefined,
