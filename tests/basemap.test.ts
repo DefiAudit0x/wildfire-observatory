@@ -72,4 +72,16 @@ describe("cartoUrl", () => {
       "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=k1"
     );
   });
+
+  it("keeps light_all at the documented root path", () => {
+    expect(cartoUrl("light_all", "k2")).toBe(
+      "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png?key=k2"
+    );
+  });
+
+  it("routes voyager through /rastertiles/voyager/ (bare /voyager/ 404s every tile)", () => {
+    expect(cartoUrl("voyager", "k3")).toBe(
+      "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png?key=k3"
+    );
+  });
 });

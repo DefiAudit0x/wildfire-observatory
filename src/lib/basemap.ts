@@ -32,5 +32,9 @@ export function cartoUrl(
   style: "light_all" | "dark_all" | "voyager",
   key: string
 ): string {
-  return `https://{s}.basemaps.cartocdn.com/${style}/{z}/{x}/{y}{r}.png?key=${encodeURIComponent(key)}`;
+  // voyager's documented raster path is /rastertiles/voyager/ — a bare
+  // /voyager/ prefix 404s every tile (the v2.1.1 "empty squares" bug).
+  // light_all / dark_all live at the root, no rastertiles segment.
+  const path = style === "voyager" ? "rastertiles/voyager" : style;
+  return `https://{s}.basemaps.cartocdn.com/${path}/{z}/{x}/{y}{r}.png?key=${encodeURIComponent(key)}`;
 }
