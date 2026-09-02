@@ -389,9 +389,20 @@ class MeshService : Service() {
             .setOngoing(true)
             .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 14+: the runtime type must be a SUBSET of the manifest
+            // attribute. MeshService declares specialUse (with its
+            // PROPERTY_SPECIAL_USE_FGS_SUBTYPE), so the type passed here MUST
+            // be FOREGROUND_SERVICE_TYPE_SPECIAL_USE — passing DATA_SYNC
+            // crashed at first mesh start on every Android 14+ device
+            // ("foregroundServiceType 0x00000001 is not a subset of
+            // 0x40000000", caught by the owner's DEVICE_LAB run) and dataSync
+            // would carry a 6-hour runtime cap on Android 15+ anyway.
+            startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
+            // API 29–33: the 2-arg overload rides the manifest type. These
+            // platforms predate the specialUse bit, so it is never passed
+            // explicitly here.
             startForeground(1, notification)
         }
     }
