@@ -17,21 +17,27 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.InputStream
 
 /**
- * v2.0.0 — بلاغ ميداني. The native report form closing the other half of the
+ * v2.2.0 — بلاغ ميداني. The native report form closing the other half of the
  * field feedback: place name and wilaya auto-fill from Nominatim reverse
  * geocoding the moment a fix lands (never overwriting user edits), severity
- * chips, optional photo (gallery pick → downscaled ≤500KB data URI), and the
- * offline queue path with the idempotent replay.
+ * chips, TWO photo paths — the in-app camera (the point of the whole feature:
+ * "فتح الكاميرا وتصوير") and the legacy gallery pick — then the offline queue
+ * path with the idempotent replay.
+ *
+ * Photo plumbing is unified in PhotoPipeline (sample → JPEG budget); this
+ * class only decides the SOURCE: cache file from CameraCaptureFragment
+ * (Fragment Result API) or content URI from the gallery picker.
  */
 class ReportFragment : Fragment() {
 
     companion object {
         private const val PICK_IMAGE_REQUEST = 3003
-        private const val MAX_IMAGE_BYTES = 450_000 // data-URI budget under the server's 500KB
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -75,8 +81,24 @@ class ReportFragment : Fragment() {
         }
         setSeverity("medium")
 
-        view.findViewById<View>(R.id.report_attach).setOnClickListener { pickImage() }
+        view.findViewById<View>(R.id.report_camera).setOnClickListener { openCamera() }
+        view.findViewById<View>(R.id.report_gallery).setOnClickListener { pickImage() }
         submitButton?.setOnClickListener { submit() }
+
+        // The in-app camera hands back a cache-file path via the Fragment
+        // Result API. The form sits underneath the camera (add + back stack),
+        // so severity/description/text survive the capture round trip.
+        parentFragmentManager.setFragmentResultListener(
+            CameraCaptureFragment.RESULT_KEY, viewLifecycleOwner
+        ) { _, bundle ->
+            val path = bundle.getString(CameraCaptureFragment.RESULT_CAPTURE_PATH)
+                ?: return@setFragmentResultListener
+            ingestImage { File(path).inputStream() }
+            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                // Cache hygiene: the processed data URI lives in memory now.
+                runCatching { File(path).delete() }
+            }
+        }
 
         app.locationEngine.addListener { state ->
             activity?.runOnUiThread { onLocation(state) }
@@ -145,6 +167,13 @@ class ReportFragment : Fragment() {
         }
     }
 
+    private fun openCamera() {
+        parentFragmentManager.beginTransaction()
+            .add(R.id.fragment_container, CameraCaptureFragment())
+            .addToBackStack(null)
+            .commit()
+    }
+
     private fun pickImage() {
         val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
             type = "image/*"
@@ -162,35 +191,31 @@ class ReportFragment : Fragment() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != PICK_IMAGE_REQUEST || resultCode != Activity.RESULT_OK) return
         val uri = data?.data ?: return
+        ingestImage { requireContext().contentResolver.openInputStream(uri) }
+    }
+
+    /**
+     * One ingest path for BOTH sources (gallery URI stream, camera cache
+     * file): decode bounds → PhotoPipeline sample → decode → JPEG budget →
+     * data URI. Behavior-identical to the v2.0.0 picker loop, now shared.
+     */
+    private fun ingestImage(openStream: (boundsOnly: Boolean) -> InputStream?) {
         try {
-            val ctx = requireContext()
-            val input = ctx.contentResolver.openInputStream(uri) ?: return
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeStream(input, null, bounds)
-            input.close()
-            var sample = 1
-            while (bounds.outWidth / sample > 1280 || bounds.outHeight / sample > 1280) {
-                sample *= 2
+            openStream(true)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = PhotoPipeline.targetSample(bounds.outWidth, bounds.outHeight)
             }
-            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-            val stream2 = ctx.contentResolver.openInputStream(uri) ?: return
-            val bitmap = BitmapFactory.decodeStream(stream2, null, opts)
-            stream2.close()
+            val bitmap = openStream(false)?.use { BitmapFactory.decodeStream(it, null, opts) }
             if (bitmap == null) return
-            var quality = 80
-            var bytes: ByteArray
-            do {
-                val out = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
-                bytes = out.toByteArray()
-                quality -= 15
-            } while (bytes.size > MAX_IMAGE_BYTES && quality > 20)
-            if (bytes.size > MAX_IMAGE_BYTES) {
+            val bytes = PhotoPipeline.compressWithinBudget(bitmap)
+            if (bytes == null) {
                 Toast.makeText(requireContext(), R.string.report_photo_too_big, Toast.LENGTH_LONG).show()
                 return
             }
             imageDataUri = "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
             photoLine?.text = getString(R.string.report_photo_attached_fmt, bytes.size / 1024)
+            photoLine?.visibility = View.VISIBLE
         } catch (e: Exception) {
             Toast.makeText(requireContext(), R.string.report_photo_failed, Toast.LENGTH_SHORT).show()
         }
@@ -223,6 +248,7 @@ class ReportFragment : Fragment() {
                     descriptionInput?.setText("")
                     imageDataUri = null
                     photoLine?.text = ""
+                    photoLine?.visibility = View.GONE
                 } else if (ok && userError == AppRepository.OFFLINE_QUEUED_MSG) {
                     Toast.makeText(ctx, userError, Toast.LENGTH_LONG).show()
                 } else if (!ok) {

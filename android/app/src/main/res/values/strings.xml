@@ -107,6 +107,8 @@
     <string name="report_description_hint">الوصف — 10 أحرف على الأقل (دخان؟ لهب؟ اتجاه؟)</string>
     <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$d م</string>
     <string name="report_attach">إرفاق صورة</string>
+    <string name="report_camera">تصوير</string>
+    <string name="report_gallery">من المعرض</string>
     <string name="report_photo_attached_fmt">صورة مرفقة (%1$d كيلوبايت)</string>
     <string name="report_pick_photo">اختيار صورة</string>
     <string name="report_no_gallery">لا يتوفر متصفح صور</string>
@@ -117,6 +119,14 @@
     <string name="report_sent">تم إرسال البلاغ — شكرًا لك</string>
     <string name="report_failed_fmt">تعذر الإرسال: %1$s</string>
     <string name="report_queue_fmt">لديك %1$d بلاغ محفوظ بانتظار الشبكة</string>
+
+    <!-- v2.2.0 — in-app camera (CameraCaptureFragment) -->
+    <string name="camera_close">إغلاق</string>
+    <string name="camera_flip">تبديل الكاميرا</string>
+    <string name="camera_hint">وجّه الكاميرا نحو الدخان أو اللهب ثم اضغط زر التصوير</string>
+    <string name="camera_shutter_desc">زر التصوير</string>
+    <string name="camera_permission_denied">إذن الكاميرا مرفوض — يمكنك اختيار صورة من المعرض بدلاً من التصوير</string>
+    <string name="camera_open_fail">تعذر تشغيل الكاميرا — حاول مجددًا أو اختر صورة من المعرض</string>
 
     <!-- Team / mesh -->
     <string name="team_title">الفريق والشبكة</string>
