@@ -5,6 +5,7 @@ import android.preference.PreferenceManager
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.ContextCompat
@@ -20,26 +21,46 @@ import org.osmdroid.util.GeoPoint
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Overlay
+import org.osmdroid.views.overlay.Polygon
 import org.osmdroid.views.overlay.Polyline
+import kotlin.math.roundToInt
 
 /**
- * v2.1.0 — the field map, rescued from the "API KEY REQUIRED" disaster:
- * v2.0.0 rode CartoDarkMatter, and CARTO started serving anonymous clients
- * placeholder tiles stamped "API KEY REQUIRED" — the owner's device showed a
- * black map drowning in watermarks (the "prehistoric" verdict). Now standard
- * OpenStreetMap raster tiles: no key, no registration, valid UA below, and
- * the sqlite cache still keeps visited tiles offline. osmdroid's stock white
- * zoom buttons are hidden and replaced with styled in-layout controls.
- * Everything else from v2.0.0 stands: FIRMS hotspots, verified fires,
- * safezones, mesh intel, user marker, and the hybrid OSRM evacuation with
- * the per-vertex 2.5 km fire-corridor red warning.
+ * v2.10.0 (S4 Radar v2) — the INTEGRATED OPERATIONAL MAP. Everything the
+ * field needs fused into one native screen (previously the "integrated map"
+ * existed on NEITHER platform: the web EvacuationRadar is range-rings-only
+ * and this fragment was user-marker + route + threat pins):
+ *
+ *  - Range rings (7.5/15/22.5/30 km) around the user, toggleable, web ring
+ *    spec — drawn UNDER every other layer.
+ *  - LIVE WIND + SPREAD CONE: the repository's WeatherNow (Open-Meteo, same
+ *    provider the web radar calls) drives a ±22° translucent downwind cone
+ *    at 55% of the 30 km range. Explicitly disclaimed: wind reference, NOT a
+ *    fire model. No wind reading → no cone, no drift hint, ever.
+ *  - ROUTE ALTERNATIVES, SAFETY-FIRST: the OSRM request now asks for
+ *    alternatives; every candidate road gets a per-vertex fire-corridor
+ *    measurement (reports + hotspots) and the radar auto-draws the SAFEST
+ *    (max clearance) rather than the fastest, with tappable chips to switch.
+ *  - AI SAFETY BRIEFING: the server's /api/ai/guidance (prompt-sanitized,
+ *    6/min limited, fallback-bodied) rendered in an overlay card. Client
+ *    discipline mirrors the web AICopilot: 1h cache, ≥5s between requests,
+ *    honest failure — the client never authors guidance text.
+ *  - MISSION TARGET: an active team mission (own team only — teammate
+ *    positions remain command-center-only by the S-M2 design) paints its SOS
+ *    target + phase chip from the same service state TeamFragment reads.
+ *
+ * Everything from v2.1.1 stands: OSM/CARTO tiles, FIRMS hotspots, verified
+ * fires, safezones, mesh intel, user marker, recenter discipline (F11).
  */
 class MapFragment : Fragment() {
 
     companion object {
-        // Same threshold the web SafeEvacuation uses (2.5 km corridor).
-        private const val ROUTE_FIRE_WARNING_M = 2_500.0
         private const val DEFAULT_ZOOM = 11.0
+        /** Web parity: wind refresh every 10 minutes while fixes arrive. */
+        private const val WIND_REFRESH_MS = 10L * 60L * 1000L
+        /** Chips drawn for the top-ranked routes (OSRM caps alternatives ~3). */
+        private const val MAX_ROUTE_CHIPS = 3
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -48,8 +69,22 @@ class MapFragment : Fragment() {
     private var statusText: TextView? = null
     private var routeButton: View? = null
     private var routeInfoText: TextView? = null
+    private var routeChipsScroll: View? = null
+    private var routeChipsRow: LinearLayout? = null
+    private var ringsToggle: TextView? = null
+    private var aiButton: TextView? = null
+    private var windChip: TextView? = null
+    private var radarNote: TextView? = null
+    private var missionChip: TextView? = null
+    private var aiCard: View? = null
+    private var aiCardBody: TextView? = null
+
     private var userMarker: Marker? = null
+    private var missionMarker: Marker? = null
     private var routeLine: Polyline? = null
+    private var ringLines: List<Polyline> = emptyList()
+    private var conePolygon: Polygon? = null
+
     private var mapReady = false
     private var lastUserLatLng: Pair<Double, Double>? = null
     // F11: recenter discipline. The old onFix called animateTo on EVERY
@@ -58,12 +93,26 @@ class MapFragment : Fragment() {
     // window, or when the recenter button is pressed.
     private var firstFixSeen = false
 
-    // F2: named listener so onDestroyView can deregister from the
-    // application-scoped engine (an inline lambda leaked this view forever).
+    // S4 radar state.
+    private var ringsVisible = true
+    private var lastWindFetchMs = 0L
+    private var rankedRoutes: List<RadarV2.RouteOption> = emptyList()
+    private var selectedRouteIndex = -1
+    private var lastSafezoneNameAr: String? = null
+    private var routeFetchInFlight = false
+
+    // F2: named listeners so onDestroyView can deregister from the
+    // application-scoped engines (inline lambdas leaked this view forever).
     private val locationListener: (LocationEngine.State) -> Unit = { state ->
         activity?.runOnUiThread {
             state.fix?.let { onFix(it) }
         }
+    }
+
+    // S4: team service beats carry the ACTIVE MISSION of the member's own
+    // team ("beat" → missionJson; "stopped"/"revoked"/"error" → clear).
+    private val serviceListener: (String, String?) -> Unit = { state, payload ->
+        activity?.runOnUiThread { onServiceState(state, payload) }
     }
 
     override fun onCreateView(
@@ -77,6 +126,15 @@ class MapFragment : Fragment() {
         statusText = view.findViewById(R.id.map_status)
         routeButton = view.findViewById(R.id.route_button)
         routeInfoText = view.findViewById(R.id.route_info)
+        routeChipsScroll = view.findViewById(R.id.route_chips_scroll)
+        routeChipsRow = view.findViewById(R.id.route_chips_row)
+        ringsToggle = view.findViewById(R.id.rings_toggle)
+        aiButton = view.findViewById(R.id.ai_briefing_button)
+        windChip = view.findViewById(R.id.wind_chip)
+        radarNote = view.findViewById(R.id.radar_note)
+        missionChip = view.findViewById(R.id.mission_chip)
+        aiCard = view.findViewById(R.id.ai_card)
+        aiCardBody = view.findViewById(R.id.ai_card_body)
         // osmdroid session config: a descriptive UA (tile servers require one)
         // and app-private cache paths (no storage permission needed on 26+).
         val ctx = requireContext()
@@ -139,8 +197,14 @@ class MapFragment : Fragment() {
         }
 
         routeButton?.setOnClickListener { fetchEvacuationRoute() }
+        ringsToggle?.setOnClickListener { onRingsToggled() }
+        aiButton?.setOnClickListener { onAiBriefingRequested() }
+        view.findViewById<View>(R.id.ai_card_close).setOnClickListener {
+            aiCard?.visibility = View.GONE
+        }
 
         app.locationEngine.addListener(locationListener)
+        TeamLocationService.addStateListener(serviceListener)
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -151,6 +215,8 @@ class MapFragment : Fragment() {
 
     private fun onFix(fix: LocationLogic.FixSnapshot) {
         val mv = map ?: return
+        val moved = lastUserLatLng != null &&
+            (lastUserLatLng!!.first != fix.lat || lastUserLatLng!!.second != fix.lng)
         lastUserLatLng = fix.lat to fix.lng
         val point = GeoPoint(fix.lat, fix.lng)
         if (userMarker == null) {
@@ -173,19 +239,203 @@ class MapFragment : Fragment() {
             mv.controller.animateTo(point)
         }
         statusText?.text = getString(R.string.map_status_fix_fmt, fix.accuracyM.toInt(), fix.provider)
+        // S4: rings ride the user's position; wind refreshes on web parity's
+        // 10-minute cadence (the cone itself redraws via the snapshot flow).
+        if (moved || ringLines.isEmpty()) drawRings(mv)
+        maybeFetchWind(fix)
     }
+
+    // ---------- S4 radar layers ----------
+
+    private fun onRingsToggled() {
+        ringsVisible = !ringsVisible
+        val mv = map ?: return
+        val c = lastUserLatLng
+        if (c != null) drawRings(mv)
+        ringsToggle?.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (ringsVisible) R.color.accent_red else R.color.text_secondary
+            )
+        )
+    }
+
+    /** Range rings UNDER everything else; empty center → nothing drawn. */
+    private fun drawRings(mv: MapView) {
+        ringLines.forEach { mv.overlays.remove(it) }
+        ringLines = emptyList()
+        if (!ringsVisible) return
+        val c = lastUserLatLng ?: return
+        ringLines = RadarV2.RANGE_RINGS_KM.map { km ->
+            Polyline(mv).apply {
+                setPoints(
+                    RadarV2.circleGeoPoints(c.first, c.second, km)
+                        .map { GeoPoint(it.first, it.second) }
+                )
+                outlinePaint.color = 0x1FFFFFFF // white ~12%, web ring tint
+                outlinePaint.strokeWidth = 2f
+            }
+        }
+        mv.overlays.addAll(ringLines)
+        mv.invalidate()
+    }
+
+    /** ±22° downwind cone at 55% range. No wind → cone removed, note hidden. */
+    private fun drawCone(mv: MapView, weather: WeatherNow?) {
+        conePolygon?.let { mv.overlays.remove(it) }
+        conePolygon = null
+        val c = lastUserLatLng
+        if (weather == null || c == null) {
+            radarNote?.visibility = View.GONE
+            return
+        }
+        val drift = RadarV2.driftHeading(weather.windFromDeg.roundToInt())
+        val pts = RadarV2.coneGeoPoints(c.first, c.second, drift)
+        if (pts.isEmpty()) {
+            radarNote?.visibility = View.GONE
+            return
+        }
+        conePolygon = Polygon(mv).apply {
+            points = pts.map { GeoPoint(it.first, it.second) }
+            fillPaint.color = 0x47F97316.toInt() // orange-500 at ~28% (web sector tint)
+            outlinePaint.color = 0x66F97316.toInt()
+            outlinePaint.strokeWidth = 1.5f
+        }
+        mv.overlays.add(conePolygon)
+        radarNote?.visibility = View.VISIBLE
+        mv.invalidate()
+    }
+
+    private fun updateWindChip(weather: WeatherNow?) {
+        val chip = windChip ?: return
+        if (weather == null) {
+            chip.text = getString(R.string.wind_no_fix)
+            return
+        }
+        val dirAr = TelemetryCamera.bearingDirectionAr(weather.windFromDeg)
+        chip.text = getString(
+            R.string.wind_chip_fmt,
+            RadarV2.speedLabel(weather.windKph),
+            RadarV2.tempLabel(weather.tempC),
+            dirAr,
+            RadarV2.windBrief(weather.windKph)
+        )
+    }
+
+    /**
+     * Web parity wind refresh: Open-Meteo every 10 minutes while fixes flow.
+     * The result lands in the repository snapshot, and the snapshot collector
+     * below redraws the cone + chip — this call only TRIGGERS.
+     */
+    private fun maybeFetchWind(fix: LocationLogic.FixSnapshot) {
+        val now = System.currentTimeMillis()
+        if (now - lastWindFetchMs < WIND_REFRESH_MS) return
+        lastWindFetchMs = now
+        app.repository.fetchWeatherAt(fix.lat, fix.lng) { }
+    }
+
+    // ---------- AI safety briefing ----------
+
+    private fun onAiBriefingRequested() {
+        val now = System.currentTimeMillis()
+        val cached = app.aiBriefingText
+        if (cached != null && RadarV2.aiCacheFresh(app.aiBriefingAt, now)) {
+            showAiCard(cached)
+            return
+        }
+        if (!RadarV2.aiRequestAllowed(app.aiLastRequestMs, now)) {
+            Toast.makeText(requireContext(), R.string.ai_wait, Toast.LENGTH_SHORT).show()
+            return
+        }
+        app.aiLastRequestMs = now
+        aiCard?.visibility = View.VISIBLE
+        aiCardBody?.text = getString(R.string.ai_loading)
+        val coords = lastUserLatLng
+        viewLifecycleOwner.lifecycleScope.launch {
+            val body = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                when (val r = app.api.post("/api/ai/guidance", ApiPayloads.buildAiGuidanceBody(coords?.first, coords?.second))) {
+                    is ObservatoryApi.Result.Ok -> Parsers.parseAiGuidance(r.body)
+                    else -> null
+                }
+            }
+            if (!isAdded) return@launch
+            if (body == null) {
+                // Honest failure — no locally authored guidance, ever.
+                if (cached != null) showAiCard(cached) else {
+                    aiCardBody?.text = getString(R.string.ai_failed)
+                }
+                return@launch
+            }
+            app.aiBriefingText = body
+            app.aiBriefingAt = System.currentTimeMillis()
+            showAiCard(body)
+        }
+    }
+
+    private fun showAiCard(text: String) {
+        // The server returns markdown-ish "### …" section heads; the card
+        // renders them as plain emphasis lines (no markdown parser shipped).
+        aiCardBody?.text = text.replace("### ", "▪ ")
+        aiCard?.visibility = View.VISIBLE
+    }
+
+    // ---------- Mission target (own team only) ----------
+
+    private fun onServiceState(state: String, payload: String?) {
+        val mv = map ?: return
+        if (state == "beat") {
+            val phase = TeamLocationLogic.parseMissionPhase(payload)
+            val coords = TeamLocationLogic.parseMissionCoords(payload)
+            if (phase != null && phase != "cleared" && coords != null) {
+                val point = GeoPoint(coords.first, coords.second)
+                if (missionMarker == null) {
+                    missionMarker = Marker(mv).apply {
+                        setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+                        title = getString(R.string.mission_target_title)
+                        snippet = getString(R.string.mission_target_snippet)
+                        icon = ContextCompat.getDrawable(requireContext(), R.drawable.ic_mission_target)
+                            ?: return@apply
+                        mv.overlays.add(this)
+                    }
+                }
+                missionMarker?.position = point
+                val phaseAr = when (phase) {
+                    "en_route" -> getString(R.string.phase_en_route)
+                    "on_scene" -> getString(R.string.phase_on_scene)
+                    else -> phase
+                }
+                missionChip?.text = getString(R.string.mission_chip_fmt, phaseAr)
+                missionChip?.visibility = View.VISIBLE
+            } else {
+                removeMissionTarget(mv)
+            }
+        } else if (state == "stopped" || state == "revoked" || state == "error") {
+            removeMissionTarget(mv)
+        }
+    }
+
+    private fun removeMissionTarget(mv: MapView) {
+        missionMarker?.let { mv.overlays.remove(it) }
+        missionMarker = null
+        missionChip?.visibility = View.GONE
+    }
+
+    // ---------- Snapshot rendering ----------
 
     private fun render(snap: AppRepository.Snapshot) {
         val mv = map ?: return
         if (!mapReady) return
         val now = System.currentTimeMillis()
 
-        // Rebuild data overlays (keep user marker + route line).
-        val keep = mv.overlays.filter { it === userMarker || it === routeLine }
+        // Rebuild data overlays (keep identity markers + route line).
+        val keep = mv.overlays.filter { it === userMarker || it === routeLine || it === missionMarker }
         mv.overlays.clear()
         mv.overlays.addAll(keep)
 
+        drawRings(mv)
+        drawCone(mv, snap.weather)
         renderThreats(mv, snap, now)
+        updateWindChip(snap.weather)
         statusText?.text = if (snap.online) {
             getString(R.string.map_status_sync_fmt, snap.reports.size, snap.hotspots.size)
         } else {
@@ -247,9 +497,15 @@ class MapFragment : Fragment() {
         }
     }
 
+    // ---------- Route alternatives (safety-first) ----------
+
     /**
-     * Hybrid evacuation, native: nearest safezone by haversine, then the real
-     * OSRM road geometry, then the fire-corridor check along the polyline.
+     * v2.10.0: OSRM now returns up to ~3 candidate roads (alternatives=true).
+     * Each gets its per-vertex fire-corridor clearance measured against the
+     * CURRENT threat picture (fresh reports + hotspots); RadarV2 ranks them
+     * SAFETY-FIRST and the safest is drawn automatically. Chips let the
+     * driver compare and switch — the fastest road is no longer privileged
+     * over the safest one.
      */
     private fun fetchEvacuationRoute() {
         val mv = map ?: return
@@ -258,6 +514,7 @@ class MapFragment : Fragment() {
             Toast.makeText(requireContext(), R.string.route_need_fix, Toast.LENGTH_LONG).show()
             return
         }
+        if (routeFetchInFlight) return
         val snap = app.repository.state.value
         val target = snap.safezones.minByOrNull {
             TeamLocationLogic.haversineMeters(user.first, user.second, it.lat, it.lng)
@@ -266,54 +523,134 @@ class MapFragment : Fragment() {
             Toast.makeText(requireContext(), R.string.route_no_safezones, Toast.LENGTH_LONG).show()
             return
         }
+        lastSafezoneNameAr = target.nameAr
         routeInfoText?.text = getString(R.string.route_fetching)
+        routeFetchInFlight = true
         viewLifecycleOwner.lifecycleScope.launch {
             val url = ApiPayloads.buildOsrmUrl(user.first, user.second, target.lat, target.lng)
             val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 when (val r = app.api.get(url)) {
-                    is ObservatoryApi.Result.Ok -> Parsers.parseOsrmRoute(r.body)
+                    is ObservatoryApi.Result.Ok -> Parsers.parseOsrmAlternatives(r.body)
                     else -> null
                 }
             }
+            routeFetchInFlight = false
             if (!isAdded) return@launch
-            val (points, distDur) = result ?: run {
+            val raw = result ?: run {
                 // Honest fallback: NO invented route line — say what we know.
                 val straightKm = TeamLocationLogic.haversineMeters(user.first, user.second, target.lat, target.lng) / 1000.0
                 routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, straightKm)
                 routeLine?.let { mv.overlays.remove(it); routeLine = null }
+                routeChipsScroll?.visibility = View.GONE
+                rankedRoutes = emptyList()
                 Toast.makeText(requireContext(), R.string.route_offline_toast, Toast.LENGTH_LONG).show()
                 return@launch
             }
-            routeLine?.let { mv.overlays.remove(it) }
+            // One threat picture, reused for every candidate (fresh reports +
+            // hotspots — the same corridor discipline as v2.1.0, now per-route).
             val now = System.currentTimeMillis()
-            val threats = snap.reports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
-                snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) }
-            var minFireM = Double.MAX_VALUE
-            for (p in points) {
-                val d = GeoMath.minDistanceToPolylineM(p.first, p.second, threats.map { it.lat to it.lng })
-                if (d < minFireM) minFireM = d
+            val threats: List<Pair<Double, Double>> =
+                snap.reports.filter { ProximityLogic.isFresh(it.timestampMs, now) }
+                    .map { it.lat to it.lng } +
+                    snap.hotspots.map { it.lat to it.lng }
+            rankedRoutes = RadarV2.rankRoutes(
+                raw.map { (pts, dist, dur) ->
+                    val minFire = if (pts.isEmpty()) {
+                        Double.NaN
+                    } else if (threats.isEmpty()) {
+                        Double.MAX_VALUE
+                    } else {
+                        pts.minOf { p -> GeoMath.minDistanceToPolylineM(p.first, p.second, threats) }
+                    }
+                    RadarV2.RouteOption(pts, dist, dur, minFire)
+                }
+            )
+            renderRouteChips()
+            if (rankedRoutes.isEmpty()) {
+                routeChipsScroll?.visibility = View.GONE
+                routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, 0.0)
+                return@launch
             }
-            val crossesFire = minFireM < ROUTE_FIRE_WARNING_M
-            val line = Polyline(mv).apply {
-                setPoints(points.map { GeoPoint(it.first, it.second) })
-                outlinePaint.color = if (crossesFire) 0xFFEF4444.toInt() else 0xFF10B981.toInt()
-                outlinePaint.strokeWidth = 12f
-            }
-            routeLine = line
-            mv.overlays.add(line)
-            try {
-                mv.zoomToBoundingBox(BoundingBox.fromGeoPoints(points.map { GeoPoint(it.first, it.second) }), false, 90)
-            } catch (e: Exception) {
-                // degenerate bounding box — keep current zoom
-            }
-            val km = distDur.first / 1000.0
-            val min = distDur.second / 60.0
-            routeInfoText?.text = if (crossesFire) {
-                getString(R.string.route_warn_fmt, target.nameAr, km, min.toInt(), (minFireM / 1000.0))
-            } else {
-                getString(R.string.route_ok_fmt, target.nameAr, km, min.toInt())
-            }
+            selectRoute(0)
         }
+    }
+
+    private fun renderRouteChips() {
+        val row = routeChipsRow ?: return
+        row.removeAllViews()
+        if (rankedRoutes.isEmpty()) {
+            routeChipsScroll?.visibility = View.GONE
+            return
+        }
+        val density = resources.displayMetrics.density
+        rankedRoutes.take(MAX_ROUTE_CHIPS).forEachIndexed { idx, opt ->
+            val chip = TextView(requireContext()).apply {
+                val verdict = getString(if (opt.crossesFire) R.string.route_cross else R.string.route_safe)
+                val base = getString(
+                    R.string.route_chip_fmt,
+                    opt.distanceM / 1000.0,
+                    (opt.durationS / 60.0).roundToInt(),
+                    verdict
+                )
+                text = if (idx == 0) getString(R.string.route_safest_mark, base) else base
+                setBackgroundResource(R.drawable.bg_chip)
+                setPadding(
+                    (10 * density).toInt(), (5 * density).toInt(),
+                    (10 * density).toInt(), (5 * density).toInt()
+                )
+                textSize = 11f
+                setTextColor(
+                    ContextCompat.getColor(
+                        requireContext(),
+                        when {
+                            idx == selectedRouteIndex -> R.color.accent_red
+                            opt.crossesFire -> R.color.accent_orange
+                            else -> R.color.text_secondary
+                        }
+                    )
+                )
+                setOnClickListener { selectRoute(idx) }
+            }
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = (8 * density).toInt() }
+            row.addView(chip, lp)
+        }
+        routeChipsScroll?.visibility = View.VISIBLE
+    }
+
+    /** Draws the selected alternative + honest corridor-verdict info line. */
+    private fun selectRoute(idx: Int) {
+        val mv = map ?: return
+        val opt = rankedRoutes.getOrNull(idx) ?: return
+        selectedRouteIndex = idx
+        routeLine?.let { mv.overlays.remove(it) }
+        val line = Polyline(mv).apply {
+            setPoints(opt.points.map { GeoPoint(it.first, it.second) })
+            outlinePaint.color = if (opt.crossesFire) 0xFFEF4444.toInt() else 0xFF10B981.toInt()
+            outlinePaint.strokeWidth = 12f
+        }
+        routeLine = line
+        mv.overlays.add(line)
+        try {
+            mv.zoomToBoundingBox(
+                BoundingBox.fromGeoPoints(opt.points.map { GeoPoint(it.first, it.second) }),
+                false, 90
+            )
+        } catch (e: Exception) {
+            // degenerate bounding box — keep current zoom
+        }
+        val nameAr = lastSafezoneNameAr
+        val km = opt.distanceM / 1000.0
+        val min = (opt.durationS / 60.0).roundToInt()
+        routeInfoText?.text = if (opt.crossesFire && !opt.minFireDistanceM.isNaN()) {
+            getString(R.string.route_warn_fmt, nameAr ?: "", km, min, opt.minFireDistanceM / 1000.0)
+        } else {
+            getString(R.string.route_ok_fmt, nameAr ?: "", km, min)
+        }
+        renderRouteChips()
+        mv.invalidate()
     }
 
     override fun onResume() {
@@ -328,10 +665,15 @@ class MapFragment : Fragment() {
 
     override fun onDestroyView() {
         app.locationEngine.removeListener(locationListener)
+        TeamLocationService.removeStateListener(serviceListener)
         map?.onDetach()
         map = null
         userMarker = null
+        missionMarker = null
         routeLine = null
+        ringLines = emptyList()
+        conePolygon = null
+        rankedRoutes = emptyList()
         super.onDestroyView()
     }
 }

@@ -38,6 +38,15 @@ class ObservatoryApp : Application() {
             }
     }
 
+    // ---- v2.10.0 (S4): AI briefing slots (web AICopilot cache discipline) ----
+    // Process-scoped on purpose: a fresh process simply refetches. The TTL and
+    // spacing rules live in RadarV2 (pure, unit-tested); these fields only hold
+    // the values. @Volatile because map fragments may read from the main thread
+    // while an IO coroutine writes the result back.
+    @Volatile var aiBriefingText: String? = null
+    @Volatile var aiBriefingAt: Long = 0L
+    @Volatile var aiLastRequestMs: Long = 0L
+
     override fun onCreate() {
         super.onCreate()
         instance = this
