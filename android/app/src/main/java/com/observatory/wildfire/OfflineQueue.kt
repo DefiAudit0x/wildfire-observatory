@@ -60,8 +60,8 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
     fun restoreAll(entries: List<Entry<T>>) {
         items.clear()
         val seen = HashSet<String>()
-        for (e in entries.asReversed()) {
-            if (seen.add(e.key)) items.addFirst(e)
+        for (e in entries) {
+            if (seen.add(e.key)) items.addLast(e)
         }
         while (items.size > capacity) items.removeFirst()
     }
