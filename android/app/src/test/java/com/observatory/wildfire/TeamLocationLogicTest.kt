@@ -107,6 +107,24 @@ class TeamLocationLogicTest {
     }
 
     @Test
+    fun `F10 fixTimeMs travels when present and stays absent for legacy calls`() {
+        assertEquals(
+            "{\"lat\":36.75,\"lng\":5.07,\"fixTimeMs\":1730000000000}",
+            TeamLocationLogic.buildHeartbeatBodyJson(36.75, 5.07, null, null, null, null, 1730000000000L)
+        )
+        // zero/negative epochs are dropped — never fabricate a fix age
+        assertEquals(
+            "{\"lat\":36.75,\"lng\":5.07}",
+            TeamLocationLogic.buildHeartbeatBodyJson(36.75, 5.07, null, null, null, null, 0L)
+        )
+        // legacy 6-arg call (no fix time at all)
+        assertEquals(
+            "{\"lat\":36.75,\"lng\":5.07}",
+            TeamLocationLogic.buildHeartbeatBodyJson(36.75, 5.07, null, null, null, null, null)
+        )
+    }
+
+    @Test
     fun `non-finite coordinates degrade to null instead of corrupting the JSON`() {
         // JSON has no NaN — a broken fix must not 400 the whole beat forever.
         assertEquals(
