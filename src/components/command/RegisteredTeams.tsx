@@ -16,6 +16,10 @@ import { RegisteredTeam, JoinCodeIssued } from "./registeredTeams";
  * rename, device blocklist) land beside dispatch — every lever maps to a
  * server endpoint added in the same round; W4 adds the roster freshness
  * indicator; W5 turns the join-code expiry into a live countdown.
+ * Phase C: W8 adds an in-flight guard to member removal (one DELETE at a
+ * time — a double click no longer fires a second DELETE); W9 closes the
+ * accessibility gaps (aria-labels on every icon-only button and the search
+ * field, 9px text lifted to 10px, gray-500 content lifted to gray-400).
  */
 
 interface RegisteredTeamsProps {
@@ -76,6 +80,9 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
   const [teamSearch, setTeamSearch] = useState("");
   // B3 levers: one in-flight lever per team at a time.
   const [leverBusy, setLeverBusy] = useState<string | null>(null);
+  // W8: member removal in-flight guard — a second click during the DELETE
+  // flight previously fired a second DELETE (double toast / spurious 404).
+  const [removingFor, setRemovingFor] = useState<string | null>(null);
   // ARC pattern (TeamsTable): result chips self-expire instead of sticking.
   const [resultChip, setResultChip] = useState<Record<string, { ok: boolean; text: string }>>({});
   const resultTimers = useRef<Record<string, number>>({});
@@ -192,6 +199,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
   };
 
   const handleRemoveMember = async (teamId: string, memberId: string, name: string) => {
+    if (removingFor) return; // W8: one removal in flight at a time.
     if (!window.confirm(isArabic ? `إزالة العضو «${name}» من الفريق؟` : `Retirer le membre « ${name} » ?`)) return;
     // B1/B2: removal revokes the device's token (server-side). Offer the
     // lost-device blocklist step explicitly — a blocked device cannot come
@@ -201,6 +209,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
         ? "هل تريد أيضًا حجب هذا الجهاز من إعادة الانضمام؟ (لجهاز مفقود أو مُسحوب)"
         : "Bloquer aussi cet appareil de toute réadhésion ? (appareil perdu/réassigné)"
     );
+    setRemovingFor(memberId);
     try {
       const res = await apiFetch(
         `/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`,
@@ -222,6 +231,8 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
       }
     } catch {
       notify(isArabic ? "تعذرت إزالة العضو" : "Échec du retrait du membre", "error");
+    } finally {
+      if (mountedRef.current) setRemovingFor(null);
     }
   };
 
@@ -332,7 +343,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
               flight plus the time the current data landed. */}
           {refreshing && <RefreshCw className="h-3 w-3 animate-spin text-amber-400" data-testid="teams-refreshing" />}
           {lastUpdated !== null && !refreshing && (
-            <span className="text-[9px] text-gray-500" title={isArabic ? "آخر تحديث للقائمة" : "Dernière mise à jour"}>
+            <span className="text-[10px] text-gray-400" title={isArabic ? "آخر تحديث للقائمة" : "Dernière mise à jour"}>
               {isArabic ? "آخر تحديث" : "MAJ"} {new Date(lastUpdated).toLocaleTimeString(isArabic ? "ar" : "fr", { hour12: false })}
             </span>
           )}
@@ -345,6 +356,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
               value={teamSearch}
               onChange={(e) => setTeamSearch(e.target.value)}
               placeholder={isArabic ? "ابحث عن فريق..." : "Rechercher..."}
+              aria-label={isArabic ? "بحث في الفرق المسجلة" : "Recherche des équipes"}
               className="w-40 bg-zinc-950 border border-white/10 rounded-lg py-1.5 pl-9 pr-3 text-[11px] text-slate-300 placeholder:text-gray-600 focus:outline-none focus:border-amber-500/40"
             />
           </div>
@@ -451,6 +463,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       disabled={leverBusy !== null}
                       onClick={() => handleRenameTeam(team)}
                       className="text-gray-500 hover:text-amber-300 cursor-pointer disabled:opacity-40"
+                      aria-label={isArabic ? "إعادة تسمية الفريق" : "Renommer l'équipe"}
                       title={isArabic ? "إعادة تسمية الفريق" : "Renommer l'équipe"}
                     >
                       <Pencil className="h-3 w-3" />
@@ -460,6 +473,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       disabled={leverBusy !== null}
                       onClick={() => handleSetTeamActive(team.teamId, team.active === false)}
                       className={`cursor-pointer disabled:opacity-40 ${team.active === false ? "text-emerald-400 hover:text-emerald-300" : "text-gray-500 hover:text-red-400"}`}
+                      aria-label={team.active === false ? (isArabic ? "تفعيل الفريق" : "Activer l'équipe") : (isArabic ? "تعطيل الفريق" : "Désactiver l'équipe")}
                       title={team.active === false ? (isArabic ? "تفعيل الفريق" : "Activer l'équipe") : (isArabic ? "تعطيل الفريق" : "Désactiver l'équipe")}
                     >
                       <Power className="h-3 w-3" />
@@ -472,12 +486,12 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       <div className={`flex items-center gap-1.5 border rounded px-2 py-1 ${countdown?.expired ? "bg-red-950/40 border-red-500/40" : countdown?.soon ? "bg-amber-950/30 border-amber-500/40" : "bg-zinc-950 border-amber-500/30"}`}>
                         <KeyRound className={`h-3 w-3 ${countdown?.expired ? "text-red-400" : "text-amber-400"}`} />
                         <span className={`font-mono font-extrabold text-xs tracking-[0.2em] ${countdown?.expired ? "text-red-300 line-through" : "text-amber-300"}`}>{issued.code}</span>
-                        <button type="button" onClick={() => handleCopyCode(team.teamId)} className="text-gray-400 hover:text-amber-300 cursor-pointer" title={isArabic ? "نسخ" : "Copier"}>
+                        <button type="button" onClick={() => handleCopyCode(team.teamId)} className="text-gray-400 hover:text-amber-300 cursor-pointer" aria-label={isArabic ? "نسخ الرمز" : "Copier le code"} title={isArabic ? "نسخ" : "Copier"}>
                           <Copy className="h-3 w-3" />
                         </button>
                         {/* W5: live countdown — expired renders red, <30min amber. */}
                         <span
-                          className={`text-[9px] font-bold ${countdown?.expired ? "text-red-400" : countdown?.soon ? "text-amber-300" : "text-gray-500"}`}
+                          className={`text-[10px] font-bold ${countdown?.expired ? "text-red-400" : countdown?.soon ? "text-amber-300" : "text-gray-400"}`}
                           title={formatExpiry(issued.expiresAt, isArabic)}
                         >
                           {countdown?.text}
@@ -499,7 +513,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                 {/* Members */}
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {team.members.length === 0 && (
-                    <span className="text-[10px] text-gray-500">
+                    <span className="text-[10px] text-gray-400">
                       {isArabic ? "لا أعضاء بعد — أدخل رمز الانضمام في جهاز الفريق" : "Aucun membre — saisissez le code sur l'appareil de terrain"}
                     </span>
                   )}
@@ -510,15 +524,17 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                       <span className={`h-1.5 w-1.5 rounded-full ${m.online ? "bg-emerald-400 animate-pulse" : "bg-gray-600"}`} />
                       {m.name}
                       {m.online && m.lat !== null && m.lng !== null && (
-                        <button type="button" onClick={() => onTargetMember(team.teamId, m.memberId)} className="text-amber-400 hover:text-amber-300 cursor-pointer" title={isArabic ? "تحديد على الخريطة" : "Localiser"}>
+                        <button type="button" onClick={() => onTargetMember(team.teamId, m.memberId)} className="text-amber-400 hover:text-amber-300 cursor-pointer" aria-label={isArabic ? "تحديد العضو على الخريطة" : "Localiser le membre"} title={isArabic ? "تحديد على الخريطة" : "Localiser"}>
                           <MapPin className="h-2.5 w-2.5" />
                         </button>
                       )}
-                      {m.online && m.batteryPct !== null && <span className="text-gray-500">{Math.round(m.batteryPct)}%</span>}
+                      {m.online && m.batteryPct !== null && <span className="text-gray-400">{Math.round(m.batteryPct)}%</span>}
                       <button
                         type="button"
                         onClick={() => handleRemoveMember(team.teamId, m.memberId, m.name)}
-                        className="text-gray-500 hover:text-red-400 cursor-pointer"
+                        disabled={removingFor !== null}
+                        className="text-gray-500 hover:text-red-400 cursor-pointer disabled:opacity-40"
+                        aria-label={isArabic ? `إزالة العضو ${m.name}` : `Retirer le membre ${m.name}`}
                         title={isArabic ? "إزالة العضو" : "Retirer le membre"}
                       >
                         <UserMinus className="h-2.5 w-2.5" />
@@ -604,7 +620,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                 {/* B2: blocked devices — with the unblock lever. */}
                 {team.blockedPrincipals.length > 0 && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <span className="text-[9px] font-bold text-gray-500 flex items-center gap-1">
+                    <span className="text-[10px] font-bold text-gray-400 flex items-center gap-1">
                       <Ban className="h-2.5 w-2.5" />
                       {isArabic ? `أجهزة محجوبة (${team.blockedPrincipals.length}):` : `Appareils bloqués (${team.blockedPrincipals.length}) :`}
                     </span>
@@ -616,6 +632,7 @@ export default function RegisteredTeams({ isArabic, teams, sosCalls, dispatchLoa
                           disabled={leverBusy !== null}
                           onClick={() => handleUnblockPrincipal(team.teamId, principal)}
                           className="text-gray-500 hover:text-emerald-300 cursor-pointer disabled:opacity-40"
+                          aria-label={isArabic ? "فك الحجب" : "Débloquer"}
                           title={isArabic ? "فك الحجب" : "Débloquer"}
                         >
                           <X className="h-2.5 w-2.5" />
