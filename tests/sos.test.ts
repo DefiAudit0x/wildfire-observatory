@@ -252,6 +252,35 @@ describe("SOS durable lifecycle mutations", () => {
     expect(dispatch.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
   });
 
+  it("S-M7: rejects dispatch notes over 500 chars before anything durable happens", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "x".repeat(501) });
+
+    expect(dispatch.status).toBe(400);
+    // Validation is the FIRST gate — no team lookup, no dispatch write.
+    expect(fsMock.docGet).not.toHaveBeenCalled();
+    expect(fsMock.appendSosDispatch).not.toHaveBeenCalled();
+  });
+
+  it("S-M7: accepts dispatch notes at the 500-char cap", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
+    fsMock.appendSosDispatch.mockResolvedValueOnce("ok");
+
+    const dispatch = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "y".repeat(500) });
+
+    expect(dispatch.status).toBe(200);
+  });
+
   it("rejects dispatching to a resolved SOS with 409 (atomic transaction guard)", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());

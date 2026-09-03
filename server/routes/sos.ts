@@ -41,7 +41,11 @@ const dispatchSchema = z.object({
   // let an operator "dispatch" phantom teams that never existed — it died with
   // the simulated dispatch table. The team entity supplies names/type.
   teamId: z.string().regex(/^[A-Za-z0-9_-]{3,64}$/),
-  notes: z.string().optional(),
+  // S-M7: notes rode unbounded into every dispatchedTeams entry
+  // (Firestore arrayUnion) — an operator paste (or a hostile admin client)
+  // grew the trappedSos doc toward its size limit and inflated every later
+  // read of the SOS. Match the citizen textMessage cap.
+  notes: z.string().max(500, "Notes must be 500 characters or fewer").optional(),
 });
 
 const profileSchema = z.object({

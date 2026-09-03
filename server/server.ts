@@ -53,8 +53,14 @@ app.use(helmet({ crossOriginEmbedderPolicy: false, contentSecurityPolicy: { dire
 app.use(cors({ origin: config.corsOrigins, methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], allowedHeaders: ["Content-Type", "Authorization"] }));
 app.use(compression());
 app.use(cookieParser());
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ limit: "10mb", extended: true }));
+// S-M15 fix: the global body ceiling used to be 10MiB on EVERY route while the
+// largest legitimate payload is far smaller: the SOS audio is zod-capped at
+// 700KB of base64, the report photo at 500KB (data URL or multer file). A
+// handful of concurrent 700KB requests at 10MiB headroom pinned ~10MB of
+// buffered bodies per request for no reason. 1MiB keeps honest headroom above
+// both caps and starves trivial memory-exhaustion floods.
+app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
 // B7 (CGNAT residual): the general limiter used to key EVERYTHING by IP, so
 // ~3 command-center tabs (32 req/min each) behind one office address hit the

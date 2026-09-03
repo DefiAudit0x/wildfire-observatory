@@ -1,26 +1,94 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import rateLimit from "express-rate-limit";
+import { randomBytes } from "node:crypto";
 import config from "./config.js";
 import logger from "./logger.js";
 import { getDb } from "./firebase.js";
-import { docGet } from "./fs.js";
+import { docGet, docSet } from "./fs.js";
 
 export type UserRole = "admin" | "superadmin" | "commander" | "agent";
+export type AdminSessionRole = "admin" | "superadmin";
 
 export interface AuthPayload {
   role: UserRole;
   unitId?: string;
   name?: string;
   agentId?: string;
+  /** S-M1: per-session revocation id — present on all admin sessions. */
+  jti?: string;
   iat?: number;
 }
 
 export const ALL_ROLES: readonly UserRole[] = ["admin", "superadmin", "commander", "agent"];
 export const OFFICER_ROLES: readonly UserRole[] = ["admin", "superadmin", "commander"];
 
-export function generateAdminToken(): string {
-  return jwt.sign({ role: "admin" }, config.jwtSecret, { expiresIn: "24h" });
+// S-M1: admin sessions used to be bare { role } JWTs — no identity, no way to
+// revoke anything but the cookie itself. A stolen admin cookie stayed valid for
+// its full 24h regardless of logout, password rotation or incident response.
+// Every token issued from now on carries a jti, and requireAuth checks it
+// against the durable adminRevocations register (logout writes one entry per
+// jti; the entry outlives the cookie and dies with the token's own exp).
+// Legacy jti-less tokens keep working until natural 24h expiry — they simply
+// stay un-revocable, which is exactly the old behaviour, never worse.
+const ADMIN_REVOCATION_COLLECTION = "adminRevocations";
+
+export function generateAdminToken(role: AdminSessionRole = "admin"): string {
+  return jwt.sign({ role, jti: randomBytes(16).toString("hex") }, config.jwtSecret, { expiresIn: "24h" });
+}
+
+function isAdminSessionPayload(decoded: AuthPayload): boolean {
+  return (
+    (decoded.role === "admin" || decoded.role === "superadmin") &&
+    !decoded.agentId &&
+    !(decoded as { scope?: unknown }).scope
+  );
+}
+
+/**
+ * S-M1: revoke an admin session server-side. `token` is the raw admin_token
+ * (cookie or bearer). Decoding (not verifying) is enough — a forged token
+ * cannot produce a jti the register cares about, and an expired token's
+ * revocation entry is inert. Returns true when a revocation was durably
+ * written, false when there was nothing to revoke or the register is down.
+ */
+export async function revokeAdminSession(token: string | undefined | null, reason: string): Promise<boolean> {
+  if (!token) return false;
+  try {
+    const decoded = jwt.decode(token) as (AuthPayload & { jti?: string; exp?: number }) | null;
+    if (!decoded || typeof decoded.jti !== "string" || !decoded.jti) return false;
+    const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now() + 24 * 60 * 60 * 1000;
+    const ok = await docSet(ADMIN_REVOCATION_COLLECTION, decoded.jti, {
+      revokedAt: new Date().toISOString(),
+      exp: expMs,
+      reason,
+    });
+    if (!ok) logger.warn({ jti: decoded.jti }, "Admin revocation register unavailable — token stays valid until expiry");
+    return ok;
+  } catch (err) {
+    logger.warn({ err }, "Admin revocation write failed");
+    return false;
+  }
+}
+
+/**
+ * S-M1: true when this jti sits in the revocation register. Expired register
+ * entries are ignored (the token is dead anyway). A register outage is
+ * fail-open ON PURPOSE: the admin password remains the real credential, and
+ * locking the control room out during a Firestore outage would trade a
+ * revocation edge case for an availability emergency.
+ */
+async function isAdminSessionRevoked(jti: string): Promise<boolean> {
+  try {
+    const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti);
+    if (!entry) return false;
+    const exp = typeof entry.exp === "number" ? entry.exp : Date.parse(entry.exp);
+    if (Number.isFinite(exp) && exp < Date.now()) return false;
+    return true;
+  } catch (err) {
+    logger.warn({ err }, "Admin revocation check failed — failing open");
+    return false;
+  }
 }
 
 export function verifyAdminToken(token: string): { valid: boolean; role?: string } {
@@ -74,6 +142,18 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     if (scope === "team-member" || scope === "public-principal") {
       res.status(403).json({ error: "Forbidden: this token scope is not a session credential" });
       return;
+    }
+
+    // S-M1: password-based admin sessions now carry a jti and are checked
+    // against the durable revocation register — logout (or incident response)
+    // kills a stolen cookie everywhere, without waiting for JWT expiry.
+    // Staff sessions keep their own fail-closed revalidation below.
+    if (isAdminSessionPayload(decoded) && typeof (decoded as { jti?: unknown }).jti === "string") {
+      const db = getDb();
+      if (db && (await isAdminSessionRevoked((decoded as { jti: string }).jti))) {
+        res.status(401).json({ error: "Unauthorized: admin session has been revoked" });
+        return;
+      }
     }
 
     // Legacy password-based admin sessions have no agentId and therefore no

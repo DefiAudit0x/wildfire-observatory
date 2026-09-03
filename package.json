@@ -1,7 +1,7 @@
 {
   "name": "north-african-wildfire-observatory",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.6.0",
   "packageManager": "pnpm@11.21.0",
   "type": "module",
   "scripts": {

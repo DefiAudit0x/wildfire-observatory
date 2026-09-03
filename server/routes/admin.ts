@@ -2,7 +2,7 @@ import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import { requireAdmin, generateAdminToken } from "../middleware.js";
+import { requireAdmin, generateAdminToken, revokeAdminSession } from "../middleware.js";
 import { str } from "../params.js";
 import {
   updateReportInFirestore,
@@ -100,15 +100,18 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
   }
   const { password } = parsed.data;
   if (await verifyAdminPassword(password)) {
-    const token = generateAdminToken();
+    // S-M3: the password gate issues the "admin" role; the central-command
+    // gate (SUPER_ADMIN_PASSWORD) issues "superadmin" — the two privileged
+    // sessions are now distinguishable in /api/admin/session and the audit log.
+    const token = generateAdminToken("admin");
     res.cookie("admin_token", token, {
       httpOnly: true,
       sameSite: "lax",
       secure: config.cookieSecure,
       maxAge: 24 * 60 * 60 * 1000,
     });
-    logAdminAction("admin.login", { success: true }, actorFromRequest(req)).catch(() => {});
-    res.json({ success: true });
+    logAdminAction("admin.login", { success: true, role: "admin" }, actorFromRequest(req)).catch(() => {});
+    res.json({ success: true, role: "admin" });
   } else {
     logger.warn("Failed admin login attempt");
     logAdminAction("admin.login", { success: false }, actorFromRequest(req)).catch(() => {});
@@ -116,11 +119,20 @@ router.post("/verify", loginLimiter, async (req: Request, res: Response) => {
   }
 });
 
-router.get("/session", requireAdmin, (_req: Request, res: Response) => {
-  res.json({ authenticated: true });
+router.get("/session", requireAdmin, (req: Request, res: Response) => {
+  // S-M3: announce which privileged role this session holds so the UI and
+  // incident response can tell an "admin" password session from a
+  // "superadmin" central-command session.
+  res.json({ authenticated: true, role: (req as any).admin?.role ?? "admin" });
 });
 
-router.post("/logout", (_req: Request, res: Response) => {
+router.post("/logout", async (req: Request, res: Response) => {
+  // S-M1: logout now revokes server-side, not just the cookie — a copied
+  // admin_token dies in the revocation register instead of living 24h more.
+  await revokeAdminSession(
+    (req as any).cookies?.admin_token || req.headers.authorization?.replace(/^Bearer /, ""),
+    "logout"
+  );
   res.clearCookie("admin_token");
   res.json({ success: true });
 });

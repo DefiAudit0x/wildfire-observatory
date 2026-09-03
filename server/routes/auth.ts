@@ -5,6 +5,7 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import { generateStaffToken, requireAuth } from "../middleware.js";
 import { docGet } from "../fs.js";
+import { logAdminAction } from "./audit.js";
 import config from "../config.js";
 
 const router = Router();
@@ -39,6 +40,9 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
     const valid = await bcrypt.compare(password, user.passwordHash || "");
     if (!valid) {
       logger.warn({ agentId }, "Failed staff login attempt");
+      // S-M8: failed logins against a REAL agentId are probing the account —
+      // they belong in the durable audit trail next to successful ones.
+      logAdminAction("staff.login", { success: false, attemptedAgentId: agentId }, { agentId: null, name: null, ip: req.ip || null }).catch(() => {});
       res.status(401).json({ error: "Invalid credentials" });
       return;
     }
@@ -55,6 +59,9 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
       maxAge: 24 * 60 * 60 * 1000,
     });
     logger.info({ agentId, role: user.role, unitId: user.unitId }, "Staff login");
+    // S-M8: every staff login (a session grant) lands in the audit log with
+    // its actor identity.
+    logAdminAction("staff.login", { success: true, role: user.role, unitId: user.unitId }, { agentId: user.agentId, name: user.name, ip: req.ip || null }).catch(() => {});
     res.json({
       success: true,
       user: {

@@ -30,6 +30,23 @@ if (
 const devJwtSecret = jwtSecret || "change-me-in-production";
 
 /**
+ * S-M12 fix: GENERAL_LIMIT_MAX used to be a bare parseInt — "abc" became NaN
+ * and "0" became 0, and both values were handed straight to express-rate-limit
+ * as the request ceiling (NaN/0 either brick every request or disable the
+ * limiter entirely). Malformed values now fall back to the default with a
+ * boot-time warning instead of silently corrupting the limit.
+ */
+function parseRateLimitMax(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100000) {
+    console.warn(`[config] GENERAL_LIMIT_MAX="${raw}" is invalid (need integer 1..100000) — falling back to ${fallback}`);
+    return fallback;
+  }
+  return parsed;
+}
+
+/**
  * ARC-L06 fix: a malformed PORT ("3000px", empty string with no default…) used
  * to become NaN and the server silently listened on "NaN" → crash at boot with
  * an unrelated error. Clamp to the valid range with an explicit fallback.
@@ -42,7 +59,7 @@ function parsePort(raw: string | undefined, fallback: number): number {
 const config = {
   port: parsePort(process.env.PORT, 3000),
   nodeEnv,
-  generalLimitMax: parseInt(process.env.GENERAL_LIMIT_MAX || "100", 10),
+  generalLimitMax: parseRateLimitMax(process.env.GENERAL_LIMIT_MAX, 100),
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   nasaFirmsKey: process.env.NASA_FIRMS_KEY || "",
   firmsBaseUrl: process.env.FIRMS_BASE_URL || "https://firms.modaps.eosdis.nasa.gov/api/area/csv",
