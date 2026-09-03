@@ -7,11 +7,13 @@ import config from "../config.js";
 import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { sanitizeForPrompt } from "./ai.js";
-import { getHaversineDistance, NA_BOUNDS, runClustering, wilayaContainsCoords } from "../geo.js";
+import { getHaversineDistance, NA_BOUNDS, wilayaContainsCoords } from "../geo.js";
 import {
-  getReportsDbResult,
+  getPublicReportsWire,
+  getReportImageDataUrl,
   saveReportWithIdempotency,
   lookupReportIdempotency,
+  sanitizePublicReport,
 } from "../db.js";
 import logger from "../logger.js";
 import { sendFireAlert } from "../email.js";
@@ -20,7 +22,6 @@ import { liveHub } from "../live.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 import { getPublicPrincipal } from "../public-principal.js";
 import { confirmReportWithPrincipal } from "../confirmation-ledger.js";
-import type { Report } from "../../src/types.js";
 
 const router = Router();
 
@@ -93,16 +94,14 @@ function releaseReservations(clientGeneratedId: string | undefined, lat: number,
 }
 
 /**
- * Public wire DTO. Everything a citizen reporter submits that could identify
- * them (phone, name, badge code, device id) stays server-side (and on the
- * admin/command endpoints); the public map, websockets and POST responses
- * only ever see this shape.
+ * Public wire DTO — canonical copy lives in server/db.ts (S-H1/S-H2); this
+ * re-export keeps the historical import path stable for tests and callers.
+ * Everything a citizen reporter submits that could identify them (phone,
+ * name, badge code, device id) AND the inline base64 image body stay
+ * server-side; the public map, websockets and POST responses only ever see
+ * this shape (image travels as `hasImage: true` + GET /:id/image).
  */
-export function sanitizePublicReport(report: any): any {
-  if (!report) return report;
-  const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, ...safe } = report;
-  return safe;
-}
+export { sanitizePublicReport };
 
 const aiVerificationSchema = z.object({
   isVerified: z.boolean(),
@@ -216,33 +215,54 @@ function canonicalReportFingerprint(input: {
 // v2.3.0 (simulation purge): the auto-seeder and the citizenReports fallback
 // are gone. An empty collection answers an empty list; a database outage is a
 // 503 — never a page of fabricated fires.
-function isClusterableReport(value: any): value is Report {
-  return Boolean(value) &&
-    typeof value.id === "string" && value.id.length > 0 &&
-    Number.isFinite(value.lat) && value.lat >= -90 && value.lat <= 90 &&
-    Number.isFinite(value.lng) && value.lng >= -180 && value.lng <= 180 &&
-    typeof value.timestamp === "string" && !Number.isNaN(Date.parse(value.timestamp)) &&
-    Number.isInteger(value.consensusCount) && value.consensusCount >= 0 &&
-    ["low", "medium", "high", "critical"].includes(value.severity) &&
-    ["pending", "verified", "rejected", "resolved"].includes(value.status);
-}
 
 router.get("/", async (_req: Request, res: Response) => {
-  const result = await getReportsDbResult();
+  // S-H2 fix: the route serves the pre-clustered, pre-sanitized wire cache —
+  // the O(n²) clustering runs at most once per TTL window and the payload
+  // never carries base64 image bodies (those moved to GET /:id/image) or PII
+  // (S-H1 split shards). "empty" and "no-db" both mean zero reports, honestly.
+  const result = await getPublicReportsWire();
   if (result.status === "error") {
     res.status(503).json({ error: "Report data is currently unavailable" });
     return;
   }
-  // v2.3.0: no seeding, no demo rows — "empty" and "no-db" both mean zero
-  // reports, honestly.
-  const currentReports = result.status === "ok" ? result.reports : [];
-  if (!currentReports.every(isClusterableReport)) {
-    logger.error("Report dataset failed runtime validation before clustering");
-    res.status(503).json({ error: "Report data is currently unavailable" });
+  res.json(result.status === "ok" ? result.reports : []);
+});
+
+// S-H2 companion route: report photos are fetched one-by-one, only when a
+// surface actually renders them — the list payload stays small.
+const imageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: () => process.env.VITEST === "true",
+});
+
+router.get("/:id/image", imageLimiter, async (req: Request, res: Response) => {
+  const reportId = String(req.params.id || "").trim();
+  if (!reportId || reportId.length > 128) {
+    res.status(400).json({ error: "Invalid report id" });
     return;
   }
-  const clustered = runClustering(currentReports);
-  res.json(clustered.map(sanitizePublicReport));
+  const dataUrl = await getReportImageDataUrl(reportId);
+  const match = dataUrl ? /^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/s.exec(dataUrl) : null;
+  if (!match) {
+    res.status(404).json({ error: "Image not found" });
+    return;
+  }
+  try {
+    const bytes = Buffer.from(match[2], "base64");
+    if (bytes.length === 0) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    res.set("Content-Type", match[1]);
+    res.set("Cache-Control", "public, max-age=300");
+    res.send(bytes);
+  } catch {
+    res.status(404).json({ error: "Image not found" });
+  }
 });
 
 const reportLimiter = rateLimit({

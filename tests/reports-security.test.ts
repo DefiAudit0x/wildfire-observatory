@@ -11,6 +11,17 @@ const mockReports = vi.hoisted(() => ({
 
 vi.mock("../server/db.js", () => ({
   getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: mockReports.list })),
+  // v2.4.0 (S-H2): the route serves the pre-sanitized wire; sanitize strips
+  // PII AND the inline image (replaced by hasImage + GET /:id/image).
+  getPublicReportsWire: vi.fn(async () => ({ status: "ok", reports: mockReports.list })),
+  getReportImageDataUrl: vi.fn(async () => null),
+  getReportPrivate: vi.fn(async () => null),
+  sanitizePublicReport: (report: any) => {
+    if (!report) return report;
+    const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, image: _img, ...safe } = report;
+    if (safe.hasImage === undefined && typeof report.image === "string" && report.image.length > 0) safe.hasImage = true;
+    return safe;
+  },
   seedReportsToFirestore: vi.fn(async () => true),
   lookupReportIdempotency: vi.fn(async (id: string) => {
     const entry = mockReports.idempotency.get(id);
@@ -258,7 +269,10 @@ describe("POST /api/reports — image magic-bytes gate", () => {
       .post("/api/reports")
       .send({ ...imageBaseReport(), image: VALID_JPEG });
     expect(res.status).toBe(200);
-    expect(res.body.image).toContain("data:image/jpeg");
+    // S-H2: the photo body NEVER travels back on the wire — the response
+    // carries hasImage instead (the photo is fetched via GET /:id/image).
+    expect(res.body.image).toBeUndefined();
+    expect(res.body.hasImage).toBe(true);
   });
 
   it("accepts a real PNG data URL", async () => {
@@ -299,6 +313,7 @@ describe("POST /api/reports — image magic-bytes gate", () => {
     const res = await supertest(app).post("/api/reports").send(imageBaseReport());
     expect(res.status).toBe(200);
     expect(res.body.image).toBeUndefined();
+    expect(res.body.hasImage).toBeUndefined();
   });
 });
 

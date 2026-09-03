@@ -247,8 +247,8 @@ export default function MainContent({
                         }`}
                       >
                         <div className="flex gap-3 items-start">
-                          {rep.image && (rep.image.startsWith("data:image/") || rep.image.startsWith("https://")) ? (
-                            <img src={rep.image} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt={isArabic ? `صورة بلاغ: ${rep.locationName}` : `Photo du signalement : ${rep.locationName}`} referrerPolicy="no-referrer" />
+                          {rep.hasImage ? (
+                            <img src={`/api/reports/${encodeURIComponent(rep.id)}/image`} className="w-16 h-12 object-cover rounded border border-white/5 mt-1" alt={isArabic ? `صورة بلاغ: ${rep.locationName}` : `Photo du signalement : ${rep.locationName}`} referrerPolicy="no-referrer" />
                           ) : (
                             <div className="w-16 h-12 bg-black/40 rounded border border-white/5 flex items-center justify-center text-xs text-slate-500">
                               🔥

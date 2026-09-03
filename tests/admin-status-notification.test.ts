@@ -24,6 +24,10 @@ vi.mock("../server/db.js", () => ({
   getReportsFromFirestore: mocks.getReportsFromFirestore,
   deleteReportFromFirestore: mocks.deleteReportFromFirestore,
   purgeReportWithIdempotency: mocks.purgeReportWithIdempotency,
+  // S-H1: after the privacy split the route recovers the notification
+  // addressee from the reportPrivate shard — the default mock returns no
+  // shard, so NO identity may be manufactured (asserted below).
+  getReportPrivate: vi.fn(async () => null),
 }));
 
 vi.mock("../server/routes/notifications.js", () => ({
@@ -89,5 +93,25 @@ describe("POST /api/admin/reports/:id/update-status — notification source of t
 
     expect(res.status).toBe(200);
     expect(mocks.createNotification).not.toHaveBeenCalled();
+  });
+
+  it("S-H1: recovers the notification addressee from the reportPrivate shard", async () => {
+    mocks.createNotification.mockClear();
+    mocks.getReportsFromFirestore.mockResolvedValueOnce([
+      { id: "split-report", locationName: "غابة الplit", status: "verified" },
+    ] as any);
+    const { getReportPrivate } = await import("../server/db.js") as any;
+    getReportPrivate.mockResolvedValueOnce({ reportId: "split-report", deviceId: "shard-device-77" });
+
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/admin/reports/split-report/update-status")
+      .send({ status: "verified" });
+
+    expect(res.status).toBe(200);
+    expect(getReportPrivate).toHaveBeenCalledWith("split-report");
+    expect(mocks.createNotification).toHaveBeenCalledWith(expect.objectContaining({
+      deviceId: "shard-device-77",
+    }));
   });
 });

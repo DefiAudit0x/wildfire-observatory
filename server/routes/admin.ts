@@ -9,6 +9,7 @@ import {
   deleteReportFromFirestore,
   purgeReportWithIdempotency,
   getReportsFromFirestore,
+  getReportPrivate,
 } from "../db.js";
 import { createNotification } from "./notifications.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
@@ -174,7 +175,16 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
     // building a notification that depends on deviceId/locationName.
     const persistedReports = await getReportsFromFirestore();
     const report = persistedReports?.find((r: any) => r.id === id) ?? null;
-    await buildStatusNotification(report || updateData, status);
+    // S-H1: the public doc no longer carries deviceId (it lives in the
+    // reportPrivate shard) — recover the addressee from the shard so status
+    // notifications keep reaching the reporter after the privacy split.
+    let notificationDeviceId: string | undefined =
+      report?.deviceId ?? (typeof updateData.deviceId === "string" ? updateData.deviceId : undefined);
+    if (!notificationDeviceId) {
+      const priv = await getReportPrivate(id);
+      notificationDeviceId = typeof priv?.deviceId === "string" ? priv.deviceId : undefined;
+    }
+    await buildStatusNotification({ ...(report || updateData), deviceId: notificationDeviceId }, status);
     logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
     res.json({ success: true });

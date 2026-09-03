@@ -369,3 +369,79 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
     expect(mismatch.body.error).toContain("mismatch");
   });
 });
+
+describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
+  function sosBody(cgid?: string) {
+    return { ...validBody(), clientGeneratedId: cgid };
+  }
+
+  it("rejects a clientGeneratedId shorter than the schema floor", async () => {
+    const app = createApp();
+    const res = await supertest(app).post("/api/sos").send(sosBody("short"));
+    expect(res.status).toBe(400);
+  });
+
+  it("replays the FIRST stored SOS when the same clientGeneratedId is retried in-process", async () => {
+    const app = createApp();
+    const cgid = "cg-sos-retry-0001";
+
+    const first = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    expect(first.status).toBe(200);
+    const firstId = first.body.id;
+
+    const retry = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    expect(retry.status).toBe(200);
+    expect(retry.body.id).toBe(firstId);
+
+    // exactly ONE durable admission happened for the pair of requests
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays from the durable ledger after process death (memory empty)", async () => {
+    const cgid = "cg-sos-retry-0002";
+    fsMock.docGet.mockImplementation(async (col: string, id: string) => {
+      if (col === "sosIdempotency" && id === cgid) {
+        return { sosId: "sos-durable-42", deviceId: "dev-x" };
+      }
+      if (col === "trappedSos" && id === "sos-durable-42") {
+        return { id: "sos-durable-42", deviceId: "dev-x", lat: 36.75, lng: 7.6, status: "pending" };
+      }
+      return null;
+    });
+
+    const app = createApp();
+    const res = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe("sos-durable-42");
+    // no new admission for a replay
+    expect(fsMock.createSosWithAdmission).not.toHaveBeenCalled();
+  });
+
+  it("admits a NEW SOS when the ledger lookup fails — an emergency is never blocked", async () => {
+    const cgid = "cg-sos-retry-0003";
+    fsMock.docGet.mockImplementation(async (col: string) => {
+      if (col === "sosIdempotency") throw new Error("ledger down");
+      return null;
+    });
+
+    const app = createApp();
+    const res = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    expect(res.status).toBe(200);
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
+    expect(fsMock.docSet).toHaveBeenCalledWith(
+      "sosIdempotency",
+      cgid,
+      expect.objectContaining({ sosId: res.body.id }),
+    );
+  });
+
+  it("distinct clientGeneratedIds create distinct SOS calls", async () => {
+    const app = createApp();
+    const a = await supertest(app).post("/api/sos").send(sosBody("cg-sos-distinct-a"));
+    const b = await supertest(app).post("/api/sos").send(sosBody("cg-sos-distinct-b"));
+    expect(a.status).toBe(200);
+    expect(b.status).toBe(200);
+    expect(a.body.id).not.toBe(b.body.id);
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(2);
+  });
+});
