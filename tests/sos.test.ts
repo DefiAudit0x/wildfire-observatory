@@ -22,10 +22,21 @@ import sosRouter from "../server/routes/sos.js";
 
 function createApp() {
   const app = express();
+  // The IP-level flood limiter (S-H3) lives at MODULE scope; trust-proxy +
+  // a unique X-Forwarded-For per admission call (postSos below) keeps every
+  // test in its own address bucket so the suite tests each limiter in turn.
+  app.set("trust proxy", 1);
   app.use(cookieParser());
   app.use(express.json({ limit: "10mb" }));
   app.use("/api/sos", sosRouter);
   return app;
+}
+
+let xffCounter = 0;
+function postSos(app: ReturnType<typeof createApp>, ip?: string) {
+  xffCounter += 1;
+  const addr = ip ?? `10.77.0.${(xffCounter % 250) + 1}`;
+  return supertest(app).post("/api/sos").set("X-Forwarded-For", addr);
 }
 
 let deviceCounter = 0;
@@ -66,7 +77,7 @@ beforeEach(() => {
 describe("POST /api/sos", () => {
   it("accepts a valid SOS", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send(validBody());
+    const res = await postSos(app).send(validBody());
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("id");
     expect(res.body.status).toBe("active");
@@ -75,13 +86,13 @@ describe("POST /api/sos", () => {
 
   it("returns 400 for missing required fields", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send({});
+    const res = await postSos(app).send({});
     expect(res.status).toBe(400);
   });
 
   it("returns 400 for coordinates outside coverage (North Africa geofence)", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send({
+    const res = await postSos(app).send({
       ...validBody(),
       lat: 55.0,
       lng: -4.0,
@@ -94,9 +105,9 @@ describe("POST /api/sos", () => {
     const app = createApp();
     const body = validBody();
     fsMock.createSosWithAdmission.mockResolvedValueOnce("created").mockResolvedValueOnce("duplicate");
-    const first = await supertest(app).post("/api/sos").send(body);
+    const first = await postSos(app).send(body);
     expect(first.status).toBe(200);
-    const second = await supertest(app).post("/api/sos").send(body);
+    const second = await postSos(app).send(body);
     expect(second.status).toBe(409);
   });
 
@@ -105,18 +116,18 @@ describe("POST /api/sos", () => {
     const body = validBody();
     fsMock.createSosWithAdmission.mockResolvedValueOnce("unavailable").mockResolvedValueOnce("created");
 
-    const failed = await supertest(app).post("/api/sos").send(body);
+    const failed = await postSos(app).send(body);
     expect(failed.status).toBe(503);
     expect(failed.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
 
-    const retry = await supertest(app).post("/api/sos").send(body);
+    const retry = await postSos(app).send(body);
     expect(retry.status).toBe(200);
     expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(2);
   });
 
   it("clamps audioDuration to the configured maximum", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send({
+    const res = await postSos(app).send({
       ...validBody(),
       audioDuration: 999,
     });
@@ -127,7 +138,7 @@ describe("POST /api/sos", () => {
   it("caps oversized audio payloads", async () => {
     const app = createApp();
     const bigAudio = `data:audio/webm;base64,${"a".repeat(800 * 1024)}`;
-    const res = await supertest(app).post("/api/sos").send({
+    const res = await postSos(app).send({
       ...validBody(),
       audioUrl: bigAudio,
     });
@@ -136,7 +147,7 @@ describe("POST /api/sos", () => {
 
   it("exposes metadata (priority, nearby-fire corroboration) on successful SOS", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send(validBody());
+    const res = await postSos(app).send(validBody());
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("priority");
     expect(res.body).toHaveProperty("nearbyFireCorroborated");
@@ -145,7 +156,7 @@ describe("POST /api/sos", () => {
 
   it("does not leak raw audio in the POST response (only a hasAudio flag)", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send({
+    const res = await postSos(app).send({
       ...validBody(),
       audioUrl: "data:audio/webm;base64,AAAA",
     });
@@ -156,7 +167,7 @@ describe("POST /api/sos", () => {
 
   it("does not leak PII on the public list endpoint (audio, phone, deviceId stripped)", async () => {
     const app = createApp();
-    await supertest(app).post("/api/sos").send({
+    await postSos(app).send({
       ...validBody(),
       audioUrl: "data:audio/webm;base64,AAAA",
     });
@@ -172,7 +183,7 @@ describe("POST /api/sos", () => {
 
   it("labels a public SOS list as a memory fallback when Firestore is unavailable", async () => {
     const app = createApp();
-    await supertest(app).post("/api/sos").send(validBody());
+    await postSos(app).send(validBody());
     fsMock.collectionGet.mockResolvedValueOnce(null as any);
 
     const list = await supertest(app).get("/api/sos");
@@ -187,7 +198,7 @@ describe("POST /api/sos rate limiting", () => {
     const limiterDevice = uniqueDevice();
     let got429 = false;
     for (let i = 0; i < 8; i++) {
-      const res = await supertest(app).post("/api/sos").send({ ...validBody(), deviceId: limiterDevice });
+      const res = await postSos(app).send({ ...validBody(), deviceId: limiterDevice });
       if (res.status === 429) got429 = true;
     }
     expect(got429).toBe(true);
@@ -199,7 +210,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("B4: resolve runs the atomic tx and surfaces the cleared-mission count", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "resolved", missionsCleared: 2 });
 
     const resolve = await supertest(app)
@@ -214,7 +225,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("B4: 404 when the SOS doc is missing (the tx knows, no silent guess)", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "missing" });
 
     const resolve = await supertest(app)
@@ -226,7 +237,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("does not claim resolve success when durable update fails", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.resolveSosAtomically.mockResolvedValueOnce({ status: "unavailable" });
 
     const resolve = await supertest(app)
@@ -239,7 +250,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("does not claim dispatch success when durable update fails", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("unavailable");
 
@@ -254,7 +265,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("S-M7: rejects dispatch notes over 500 chars before anything durable happens", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
 
     const dispatch = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
@@ -269,7 +280,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("S-M7: accepts dispatch notes at the 500-char cap", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("ok");
 
@@ -283,7 +294,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("rejects dispatching to a resolved SOS with 409 (atomic transaction guard)", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("resolved");
 
@@ -298,7 +309,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("rejects a team already on an active mission with 409 (ARC-H8 uniqueness)", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("team_busy");
 
@@ -313,7 +324,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("404s phantom teams — legacy free-text dispatch was purged (v2.3.0)", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     // docGet defaults to null in beforeEach: no team entity ⇒ no dispatch.
     const legacy = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
@@ -330,7 +341,7 @@ describe("SOS durable lifecycle mutations", () => {
 
   it("passes the registered teamId as the mission identity", async () => {
     const app = createApp();
-    const created = await supertest(app).post("/api/sos").send(validBody());
+    const created = await postSos(app).send(validBody());
     fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
@@ -406,7 +417,7 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
 
   it("rejects a clientGeneratedId shorter than the schema floor", async () => {
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send(sosBody("short"));
+    const res = await postSos(app).send(sosBody("short"));
     expect(res.status).toBe(400);
   });
 
@@ -414,11 +425,11 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     const app = createApp();
     const cgid = "cg-sos-retry-0001";
 
-    const first = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    const first = await postSos(app).send(sosBody(cgid));
     expect(first.status).toBe(200);
     const firstId = first.body.id;
 
-    const retry = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    const retry = await postSos(app).send(sosBody(cgid));
     expect(retry.status).toBe(200);
     expect(retry.body.id).toBe(firstId);
 
@@ -439,7 +450,7 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     });
 
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    const res = await postSos(app).send(sosBody(cgid));
     expect(res.status).toBe(200);
     expect(res.body.id).toBe("sos-durable-42");
     // no new admission for a replay
@@ -454,7 +465,7 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     });
 
     const app = createApp();
-    const res = await supertest(app).post("/api/sos").send(sosBody(cgid));
+    const res = await postSos(app).send(sosBody(cgid));
     expect(res.status).toBe(200);
     expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
     expect(fsMock.docSet).toHaveBeenCalledWith(
@@ -466,8 +477,8 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
 
   it("distinct clientGeneratedIds create distinct SOS calls", async () => {
     const app = createApp();
-    const a = await supertest(app).post("/api/sos").send(sosBody("cg-sos-distinct-a"));
-    const b = await supertest(app).post("/api/sos").send(sosBody("cg-sos-distinct-b"));
+    const a = await postSos(app).send(sosBody("cg-sos-distinct-a"));
+    const b = await postSos(app).send(sosBody("cg-sos-distinct-b"));
     expect(a.status).toBe(200);
     expect(b.status).toBe(200);
     expect(a.body.id).not.toBe(b.body.id);

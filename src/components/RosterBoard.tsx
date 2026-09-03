@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { ClipboardList, Plus, Trash2, Save, ChevronLeft, ChevronRight, CalendarDays, UserPlus, X, Wrench, AlertTriangle, LogOut, RefreshCw, Building2, ShieldCheck, Copy } from "lucide-react";
 import { Language } from "../types";
 import { useStaffSession } from "../hooks/useAuth"; // ARC-M33: one shared session truth
+import { apiFetch } from "../utils/adminApi"; // W-M10: 15s ceiling on every call
 import ConfirmDialog from "./ui/ConfirmDialog";
 
 interface StaffUser {
@@ -117,7 +118,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
 
   const fetchStaff = useCallback(async () => {
     try {
-      const res = await fetch("/api/users", { credentials: "same-origin" });
+      const res = await apiFetch("/api/users", "GET");
       if (res.ok) {
         const data = await res.json();
         setStaff(Array.isArray(data.users) ? data.users.filter((u: any) => u.isActive) : []);
@@ -145,12 +146,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${rosterDate}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ posts: roster.posts }),
-      });
+      const res = await apiFetch(`/api/roster/${rosterDate}`, "PUT", { posts: roster.posts });
       const data = await res.json();
       if (res.ok) {
         setRoster(data);
@@ -171,11 +167,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${date}/copy-to/${target}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-      });
+      const res = await apiFetch(`/api/roster/${date}/copy-to/${target}`, "POST");
       const data = await res.json();
       if (res.status === 201) {
         setMsg(isArabic ? `✓ نُسخ الجدول إلى ${target}.` : `✓ Copié vers ${target}.`);
@@ -203,16 +195,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${date}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({
-          labelAr: newPost.labelAr.trim(),
-          vehicle: newPost.vehicle.trim() || undefined,
-          status: "active",
-          personnel: [],
-        }),
+      const res = await apiFetch(`/api/roster/${date}`, "POST", {
+        labelAr: newPost.labelAr.trim(),
+        vehicle: newPost.vehicle.trim() || undefined,
+        status: "active",
+        personnel: [],
       });
       const data = await res.json();
       if (res.ok || res.status === 201) {

@@ -38,6 +38,8 @@ class ReportFragment : Fragment() {
 
     companion object {
         private const val PICK_IMAGE_REQUEST = 3003
+        // F6: cool-down after a failed reverse-geocode attempt.
+        private const val GEO_BACKOFF_MS = 60_000L
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -55,6 +57,13 @@ class ReportFragment : Fragment() {
     private var imageDataUri: String? = null
     private var autofilledName = false
     private var autofilledWilaya = false
+
+    // F6: reverse-geocode discipline — single-flight (drop while one is
+    // outstanding) + a 60 s backoff after any failure, so a degraded
+    // upstream never turns the autofill into a retry storm. The call also
+    // now rides the server's /api/geo/reverse proxy (cache + rate limit).
+    private var geoLookupInFlight = false
+    private var geoBackoffUntilMs = 0L
 
     // F2: named listener so onDestroyView can deregister from the
     // application-scoped engine (an inline lambda leaked this view forever).
@@ -151,22 +160,42 @@ class ReportFragment : Fragment() {
     }
 
     private fun reverseGeocode(lat: Double, lng: Double) {
+        // F6: single-flight + failure backoff. The lookup used to re-fire
+        // with every GPS publish while the autofill flags were unset, and
+        // once the service degraded into 403s this became a continuous
+        // policy violation. It now rides the server's /api/geo/reverse
+        // proxy (which caches + rate-limits on top of this discipline).
+        if (geoLookupInFlight) return
+        if (System.currentTimeMillis() < geoBackoffUntilMs) return
+        geoLookupInFlight = true
         viewLifecycleOwner.lifecycleScope.launch {
-            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                when (val r = app.api.get(ApiPayloads.buildNominatimReverseUrl(lat, lng))) {
-                    is ObservatoryApi.Result.Ok -> Parsers.parseNominatimReverse(r.body)
-                    else -> null
+            try {
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    when (val r = app.api.get(ApiPayloads.buildGeoReversePath(lat, lng))) {
+                        is ObservatoryApi.Result.Ok -> Parsers.parseNominatimReverse(r.body)
+                        else -> null
+                    }
                 }
-            }
-            if (!isAdded) return@launch
-            val (display, stateName) = result ?: return@launch
-            if (!autofilledName) {
-                locationNameInput?.setText(display.split(",").take(2).joinToString("،").trim())
-                autofilledName = true
-            }
-            if (!autofilledWilaya && stateName.isNotBlank()) {
-                wilayaInput?.setText(stateName)
-                autofilledWilaya = true
+                if (!isAdded) return@launch
+                if (result == null) {
+                    // Failure (or empty parse): back off before the next try
+                    // so a degraded upstream never turns into a retry storm.
+                    geoBackoffUntilMs = System.currentTimeMillis() + GEO_BACKOFF_MS
+                    return@launch
+                }
+                val (display, stateName) = result
+                if (!autofilledName) {
+                    locationNameInput?.setText(display.split(",").take(2).joinToString("،").trim())
+                    autofilledName = true
+                }
+                if (!autofilledWilaya && stateName.isNotBlank()) {
+                    wilayaInput?.setText(stateName)
+                    autofilledWilaya = true
+                }
+            } finally {
+                // Released even when the coroutine is cancelled (view left) —
+                // a stuck lock would silence the autofill for the session.
+                geoLookupInFlight = false
             }
         }
     }

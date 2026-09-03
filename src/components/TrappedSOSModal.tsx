@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { AlertTriangle, MapPin, Mic, RadioReceiver, ShieldAlert, X, Volume2, Activity, ShieldCheck, RefreshCw } from "lucide-react";
 import { getDeviceId } from "../utils/device";
+import { useModalA11y } from "../hooks/useModalA11y";
 
 interface TrappedSOSModalProps {
   lang: "ar" | "fr";
@@ -58,6 +59,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const [isSending, setIsSending] = useState(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  // W-H3: full modal a11y contract (dialog role, focus trap, Escape, focus
+  // restore). Escape is suppressed while RECORDING — a stray keystroke must
+  // never discard a trapped person's voice note — and while SENDING.
+  const overlayRef = useModalA11y<HTMLDivElement>({
+    onCancel: onClose,
+    suppressEscape: step === "recording" || isSending,
+  });
   const audioCtxRef = useRef<AudioContext | null>(null);
   // W-H1: the recording visualizer minted its OWN AudioContext per recording
   // and never closed it — one leaked context per take, plus the synthetic
@@ -509,7 +517,14 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   };
 
   return (
-    <div className="fixed inset-0 z-[2000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4">
+    <div
+      ref={overlayRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={isArabic ? "نداء استغاثة طارئ" : "SOS Urgence"}
+      tabIndex={-1}
+      className="fixed inset-0 z-[2000] bg-black/90 backdrop-blur-sm flex items-center justify-center p-4 outline-none"
+    >
       {/* v1.0.4 field fix: the panel MUST scroll — the recording step alone is
           taller than a small phone viewport (mic animation + timer + warning
           block + 20-bar visualizer + send button), and with items-center +

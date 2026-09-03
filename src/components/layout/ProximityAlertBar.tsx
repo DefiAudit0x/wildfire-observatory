@@ -27,7 +27,14 @@ function ProximityAlertBar({
             <span className="relative inline-flex rounded-full h-3 w-3 bg-red-600"></span>
           </span>
 
-          <div className="text-sm">
+          <div
+            className="text-sm"
+            // W-H5: the bar's ONLY channel is visual+audio; screen-reader
+            // users got nothing. An alert-live region announces the threat
+            // text the moment it appears (assertive — this is an emergency).
+            role="alert"
+            aria-live="assertive"
+          >
             <p className="font-extrabold text-red-400 flex items-center gap-1">
               🚨 {isArabic ? "تنبيه: بؤر خطر قريبة من موقعك" : "ALERTE : foyers à proximité de votre position"}
             </p>

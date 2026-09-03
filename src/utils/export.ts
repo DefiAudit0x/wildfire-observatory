@@ -42,7 +42,6 @@ export function hotspotsToGeoJson(reports: Report[], satellites: SatelliteHotspo
         id: s.id,
         confidence: s.confidence,
         satellite: s.satellite,
-        fallback: s.isFallback === true,
       },
       geometry: { type: "Point", coordinates: [s.lng, s.lat] },
     })),

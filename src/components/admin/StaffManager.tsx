@@ -69,7 +69,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
 
   const fetchUnits = useCallback(async () => {
     try {
-      const res = await fetch("/api/units", { credentials: "same-origin" });
+      const res = await apiFetch("/api/units", "GET");
       if (res.ok) {
         const data = await res.json();
         setUnits(Array.isArray(data.units) ? data.units : []);
@@ -81,7 +81,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
 
   const fetchUsers = useCallback(async () => {
     try {
-      const res = await fetch("/api/users", { credentials: "same-origin" });
+      const res = await apiFetch("/api/users", "GET");
       if (res.ok) {
         const data = await res.json();
         setUsers(Array.isArray(data.users) ? data.users : []);
@@ -116,12 +116,9 @@ export default function StaffManager({ lang }: StaffManagerProps) {
     setLoginLoading(true);
     setMsg(null);
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ agentId: agentId.trim(), password }),
-      });
+      // W-M10: login rides the shared 15s ceiling — a hung link used to pin
+      // the submit spinner indefinitely.
+      const res = await apiFetch("/api/auth/login", "POST", { agentId: agentId.trim(), password });
       const data = await res.json();
       if (res.ok && data.success) {
         setAgentId("");

@@ -38,6 +38,7 @@ import usersRouter from "./routes/users.js";
 import rosterRouter from "./routes/roster.js";
 import historyRouter from "./routes/history.js";
 import teamsRouter from "./routes/teams.js";
+import geoRouter from "./routes/geo.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -179,6 +180,7 @@ app.use("/api/users", usersRouter);
 app.use("/api/roster", rosterRouter);
 app.use("/api/history", historyRouter);
 app.use("/api/teams", teamsRouter);
+app.use("/api/geo", geoRouter);
 app.use("/api", commandRouter);
 
 async function startServer() {

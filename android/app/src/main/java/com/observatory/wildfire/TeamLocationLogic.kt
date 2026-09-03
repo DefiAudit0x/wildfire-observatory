@@ -167,6 +167,9 @@ object TeamLocationLogic {
      * FGS heartbeat body. Doubles that are not finite are dropped to absent —
      * JSON has no NaN, and the server's zod gate would 400 the whole beat for
      * one broken field. Mirrors the web client's "omit optional fields" shape.
+     * F10: fixTimeMs carries the GPS fix's OWN epoch so the command map can
+     * distinguish a live member from a device replaying a stale lock —
+     * previously an hour-old fix looked identical to a fresh one.
      */
     fun buildHeartbeatBodyJson(
         lat: Double,
@@ -174,7 +177,8 @@ object TeamLocationLogic {
         accuracy: Double?,
         heading: Double?,
         speed: Double?,
-        batteryPct: Int?
+        batteryPct: Int?,
+        fixTimeMs: Long? = null
     ): String {
         val sb = StringBuilder(160)
         sb.append("{\"lat\":").append(jsonNumber(lat))
@@ -183,6 +187,7 @@ object TeamLocationLogic {
         if (heading != null && heading.isFinite()) sb.append(",\"heading\":").append(jsonNumber(heading))
         if (speed != null && speed.isFinite()) sb.append(",\"speed\":").append(jsonNumber(speed))
         if (batteryPct != null && batteryPct in 0..100) sb.append(",\"batteryPct\":").append(batteryPct)
+        if (fixTimeMs != null && fixTimeMs > 0) sb.append(",\"fixTimeMs\":").append(fixTimeMs)
         sb.append('}')
         return sb.toString()
     }

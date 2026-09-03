@@ -139,11 +139,15 @@ class ApiPayloadsTest {
     }
 
     @Test
-    fun `nominatim url pins arabic and zoom`() {
-        val url = ApiPayloads.buildNominatimReverseUrl(36.7538, 3.0588)
-        assertTrue(url.contains("nominatim.openstreetmap.org/reverse"))
-        assertTrue(url.contains("accept-language=ar"))
-        assertTrue(url.contains("zoom=14"))
+    fun `geo reverse rides the server proxy path, not nominatim directly`() {
+        // F6/W-H6: the app never speaks to nominatim.openstreetmap.org —
+        // exact field coordinates travel only to our own origin, which owns
+        // the third-party egress (UA policy, cache, coverage gate).
+        val path = ApiPayloads.buildGeoReversePath(36.7538, 3.0588)
+        assertTrue(path.startsWith("/api/geo/reverse"))
+        assertTrue(path.contains("lang=ar"))
+        assertTrue(path.contains("36.753800"))
+        assertTrue(path.contains("3.058800"))
     }
 
     @Test

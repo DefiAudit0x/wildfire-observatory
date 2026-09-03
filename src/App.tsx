@@ -16,6 +16,9 @@ import MainContent from "./components/layout/MainContent";
 import TrappedSOSModal from "./components/TrappedSOSModal";
 import { getNearestActiveThreat } from "./utils/threats";
 import { computeSyncState } from "./utils/datasetHealth";
+import { describeConfirmationError } from "./utils/confirmationErrors";
+import useToasts from "./hooks/useToasts";
+import ToastStack from "./components/ui/ToastStack";
 
 export default function App() {
   const [lang, setLang] = useState<Language>("ar");
@@ -60,8 +63,22 @@ export default function App() {
     fetchData,
     handleCreateReport,
     handleConfirmReport,
+    confirmError,
+    clearConfirmError,
     handleMarkNotificationRead,
   } = useObservatoryData();
+
+  // W-M9: citizen confirmation failures were silently swallowed — the hook
+  // exposed confirmError but no surface rendered it, so a failed upvote
+  // just re-enabled the button with zero explanation. Every failure now
+  // surfaces as a toast (translated code, or the bounded server message).
+  const { toasts, push } = useToasts();
+  useEffect(() => {
+    if (!confirmError) return;
+    push(describeConfirmationError(confirmError, isArabic), "error");
+    clearConfirmError();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [confirmError]);
 
     const { activeAlerts, isMuted, setIsMuted } = useProximityAlerts(reports, userLocation, isTrustedReporter);
   const [syncNow, setSyncNow] = useState(() => Date.now());
@@ -221,6 +238,9 @@ export default function App() {
 
       {/* BRAND FOOTER */}
       <AppFooter isArabic={isArabic} />
+
+      {/* W-M9: global action feedback (confirmation failures, …) */}
+      <ToastStack toasts={toasts} />
     </div>
   );
 }

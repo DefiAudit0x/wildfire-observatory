@@ -1,4 +1,5 @@
 import { AlertTriangle, Check, X } from "lucide-react";
+import { useModalA11y } from "../../hooks/useModalA11y";
 import { Language } from "../../types";
 
 interface ConfirmDialogProps {
@@ -24,13 +25,26 @@ export default function ConfirmDialog({
   onCancel,
   lang,
 }: ConfirmDialogProps) {
-  if (!open) return null;
   const isArabic = lang === "ar";
+  // W-H3: aria-modal/role existed; what was missing was the BEHAVIOR — no
+  // focus trap (Tab walked into the page behind) and no Escape. The hook is
+  // called unconditionally (rules of hooks) and gated by `enabled: open`;
+  // it also restores focus to the trigger element on close.
+  const dialogRef = useModalA11y<HTMLDivElement>({
+    enabled: open,
+    onCancel,
+  });
+
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative bg-zinc-950 border border-white/10 rounded-2xl p-6 shadow-[0_10px_60px_rgba(0,0,0,0.9)] w-full max-w-sm space-y-4 animate-fade-in">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="relative bg-zinc-950 border border-white/10 rounded-2xl p-6 shadow-[0_10px_60px_rgba(0,0,0,0.9)] w-full max-w-sm space-y-4 animate-fade-in outline-none"
+      >
         <div className="flex items-start gap-3">
           <div className={`h-10 w-10 shrink-0 rounded-xl flex items-center justify-center ${
             danger ? "bg-red-600/10 border border-red-500/20 text-red-500" : "bg-amber-600/10 border border-amber-500/20 text-amber-500"

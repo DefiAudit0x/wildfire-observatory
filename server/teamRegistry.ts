@@ -39,6 +39,9 @@ export interface TeamMemberPosition {
   heading: number | null;
   speed: number | null;
   batteryPct: number | null;
+  // F10: the client-reported GPS fix epoch (ms). Null = legacy client or
+  // unknown age — consumers must NOT guess an age for it.
+  fixTimeMs: number | null;
   lastSeen: number;
   trail: TeamPositionPoint[];
 }
@@ -70,6 +73,7 @@ export interface HeartbeatInput {
   heading?: number | null;
   speed?: number | null;
   batteryPct?: number | null;
+  fixTimeMs?: number | null;
   now?: number;
 }
 
@@ -96,6 +100,7 @@ export function recordHeartbeat(input: HeartbeatInput): TeamMemberPosition {
     heading: input.heading ?? null,
     speed: input.speed ?? null,
     batteryPct: input.batteryPct ?? null,
+    fixTimeMs: input.fixTimeMs ?? null,
     lastSeen: now,
     trail,
     lastSnapshotAt: existing?.lastSnapshotAt ?? 0,

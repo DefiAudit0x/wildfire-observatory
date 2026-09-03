@@ -419,8 +419,6 @@ class AppRepository(
         persistSnapshot()
     }
 
-    private fun fetchWeather(): WeatherNow? = _state.value.weather
-
     fun fetchWeatherAt(lat: Double, lng: Double, onDone: (WeatherNow?) -> Unit) {
         scope.launch {
             val r = io { api.get(ApiPayloads.buildOpenMeteoUrl(lat, lng)) }

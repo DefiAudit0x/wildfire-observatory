@@ -209,9 +209,15 @@ export function useGeolocation(isArabic: boolean) {
   // only): GPS updates refresh locationRef instead of recreating the effect,
   // so the beat is every 30 s regardless of how chatty the position receiver
   // is. Revoking consent clears the interval on the spot.
+  // W-M14: the beat used to fire EVERY 30 s while the tab was HIDDEN — a
+  // real field battery/data drain through long shifts. While document.hidden
+  // the sends pause; a visibilitychange listener fires one beat immediately
+  // on return, so the command map's staleness window (5-min TTL) barely
+  // notices the pause.
   useEffect(() => {
     if (!locationSharingConsent) return;
     const sendHeartbeat = () => {
+      if (document.hidden) return; // W-M14: pause while the tab is hidden
       const loc = locationRef.current;
       if (!loc) return;
       fetchWithRetry("/api/location/heartbeat", {
@@ -220,10 +226,17 @@ export function useGeolocation(isArabic: boolean) {
         body: JSON.stringify(buildHeartbeatPayload(deviceId, loc)),
       }).catch(() => {});
     };
+    const onVisibility = () => {
+      if (!document.hidden) sendHeartbeat();
+    };
 
     sendHeartbeat();
     const interval = setInterval(sendHeartbeat, 30000);
-    return () => clearInterval(interval);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [deviceId, locationSharingConsent]);
 
   return {

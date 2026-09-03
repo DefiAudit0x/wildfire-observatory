@@ -24,7 +24,6 @@ const satellite: SatelliteHotspot = {
   scanTime: "2026-08-01T00:00:00Z",
   satellite: "VIIRS",
   wilaya: "الجزائر - عنابة (Algérie - Annaba)",
-  isFallback: false,
 };
 
 describe("reportsToCsv", () => {
@@ -82,12 +81,5 @@ describe("hotspotsToGeoJson", () => {
     expect(parsed.features[0].geometry.coordinates).toEqual([7.6, 36.7]);
     expect(parsed.features[1].properties.kind).toBe("satellite");
     expect(parsed.features[1].properties.satellite).toBe("VIIRS");
-    expect(parsed.features[1].properties.fallback).toBe(false);
-  });
-
-  it("flags fallback satellite points", () => {
-    const fallback: SatelliteHotspot = { ...satellite, isFallback: true };
-    const parsed = JSON.parse(hotspotsToGeoJson([], [fallback])) as any;
-    expect(parsed.features[0].properties.fallback).toBe(true);
   });
 });

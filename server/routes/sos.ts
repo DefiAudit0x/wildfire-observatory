@@ -107,16 +107,49 @@ export function getSosSummarySnapshot(): SosSummary[] {
 // rolling window so long-running processes don't accumulate unbounded memory.
 const MEMORY_SOS_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 const MEMORY_SOS_MAX_ITEMS = 200;
+// S-H3 (half of the fix): the raw audio body is memory-ONLY (a restart drops
+// it anyway) and its operational value is the first response window, not 12
+// hours. Aging audio out after 2h bounds the worst-case audio residency —
+// 200 entries × 700KB ≈ 140MB — to roughly one response shift, and caps what
+// a flood of attacker SOS entries can pin in RAM. Metadata (id, status,
+// priority, coords) still lives the full 12h window for the command views.
+const MEMORY_SOS_AUDIO_TTL_MS = 2 * 60 * 60 * 1000;
 function sweepMemorySos() {
   const cutoff = Date.now() - MEMORY_SOS_MAX_AGE_MS;
+  const audioCutoff = Date.now() - MEMORY_SOS_AUDIO_TTL_MS;
   while (memorySos.length > 0 && new Date(memorySos[memorySos.length - 1].timestamp).getTime() < cutoff) {
     memorySos.pop();
+  }
+  for (const s of memorySos) {
+    if (s.audioUrl && new Date(s.timestamp).getTime() < audioCutoff) {
+      s.audioUrl = undefined;
+    }
   }
 }
 sweepMemorySos();
 setInterval(sweepMemorySos, 15 * 60 * 1000).unref();
 
 // ── Rate limiting & duplicate detection ──────────────────────────────────────
+// S-H3: the per-device window alone was keyed by a request-BODY field, so an
+// attacker rotating deviceIds minted a fresh 2-per-minute bucket on every
+// request and flooded memorySos (evicting REAL SOS from the 200-item window).
+// The fix is layered: an ADDRESS-level limiter in front bounds any single
+// source (device rotation still lands in the same IP bucket), while the
+// per-device limiter keeps its role of pacing one honest device. Multiple
+// trapped victims behind one NAT are still served — the IP budget (10 per
+// 2 min) admits them; a flooder cannot exceed it from that address.
+const sosIpLimiter = rateLimit({
+  windowMs: 2 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    const ip = req.ip ?? "unknown";
+    return `sos-ip:${ip === "unknown" ? ip : ipKeyGenerator(ip)}`;
+  },
+  message: { error: "Too many SOS requests from this address. Try again shortly." },
+});
+
 const sosPostLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 2,
@@ -286,7 +319,7 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
+router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Response) => {
   const parsed = sosSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Missing required fields", details: parsed.error.flatten() });
