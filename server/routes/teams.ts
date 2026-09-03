@@ -6,7 +6,7 @@ import logger from "../logger.js";
 import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache } from "../fs.js";
 import { joinTeamAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
-import { getPublicPrincipal, issuePublicPrincipal } from "../public-principal.js";
+import { getPublicPrincipal, issuePublicPrincipal, renewPublicPrincipal } from "../public-principal.js";
 import { createTeamMemberToken, isTokenGenerationStale, teamTokenFromRequest } from "../teamAuth.js";
 import { isOnline, listPositions, recordHeartbeat, removeMember, snapshotIfDue } from "../teamRegistry.js";
 import { NA_BOUNDS, getHaversineDistance, saneCoord } from "../geo.js";
@@ -407,8 +407,13 @@ router.post("/join", joinLimiter, async (req: Request, res: Response) => {
     return;
   }
 
+  // Phase C (principal-cookie ghosts): a returning device's principal is
+  // re-issued with a fresh window (same subject — identity continuity),
+  // instead of silently dying at day 30 and minting a ghost duplicate member
+  // on the next join. First-time devices get a brand-new principal.
   let principal = getPublicPrincipal(req);
-  if (!principal) principal = issuePublicPrincipal(res);
+  if (principal) renewPublicPrincipal(res, principal.subject);
+  else principal = issuePublicPrincipal(res);
   const subject = principal.subject;
 
   // Fast-fail on the cached doc; the transaction below is the authority.

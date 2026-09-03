@@ -59,6 +59,17 @@ jobs:
             echo "SIGNED=false" >> "$GITHUB_ENV"
             echo "::warning::Signing secrets absent — release build will be UNSIGNED"
           fi
+      # P5-F1: on main the keystore secrets MUST exist — they do for same-repo
+      # runs, so a missing signature on a main push means the secrets vanished
+      # (rotation accident, org change) and every artifact would silently
+      # ship unsigned. Fail loudly instead. PR runs keep the warn-and-build
+      # behavior above (fork PRs have no secrets; the job still verifies
+      # compile+R8 health, which is the point of running it there).
+      - name: Guard — main releases must be signed (P5-F1)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.SIGNED != 'true'
+        run: |
+          echo "::error::Release build on main is UNSIGNED — KEYSTORE_BASE64 secret missing. Refusing to produce artifacts."
+          exit 1
       - name: Build release (APK + AAB)
         run: gradle -p android assembleRelease bundleRelease --stacktrace
       - name: Verify APK signature

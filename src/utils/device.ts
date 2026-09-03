@@ -35,6 +35,18 @@
  *   authority exclusively from its own signed cookies/tokens (public
  *   principal, staff session, team-member token). This id is a
  *   lookup/display key and must never be trusted as proof of ownership.
+ *
+ * Phase C (critique lows):
+ * - W10 — the legacy-key retirement is UNCONDITIONAL: a corrupt
+ *   (pattern-failing) mesh_device_id used to sit in storage forever because
+ *   the retirement rode inside the adoption branch, which only ran for valid
+ *   values. The "removed once" promise now holds for garbage too.
+ * - W11 — two tabs opened before either writes used to mint two identities
+ *   (each kept alive by its session mirror), splitting notifications and SOS
+ *   ownership across the same browser. A storage-event listener now
+ *   converges the race deterministically: both tabs adopt the
+ *   lexicographically smaller id. Display-key semantics (above) make the
+ *   pre-convergence window harmless.
  */
 
 const DEVICE_ID_KEY = "device_id";
@@ -44,6 +56,7 @@ const ID_PATTERN = /^[A-Za-z0-9_-]{6,128}$/;
 
 let memoryDeviceId: string | null = null;
 let fallbackCounter = 0;
+let convergenceInstalled = false;
 
 function newDeviceId(): string {
   const uuid = globalThis.crypto?.randomUUID?.();
@@ -59,6 +72,44 @@ function readStorage(store: Storage | undefined, key: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * W11: two-tab first-visit convergence.
+ *
+ * Both tabs call getDeviceId() before either persists; the loser of the race
+ * overwrites the winner's localStorage entry while its own session mirror
+ * keeps a second identity alive. When the other tab's write lands here as a
+ * storage event, BOTH sides apply the same deterministic tie-break — adopt
+ * the lexicographically smaller id — so the race always converges to ONE
+ * identity per browser instead of splitting notifications/SOS ownership.
+ * The id is a display/lookup key (see the privacy semantics above), so the
+ * brief pre-convergence window is harmless.
+ */
+function installStorageConvergence(): void {
+  if (convergenceInstalled) return;
+  convergenceInstalled = true;
+  const win = (globalThis as any).window;
+  if (!win || typeof win.addEventListener !== "function") return;
+  win.addEventListener("storage", (event: StorageEvent) => {
+    try {
+      if (event.key !== DEVICE_ID_KEY) return;
+      if (event.storageArea !== (globalThis as any).localStorage) return;
+      const incoming = typeof event.newValue === "string" && ID_PATTERN.test(event.newValue) ? event.newValue : null;
+      if (!incoming || !memoryDeviceId || incoming === memoryDeviceId) return;
+      const winner = incoming < memoryDeviceId ? incoming : memoryDeviceId;
+      if (winner === memoryDeviceId) {
+        // Ours wins: re-assert it so the other tab's next event adopts it.
+        try { (globalThis as any).localStorage?.setItem(DEVICE_ID_KEY, winner); } catch { /* best effort */ }
+        return;
+      }
+      memoryDeviceId = winner;
+      try {
+        (globalThis as any).sessionStorage?.setItem(DEVICE_ID_KEY, winner);
+        (globalThis as any).localStorage?.setItem(DEVICE_ID_KEY, winner);
+      } catch { /* memoryDeviceId still keeps this page stable */ }
+    } catch { /* a broken event must never break identity */ }
+  });
 }
 
 /**
@@ -78,6 +129,7 @@ function nativeBridgeId(): string | null {
 }
 
 export function getDeviceId(): string {
+  installStorageConvergence();
   if (memoryDeviceId) return memoryDeviceId;
 
   let session: Storage | undefined;
@@ -95,13 +147,15 @@ export function getDeviceId(): string {
   if (!id) {
     // One-time migration: adopt the legacy mesh id, then retire the old key.
     const legacy = readStorage(local, LEGACY_MESH_ID_KEY);
-    if (legacy) {
-      id = legacy;
-      try {
-        local?.removeItem(LEGACY_MESH_ID_KEY);
-      } catch {
-        // Best-effort cleanup; leaving it causes no further reads anywhere.
-      }
+    if (legacy) id = legacy;
+    // W10: retire the legacy key UNCONDITIONALLY. readStorage returns null
+    // for values that fail ID_PATTERN, and the retirement used to ride
+    // inside the adoption branch — so a corrupt mesh_device_id sat in
+    // storage forever (harmless, but it broke the "removed once" promise).
+    try {
+      if (local?.getItem(LEGACY_MESH_ID_KEY) != null) local.removeItem(LEGACY_MESH_ID_KEY);
+    } catch {
+      // Storage blocked — same best-effort posture as every other touch.
     }
   }
 
