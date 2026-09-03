@@ -503,10 +503,10 @@ class AppRepository(
         }
     }
 
-    private fun readQueueFile(kind: String): List<OfflineQueue<String>.Entry> = runCatching {
+    private fun readQueueFile(kind: String): List<OfflineQueue.Entry<String>> = runCatching {
         val raw = queueFile(kind).readText()
         if (raw.isBlank()) return emptyList()
-        val out = ArrayList<OfflineQueue<String>.Entry>()
+        val out = ArrayList<OfflineQueue.Entry<String>>()
         val arr = JSONArray(raw)
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
@@ -514,7 +514,7 @@ class AppRepository(
             val payload = o.optString("payload", "")
             if (key.isBlank() || payload.isEmpty()) continue
             out.add(
-                OfflineQueue.Entry(
+                OfflineQueue.Entry<String>(
                     key = key,
                     payload = payload,
                     attempts = o.optInt("attempts", 0),
@@ -534,7 +534,7 @@ class AppRepository(
         persistQueueFile("sos", sosQueue.snapshot())
     }
 
-    private fun persistQueueFile(kind: String, entries: List<OfflineQueue<String>.Entry>) {
+    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>) {
         runCatching {
             val arr = JSONArray()
             var totalChars = 0
