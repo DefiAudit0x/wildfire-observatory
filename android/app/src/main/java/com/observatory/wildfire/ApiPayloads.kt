@@ -158,12 +158,33 @@ object ApiPayloads {
     // URL builders (pure — each pinned by tests)
     // ========================
 
-    /** OSRM driving route with full geometry (same endpoint the web uses). */
+    /**
+     * OSRM driving route with full geometry (same endpoint the web uses).
+     * v2.10.0 (S4): alternatives=true — the radar now RANKS the candidate
+     * roads safety-first (max fire-corridor clearance) instead of only
+     * warning on the single route OSRM happened to return first.
+     */
     fun buildOsrmUrl(userLat: Double, userLng: Double, targetLat: Double, targetLng: Double): String {
         // OSRM wants lon,lat order.
         val coord1 = "${fmtLng(userLng)},${fmt(userLat)}"
         val coord2 = "${fmtLng(targetLng)},${fmt(targetLat)}"
-        return "https://router.project-osrm.org/route/v1/driving/$coord1;$coord2?overview=full&geometries=geojson"
+        return "https://router.project-osrm.org/route/v1/driving/$coord1;$coord2?overview=full&geometries=geojson&alternatives=true"
+    }
+
+    /**
+     * v2.10.0 (S4): POST /api/ai/guidance body — the same contract the web
+     * AICopilot sends. Coordinates ride along ONLY when a fix exists; the
+     * server falls back to its own generic context otherwise (no silent
+     * regional default). lang is fixed to "ar" on this app (Arabic-first UI).
+     */
+    fun buildAiGuidanceBody(lat: Double?, lng: Double?): String {
+        val sb = StringBuilder(96)
+        sb.append('{')
+        if (lat != null && lng != null) {
+            sb.append("\"lat\":").append(fmt(lat)).append(",\"lng\":").append(fmtLng(lng)).append(',')
+        }
+        sb.append("\"lang\":\"ar\"}")
+        return sb.toString()
     }
 
     /**

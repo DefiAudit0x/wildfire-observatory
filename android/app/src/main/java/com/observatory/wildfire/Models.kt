@@ -226,17 +226,37 @@ object Parsers {
         )
     }.getOrNull()
 
-    /** OSRM route: geometry coordinates → lat/lng pairs, plus distance/duration. */
-    fun parseOsrmRoute(body: String): Pair<List<Pair<Double, Double>>, Pair<Double, Double>>? = runCatching {
-        val route = JSONObject(body).getJSONArray("routes").getJSONObject(0)
-        val coords = route.getJSONObject("geometry").getJSONArray("coordinates")
-        val pts = ArrayList<Pair<Double, Double>>(coords.length())
-        for (i in 0 until coords.length()) {
-            val c = coords.getJSONArray(i)
-            pts.add(c.getDouble(1) to c.getDouble(0)) // geojson = lng,lat → lat,lng
+    /**
+     * v2.10.0 (S4) — OSRM ALTERNATIVES: every candidate road in the response,
+     * not just [0]. Each entry carries the raw points + distance/duration;
+     * the fire-corridor measurement and safety ranking live in RadarV2 (pure,
+     * unit-tested). Returns at most 3 (OSRM's own alternative cap) and never
+     * the empty list when route[0] parsed — single-route responses degrade
+     * gracefully. (Supersedes the v2.1.0 single-route parser — dead code
+     * removed per the F18 discipline.)
+     */
+    fun parseOsrmAlternatives(body: String): List<Triple<List<Pair<Double, Double>>, Double, Double>>? = runCatching {
+        val routes = JSONObject(body).getJSONArray("routes")
+        val out = ArrayList<Triple<List<Pair<Double, Double>>, Double, Double>>(routes.length().coerceAtMost(3))
+        for (i in 0 until routes.length().coerceAtMost(3)) {
+            val route = routes.getJSONObject(i)
+            val coords = route.getJSONObject("geometry").getJSONArray("coordinates")
+            val pts = ArrayList<Pair<Double, Double>>(coords.length())
+            for (j in 0 until coords.length()) {
+                val c = coords.getJSONArray(j)
+                pts.add(c.getDouble(1) to c.getDouble(0))
+            }
+            if (pts.isNotEmpty()) {
+                out.add(Triple(pts, route.getDouble("distance"), route.getDouble("duration")))
+            }
         }
-        if (pts.isEmpty()) return@runCatching null
-        pts to (route.getDouble("distance") to route.getDouble("duration"))
+        if (out.isEmpty()) null else out
+    }.getOrNull()
+
+    /** POST /api/ai/guidance success → the sanitized briefing text. */
+    fun parseAiGuidance(body: String): String? = runCatching {
+        val g = JSONObject(body).optString("guidance", "")
+        g.takeIf { it.isNotBlank() }
     }.getOrNull()
 
     /** Nominatim reverse: display_name + state/province for the wilaya field. */
