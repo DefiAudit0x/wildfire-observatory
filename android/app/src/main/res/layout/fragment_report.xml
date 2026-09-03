@@ -190,6 +190,18 @@
             android:textSize="12sp"
             android:visibility="gone" />
 
+        <!-- v2.9.0: telemetry verdicts beside the photo — on-device color
+             pre-scan + alignment estimate (capture) or the honest EXIF note
+             (gallery). Estimate-only wording, never a proof claim. -->
+        <TextView
+            android:id="@+id/report_telemetry_line"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/accent_cyan"
+            android:textSize="11sp"
+            android:visibility="gone" />
+
         <TextView
             android:id="@+id/report_submit"
             android:layout_width="match_parent"
