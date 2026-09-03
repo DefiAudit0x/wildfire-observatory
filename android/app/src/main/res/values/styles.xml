@@ -19,7 +19,10 @@
     </style>
 
     <!-- Typography scale — mirrors the web's font classes (Cairo/slate scale;
-         bold-heavy headers, muted captions). -->
+         bold-heavy headers, muted captions). The empty Obs root exists because
+         dotted style names inherit an implicit parent that must resolve. -->
+    <style name="Obs" />
+
     <style name="Obs.Title">
         <item name="android:textColor">@color/text_primary</item>
         <item name="android:textSize">18sp</item>
