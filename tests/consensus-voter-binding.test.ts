@@ -144,26 +144,22 @@ describe("ARC-M01/M02: bounded dev-only fallback ledger", () => {
     }
   });
 
-  it("dev fallback dedupes by principal subject and never evicts a recorded voter", async () => {
-    // config.nodeEnv is NOT production in tests (SKIP_FIREBASE dev mode), so
-    // the memory fallback activates for no_db results — but only for reports
-    // that exist in the local seed.
-    const { citizenReports } = await import("../server/data.js");
-    const seedId = citizenReports[0].id as string;
-    const baselineCount = Number(citizenReports[0].consensusCount || 0);
-
+  it("dev/no_db answers 404 — the demo-seed confirmation path was purged (v2.3.0)", async () => {
+    // The old dev fallback confirmed votes against fabricated citizenReports
+    // seed rows (dedupe by principal subject). v2.3.0 removed the seed and the
+    // fallback: without a durable ledger there are no reports to confirm —
+    // the route must 404, never fabricate a confirmation.
     ledgerState.result = { status: "no_db" };
     const app = createApp();
 
     const first = await supertest(app)
-      .post(`/api/reports/${seedId}/confirm`)
+      .post("/api/reports/rep-1/confirm")
       .send({ deviceId: "ignored" });
-    expect(first.status).toBe(200);
-    expect(first.body.consensusCount).toBe(baselineCount + 1);
+    expect(first.status).toBe(404);
 
     const second = await supertest(app)
-      .post(`/api/reports/${seedId}/confirm`)
+      .post("/api/reports/rep-1/confirm")
       .send({ deviceId: "ignored" });
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(404);
   });
 });

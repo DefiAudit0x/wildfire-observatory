@@ -1,6 +1,6 @@
 import { Radio, AlertTriangle, Shield, Users, Truck, ShieldCheck, HeartHandshake, Crown } from "lucide-react";
 import { Report, SatelliteHotspot, TrappedSOS } from "../../types";
-import { TeamStatus } from "./teams";
+import { RegisteredTeam } from "./registeredTeams";
 
 export interface UserLocationData {
   deviceId: string;
@@ -17,10 +17,11 @@ interface StatCardsProps {
   satellites: SatelliteHotspot[];
   sosCalls: TrappedSOS[];
   activeUsers: UserLocationData[];
-  teams: TeamStatus[];
+  /** v2.3.0: the REAL registered-team roster (was: simulated TeamStatus[]). */
+  registeredTeams: RegisteredTeam[];
 }
 
-export default function StatCards({ isArabic, reports, satellites, sosCalls, activeUsers, teams }: StatCardsProps) {
+export default function StatCards({ isArabic, reports, satellites, sosCalls, activeUsers, registeredTeams }: StatCardsProps) {
   // ARC-M30 fix: rejected reports were counted as active fires (they are
   // declared invalid) and verified critical fires were invisible in the
   // critical card (only "pending" was counted). Align with the SOS proximity
@@ -34,10 +35,12 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
   const satelliteHotspots = satellites.length;
   const activeSosCount = sosCalls.filter(s => s.status === "active").length;
 
-  const pcTeams = teams.filter(t => t.type === "protection_civile");
-  const volTeams = teams.filter(t => t.type === "volunteers");
-  const pcEnRoute = pcTeams.filter(t => t.status !== "available").length;
-  const volEnRoute = volTeams.filter(t => t.status !== "available").length;
+  // v2.3.0: mission counts come from the live roster's activeMission — real
+  // server-side mission locks, not a 2-minute animation timer.
+  const pcTeams = registeredTeams.filter(t => t.type === "protection_civile" && t.active !== false);
+  const volTeams = registeredTeams.filter(t => t.type === "volunteers" && t.active !== false);
+  const pcEnRoute = pcTeams.filter(t => t.activeMission).length;
+  const volEnRoute = volTeams.filter(t => t.activeMission).length;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">

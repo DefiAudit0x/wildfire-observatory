@@ -240,12 +240,13 @@ describe("SOS durable lifecycle mutations", () => {
   it("does not claim dispatch success when durable update fails", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("unavailable");
 
     const dispatch = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
       .set(adminAuth())
-      .send({ type: "protection_civile", teamNameAr: "فريق تجريبي", teamNameFr: "Équipe test" });
+      .send({ teamId: "team-alpha", notes: "" });
 
     expect(dispatch.status).toBe(503);
     expect(dispatch.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
@@ -254,12 +255,13 @@ describe("SOS durable lifecycle mutations", () => {
   it("rejects dispatching to a resolved SOS with 409 (atomic transaction guard)", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("resolved");
 
     const dispatch = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
       .set(adminAuth())
-      .send({ type: "protection_civile", teamNameAr: "فريق تجريبي", teamNameFr: "Équipe test" });
+      .send({ teamId: "team-alpha" });
 
     expect(dispatch.status).toBe(409);
     expect(dispatch.body.error).toMatch(/resolved/i);
@@ -268,27 +270,46 @@ describe("SOS durable lifecycle mutations", () => {
   it("rejects a team already on an active mission with 409 (ARC-H8 uniqueness)", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
     fsMock.appendSosDispatch.mockResolvedValueOnce("team_busy");
 
     const dispatch = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
       .set(adminAuth())
-      .send({ type: "protection_civile", teamNameAr: "RAPIDE 1", teamNameFr: "RAPIDE 1" });
+      .send({ teamId: "team-alpha" });
 
     expect(dispatch.status).toBe(409);
     expect(dispatch.body.code).toBe("TEAM_ALREADY_DISPATCHED");
   });
 
-  it("passes a stable mission team id derived from type+team name", async () => {
+  it("404s phantom teams — legacy free-text dispatch was purged (v2.3.0)", async () => {
     const app = createApp();
     const created = await supertest(app).post("/api/sos").send(validBody());
-    await supertest(app)
+    // docGet defaults to null in beforeEach: no team entity ⇒ no dispatch.
+    const legacy = await supertest(app)
       .post(`/api/sos/${created.body.id}/dispatch`)
       .set(adminAuth())
       .send({ type: "protection_civile", teamNameAr: "RAPIDE 1", teamNameFr: "RAPIDE 1" });
+    expect(legacy.status).toBe(400);
+
+    const unknownTeam = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-ghost" });
+    expect(unknownTeam.status).toBe(404);
+  });
+
+  it("passes the registered teamId as the mission identity", async () => {
+    const app = createApp();
+    const created = await supertest(app).post("/api/sos").send(validBody());
+    fsMock.docGet.mockResolvedValueOnce({ teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true });
+    await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha" });
 
     const missionId = fsMock.appendSosDispatch.mock.calls[0][2];
-    expect(missionId).toBe("protection_civile:rapide-1");
+    expect(missionId).toBe("team-alpha");
   });
 });
 

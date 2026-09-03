@@ -15,7 +15,6 @@ vi.mock("../server/mesh.js", () => ({
 
 vi.mock("../server/db.js", () => ({
   getReportsDbResult: vi.fn(async () => dbState.result),
-  seedReportsToFirestore: vi.fn(async () => undefined),
   saveReportToFirestore: vi.fn(async () => "saved"),
   saveReportWithIdempotency: vi.fn(async (report: any) => report.clientGeneratedId === "cg-durable-0001"
     ? { status: "existing", report: { ...report, id: "rep-durable-1" } }
@@ -84,17 +83,15 @@ describe("reports database result semantics", () => {
   });
 
   it("returns 503 without RAM mutation or broadcast when durable confirmation fails", async () => {
-    const { citizenReports } = await import("../server/data.js");
     const { createPublicPrincipalToken, PUBLIC_PRINCIPAL_COOKIE } = await import(
       "../server/public-principal.js"
     );
-    const seed = citizenReports.find((report) => report.id === "rep-1");
-    if (!seed) throw new Error("expected rep-1 seed fixture");
-    const before = seed.consensusCount;
     dbState.confirmation = { status: "error" };
     meshBroadcast.mockClear();
 
-    // ARC-H1: the endpoint now requires the server-issued public principal.
+    // ARC-H1: the endpoint requires the server-issued public principal.
+    // v2.3.0: no demo seed exists to mutate — the assertion is that the
+    // failure surfaces as a 503 and nothing is broadcast as confirmed.
     const res = await supertest(createApp())
       .post("/api/reports/rep-1/confirm")
       .set("Cookie", `${PUBLIC_PRINCIPAL_COOKIE}=${createPublicPrincipalToken("subject-durable-test" as any)}`)
@@ -102,7 +99,27 @@ describe("reports database result semantics", () => {
 
     expect(res.status).toBe(503);
     expect(res.body.code).toBe("CONSENSUS_DURABILITY_UNAVAILABLE");
-    expect(seed.consensusCount).toBe(before);
+    expect(meshBroadcast).not.toHaveBeenCalled();
+    dbState.confirmation = { status: "no_db" };
+  });
+
+  it("answers 404 on no_db — without a database no reports exist, honestly (v2.3.0)", async () => {
+    const { createPublicPrincipalToken, PUBLIC_PRINCIPAL_COOKIE } = await import(
+      "../server/public-principal.js"
+    );
+    dbState.confirmation = { status: "no_db" };
+    meshBroadcast.mockClear();
+
+    // The old dev fallback confirmed votes against fabricated demo rows.
+    // With the seed purged there is nothing to confirm against — the route
+    // must NOT pretend a vote was recorded.
+    const res = await supertest(createApp())
+      .post("/api/reports/rep-1/confirm")
+      .set("Cookie", `${PUBLIC_PRINCIPAL_COOKIE}=${createPublicPrincipalToken("subject-no-db-test" as any)}`)
+      .send({ deviceId: "no-db-device" });
+
+    expect(res.status).toBe(404);
+    expect(res.body.error).toContain("not found");
     expect(meshBroadcast).not.toHaveBeenCalled();
     dbState.confirmation = { status: "no_db" };
   });

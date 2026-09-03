@@ -2,7 +2,6 @@ import { Request, Response, Router } from "express";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
-import { citizenReports } from "../data.js";
 import { requireAdmin, generateAdminToken } from "../middleware.js";
 import { str } from "../params.js";
 import {
@@ -171,11 +170,10 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
 
   const updated = await updateReportInFirestore(id, updateData);
   if (updated === "updated") {
-    // Firestore is the source of truth here. The in-memory seed can be stale
-    // or may not contain reports created after startup, so load the persisted
-    // report before building a notification that depends on deviceId/locationName.
+    // Firestore is the source of truth here. Load the persisted report before
+    // building a notification that depends on deviceId/locationName.
     const persistedReports = await getReportsFromFirestore();
-    const report = persistedReports?.find((r: any) => r.id === id) ?? citizenReports.find((r: any) => r.id === id);
+    const report = persistedReports?.find((r: any) => r.id === id) ?? null;
     await buildStatusNotification(report || updateData, status);
     logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
@@ -183,22 +181,11 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
     return;
   }
 
-  // ARC-M05 fix: the old bool contract collapsed no-db / error / missing into
-  // one falsy value, so a live database outage either mutated the in-memory
-  // seed while claiming success (a lie the operator could not detect) or
-  // returned a misleading 404. Only the genuinely-missing / no-db (local dev)
-  // cases fall back to the static seed now; a real read/write failure is a 503.
+  // ARC-M05 fix: only the genuinely-missing / no-db cases land here, and both
+  // mean the report does not exist — v2.3.0 removed the static demo seed the
+  // old fallback used to mutate while claiming success. A real read/write
+  // failure is a 503.
   if (updated === "missing" || updated === "no-db") {
-    const report = citizenReports.find((r: any) => r.id === id);
-    if (report) {
-      if (status) report.status = status;
-      if (severity) report.severity = severity;
-      await buildStatusNotification(report, status);
-      logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
-      liveHub.broadcast("report:update", { id, status, severity });
-      res.json({ success: true });
-      return;
-    }
     res.status(404).json({ error: "Report not found" });
     return;
   }
@@ -220,15 +207,9 @@ router.post("/reports/:id/delete", requireAdmin, adminActionLimiter, async (req:
     return;
   }
 
+  // v2.3.0 (simulation purge): the demo-seed splice is gone — without a
+  // database there are no reports to delete. 404 honestly.
   if (deleted === "missing" || deleted === "no-db") {
-    const index = citizenReports.findIndex((r: any) => r.id === id);
-    if (index !== -1) {
-      citizenReports.splice(index, 1);
-      logAdminAction("report.delete", { id }, actorFromRequest(req)).catch(() => {});
-      liveHub.broadcast("report:delete", { id });
-      res.json({ success: true });
-      return;
-    }
     res.status(404).json({ error: "Report not found" });
     return;
   }

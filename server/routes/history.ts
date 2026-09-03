@@ -1,7 +1,6 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { getReportsDbResult } from "../db.js";
-import { citizenReports } from "../data.js";
 import { collectionGet } from "../fs.js";
 import { getLiveSatelliteData } from "./satellite.js";
 import { getSosSummarySnapshot } from "./sos.js";
@@ -21,7 +20,9 @@ router.get("/", async (_req: Request, res: Response) => {
   const days = reqQuery.success && reqQuery.data.days ? reqQuery.data.days : 30;
 
   const dbResult = await getReportsDbResult();
-  const reports = dbResult.status === "ok" ? dbResult.reports : citizenReports;
+  // v2.3.0 (simulation purge): no demo-seed fallback — a database outage or an
+  // empty collection means an honest all-zero history chart.
+  const reports = dbResult.status === "ok" ? dbResult.reports : [];
 
   const buckets = new Map<string, { reports: number; verified: number; sos: number; hotspots: number }>();
   const now = new Date();

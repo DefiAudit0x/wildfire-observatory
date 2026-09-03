@@ -1,119 +1,16 @@
-import { Report, SatelliteHotspot, WilayaStatus } from "../src/types.js";
+import { WilayaStatus } from "../src/types.js";
 
-// v1.0.4: seed/fallback rows carry DYNAMIC timestamps (minutes before the
-// server booted, inside the shared THREAT_MAX_AGE_MS window). The old fixed
-// 2026 dates meant the fallback data was born permanently stale: the
-// freshness-gated surfaces (SOS "no active fires", Home banner) and the
-// now-freshness-gated proximity banner could never agree — and demo/fallback
-// mode looked broken. Seed rows stay clearly synthetic via their ids/names.
-const minutesAgoIso = (m: number): string =>
-  new Date(Date.now() - m * 60_000).toISOString();
-
-export const citizenReports: Report[] = [
-  {
-    id: "rep-1", lat: 36.881, lng: 8.412,
-    locationName: "بالقرب من بحيرة طونغا، القالة",
-    wilaya: "الجزائر - الطارف (Algérie - El Tarf)",
-    description: "النيران تنتشر بسرعة في أحراش البلوط، الرياح قوية ونناشد الحماية المدنية بالتدخل الطائرات ضرورية هنا.",
-    severity: "critical", status: "verified",
-    timestamp: minutesAgoIso(6), consensusCount: 15,
-    reporterType: "official", reporterBadgeCode: "1021",
-    aiVerification: {
-      isVerified: true, confidence: 95,
-      detectedSigns: ["ألسنة لهب كثيفة", "دخان أسود كثيف", "غابات الصنوبر"],
-      aiComments: "يُظهر التحليل البصري خط حريق نشط في منطقة غابية كثيفة مع انبعاثات دخانية تهدد الغطاء النباتي.",
-      suggestedSeverity: "CRITICAL",
-    },
-  },
-  {
-    id: "rep-2", lat: 36.835, lng: 6.635,
-    locationName: "أعالي تمالوس، غابة بئر حداد",
-    wilaya: "الجزائر - سكيكدة (Algérie - Skikda)",
-    description: "دخان كثيف يتصاعد من وسط الغابة. الحريق بدأ قبل نصف ساعة ويتسع الآن.",
-    severity: "high", status: "verified",
-    timestamp: minutesAgoIso(9), consensusCount: 8,
-    reporterType: "volunteer", reporterBadgeCode: "777",
-    aiVerification: {
-      isVerified: true, confidence: 88,
-      detectedSigns: ["أعمدة دخان أبيض ورمادي", "غطاء غابي كثيف"],
-      aiComments: "تأكيد تصاعد أعمدة دخان مميزة لحرائق الغابات في المراحل الأولى.",
-      suggestedSeverity: "HIGH",
-    },
-  },
-  {
-    id: "rep-3", lat: 36.911, lng: 7.675,
-    locationName: "طريق سرايدي الجبلي",
-    wilaya: "الجزائر - عنابة (Algérie - Annaba)",
-    description: "اندلاع حريق جانبي بجوار الطريق الجبلي سرايدي، نرجو الحذر من السائقين وتجنب الصعود حاليا.",
-    severity: "medium", status: "pending",
-    timestamp: minutesAgoIso(12), consensusCount: 3,
-    reporterType: "citizen",
-  },
-  {
-    id: "rep-4", lat: 36.721, lng: 4.041,
-    locationName: "أعالي الأربعاء نايث إيراثن",
-    wilaya: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)",
-    description: "نشوب بؤرة حريق صغيرة قرب الأحواش السكنية، الشباب هنا يقومون بمحاصرتها بالمياه والتراب، الحماية المدنية في طريقها للمكان.",
-    severity: "high", status: "verified",
-    timestamp: minutesAgoIso(14), consensusCount: 11,
-    reporterType: "volunteer", reporterBadgeCode: "888",
-    aiVerification: {
-      isVerified: true, confidence: 90,
-      detectedSigns: ["أعمدة لهب نشطة", "قرب مجمعات سكنية"],
-      aiComments: "تم رصد الحريق بالقرب من تجمعات سكنية جبلية جراء ارتفاع حرارة الجو، يوصى بمتابعة سريعة.",
-      suggestedSeverity: "HIGH",
-    },
-  },
-  {
-    id: "rep-tn-1", lat: 36.782, lng: 8.685,
-    locationName: "عين دراهم الجبلية",
-    wilaya: "تونس - جندوبة (Tunisie - Jendouba)",
-    description: "حريق غابي نشط في مرتفعات عين دراهم، فرق الإطفاء تحاول السيطرة عليه لمنع تمدده للمناطق المجاورة.",
-    severity: "critical", status: "verified",
-    timestamp: minutesAgoIso(7), consensusCount: 14,
-    reporterType: "official", reporterBadgeCode: "198",
-    aiVerification: {
-      isVerified: true, confidence: 96,
-      detectedSigns: ["لهب ممتد", "غابة صنوبر جبلية"],
-      aiComments: "مصادقة بصرية كاملة لحريق غابي ممتد على المرتفعات الشمالية الغربية لتونس.",
-      suggestedSeverity: "CRITICAL",
-    },
-  },
-  {
-    id: "rep-ma-1", lat: 35.612, lng: -5.275,
-    locationName: "غابة باب تازة بمحيط شفشاون",
-    wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)",
-    description: "دخان مرئي من وسط غابة باب تازة الجبلية. السكان المحليون يشاركون في جهود الإطفاء والاحتواء.",
-    severity: "high", status: "verified",
-    timestamp: minutesAgoIso(10), consensusCount: 12,
-    reporterType: "volunteer", reporterBadgeCode: "150",
-    aiVerification: {
-      isVerified: true, confidence: 91,
-      detectedSigns: ["سحب دخان كثيف", "تضاريس غابية جبلية"],
-      aiComments: "تم رصد دخان كثيف متصاعد من تضاريس وعرة في جبال الريف المغربية.",
-      suggestedSeverity: "HIGH",
-    },
-  },
-  {
-    id: "rep-ly-1", lat: 32.745, lng: 21.841,
-    locationName: "مرتفعات شحات الغابية",
-    wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)",
-    description: "تصاعد أعمدة دخان من الأحراش القريبة من غابات شحات بالجبل الأخضر، نسأل الله السلامة واللطف.",
-    severity: "medium", status: "pending",
-    timestamp: minutesAgoIso(16), consensusCount: 4,
-    reporterType: "citizen",
-  },
-];
-
-export const satelliteHotspots: SatelliteHotspot[] = [
-  { id: "sat-1", lat: 36.885, lng: 8.423, brightness: 345.5, confidence: 92, scanTime: minutesAgoIso(4), satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-2", lat: 36.892, lng: 8.451, brightness: 332.1, confidence: 85, scanTime: minutesAgoIso(4), satellite: "VIIRS", wilaya: "الجزائر - الطارف (Algérie - El Tarf)" },
-  { id: "sat-3", lat: 36.842, lng: 6.641, brightness: 328.4, confidence: 89, scanTime: minutesAgoIso(8), satellite: "MODIS", wilaya: "الجزائر - سكيكدة (Algérie - Skikda)" },
-  { id: "sat-tn-1", lat: 36.650, lng: 8.780, brightness: 348.6, confidence: 94, scanTime: minutesAgoIso(6), satellite: "VIIRS", wilaya: "تونس - جندوبة (Tunisie - Jendouba)" },
-  { id: "sat-ma-1", lat: 35.580, lng: -5.360, brightness: 339.2, confidence: 91, scanTime: minutesAgoIso(9), satellite: "MODIS", wilaya: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)" },
-  { id: "sat-ly-1", lat: 32.750, lng: 21.850, brightness: 341.0, confidence: 93, scanTime: minutesAgoIso(11), satellite: "VIIRS", wilaya: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)" },
-];
-
+// v2.3.0 (simulation purge): this file used to ship 7 fabricated citizen
+// reports (fake AI verification, fake consensus, fake official badge codes),
+// 6 fabricated satellite hotspots, and fake active-fire counts on 7 wilayas.
+// They were auto-seeded into Firestore on first boot and served as "fallback"
+// data on 4 routes — meaning a real operator could see fake critical fires,
+// fake hotspots and fake rescue teams on a live incident. All of it is gone.
+// What remains is the static wilaya REGISTRY: names + emergency phone numbers
+// — reference data only. Every dynamic field (activeFires, satelliteHotspots,
+// severity, evacuationRecommended) is now computed exclusively from live
+// reports and live NASA FIRMS data; the stored values below are inert zeros
+// kept so the type stays satisfiable without a default-object trick.
 export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "الجزائر - أدرار", nameFr: "Algérie - Adrar", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الشلف", nameFr: "Algérie - Chlef", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
@@ -129,15 +26,15 @@ export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "الجزائر - تبسة", nameFr: "Algérie - Tébessa", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - تلمسان", nameFr: "Algérie - Tlemcen", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - تيارت", nameFr: "Algérie - Tiaret", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
-  { nameAr: "الجزائر - تيزي وزو", nameFr: "Algérie - Tizi Ouzou", activeFires: 1, satelliteHotspots: 0, severity: "high", evacuationRecommended: false, emergencyPhone: "1021" },
+  { nameAr: "الجزائر - تيزي وزو", nameFr: "Algérie - Tizi Ouzou", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الجزائر العاصمة", nameFr: "Algérie - Alger", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الجلفة", nameFr: "Algérie - Djelfa", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - جيجل", nameFr: "Algérie - Jijel", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - سطيف", nameFr: "Algérie - Sétif", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - سعيدة", nameFr: "Algérie - Saïda", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
-  { nameAr: "الجزائر - سكيكدة", nameFr: "Algérie - Skikda", activeFires: 1, satelliteHotspots: 1, severity: "high", evacuationRecommended: false, emergencyPhone: "1021" },
+  { nameAr: "الجزائر - سكيكدة", nameFr: "Algérie - Skikda", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - سيدي بلعباس", nameFr: "Algérie - Sidi Bel Abbès", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
-  { nameAr: "الجزائر - عنابة", nameFr: "Algérie - Annaba", activeFires: 1, satelliteHotspots: 0, severity: "medium", evacuationRecommended: false, emergencyPhone: "1021" },
+  { nameAr: "الجزائر - عنابة", nameFr: "Algérie - Annaba", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - قالمة", nameFr: "Algérie - Guelma", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - قسنطينة", nameFr: "Algérie - Constantine", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - المدية", nameFr: "Algérie - Médéa", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
@@ -150,7 +47,7 @@ export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "الجزائر - إليزي", nameFr: "Algérie - Illizi", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - برج بوعريريج", nameFr: "Algérie - Bordj Bou Arréridj", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - بومرداس", nameFr: "Algérie - Boumerdès", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
-  { nameAr: "الجزائر - الطارف", nameFr: "Algérie - El Tarf", activeFires: 1, satelliteHotspots: 2, severity: "critical", evacuationRecommended: true, emergencyPhone: "1021" },
+  { nameAr: "الجزائر - الطارف", nameFr: "Algérie - El Tarf", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - تندوف", nameFr: "Algérie - Tindouf", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - تيسمسيلت", nameFr: "Algérie - Tissemsilt", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - الوادي", nameFr: "Algérie - El Oued", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
@@ -173,7 +70,7 @@ export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "الجزائر - جانت", nameFr: "Algérie - Djanet", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - المغير", nameFr: "Algérie - El M'Ghair", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
   { nameAr: "الجزائر - المنيعة", nameFr: "Algérie - El Meniaa", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "1021" },
-  { nameAr: "تونس - جندوبة", nameFr: "Tunisie - Jendouba", activeFires: 1, satelliteHotspots: 1, severity: "critical", evacuationRecommended: true, emergencyPhone: "198" },
+  { nameAr: "تونس - جندوبة", nameFr: "Tunisie - Jendouba", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
   { nameAr: "تونس - باجة", nameFr: "Tunisie - Béja", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
   { nameAr: "تونس - بنزرت", nameFr: "Tunisie - Bizerte", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
   { nameAr: "تونس - تونس العاصمة", nameFr: "Tunisie - Tunis", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
@@ -197,7 +94,7 @@ export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "تونس - قفصة", nameFr: "Tunisie - Gafsa", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
   { nameAr: "تونس - توزر", nameFr: "Tunisie - Tozeur", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
   { nameAr: "تونس - قبلي", nameFr: "Tunisie - Kebili", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "198" },
-  { nameAr: "المغرب - طنجة تطوان الحسيمة", nameFr: "Maroc - Tanger-Tétouan", activeFires: 1, satelliteHotspots: 1, severity: "high", evacuationRecommended: false, emergencyPhone: "150" },
+  { nameAr: "المغرب - طنجة تطوان الحسيمة", nameFr: "Maroc - Tanger-Tétouan", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
   { nameAr: "المغرب - الشرقية", nameFr: "Maroc - L'Oriental", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
   { nameAr: "المغرب - فاس مكناس", nameFr: "Maroc - Fès-Meknès", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
   { nameAr: "المغرب - الرباط سلا القنيطرة", nameFr: "Maroc - Rabat-Salé-Kénitra", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
@@ -209,7 +106,7 @@ export const wilayasStatus: WilayaStatus[] = [
   { nameAr: "المغرب - كلميم واد نون", nameFr: "Maroc - Guelmim-Oued Noun", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
   { nameAr: "المغرب - العيون الساقية الحمراء", nameFr: "Maroc - Laâyoune-Sakia El Hamra", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
   { nameAr: "المغرب - الداخلة وادي الذهب", nameFr: "Maroc - Dakhla-Oued Ed-Dahab", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "150" },
-  { nameAr: "ليبيا - الجبل الأخضر", nameFr: "Libye - Al Jabal al Akhdar", activeFires: 1, satelliteHotspots: 1, severity: "medium", evacuationRecommended: false, emergencyPhone: "193" },
+  { nameAr: "ليبيا - الجبل الأخضر", nameFr: "Libye - Al Jabal al Akhdar", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "193" },
   { nameAr: "ليبيا - طرابلس", nameFr: "Libye - Tripoli", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "193" },
   { nameAr: "ليبيا - بنغازي", nameFr: "Libye - Benghazi", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "193" },
   { nameAr: "ليبيا - مصراتة", nameFr: "Libye - Misrata", activeFires: 0, satelliteHotspots: 0, severity: "safe", evacuationRecommended: false, emergencyPhone: "193" },

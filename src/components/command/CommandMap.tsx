@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import { MapPin, Users } from "lucide-react";
 import { Report, SatelliteHotspot, TrappedSOS } from "../../types";
-import { TeamStatus, getTeamStatusBadge } from "./teams";
 import { UserLocationData } from "./StatCards";
 import { MapTeamMember } from "./registeredTeams";
 
@@ -18,7 +17,6 @@ interface CommandMapProps {
   activeUsers: UserLocationData[];
   reports: Report[];
   sosCalls: TrappedSOS[];
-  teams: TeamStatus[];
   teamMembers: MapTeamMember[];
   focus: FocusTarget | null;
 }
@@ -29,7 +27,7 @@ function esc(value: unknown): string {
   return div.innerHTML;
 }
 
-export default function CommandMap({ isArabic, satellites, activeUsers, reports, sosCalls, teams, teamMembers, focus }: CommandMapProps) {
+export default function CommandMap({ isArabic, satellites, activeUsers, reports, sosCalls, teamMembers, focus }: CommandMapProps) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<L.Map | null>(null);
   const markersLayer = useRef<L.LayerGroup | null>(null);
@@ -217,8 +215,8 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
 
     // Team Mode (Phase 1): REAL field-team member positions from the live
     // registry (GET /api/teams) — breadcrumb trail, accuracy circle, and a
-    // labelled marker per member. Distinct from the simulated team markers
-    // below (square badge + name chip instead of emoji roundel).
+    // labelled marker per member. v2.3.0 removed the simulated team markers
+    // that used to animate fictional units toward SOS calls.
     teamMembers.forEach((m) => {
       const color = m.teamType === "protection_civile" ? "#ef4444" : "#10b981";
       if (m.trail.length >= 2) {
@@ -278,43 +276,6 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       trackPopup(layer.getLayers().at(-1) as L.Layer, `member:${m.memberId}`);
     });
 
-    // Active Teams (Civil Protection & Volunteers) — SIMULATED legacy rows
-    teams.forEach((t) => {
-      const badge = getTeamStatusBadge(t, isArabic);
-
-      L.marker([t.currentLat, t.currentLng], {
-        icon: L.divIcon({
-          className: "",
-          html: `
-            <div class="relative flex items-center justify-center" style="width: 32px; height: 32px;">
-              <div class="absolute inset-0 rounded-full ${t.status === 'en_route' ? 'animate-ping' : ''} opacity-25" style="background-color: ${t.color};"></div>
-              <div class="relative z-10 h-8 w-8 rounded-full flex items-center justify-center shadow-lg border-2 bg-zinc-900" style="border-color: ${t.color}; border-style: solid;">
-                <span class="text-sm">${t.emoji}</span>
-              </div>
-              <div class="absolute -top-1 -right-1 w-3 h-3 rounded-full border border-zinc-950 ${t.status === 'available' ? 'bg-emerald-500' : t.status === 'en_route' ? 'bg-amber-500 animate-pulse' : 'bg-red-500 animate-pulse'}"></div>
-            </div>
-          `,
-          iconSize: [32, 32],
-          iconAnchor: [16, 16],
-        }),
-      }).bindPopup(`
-        <div class="text-xs font-mono p-1 space-y-1" dir="${isArabic ? "rtl" : "ltr"}">
-          <div class="flex items-center gap-1.5 font-bold text-slate-100 bg-slate-800 p-1.5 rounded border border-slate-700">
-            <span>${t.emoji}</span>
-            <span style="color: ${t.color};">${t.type === 'protection_civile' ? (isArabic ? 'الحماية المدنية' : 'Protection Civile') : (isArabic ? 'المتطوعين' : 'Volontaires')}</span>
-          </div>
-          <div class="text-slate-300 space-y-1">
-            <p><strong>${isArabic ? "الفرقة:" : "Équipe:"}</strong> ${isArabic ? esc(t.teamNameAr) : esc(t.teamNameFr)}</p>
-            <p><strong>${isArabic ? "الحالة:" : "Statut:"}</strong> ${badge.text}</p>
-            ${t.assistedPerson ? `<p><strong>${isArabic ? "المستغيث:" : "Assiste:"}</strong> ${esc(t.assistedPerson)}</p>` : ""}
-            ${t.notes ? `<p><strong>${isArabic ? "ملاحظات:" : "Notes:"}</strong> ${esc(t.notes)}</p>` : ""}
-            <p><strong>${isArabic ? "الإحداثيات:" : "GPS:"}</strong> ${t.currentLat.toFixed(4)}, ${t.currentLng.toFixed(4)}</p>
-          </div>
-        </div>
-      `).addTo(layer);
-      trackPopup(layer.getLayers().at(-1) as L.Layer, `team:${t.id ?? t.teamNameFr}:${t.currentLat},${t.currentLng}`);
-    });
-
     // ARC-H9 fix: fitBounds only ONCE on first data arrival — the operator
     // keeps full control of the viewport afterwards (use the focus prop to
     // deliberately move the camera).
@@ -323,7 +284,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       mapInstance.current.fitBounds(group.getBounds().pad(0.2));
       didFitRef.current = true;
     }
-  }, [activeUsers, satellites, reports, sosCalls, isArabic, teams, teamMembers]);
+  }, [activeUsers, satellites, reports, sosCalls, isArabic, teamMembers]);
 
   // External focus target (e.g. from table "تحديد" buttons)
   useEffect(() => {

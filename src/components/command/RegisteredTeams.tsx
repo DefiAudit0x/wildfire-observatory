@@ -6,10 +6,11 @@ import { RegisteredTeam, JoinCodeIssued } from "./registeredTeams";
 
 /**
  * Team Mode (Phase 1) — registered field teams and their live GPS members.
- * This panel is the real replacement for the simulated dispatch table below
- * it (TeamsTable keeps rendering the legacy simulated rows until every
- * operation migrates). Dispatch here sends teamId; the server resolves the
- * team entity inside the dispatch transaction.
+ * v2.3.0 (simulation purge): this is now the ONLY dispatch surface. The legacy
+ * simulated dispatch table (six phantom units animating toward SOS calls on a
+ * fabricated 2-minute timer) and its free-text dispatch API path were removed.
+ * Dispatch here sends teamId; the server resolves the team entity inside the
+ * dispatch transaction.
  *
  * Round B: dispatcher LEVERS (force-clear mission, deactivate/activate,
  * rename, device blocklist) land beside dispatch — every lever maps to a

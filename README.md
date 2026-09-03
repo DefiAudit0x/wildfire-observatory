@@ -54,7 +54,7 @@
 |---|---|
 | 🗺️ **Interactive Map** | Near-real-time wildfire monitoring with Leaflet, satellite hotspots (MODIS/VIIRS) & citizen reports |
 | 🤖 **AI Verification** | Google Gemini Vision API analyzes uploaded images for fire/smoke detection |
-| 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time over a Cloudflare proxy; graceful static fallback when unreachable) |
+| 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time over a Cloudflare proxy; unreachable = an honest empty sky, zero fabricated hotspots) |
 | 📊 **Fire Risk Index** | Deterministic 0–100 risk indicator from citizen reports, satellite hotspots & wilaya severity |
 | 📈 **History & Open Export** | 30-day activity chart + public CSV/GeoJSON export of reports and hotspots |
 | 👥 **Consensus Engine** | Citizen upvoting system — 5+ confirmations auto-verifies a report |
@@ -145,7 +145,7 @@ observatory/
 │   ├── firebase.ts            # Firebase lazy initialization
 │   ├── ai.ts                  # Gemini AI client
 │   ├── geo.ts                 # Haversine, clustering, wilaya mapping
-│   ├── data.ts                # Seed data (reports, hotspots, wilayas)
+│   ├── data.ts                # Static wilaya registry (names + emergency phones); v2.3.0 purged all demo reports/hotspots
 │   ├── middleware.ts          # JWT auth, error handler
 │   ├── swagger.ts             # OpenAPI 3.0 config
 │   └── routes/
