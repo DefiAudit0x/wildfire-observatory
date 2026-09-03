@@ -51,6 +51,7 @@ class ReportFragment : Fragment() {
     private var descriptionInput: EditText? = null
     private var locationLine: TextView? = null
     private var photoLine: TextView? = null
+    private var telemetryLine: TextView? = null
     private var queueLine: TextView? = null
     private var submitButton: View? = null
 
@@ -84,6 +85,7 @@ class ReportFragment : Fragment() {
         descriptionInput = view.findViewById(R.id.report_description)
         locationLine = view.findViewById(R.id.report_location_line)
         photoLine = view.findViewById(R.id.report_photo_line)
+        telemetryLine = view.findViewById(R.id.report_telemetry_line)
         queueLine = view.findViewById(R.id.report_queue_line)
         submitButton = view.findViewById(R.id.report_submit)
 
@@ -103,12 +105,21 @@ class ReportFragment : Fragment() {
         // The in-app camera hands back a cache-file path via the Fragment
         // Result API. The form sits underneath the camera (add + back stack),
         // so severity/description/text survive the capture round trip.
+        // S3: the result also carries the stamped capture's telemetry —
+        // the on-device pre-scan verdict and the alignment estimate — shown
+        // verbatim beside the photo line (estimate-only wording preserved).
         parentFragmentManager.setFragmentResultListener(
             CameraCaptureFragment.RESULT_KEY, viewLifecycleOwner
         ) { _, bundle ->
             val path = bundle.getString(CameraCaptureFragment.RESULT_CAPTURE_PATH)
                 ?: return@setFragmentResultListener
-            ingestImage { File(path).inputStream() }
+            ingestImage(openStream = { File(path).inputStream() }, fromCapture = true)
+            showCaptureTelemetry(
+                prescanPresent = bundle.getBoolean(CameraCaptureFragment.RESULT_PRESCAN_PRESENT),
+                prescanConfidence = bundle.getInt(CameraCaptureFragment.RESULT_PRESCAN_CONFIDENCE),
+                alignPct = bundle.getInt(CameraCaptureFragment.RESULT_ALIGN_PCT),
+                alignName = bundle.getString(CameraCaptureFragment.RESULT_ALIGN_NAME)
+            )
             viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
                 // Cache hygiene: the processed data URI lives in memory now.
                 runCatching { File(path).delete() }
@@ -224,15 +235,50 @@ class ReportFragment : Fragment() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != PICK_IMAGE_REQUEST || resultCode != Activity.RESULT_OK) return
         val uri = data?.data ?: return
-        ingestImage { requireContext().contentResolver.openInputStream(uri) }
+        ingestImage(
+            openStream = { requireContext().contentResolver.openInputStream(uri) },
+            fromCapture = false
+        )
+    }
+
+    /**
+     * S3 — the stamped capture's telemetry verdicts, verbatim estimate-only
+     * wording (web edgeAiStatus + matchedReport lines). A -1 alignPct means
+     * "no alignment was computed" (no fix or no heading) — the line is
+     * omitted rather than faked.
+     */
+    private fun showCaptureTelemetry(
+        prescanPresent: Boolean,
+        prescanConfidence: Int,
+        alignPct: Int,
+        alignName: String?
+    ) {
+        val view = telemetryLine ?: return
+        val prescanText = if (prescanPresent) {
+            getString(R.string.prescan_positive_fmt, prescanConfidence)
+        } else {
+            getString(R.string.prescan_negative_fmt, prescanConfidence)
+        }
+        val alignText = if (alignPct >= 0) {
+            getString(
+                R.string.telemetry_alignment_fmt,
+                alignPct,
+                alignName ?: ""
+            )
+        } else null
+        view.text = if (alignText != null) "$prescanText\n$alignText" else prescanText
+        view.visibility = View.VISIBLE
     }
 
     /**
      * One ingest path for BOTH sources (gallery URI stream, camera cache
      * file): decode bounds → PhotoPipeline sample → decode → JPEG budget →
      * data URI. Behavior-identical to the v2.0.0 picker loop, now shared.
+     * S3: gallery picks run the color pre-scan and get the honest EXIF note
+     * (web parity — the file-upload warning); stamped captures skip both —
+     * their verdicts arrive in the camera result bundle instead.
      */
-    private fun ingestImage(openStream: (boundsOnly: Boolean) -> InputStream?) {
+    private fun ingestImage(openStream: (boundsOnly: Boolean) -> InputStream?, fromCapture: Boolean) {
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             openStream(true)?.use { BitmapFactory.decodeStream(it, null, bounds) }
@@ -241,7 +287,13 @@ class ReportFragment : Fragment() {
             }
             val bitmap = openStream(false)?.use { BitmapFactory.decodeStream(it, null, opts) }
             if (bitmap == null) return
+            // Pre-scan on the decoded frame BEFORE it is recycled (gallery
+            // only — stamped captures deliver their verdict in the bundle).
+            val scan = if (!fromCapture) {
+                TelemetryCamera.preScan(TelemetryOverlay.downsamplePixels(bitmap))
+            } else null
             val bytes = PhotoPipeline.compressWithinBudget(bitmap)
+            bitmap.recycle()
             if (bytes == null) {
                 Toast.makeText(requireContext(), R.string.report_photo_too_big, Toast.LENGTH_LONG).show()
                 return
@@ -249,6 +301,15 @@ class ReportFragment : Fragment() {
             imageDataUri = "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
             photoLine?.text = getString(R.string.report_photo_attached_fmt, bytes.size / 1024)
             photoLine?.visibility = View.VISIBLE
+            if (scan != null) {
+                val prescanText = if (scan.present) {
+                    getString(R.string.prescan_positive_fmt, scan.confidence)
+                } else {
+                    getString(R.string.prescan_negative_fmt, scan.confidence)
+                }
+                telemetryLine?.text = "$prescanText\n${getString(R.string.gallery_no_telemetry)}"
+                telemetryLine?.visibility = View.VISIBLE
+            }
         } catch (e: Exception) {
             Toast.makeText(requireContext(), R.string.report_photo_failed, Toast.LENGTH_SHORT).show()
         }
@@ -282,6 +343,8 @@ class ReportFragment : Fragment() {
                     imageDataUri = null
                     photoLine?.text = ""
                     photoLine?.visibility = View.GONE
+                    telemetryLine?.text = ""
+                    telemetryLine?.visibility = View.GONE
                 } else if (ok && userError == AppRepository.OFFLINE_QUEUED_MSG) {
                     Toast.makeText(ctx, userError, Toast.LENGTH_LONG).show()
                 } else if (!ok) {
@@ -298,6 +361,7 @@ class ReportFragment : Fragment() {
         descriptionInput = null
         locationLine = null
         photoLine = null
+        telemetryLine = null
         queueLine = null
         submitButton = null
         severityButtons.clear()

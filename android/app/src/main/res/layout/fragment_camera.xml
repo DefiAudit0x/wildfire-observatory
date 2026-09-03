@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v2.2.0 — full-bleed in-app camera. PreviewView under dark chrome:
-     bottom row = flip pill / ember shutter dead-center / close pill
-     (start-end mirror automatically in RTL), hint pill floats above the
-     row. Every control sits inside the parent's inset padding (the
-     activity pads the container with system bars already). -->
+<!-- v2.9.0 — full-bleed telemetry camera (S3 web ReportForm parity).
+     PreviewView under dark chrome + the evidentiary HUD:
+       top    = compass chip + stamp toggle chip + alignment estimate chip
+       center = crosshair (the frame the stamp draws at capture)
+       lower  = manual heading/pitch sliders + GPS/BEARING/PITCH status line
+       bottom = flip pill / ember shutter dead-center / close pill
+     (start-end mirror automatically in RTL). Every control sits inside the
+     parent's inset padding (the activity pads the container with system
+     bars already). -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -14,23 +18,157 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <TextView
-        android:id="@+id/camera_hint"
-        android:layout_width="wrap_content"
+    <View
+        android:id="@+id/camera_crosshair"
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_crosshair" />
+
+    <LinearLayout
+        android:id="@+id/camera_telemetry_bar"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_gravity="center_horizontal|bottom"
-        android:layout_marginStart="18dp"
-        android:layout_marginEnd="18dp"
-        android:layout_marginBottom="118dp"
-        android:background="@drawable/bg_chip"
-        android:gravity="center"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp"
-        android:text="@string/camera_hint"
-        android:textColor="@color/text_muted"
-        android:textSize="12sp" />
+        android:layout_gravity="top|fill_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp"
+        android:paddingTop="10dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:id="@+id/camera_compass"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:maxLines="2"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="@string/camera_compass_none"
+                android:textColor="@color/accent_amber"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Space
+                android:layout_width="8dp"
+                android:layout_height="1dp" />
+
+            <TextView
+                android:id="@+id/camera_stamp_toggle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="@drawable/bg_chip"
+                android:gravity="center"
+                android:paddingStart="12dp"
+                android:paddingEnd="12dp"
+                android:paddingTop="8dp"
+                android:paddingBottom="8dp"
+                android:text="@string/camera_stamp_on"
+                android:textColor="@color/accent_green"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/camera_alignment"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:maxLines="2"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="7dp"
+            android:paddingBottom="7dp"
+            android:text="@string/camera_alignment_no_fix"
+            android:textColor="@color/text_secondary"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|fill_horizontal"
+        android:orientation="vertical"
+        android:paddingStart="18dp"
+        android:paddingEnd="18dp">
+
+        <!-- Manual overrides — the no-sensor path stamps MANUAL like the web -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/camera_manual_heading_hint"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/camera_heading_slider"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:progressTint="@color/accent_red"
+                android:thumbTint="@color/accent_red" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:text="@string/camera_manual_pitch_hint"
+                android:textColor="@color/text_muted"
+                android:textSize="11sp" />
+
+            <SeekBar
+                android:id="@+id/camera_pitch_slider"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:progressTint="@color/accent_amber"
+                android:thumbTint="@color/accent_amber" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/camera_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:gravity="center"
+            android:text="@string/camera_status_fmt"
+            android:textColor="@color/text_faint"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/camera_hint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="4dp"
+            android:layout_marginBottom="6dp"
+            android:background="@drawable/bg_chip"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:text="@string/camera_hint"
+            android:textColor="@color/text_muted"
+            android:textSize="12sp" />
+    </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
