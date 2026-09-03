@@ -45,7 +45,7 @@ export function computeFireRisk(
   const activeFires = active.length;
   const criticalFires = active.filter((r) => r.severity === "critical").length;
   const liveHotspots = satellites.filter(
-    (s) => !s.isFallback && isFreshThreatTimestamp(s.scanTime, now)
+    (s) => isFreshThreatTimestamp(s.scanTime, now)
   ).length;
 
   let score = activeFires * 8 + criticalFires * 12 + Math.min(liveHotspots * 2, 20);

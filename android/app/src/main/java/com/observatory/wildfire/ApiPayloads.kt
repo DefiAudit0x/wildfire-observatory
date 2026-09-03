@@ -166,10 +166,19 @@ object ApiPayloads {
         return "https://router.project-osrm.org/route/v1/driving/$coord1;$coord2?overview=full&geometries=geojson"
     }
 
-    /** Nominatim reverse geocode for the report form's place-name autofill. */
-    fun buildNominatimReverseUrl(lat: Double, lng: Double, lang: String = "ar"): String =
-        "https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14" +
-            "&lat=${fmt(lat)}&lon=${fmtLng(lng)}&accept-language=$lang"
+    /**
+     * F6/W-H6: reverse geocoding goes through the SERVER's same-origin proxy
+     * (/api/geo/reverse) instead of hitting nominatim.openstreetmap.org
+     * directly. The direct calls leaked exact field coordinates to a third
+     * party with no consent gate, violated Nominatim's User-Agent policy
+     * (the keyless API answered with 403 storms during policy degradation),
+     * and duplicated the lookup on every GPS publish. The server now owns
+     * the egress: identifying UA, 5-min cache per coordinate, coverage gate.
+     * Response shape mirrors Nominatim's JSON, so Parsers.parseNominatimReverse
+     * is unchanged.
+     */
+    fun buildGeoReversePath(lat: Double, lng: Double, lang: String = "ar"): String =
+        "/api/geo/reverse?lat=${fmt(lat)}&lng=${fmtLng(lng)}&lang=$lang"
 
     /** Open-Meteo current weather for the observatory + radar wind vector. */
     fun buildOpenMeteoUrl(lat: Double, lng: Double): String =

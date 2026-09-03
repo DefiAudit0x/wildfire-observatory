@@ -59,7 +59,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const fetchFullSos = useCallback(async () => {
     if (!unlocked) return;
     try {
-      const res = await fetch("/api/sos/full", { credentials: "same-origin" });
+      // W-M10: 15s ceiling (apiFetch) — a hung link used to loop the
+      // "loading" spinner forever with no error and no retry path.
+      const res = await apiFetch("/api/sos/full", "GET");
       if (res.ok) {
         setFullSos(await res.json());
         sosErrorRef.current = false;
@@ -90,7 +92,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const fetchUserLocations = useCallback(async () => {
     setLoadingUsers(true);
     try {
-      const res = await fetch("/api/locations", { credentials: "same-origin" });
+      // W-M10: 15s ceiling — see fetchFullSos.
+      const res = await apiFetch("/api/locations", "GET");
       if (res.ok) {
         const data = await res.json();
         setActiveUsers(data);
@@ -157,12 +160,29 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       fetchFullSos();
       fetchUserLocations();
       fetchRegisteredTeams();
+      // W-M11: the 15s poll used to run while the tab was HIDDEN — 3
+      // endpoints every 15s burning battery/data through long shifts for
+      // nobody. The poll pauses when document.hidden and a visibilitychange
+      // listener refreshes immediately when the operator comes back, so the
+      // map is never stale on return.
       const interval = setInterval(() => {
+        if (document.hidden) return;
         fetchFullSos();
         fetchUserLocations();
         fetchRegisteredTeams();
       }, 15000);
-      return () => clearInterval(interval);
+      const onVisibility = () => {
+        if (!document.hidden && unlocked) {
+          fetchFullSos();
+          fetchUserLocations();
+          fetchRegisteredTeams();
+        }
+      };
+      document.addEventListener("visibilitychange", onVisibility);
+      return () => {
+        clearInterval(interval);
+        document.removeEventListener("visibilitychange", onVisibility);
+      };
     }
   }, [unlocked, fetchFullSos, fetchUserLocations, fetchRegisteredTeams]);
 
@@ -170,7 +190,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     let cancelled = false;
     const probeSession = async () => {
       try {
-        const res = await fetch("/api/admin/session", { credentials: "same-origin" });
+        // W-M10: 15s ceiling — the probe gated the whole panel behind a
+        // spinner with no timeout before.
+        const res = await apiFetch("/api/admin/session", "GET");
         if (cancelled) return;
         if (res.ok) {
           setUnlocked(true);

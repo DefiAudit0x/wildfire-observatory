@@ -212,21 +212,27 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
   }, [mapClickedCoords]);
 
   // v1.0.4 field fix: a confirmed GPS fix or map click now ALSO fills the
-  // place-name field automatically (Nominatim reverse geocoding, keyless) —
-  // the owner should never re-type what the device already knows. The user's
-  // own text is NEVER overwritten: the lookup only fills an EMPTY field.
-  // Debounced + aborted so fast coordinate churn (map dragging) does not spam
-  // the free API; offline/rate-limited failures degrade to typing by hand.
+  // place-name field automatically (reverse geocoding) — the owner should
+  // never re-type what the device already knows. The user's own text is
+  // NEVER overwritten: the lookup only fills an EMPTY field.
+  // Debounced + aborted so fast coordinate churn (map dragging) does not
+  // spam the API; offline/rate-limited failures degrade to typing by hand.
+  // W-H6: the lookup used to hit nominatim.openstreetmap.org DIRECTLY from
+  // the browser — exact field coordinates leaked to a third party with no
+  // consent gate while the project deliberately keeps the location pulse
+  // private. It now goes through the same-origin proxy /api/geo/reverse,
+  // which is the only egress (server attaches the policy-required UA,
+  // caches churn, bounds the coverage).
   useEffect(() => {
     const parsedLat = Number(lat);
     const parsedLng = Number(lng);
     if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${parsedLat}&lon=${parsedLng}&zoom=14&accept-language=ar`,
-        { signal: controller.signal, headers: { Accept: "application/json" } }
-      )
+      fetch(`/api/geo/reverse?lat=${parsedLat}&lng=${parsedLng}&lang=ar`, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      })
         .then((r) => (r.ok ? r.json() : null))
         .then((data: { name?: string; display_name?: string } | null) => {
           if (!data) return;

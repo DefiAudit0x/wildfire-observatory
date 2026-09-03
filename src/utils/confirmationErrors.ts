@@ -26,3 +26,23 @@ export function getConfirmationErrorMessage(code: ConfirmationErrorCode, isArabi
 
   return isArabic ? messages[code].ar : messages[code].fr;
 }
+
+/**
+ * W-M9: confirm failures used to be swallowed — the hook exposed the error
+ * but no surface rendered it. This mapper is the toast-facing entry point:
+ * known codes get the translated text; a server-provided string (bounded to
+ * 200 chars by the hook) is shown as-is; anything else degrades honestly.
+ */
+export function describeConfirmationError(error: ConfirmationErrorCode | string, isArabic: boolean): string {
+  const KNOWN: ConfirmationErrorCode[] = [
+    "CONFIRMATION_FAILED",
+    "INVALID_CONFIRMATION_RESPONSE",
+    "CONFIRMATION_TIMEOUT",
+    "CONFIRMATION_CONNECTION_FAILED",
+  ];
+  if (KNOWN.includes(error as ConfirmationErrorCode)) {
+    return getConfirmationErrorMessage(error as ConfirmationErrorCode, isArabic);
+  }
+  const raw = String(error).trim();
+  return raw || (isArabic ? "تعذر تسجيل التأكيد" : "Impossible d'enregistrer la confirmation");
+}

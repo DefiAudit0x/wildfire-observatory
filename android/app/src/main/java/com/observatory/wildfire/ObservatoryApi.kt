@@ -22,7 +22,10 @@ import java.nio.charset.StandardCharsets
 class ObservatoryApi(private val baseUrl: String) {
 
     companion object {
-        const val USER_AGENT = "WildfireObservatory-Android/2.0"
+        // F18: the UA used to hardcode "Android/2.0" while versionName moved
+        // on — log triage compared mismatched versions. It now reads the
+        // ACTUAL build version at class-init time.
+        val USER_AGENT = "WildfireObservatory-Android/${BuildConfig.VERSION_NAME}"
         private const val MAX_RESPONSE_BYTES = 32 * 1024
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000

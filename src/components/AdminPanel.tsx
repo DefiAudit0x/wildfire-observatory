@@ -8,6 +8,7 @@ import BadgeManager from "./admin/BadgeManager";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
+import { apiFetch } from "../utils/adminApi";
 import { useReportModeration } from "../hooks/useReportModeration";
 
 interface ConfirmState {
@@ -44,7 +45,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     let cancelled = false;
     const probeSession = async () => {
       try {
-        const res = await fetch("/api/admin/session", { credentials: "same-origin" });
+        const res = await apiFetch("/api/admin/session", "GET");
         if (!cancelled) setIsAuthenticated(res.ok);
       } catch {
         if (!cancelled) setIsAuthenticated(false);
@@ -64,12 +65,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
     setLoading(true);
 
     try {
-const res = await fetch("/api/admin/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ password }),
-      });
+const res = await apiFetch("/api/admin/verify", "POST", { password });
 
       if (res.ok) {
         setIsAuthenticated(true);
@@ -128,11 +124,7 @@ const res = await fetch("/api/admin/verify", {
         setConfirm(null);
         setDeletingIds((prev) => new Set(prev).add(id));
         try {
-          const res = await fetch(`/api/admin/reports/${id}/delete`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "same-origin",
-          });
+          const res = await apiFetch(`/api/admin/reports/${id}/delete`, "POST");
 
           if (res.ok) {
             onRefresh();

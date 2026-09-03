@@ -67,6 +67,21 @@
                 android:textColor="@color/text_primary"
                 android:textSize="26sp"
                 android:textStyle="bold" />
+
+            <!-- F11: explicit recenter control. Auto-recenter no longer
+                 hijacks the view on every fix — the user can pan freely and
+                 pull the dot back themselves. -->
+            <TextView
+                android:id="@+id/recenter_button"
+                android:layout_width="52dp"
+                android:layout_height="52dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_zoom_button"
+                android:gravity="center"
+                android:text="◎"
+                android:textColor="@color/text_primary"
+                android:textSize="22sp"
+                android:textStyle="bold" />
         </LinearLayout>
     </FrameLayout>
 

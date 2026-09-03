@@ -67,6 +67,9 @@ class TeamLocationService : Service(), LocationListener {
         const val EXTRA_CONFIG = "config"
         private const val NOTIFICATION_ID = 2 // MeshService owns 1
         private const val MAX_RESPONSE_BYTES = 4096
+        // F10: a fix older than this is a dead lock — the beat stops POSTing
+        // it and the notification says so until the next fresh fix lands.
+        private const val STALE_FIX_MAX_MS = 10 * 60 * 1000L
 
         // State listeners are registered by MainActivity and forwarded into
         // the WebView as `teamTrackingState` CustomEvents. CopyOnWrite: the
@@ -121,6 +124,9 @@ class TeamLocationService : Service(), LocationListener {
         Thread(runnable, "team-location-beats").apply { isDaemon = false }
     }
     private var beatTask: ScheduledFuture<*>? = null
+    // F16: written by the beat thread, reset by the GPS callback thread —
+    // without @Volatile the reset could stay thread-local forever.
+    @Volatile
     private var waitingForFixNotified = false
 
     data class Config(
@@ -296,6 +302,20 @@ class TeamLocationService : Service(), LocationListener {
                 }
                 return
             }
+            // F10: age gate. Without it a device that lost its lock kept
+            // re-sending the SAME coordinates every beat, and command read
+            // the position as live. Past STALE_FIX_MAX_MS the beat holds the
+            // location POST (the notification says so) and resumes on the
+            // next fresh fix — honest silence instead of a moving ghost.
+            val fixAgeMs = System.currentTimeMillis() - fix.time
+            if (fixAgeMs > STALE_FIX_MAX_MS) {
+                if (!waitingForFixNotified) {
+                    waitingForFixNotified = true
+                    val minutes = (fixAgeMs / 60000L).coerceAtLeast(1)
+                    updateNotification("\u062a\u0645 \u0641\u0642\u062f\u0627\u0646 \u0625\u0634\u0627\u0631\u0629 GPS \u2014 \u062a\u0645 \u0625\u064a\u0642\u0627\u0641 \u0625\u0631\u0633\u0627\u0644 \u0645\u0648\u0642\u0639 \u0642\u062f\u064a\u0645 (${minutes} \u062f\u0642\u064a\u0642\u0629)")
+                }
+                return
+            }
             val body = TeamLocationLogic.buildHeartbeatBodyJson(
                 lat = fix.latitude,
                 lng = fix.longitude,
@@ -303,6 +323,7 @@ class TeamLocationService : Service(), LocationListener {
                 heading = if (fix.hasBearing()) fix.bearing.toDouble() else null,
                 speed = if (fix.hasSpeed()) fix.speed.toDouble() else null,
                 batteryPct = readBatteryPct(),
+                fixTimeMs = fix.time,
             )
             val outcome = postJson("/api/teams/heartbeat", body, cfg)
             if (outcome == null) return // transport failure: retry next tick — never a session verdict

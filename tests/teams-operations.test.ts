@@ -115,6 +115,19 @@ describe("POST /api/teams/heartbeat", () => {
     expect(live[0].trail.length).toBeGreaterThan(0);
   });
 
+  it("F10: carries the client's fixTimeMs into the live registry", async () => {
+    heartbeatableMocks("tm-hb-fix");
+    const sent = Date.now() - 4_000;
+    const res = await supertest(createApp())
+      .post("/api/teams/heartbeat")
+      .set(memberAuth("tm-hb-fix"))
+      .set(nextIp())
+      .send({ lat: 36.75, lng: 5.07, fixTimeMs: sent });
+    expect(res.status).toBe(200);
+    const live = listPositions({ teamId: "team-a1" })[0];
+    expect(live.fixTimeMs).toBe(sent);
+  });
+
   it("401 without a team token, 400 for out-of-coverage coordinates", async () => {
     heartbeatableMocks("tm-hb2");
     const app = createApp();

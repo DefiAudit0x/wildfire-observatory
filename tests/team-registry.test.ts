@@ -111,3 +111,33 @@ describe("teamRegistry — snapshot throttle (durable layer)", () => {
     expect(fsMock.docMergeSet).not.toHaveBeenCalled();
   });
 });
+
+describe("teamRegistry — F10 fix-time plumbing", () => {
+  it("stores fixTimeMs when the client reports its GPS fix epoch", () => {
+    const now = Date.now();
+    recordHeartbeat({
+      memberId: "tm-fixtime",
+      teamId: "team-t5",
+      name: "عضو",
+      lat: 36.7,
+      lng: 5.0,
+      fixTimeMs: now - 2_000,
+      now,
+    });
+    const pos = listPositions({ teamId: "team-t5" })[0];
+    expect(pos.fixTimeMs).toBe(now - 2_000);
+  });
+
+  it("keeps fixTimeMs null for legacy clients (never guesses an age)", () => {
+    recordHeartbeat({
+      memberId: "tm-legacy",
+      teamId: "team-t5",
+      name: "عضو قديم",
+      lat: 36.7,
+      lng: 5.0,
+      now: Date.now(),
+    });
+    const pos = listPositions({ teamId: "team-t5" })[0];
+    expect(pos.fixTimeMs).toBeNull();
+  });
+});

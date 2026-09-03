@@ -30,8 +30,6 @@ class RadarView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
-    data class UiBlip(val blip: RadarModel.Blip)
-
     private var blips: List<RadarModel.Blip> = emptyList()
     private var userHasFix: Boolean = false
     private var windFromDeg: Double? = null

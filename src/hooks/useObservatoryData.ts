@@ -226,6 +226,9 @@ export function useObservatoryData() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(false);
   const [confirmError, setConfirmError] = useState<ConfirmationErrorCode | string | null>(null);
+  // W-M9: failures must be VISIBLE — App renders confirmError as a toast and
+  // clears it through this setter (the hook itself never silently drops it).
+  const clearConfirmError = useCallback(() => setConfirmError(null), []);
   const [lastRefreshed, setLastRefreshed] = useState<number>(0);
   const [lastBackendContact, setLastBackendContact] = useState<number>(0);
   const [meshStatus, setMeshStatus] = useState<"connecting" | "online" | "offline">("offline");
@@ -765,6 +768,7 @@ export function useObservatoryData() {
     handleCreateReport,
     handleConfirmReport,
     confirmError,
+    clearConfirmError,
     handleMarkNotificationRead,
   };
 }

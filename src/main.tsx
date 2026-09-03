@@ -18,6 +18,33 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 
 registerSW({ immediate: true });
 
+// W-M12: stale-chunk safety net. A deploy can invalidate chunks an
+// already-open tab is still requesting (React.lazy route splits); instead of
+// a dead "Failed to fetch dynamically imported module" screen, reload ONCE —
+// the sessionStorage guard prevents a reload loop if the failure persists.
+const CHUNK_LOAD_KEY = "chunk-load-reloaded";
+function isChunkLoadError(message: string): boolean {
+  return (
+    message.includes("Failed to fetch dynamically imported module") ||
+    message.includes("Importing a module script failed") ||
+    message.includes("error loading dynamically imported module") ||
+    message.includes("Loading chunk")
+  );
+}
+window.addEventListener("error", (e) => {
+  if (!e.message || !isChunkLoadError(e.message)) return;
+  if (sessionStorage.getItem(CHUNK_LOAD_KEY)) return;
+  sessionStorage.setItem(CHUNK_LOAD_KEY, "1");
+  window.location.reload();
+});
+window.addEventListener("unhandledrejection", (e) => {
+  const message = String((e.reason && (e.reason as Error).message) || e.reason || "");
+  if (!isChunkLoadError(message)) return;
+  if (sessionStorage.getItem(CHUNK_LOAD_KEY)) return;
+  sessionStorage.setItem(CHUNK_LOAD_KEY, "1");
+  window.location.reload();
+});
+
 // Store-and-forward mesh gateway: relay decryptable offline reports to the API
 initMeshRelay();
 

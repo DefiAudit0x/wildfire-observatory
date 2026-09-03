@@ -3,14 +3,15 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import config from "../config.js";
 import logger from "../logger.js";
-import { collectionGet } from "../fs.js";
+import { collectionGet, docUpdate } from "../fs.js";
+import { ownsDevice, issueDeviceCookie } from "../deviceBinding.js";
 import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
 
 const router = Router();
 
-const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number }>();
+const activeUserLocations = new Map<string, { lat: number; lng: number; name: string; role: string; lastSeen: number; identityVerified?: boolean }>();
 
 const LOCATION_TTL_MS = 5 * 60 * 1000;
 const locationCleanupTimer = setInterval(() => {
@@ -114,8 +115,21 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
     }
   }
 
+  // S-H4: badge ownership is a possession proof, not a knowledge proof. The
+  // code alone (short, shared, leaked in screenshots) used to ADOPT the
+  // owner's identity on the command map — anyone who learned a volunteer's
+  // badge could impersonate a responder from any device. Now identity is
+  // adopted only when the request proves possession of the server-signed
+  // device cookie for its claimed deviceId, AND that device is the one the
+  // badge is durably bound to (first verified claim binds; later claims from
+  // a different device are rejected and logged). Unverified heartbeats stay
+  // on the map as honest anonymous citizens (identityVerified:false) —
+  // location sharing itself remains open because a trapped person may have
+  // nothing but a browser.
   let finalName = name || "غير معروف";
   let finalRole = "citizen";
+  let identityVerified = false;
+  let badgeBoundToDevice = false;
 
   if (badgeCode) {
     try {
@@ -129,8 +143,39 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
         return true;
       });
       if (match) {
-        finalName = match.ownerName;
-        finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
+        const boundDevice: string | null = typeof match.boundDeviceId === "string" && match.boundDeviceId ? match.boundDeviceId : null;
+        const deviceProven = ownsDevice(req, deviceId);
+        if (boundDevice && boundDevice !== deviceId) {
+          // Badge already belongs to another device — knowledge of the code
+          // is not enough to steal it. Audit so dispatchers can spot probing.
+          logger.warn({ badge: badgeCode, claimedDevice: deviceId, boundDevice }, "Heartbeat badge claim rejected: bound to another device");
+          badgeBoundToDevice = true;
+        } else if (deviceProven) {
+          finalName = match.ownerName;
+          finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
+          identityVerified = true;
+          if (!boundDevice) {
+            // First verified claim binds the badge to THIS device durably.
+            const persisted = await docUpdate("badgeCodes", badgeCode, {
+              boundDeviceId: deviceId,
+              boundAt: new Date().toISOString(),
+            });
+            if (persisted) {
+              match.boundDeviceId = deviceId;
+              logAdminAction("badge.device_bind", { badge: badgeCode, deviceId }, actorFromRequest(req)).catch(() => {});
+            } else {
+              // Persistence down: adopt for this beat but do NOT lock the
+              // binding — an unbound adoption keeps the pre-S-H4 window open,
+              // so log it loudly instead of silently trusting it.
+              logger.warn({ badge: badgeCode }, "Badge device-bind persistence failed; identity adopted without lock");
+            }
+          }
+        } else {
+          // Possession not proven YET: issue the signed cookie so the next
+          // beat (30 s later) can verify. Same-origin web clients store it
+          // automatically; this is the one-beat bootstrap delay.
+          issueDeviceCookie(res, deviceId);
+        }
       }
     } catch (err) {
       // ignore badge matching errors, fall back to provided name/role
@@ -143,8 +188,9 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
     name: finalName,
     role: finalRole,
     lastSeen: Date.now(),
+    identityVerified,
   });
-  res.json({ success: true, name: finalName, role: finalRole });
+  res.json({ success: true, name: finalName, role: finalRole, identityVerified, ...(badgeBoundToDevice ? { badgeBoundToDevice } : {}) });
 });
 
 router.post("/auth/central-command", centralCommandLimiter, async (req: Request, res: Response) => {
@@ -182,6 +228,7 @@ router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {
     deviceId,
     ...data,
     lastSeen: new Date(data.lastSeen).toISOString(),
+    identityVerified: data.identityVerified === true,
   }));
   res.json(users);
 });

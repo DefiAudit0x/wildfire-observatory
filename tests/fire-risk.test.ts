@@ -28,7 +28,6 @@ const sat = (id: string, fallback = false): SatelliteHotspot => ({
   scanTime: "2026-08-01T09:45:00Z",
   satellite: "VIIRS",
   wilaya: "الجزائر - عنابة (Algérie - Annaba)",
-  isFallback: fallback,
 });
 
 const wilaya = (severity: WilayaStatus["severity"]): WilayaStatus => ({
@@ -48,9 +47,9 @@ describe("computeFireRisk", () => {
     expect(risk.level).toBe("low");
   });
 
-  it("ignores resolved reports and fallback hotspots", () => {
+  it("ignores resolved reports (no fallback hotspots exist since the v2.3.0 purge)", () => {
     const resolved = { ...baseReport, status: "resolved" as const, severity: "critical" as const };
-    const risk = computeFireRisk([resolved], [sat("s", true)], [wilaya("safe")], NOW);
+    const risk = computeFireRisk([resolved], [], [wilaya("safe")], NOW);
     expect(risk.score).toBe(0);
     expect(risk.activeFires).toBe(0);
   });

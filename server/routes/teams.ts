@@ -74,6 +74,11 @@ const heartbeatSchema = z.object({
   heading: z.coerce.number().finite().min(0).max(360).optional(),
   speed: z.coerce.number().finite().min(0).max(80).optional(),
   batteryPct: z.coerce.number().finite().min(0).max(100).optional(),
+  // F10: the client's own GPS fix timestamp. Without it a device that lost
+  // its fix keeps re-sending the SAME stale coordinates every beat and the
+  // command map renders a moving member that may have been dark for an hour.
+  // Absent on legacy clients — treated as "unknown age", never fabricated.
+  fixTimeMs: z.coerce.number().finite().int().nonnegative().optional(),
 });
 
 const missionPhaseSchema = z
@@ -488,7 +493,7 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     res.status(400).json({ error: "Invalid heartbeat fields" });
     return;
   }
-  const { lat, lng, accuracy, heading, speed, batteryPct } = parsed.data;
+  const { lat, lng, accuracy, heading, speed, batteryPct, fixTimeMs } = parsed.data;
   if (!inNorthAfricaBounds(lat, lng)) {
     res.status(400).json({ error: "Coordinates are outside the coverage area" });
     return;
@@ -538,6 +543,7 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     heading: heading ?? null,
     speed: speed ?? null,
     batteryPct: batteryPct ?? null,
+    fixTimeMs: fixTimeMs ?? null,
     now,
   });
   snapshotIfDue(token.memberId, token.teamId, now);

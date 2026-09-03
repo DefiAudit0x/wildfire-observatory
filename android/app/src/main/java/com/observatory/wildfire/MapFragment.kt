@@ -52,6 +52,11 @@ class MapFragment : Fragment() {
     private var routeLine: Polyline? = null
     private var mapReady = false
     private var lastUserLatLng: Pair<Double, Double>? = null
+    // F11: recenter discipline. The old onFix called animateTo on EVERY
+    // fix, fighting the user's free pan. Recentering now happens only on
+    // the first fix, when the user walks their marker OUT of the visible
+    // window, or when the recenter button is pressed.
+    private var firstFixSeen = false
 
     // F2: named listener so onDestroyView can deregister from the
     // application-scoped engine (an inline lambda leaked this view forever).
@@ -72,7 +77,6 @@ class MapFragment : Fragment() {
         statusText = view.findViewById(R.id.map_status)
         routeButton = view.findViewById(R.id.route_button)
         routeInfoText = view.findViewById(R.id.route_info)
-
         // osmdroid session config: a descriptive UA (tile servers require one)
         // and app-private cache paths (no storage permission needed on 26+).
         val ctx = requireContext()
@@ -96,6 +100,11 @@ class MapFragment : Fragment() {
         mv.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
         view.findViewById<View>(R.id.zoom_in).setOnClickListener { mv.controller.zoomIn() }
         view.findViewById<View>(R.id.zoom_out).setOnClickListener { mv.controller.zoomOut() }
+        // F11: pull the user dot back into view on demand.
+        view.findViewById<View>(R.id.recenter_button).setOnClickListener {
+            val ll = lastUserLatLng ?: return@setOnClickListener
+            mv.controller.animateTo(GeoPoint(ll.first, ll.second))
+        }
         mv.controller.setZoom(DEFAULT_ZOOM)
         // Cold start over Algiers until the first fix arrives.
         mv.controller.setCenter(GeoPoint(36.7538, 3.0588))
@@ -154,7 +163,15 @@ class MapFragment : Fragment() {
             }
         }
         userMarker?.position = point
-        mv.controller.animateTo(point)
+        // F11: auto-recenter ONLY when it helps — first fix, or the user's
+        // dot has walked out of the visible window. During free panning the
+        // camera stays where the user put it.
+        val box = mv.boundingBox
+        val outsideView = box == null || !box.contains(point)
+        if (!firstFixSeen || outsideView) {
+            firstFixSeen = true
+            mv.controller.animateTo(point)
+        }
         statusText?.text = getString(R.string.map_status_fix_fmt, fix.accuracyM.toInt(), fix.provider)
     }
 

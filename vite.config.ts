@@ -19,8 +19,14 @@ export default defineConfig(() => {
           navigateFallback: '/index.html',
           navigateFallbackDenylist: [/\/api\//],
           cleanupOutdatedCaches: true,
-          clientsClaim: true,
-          skipWaiting: true,
+          // W-M12: autoUpdate (skipWaiting+clientsClaim) let a NEW service
+          // worker take over mid-session while React.lazy boards were still
+          // requesting OLD chunks → "Failed to fetch dynamically imported
+          // module" after every deploy. With skipWaiting:false the old SW
+          // serves a consistent old bundle until every tab closes; the
+          // chunk-error reload handler in src/main.tsx is the safety net.
+          skipWaiting: false,
+          clientsClaim: false,
           maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
           runtimeCaching: [
             {

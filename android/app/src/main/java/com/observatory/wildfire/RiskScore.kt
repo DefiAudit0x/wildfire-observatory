@@ -47,8 +47,9 @@ object RiskScore {
         var sum = 0.0
         for ((severity, verified) in reports) {
             val w = severityWeight(severity, verified)
-            if (verified && severity == "rejected") continue
-            if (!verified && severity == "rejected") continue
+            // F18: the two original lines (verified+rejected, unverified+rejected)
+            // were a duplicated guard — one check covers both arms.
+            if (severity == "rejected") continue
             sum += w
         }
         val hotspotBonus = strongHotspots.coerceAtLeast(0).coerceAtMost(HOTSPOT_BONUS_MAX)
