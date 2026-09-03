@@ -49,6 +49,24 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
     }
 
     /**
+     * Hydrate the queue from persisted state (F1: cold-start survival).
+     * Replaces in-memory contents with [entries] in order, deduped by key,
+     * capped at capacity keeping the NEWEST entries (mirrors enqueue-time
+     * eviction: capacity bounds memory, the newest intel must always fit).
+     * Attempts/lastAttemptMs survive so a nearly-poisoned entry stays
+     * nearly-poisoned after restore instead of getting fresh lives.
+     */
+    @Synchronized
+    fun restoreAll(entries: List<Entry<T>>) {
+        items.clear()
+        val seen = HashSet<String>()
+        for (e in entries) {
+            if (seen.add(e.key)) items.addLast(e)
+        }
+        while (items.size > capacity) items.removeFirst()
+    }
+
+    /**
      * Try up to [max] entries in FIFO order via [send]. true = delivered
      * (removed), false = transport failure this round (kept, attempts+1).
      * Returns the number of delivered entries.

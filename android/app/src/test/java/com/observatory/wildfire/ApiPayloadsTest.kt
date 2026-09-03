@@ -83,6 +83,27 @@ class ApiPayloadsTest {
     }
 
     @Test
+    fun `sos body embeds clientGeneratedId when provided (F1+F4 contract)`() {
+        val pair = ApiPayloads.buildSosJson(
+            deviceId = "dev-1", lat = 36.75, lng = 3.05,
+            name = null, phone = null, textMessage = null,
+            audioDataUri = null, audioDurationSec = null,
+            clientGeneratedId = "abcd1234abcd1234abcd1234abcd1234"
+        )
+        assertNull(pair?.second)
+        val body = pair?.first!!
+        assertTrue(body.contains("\"clientGeneratedId\":\"abcd1234abcd1234abcd1234abcd1234\""))
+        // Right after deviceId — the server reads it before admission.
+        assertTrue(body.indexOf("\"clientGeneratedId\"") < body.indexOf("\"lat\""))
+    }
+
+    @Test
+    fun `sos body omits clientGeneratedId when absent`() {
+        val body = ApiPayloads.buildSosJson("d", 36.0, 3.0, null, null, null, null, null)?.first!!
+        assertTrue(!body.contains("clientGeneratedId"))
+    }
+
+    @Test
     fun `join body validates code and name`() {
         val ok = ApiPayloads.buildJoinJson("  AB12CD34  ", " عضو الفريق ")
         assertEquals("{\"code\":\"AB12CD34\",\"name\":\"عضو الفريق\"}", ok?.first)

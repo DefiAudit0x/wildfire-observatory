@@ -56,6 +56,12 @@ class ReportFragment : Fragment() {
     private var autofilledName = false
     private var autofilledWilaya = false
 
+    // F2: named listener so onDestroyView can deregister from the
+    // application-scoped engine (an inline lambda leaked this view forever).
+    private val locationListener: (LocationEngine.State) -> Unit = { state ->
+        activity?.runOnUiThread { onLocation(state) }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -100,9 +106,7 @@ class ReportFragment : Fragment() {
             }
         }
 
-        app.locationEngine.addListener { state ->
-            activity?.runOnUiThread { onLocation(state) }
-        }
+        app.locationEngine.addListener(locationListener)
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -259,6 +263,7 @@ class ReportFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        app.locationEngine.removeListener(locationListener)
         locationNameInput = null
         wilayaInput = null
         descriptionInput = null

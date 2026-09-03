@@ -74,6 +74,14 @@ class SosFragment : Fragment() {
     private var recordStartMs = 0L
     private var recordFile: File? = null
     private var countdownRunnable: Runnable? = null
+    private var maxDurationRunnable: Runnable? = null
+
+    // F2: the engine is application-scoped; a lambda registered inline in
+    // onViewCreated would outlive this view and leak it on every tab switch.
+    // One named listener, registered on view-ready, removed on view-gone.
+    private val locationListener: (LocationEngine.State) -> Unit = { state ->
+        activity?.runOnUiThread { renderLocation(state) }
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -104,9 +112,7 @@ class SosFragment : Fragment() {
         sosButton?.setOnClickListener { startCountdown() }
         view.findViewById<View>(R.id.sos_cancel)?.setOnClickListener { cancelCountdown() }
 
-        app.locationEngine.addListener { state ->
-            activity?.runOnUiThread { renderLocation(state) }
-        }
+        app.locationEngine.addListener(locationListener)
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -284,30 +290,65 @@ class SosFragment : Fragment() {
             recordStartMs = System.currentTimeMillis()
             recordState?.text = getString(R.string.sos_recording)
             recordButton?.alpha = 0.6f
-            handler.postDelayed({ if (recording) stopRecording() }, MAX_RECORD_MS)
+            // Named runnable: a stale max-duration timer from a PREVIOUS
+            // recording must never fire into the current one and cut it short.
+            maxDurationRunnable?.let { handler.removeCallbacks(it) }
+            val stopper = Runnable { if (recording) stopRecording() }
+            maxDurationRunnable = stopper
+            handler.postDelayed(stopper, MAX_RECORD_MS)
         } catch (e: Exception) {
             Toast.makeText(ctx, getString(R.string.sos_record_failed), Toast.LENGTH_LONG).show()
             releaseRecorder()
         }
     }
 
-    private fun stopRecording() {
-        try {
-            recorder?.stop()
-        } catch (e: Exception) {
-            // stop() throws when nothing was captured — the file is still junk
+    /**
+     * F3: stop() is what writes the MPEG-4 moov index — without it the file
+     * is unplayable bytes, and skipping release() left the mic hot. Returns
+     * true only when a stop() actually finalized a file (or none was open).
+     */
+    private fun stopRecording(): Boolean {
+        maxDurationRunnable?.let { handler.removeCallbacks(it) }
+        maxDurationRunnable = null
+        val rec = recorder
+        if (rec == null) {
+            recording = false
+            return true
         }
+        val finalized = try {
+            rec.stop()
+            true
+        } catch (e: Exception) {
+            // stop() throws when nothing was captured — the file is junk
+            false
+        }
+        releaseRecorder()
+        recording = false
         recordState?.text = getString(R.string.sos_record_done)
         recordButton?.alpha = 1f
-        releaseRecorder()
+        return finalized
     }
 
     private fun takeRecording(): Pair<String, Int>? {
         val file = recordFile ?: return null
         recordFile = null
-        if (!recording && !file.exists()) return null
-        recording = false
-        if (!file.exists() || file.length() == 0L) return null
+        if (!file.exists() || file.length() == 0L) {
+            if (recorder != null || recording) stopRecording()
+            file.delete()
+            return null
+        }
+        // F3: if the recorder is STILL RUNNING, finalize it NOW. Reading an
+        // MPEG-4 before stop() yields a moov-less file no dispatcher can
+        // play — and the old code nulled `recording` without stopping,
+        // which also bypassed the onDestroyView guard and kept the mic hot.
+        if (recorder != null || recording) {
+            if (!stopRecording()) {
+                // stop() failed: moov never written, the bytes are unusable —
+                // sending them would hand dispatch a broken recording.
+                file.delete()
+                return null
+            }
+        }
         val durationS = ((System.currentTimeMillis() - recordStartMs) / 1000).toInt().coerceIn(1, 20)
         return try {
             val bytes = file.readBytes()
@@ -339,8 +380,12 @@ class SosFragment : Fragment() {
 
     override fun onDestroyView() {
         cancelCountdown()
-        if (recording) stopRecording()
+        // F3: judge by the RECORDER, not the flag — takeRecording() used to
+        // null the flag on a live recorder and this guard skipped cleanup,
+        // leaving the mic open for the rest of the process lifetime.
+        if (recorder != null || recording) stopRecording()
         recordFile?.delete()
+        app.locationEngine.removeListener(locationListener)
         nameInput = null
         phoneInput = null
         messageInput = null

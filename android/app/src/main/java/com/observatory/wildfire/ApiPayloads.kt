@@ -96,6 +96,11 @@ object ApiPayloads {
      * POST /api/sos body. audioDuration clamps 1..20 (server zod ≤20s);
      * textMessage truncates to 500; oversized audio data-URI is refused
      * BEFORE the recorder bytes are wasted on a 400.
+     *
+     * F1+F4 contract: [clientGeneratedId] is minted ONCE per logical SOS and
+     * travels in the body AND as the offline-queue key, so a queue replay
+     * after process death (hours later, past the 5-min deviceId window)
+     * replays the first stored SOS instead of duplicating the emergency.
      */
     fun buildSosJson(
         deviceId: String,
@@ -105,7 +110,8 @@ object ApiPayloads {
         phone: String?,
         textMessage: String?,
         audioDataUri: String?,
-        audioDurationSec: Int?
+        audioDurationSec: Int?,
+        clientGeneratedId: String? = null
     ): Pair<String?, String?>? {
         if (deviceId.isBlank() || deviceId.length > 128) return null to "معرّف الجهاز غير صالح"
         if (!lat.isFinite() || lat < -90.0 || lat > 90.0) return null to "إحداثيات غير صالحة"
@@ -115,6 +121,9 @@ object ApiPayloads {
         }
         val sb = StringBuilder(160)
         sb.append("{\"deviceId\":\"").append(jsonEscape(deviceId)).append('"')
+        clientGeneratedId?.let {
+            sb.append(",\"clientGeneratedId\":\"").append(jsonEscape(it)).append('"')
+        }
         sb.append(",\"lat\":").append(jsonNum(lat))
         sb.append(",\"lng\":").append(jsonNum(lng))
         name?.trim()?.takeIf { it.isNotEmpty() }?.let {

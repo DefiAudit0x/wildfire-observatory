@@ -120,6 +120,7 @@ class AppRepository(
         TeamLocationService.addStateListener(teamListener)
         if (pollStarted.compareAndSet(false, true)) {
             restoreSnapshot()
+            restoreQueues()
             startPolling()
             startQueueDrainLoop()
         }
@@ -247,6 +248,7 @@ class AppRepository(
                     reportQueue.enqueue(key, body)
                     broadcastMeshIntel("report", "$locationName — $description", lat, lng)
                     persistSnapshot()
+                    persistQueues()
                     onDone(true, OFFLINE_QUEUED_MSG)
                 }
             }
@@ -260,7 +262,14 @@ class AppRepository(
         audioDataUri: String?, audioDurationSec: Int?,
         onDone: (ok: Boolean, outcome: SosOutcome?, userError: String?) -> Unit
     ) {
-        val built = ApiPayloads.buildSosJson(deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec)
+        // F1+F4: the idempotency key is minted ONCE per logical SOS, embedded
+        // in the body AND used as the queue key — a replay (offline queue or
+        // retry) can never become a second emergency call.
+        val key = ApiPayloads.newClientGeneratedId()
+        val built = ApiPayloads.buildSosJson(
+            deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec,
+            clientGeneratedId = key
+        )
         val body = built?.first
         if (body == null) {
             onDone(false, null, built?.second ?: "بيانات غير صالحة")
@@ -283,11 +292,12 @@ class AppRepository(
                 )
                 onDone(false, null, extractServerError(result.body) ?: "تم رفض النداء (خطأ ${result.status})")
             } else {
-                sosQueue.enqueue(ApiPayloads.newClientGeneratedId(), body)
+                sosQueue.enqueue(key, body)
                 _state.value = _state.value.copy(
                     sos = SosUiState(sending = false, queuedWhileOffline = true)
                 )
                 persistSnapshot()
+                persistQueues()
                 onDone(true, null, OFFLINE_QUEUED_MSG)
             }
             bumpQueueSize()
@@ -442,12 +452,26 @@ class AppRepository(
         scope.launch {
             while (true) {
                 if (_state.value.online) {
+                    val before = reportQueue.size() + sosQueue.size()
                     val n1 = io { reportQueue.drain(3, System.currentTimeMillis()) { api.post("/api/reports", it).is2xx } }
                     val n2 = io { sosQueue.drain(3, System.currentTimeMillis()) { api.post("/api/sos", it).is2xx } }
+                    val after = reportQueue.size() + sosQueue.size()
                     if (n1 + n2 > 0) {
                         Log.i(TAG, "Offline queue drained: reports=$n1 sos=$n2")
+                    }
+                    if (after != before) {
+                        // Delivered or poisoned entries were removed — sync disk
+                        // so a process death cannot resurrect delivered items.
+                        persistQueues()
                         bumpQueueSize()
                         persistSnapshot()
+                        if (n2 > 0 && sosQueue.size() == 0) {
+                            // The queued SOS went out: clear the "queued" flag
+                            // so no screen keeps promising a send that happened.
+                            _state.value = _state.value.copy(
+                                sos = _state.value.sos.copy(queuedWhileOffline = false)
+                            )
+                        }
                     }
                 }
                 delay(QUEUE_DRAIN_MS)
@@ -457,6 +481,91 @@ class AppRepository(
 
     private fun bumpQueueSize() {
         _state.value = _state.value.copy(queueSize = reportQueue.size() + sosQueue.size())
+    }
+
+    // ------------------------
+    // F1: durable queue files — the UI promises "سيرسل تلقائيًا عند عودة
+    // الشبكة"; only files keep that promise across process death (SharedPreferences
+    // is wrong for multi-hundred-KB base64 payloads; filesDir is not).
+    // Atomic write (tmp+rename) so a crash mid-write never corrupts the queue.
+    // ------------------------
+
+    private fun queueFile(kind: String) = java.io.File(context.filesDir, "queue_$kind.json")
+
+    private fun restoreQueues() {
+        val reports = readQueueFile("reports")
+        val sos = readQueueFile("sos")
+        if (reports.isNotEmpty()) reportQueue.restoreAll(reports)
+        if (sos.isNotEmpty()) sosQueue.restoreAll(sos)
+        if (reports.isNotEmpty() || sos.isNotEmpty()) {
+            Log.i(TAG, "Restored offline queues: reports=${reports.size} sos=${sos.size}")
+            bumpQueueSize()
+        }
+    }
+
+    private fun readQueueFile(kind: String): List<OfflineQueue.Entry<String>> = runCatching {
+        val raw = queueFile(kind).readText()
+        if (raw.isBlank()) return emptyList()
+        val out = ArrayList<OfflineQueue.Entry<String>>()
+        val arr = JSONArray(raw)
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val key = o.optString("key", "")
+            val payload = o.optString("payload", "")
+            if (key.isBlank() || payload.isEmpty()) continue
+            out.add(
+                OfflineQueue.Entry<String>(
+                    key = key,
+                    payload = payload,
+                    attempts = o.optInt("attempts", 0),
+                    lastAttemptMs = o.optLong("lastAttemptMs", 0L),
+                    lastError = o.optString("lastError", "").takeIf { it.isNotEmpty() }
+                )
+            )
+        }
+        out
+    }.getOrElse { e ->
+        Log.w(TAG, "queue restore($kind) failed — starting empty", e)
+        emptyList()
+    }
+
+    private fun persistQueues() {
+        persistQueueFile("reports", reportQueue.snapshot())
+        persistQueueFile("sos", sosQueue.snapshot())
+    }
+
+    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>) {
+        runCatching {
+            val arr = JSONArray()
+            var totalChars = 0
+            for (e in entries) {
+                if (e.payload.length > MAX_PERSIST_ENTRY_CHARS) {
+                    Log.w(TAG, "queue($kind) entry ${e.key} too large to persist (${e.payload.length} chars) — memory-only")
+                    continue
+                }
+                if (totalChars + e.payload.length > MAX_PERSIST_TOTAL_CHARS) {
+                    Log.w(TAG, "queue($kind) persist budget reached — ${entries.size - arr.length()} newest entries kept memory-only")
+                    break
+                }
+                totalChars += e.payload.length
+                arr.put(
+                    JSONObject().apply {
+                        put("key", e.key)
+                        put("payload", e.payload)
+                        put("attempts", e.attempts)
+                        put("lastAttemptMs", e.lastAttemptMs)
+                        put("lastError", e.lastError ?: JSONObject.NULL)
+                    }
+                )
+            }
+            val f = queueFile(kind)
+            val tmp = java.io.File(context.filesDir, "queue_$kind.json.tmp")
+            tmp.writeText(arr.toString())
+            if (!tmp.renameTo(f)) {
+                f.writeText(arr.toString())
+                tmp.delete()
+            }
+        }.onFailure { Log.w(TAG, "queue persist($kind) failed", it) }
     }
 
     /** Cold-start fallback: the last good API snapshot survives process death. */
@@ -520,6 +629,10 @@ class AppRepository(
         private const val QUEUE_DRAIN_MS = 20_000L
         private const val MESH_CHAT_MAX = 200
         private const val MESH_INTEL_MAX = 100
+        /** Per-entry persistence guard: a maxed legal payload (700k-char SOS audio) fits; runaway garbage does not. */
+        private const val MAX_PERSIST_ENTRY_CHARS = 800_000
+        /** Total per-file budget — bounds disk even with a full 60-entry queue of big payloads. */
+        private const val MAX_PERSIST_TOTAL_CHARS = 12_000_000
         const val OFFLINE_QUEUED_MSG = "لا يوجد اتصال — حُفظ الطلب وسيرسل تلقائيًا عند عودة الشبكة"
     }
 }
