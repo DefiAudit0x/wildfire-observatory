@@ -1,109 +1,36 @@
-import { useState, useRef, useEffect } from "react";
+import { useRef, useState } from "react";
 import { Camera, MapPin, Loader2, Upload, AlertTriangle, CheckCircle } from "lucide-react";
-import { haversineKm, determineWilayaByCoords, OUT_OF_COVERAGE } from "../utils/geo";
-import { geoErrorMessage } from "../hooks/useGeolocation";
-import { setReporterBadge } from "../utils/badgeStore";
-import { isFreshThreatTimestamp } from "../utils/threats";
-import { loadOfflineDrafts, removeOfflineDrafts, replaceOfflineDrafts } from "../utils/offlineDraftStore";
+import { useReportFields } from "../hooks/reportForm/useReportFields";
+import { useReportCamera } from "../hooks/reportForm/useReportCamera";
+import { useReportImage } from "../hooks/reportForm/useReportImage";
+import { useOfflineDraftQueue } from "../hooks/reportForm/useOfflineDraftQueue";
+import { useReportSubmit } from "../hooks/reportForm/useReportSubmit";
+import { captureStampedFrame } from "../hooks/reportForm/stampCapture";
+import { getBearingDirection } from "../hooks/reportForm/reportFormShared";
 import type { SyncState } from "../utils/datasetHealth";
-import { MAGHREB_REGIONS } from "../data/maghrebRegions";
-import { isValidOptionalPhone } from "../utils/phone";
 
-interface SubmissionResultView {
-  responseValid: boolean;
-  isOfflineDraft?: boolean;
-  imageNotAttached?: boolean;
-  status?: "pending" | "verified";
-  id?: string;
-  error?: string;
-  message?: string;
-  aiVerification?: {
-    confidence?: number;
-    aiComments?: string;
-    detectedSigns?: string[];
-    isVerified?: boolean;
-    suggestedSeverity?: string;
-  };
-}
+/**
+ * ARC-H13 — ReportForm is now a THIN ORCHESTRATOR. The former 1905-line
+ * god-component fused ~9 concerns; the logic lives in one-owner-per-slice
+ * hooks under src/hooks/reportForm/ while this file keeps the EXACT public
+ * surface (props + the three exported contract helpers) and the EXACT DOM:
+ *
+ *   reportFormShared      — types + pure contract helpers (re-exported below)
+ *   stampCapture          — pure canvas capture + telemetry HUD stamp
+ *   useReportFields       — fields, wilaya geofence, reverse geo, GPS
+ *   useReportCamera       — camera lifecycle, compass, correlation (ARC-H12/M20)
+ *   useReportImage        — attach/compress + edge-AI pre-scan
+ *   useOfflineDraftQueue  — durable drafts queue + connectivity sync (ARC-L10/L15)
+ *   useReportSubmit       — validation, idempotency, offline intercept, badge
+ *
+ * Shared spinner/feedback: isSubmitting and errorMsg are single states owned
+ * HERE (set by the fields/GPS, camera, image and submit paths through their
+ * injected setters) — exactly the original single-state topology.
+ */
 
-export function toUserFacingSubmitError(message: string | undefined, isArabic: boolean): string {
-  const normalized = message?.toLowerCase() || "";
-  if (normalized.includes("durable idempotency") || normalized.includes("durable_idempotency") || normalized.includes("admin firestore") || normalized.includes("report data is currently unavailable")) {
-    return isArabic
-      ? "تعذر إرسال البلاغ الآن لأن خادم المرصد غير جاهز. بقيت بياناتك في النموذج؛ حاول مجددًا عند توفر الخدمة."
-      : "Le serveur de l'observatoire n'est pas prêt. Vos données restent dans le formulaire ; réessayez lorsque le service sera disponible.";
-  }
-  if (normalized.includes("coordinates do not fall within") || normalized.includes("outside the monitoring coverage") || normalized.includes("خارج نطاق المراقبة")) {
-    return isArabic
-      ? "الموقع لا يطابق الولاية المحددة أو يقع خارج نطاق المراقبة. صحّح الموقع أو الولاية ثم أعد المحاولة."
-      : "La position ne correspond pas à la wilaya sélectionnée ou se trouve hors de la zone surveillée. Corrigez-la puis réessayez.";
-  }
-  if (normalized.includes("idempotency_key_reuse") || normalized.includes("already bound to a different report")) {
-    return isArabic
-      ? "تعذر إعادة استخدام هذا البلاغ بأمان. أنشئ بلاغًا جديدًا بدل إعادة إرسال بيانات مختلفة."
-      : "Ce signalement ne peut pas être réutilisé en toute sécurité. Créez un nouveau signalement au lieu de renvoyer des données différentes.";
-  }
-  if (normalized.includes("idempotency_data_integrity_failure") || normalized.includes("multiple legacy reports")) {
-    return isArabic
-      ? "تعذر معالجة البلاغ بأمان بسبب تعارض في السجل. لم يُنشأ بلاغ جديد؛ حاول لاحقًا أو تواصل مع فريق التشغيل."
-      : "Le signalement ne peut pas être traité en toute sécurité à cause d'un conflit de registre. Aucun nouveau signalement n'a été créé ; réessayez plus tard.";
-  }
-  if (normalized.includes("validation failed") || normalized.includes("missing required fields")) {
-    return isArabic
-      ? "بعض بيانات البلاغ غير مكتملة أو غير صالحة. راجع الحقول المعلّمة ثم أعد المحاولة."
-      : "Certaines données du signalement sont incomplètes ou invalides. Vérifiez les champs puis réessayez.";
-  }
-  if (normalized.includes("too many reports")) {
-    return isArabic
-      ? "تم إرسال محاولات كثيرة خلال فترة قصيرة. انتظر قليلًا ثم أعد المحاولة."
-      : "Trop de tentatives ont été envoyées en peu de temps. Attendez un instant puis réessayez.";
-  }
-  return isArabic ? "تعذر إرسال البلاغ الآن. بقيت بياناتك في النموذج؛ تحقق من الاتصال ثم أعد المحاولة." : "Impossible d'envoyer le signalement pour le moment. Vos données restent dans le formulaire ; vérifiez la connexion puis réessayez.";
-}
-
-export function isResolvedWilayaMismatch(selectedWilaya: string, resolvedWilaya: string): boolean {
-  return Boolean(selectedWilaya && resolvedWilaya && selectedWilaya !== resolvedWilaya);
-}
-
-export function normalizeSubmissionResult(value: unknown): SubmissionResultView {
-  if (!value || typeof value !== "object") {
-    return { responseValid: false, error: "The server returned an invalid response." };
-  }
-  const raw = value as Record<string, unknown>;
-  const status = raw.status === "pending" || raw.status === "verified" ? raw.status : undefined;
-  const id = typeof raw.id === "string" && raw.id.trim().length >= 3 ? raw.id.trim() : undefined;
-  const ai = raw.aiVerification && typeof raw.aiVerification === "object"
-    ? raw.aiVerification as Record<string, unknown>
-    : null;
-  const confidence = ai && Number.isFinite(Number(ai.confidence))
-    ? Math.max(0, Math.min(100, Number(ai.confidence)))
-    : undefined;
-  const detectedSigns = ai && Array.isArray(ai.detectedSigns)
-    ? ai.detectedSigns.filter((sign): sign is string => typeof sign === "string").slice(0, 20)
-    : undefined;
-  const aiVerification = ai && (confidence !== undefined || typeof ai.aiComments === "string" || detectedSigns?.length)
-    ? {
-      confidence,
-      aiComments: typeof ai.aiComments === "string" ? ai.aiComments.slice(0, 1000) : undefined,
-      detectedSigns,
-      isVerified: ai.isVerified === true,
-      suggestedSeverity: typeof ai.suggestedSeverity === "string" ? ai.suggestedSeverity : undefined,
-    }
-    : undefined;
-  const serverAccepted = raw.responseValid === true && Boolean(id && status);
-  const offlineAccepted = raw.responseValid === true && raw.isOfflineDraft === true;
-  const responseValid = serverAccepted || offlineAccepted;
-  return {
-    responseValid,
-    isOfflineDraft: raw.isOfflineDraft === true,
-    imageNotAttached: raw.imageNotAttached === true,
-    status,
-    id,
-    error: typeof raw.error === "string" ? raw.error.slice(0, 500) : undefined,
-    message: typeof raw.message === "string" ? raw.message.slice(0, 500) : undefined,
-    aiVerification,
-  };
-}
+// Public contract surface (pinned by tests/report-form-contract.test.ts) —
+// the implementations moved verbatim into reportFormShared.ts.
+export { toUserFacingSubmitError, isResolvedWilayaMismatch, normalizeSubmissionResult } from "../hooks/reportForm/reportFormShared";
 
 interface ReportFormProps {
   mapClickedCoords: { lat: number; lng: number } | null;
@@ -116,985 +43,86 @@ interface ReportFormProps {
   syncState?: SyncState;
 }
 
-const FALLBACK_WILAYAS = MAGHREB_REGIONS;
-
 export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports = [], wilayas, syncState = "never" }: ReportFormProps) {
-  // The server owns the wilaya geofence; the static copy only covers the
-  // first-load/offline window before the API list arrives.
-  const wilayaOptions = wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS;
-  const [lat, setLat] = useState("");
-  const [lng, setLng] = useState("");
-  const [locationName, setLocationName] = useState("");
-  const [wilaya, setWilaya] = useState("");
-  const [severity, setSeverity] = useState("medium");
-  const [description, setDescription] = useState("");
-  const [reporterName, setReporterName] = useState("");
-  const [reporterPhone, setReporterPhone] = useState("");
-  const [reporterType, setReporterType] = useState("citizen");
-  const [reporterBadgeCode, setReporterBadgeCode] = useState("");
-  
-  // Image attachments and compression states
-  const [image, setImage] = useState<string | null>(null);
-  const [originalSize, setOriginalSize] = useState<string | null>(null);
-  const [compressedSize, setCompressedSize] = useState<string | null>(null);
-  const [isCompressing, setIsCompressing] = useState(false);
-  
-  // Submission states
-  const [isLocating, setIsLocating] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [successReport, setSuccessReport] = useState<any | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // Compass & Camera states
-  const [isCameraOpen, setIsCameraOpen] = useState(false);
-  const [cameraStatus, setCameraStatus] = useState<"closed" | "active" | "unavailable">("closed");
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  // Sensor values are null until a real sensor delivers them — the form never
-  // fabricates a heading/pitch (no fake compass numbers stamped on photos).
-  const [heading, setHeading] = useState<number | null>(null); // 0-360 degrees (compass bearing)
-  const [pitch, setPitch] = useState<number | null>(null); // -90 to 90 degrees (elevation angle)
-  const [headingSource, setHeadingSource] = useState<"sensor" | "manual" | "none">("none");
-  const [pitchSource, setPitchSource] = useState<"sensor" | "manual" | "none">("none");
-  const [matchedReport, setMatchedReport] = useState<any | null>(null);
-  const [alignmentAccuracy, setAlignmentAccuracy] = useState<number | null>(null);
-  const [showCalibrationGuide, setShowCalibrationGuide] = useState(false);
-
-  // --- NEW ENHANCED STATES FOR SYSTEM ROBUSTNESS ---
-  const [gpsMode, setGpsMode] = useState<"adaptive" | "continuous">("adaptive");
-  const allowOfflineSimulation = import.meta.env.DEV;
-  const [isOffline, setIsOffline] = useState(() => typeof navigator !== "undefined" && !navigator.onLine);
-  const [isOfflineSimulation, setIsOfflineSimulation] = useState(false);
-  const [offlineDrafts, setOfflineDrafts] = useState<any[]>([]);
-  const [edgeAiStatus, setEdgeAiStatus] = useState<{
-    success: boolean;
-    confidence: number;
-    messageAr: string;
-    messageFr: string;
-  } | null>(null);
-  const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
-  const [includeTelemetry, setIncludeTelemetry] = useState(true);
-  const [uploadWarning, setUploadWarning] = useState<string | null>(null);
-  const [wilayaNote, setWilayaNote] = useState<{
-    kind: "suggest" | "mismatch" | "outside";
-    option?: string;
-    textAr: string;
-    textFr: string;
-  } | null>(null);
-
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const syncingDrafts = useRef(false);
-  const submittingRef = useRef(false);
   const isArabic = lang === "ar";
+  // Single spinner + single feedback line, shared by GPS/camera/image/submit
+  // and the offline sync loop — the original component's exact topology.
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load offline drafts on mount (download of connectivity is handled below)
-    useEffect(() => {
-    void loadOfflineDrafts()
-      .then((stored) => {
-        setOfflineDrafts(stored.map((draft) => ({
-          ...draft,
-          schemaVersion: draft.schemaVersion ?? 1,
-          createdAt: draft.createdAt ?? draft.timestamp ?? new Date().toISOString(),
-          queuedAt: draft.queuedAt ?? draft.timestamp ?? new Date().toISOString(),
-          retryCount: Number.isFinite(draft.retryCount) ? draft.retryCount : 0,
-        })));
-      })
-      .catch((error: unknown) => console.error("Failed to load drafts", error));
-    return undefined;
-  }, []);
+  const fields = useReportFields({ mapClickedCoords, wilayas, isArabic, setErrorMsg });
+  const camera = useReportCamera({ lat: fields.lat, lng: fields.lng, reports, isArabic, setErrorMsg });
+  const imageState = useReportImage({ isArabic, setErrorMsg });
+  const queue = useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting: setIsSubmitting });
+  const submit = useReportSubmit({
+    onSubmit,
+    isArabic,
+    fields: { values: fields.values, resetForNextReport: fields.resetForNextReport },
+    image: { image: imageState.image, compressedSize: imageState.compressedSize, resetImage: imageState.resetImage },
+    camera: { resetOrientation: camera.resetOrientation },
+    drafts: {
+      isOffline: queue.isOffline,
+      isOfflineSimulation: queue.isOfflineSimulation,
+      persistDraft: queue.persistDraft,
+    },
+    setSubmitting: setIsSubmitting,
+    setErrorMsg,
+  });
 
-  // Sync clicked coordinates from the parent map component
-  useEffect(() => {
-    if (mapClickedCoords) {
-      setLat(mapClickedCoords.lat.toFixed(6));
-      setLng(mapClickedCoords.lng.toFixed(6));
-    }
-  }, [mapClickedCoords]);
+  const {
+    lat, setLat, lng, setLng, locationName, setLocationName, wilaya, setWilaya,
+    severity, setSeverity, description, setDescription,
+    reporterName, setReporterName, reporterPhone, setReporterPhone,
+    reporterType, setReporterType, reporterBadgeCode, setReporterBadgeCode,
+    isLocating, wilayaOptions, wilayaNote, setWilayaNote, handleGetLocation,
+  } = fields;
+  const {
+    isCameraOpen, cameraStatus, stream, videoRef, heading, pitch,
+    headingSource, pitchSource, matchedReport, alignmentAccuracy,
+    showCalibrationGuide, setShowCalibrationGuide, includeTelemetry, setIncludeTelemetry,
+    safeAlignmentAccuracy, safeMatchedDistance, safeMatchedBearing,
+    startCamera, stopCamera, setManualHeading, setManualPitch,
+  } = camera;
+  const {
+    image, originalSize, compressedSize, isCompressing, uploadWarning, edgeAiStatus,
+    handleImageChange, applyCapturedImage, runEdgeAiPreScan,
+  } = imageState;
+  const {
+    isOffline, isOfflineSimulation, allowOfflineSimulation, offlineDrafts,
+    syncStatusMsg, toggleOfflineSimulation, syncOfflineDrafts,
+  } = queue;
+  const { successReport, dismissSuccess, handleSubmit } = submit;
 
-  // v1.0.4 field fix: a confirmed GPS fix or map click now ALSO fills the
-  // place-name field automatically (reverse geocoding) — the owner should
-  // never re-type what the device already knows. The user's own text is
-  // NEVER overwritten: the lookup only fills an EMPTY field.
-  // Debounced + aborted so fast coordinate churn (map dragging) does not
-  // spam the API; offline/rate-limited failures degrade to typing by hand.
-  // W-H6: the lookup used to hit nominatim.openstreetmap.org DIRECTLY from
-  // the browser — exact field coordinates leaked to a third party with no
-  // consent gate while the project deliberately keeps the location pulse
-  // private. It now goes through the same-origin proxy /api/geo/reverse,
-  // which is the only egress (server attaches the policy-required UA,
-  // caches churn, bounds the coverage).
-  useEffect(() => {
-    const parsedLat = Number(lat);
-    const parsedLng = Number(lng);
-    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) return;
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      fetch(`/api/geo/reverse?lat=${parsedLat}&lng=${parsedLng}&lang=ar`, {
-        signal: controller.signal,
-        headers: { Accept: "application/json" },
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data: { name?: string; display_name?: string } | null) => {
-          if (!data) return;
-          const place = (data.name || data.display_name || "").trim();
-          if (!place) return;
-          setLocationName((current) => (current.trim() === "" ? place : current));
-        })
-        .catch(() => {
-          /* offline or throttled: typing the place name by hand still works */
-        });
-    }, 800);
-    return () => {
-      window.clearTimeout(timer);
-      controller.abort();
-    };
-  }, [lat, lng]);
-
-  // Bind the selected region to the coordinates (mirror of the server's
-  // geofence): suggest the wilaya on GPS fix, warn on wilaya mismatch so the
-  // submission is not silently rejected by the server after the fact.
-  useEffect(() => {
-    const parsedLat = Number(lat);
-    const parsedLng = Number(lng);
-    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
-      setWilayaNote(null);
-      return;
-    }
-    const resolved = determineWilayaByCoords(parsedLat, parsedLng);
-    if (resolved === OUT_OF_COVERAGE) {
-      if (wilaya) {
-        setWilayaNote({
-          kind: "outside",
-          textAr: "⚠️ الإحداثيات خارج تغطية المنصة — سيرفض الخادم البلاغ.",
-          textFr: "⚠️ Coordonnées hors couverture — le serveur rejettera le rapport.",
-        });
-      } else {
-        setWilayaNote(null);
-      }
-      return;
-    }
-    const resolvedOption = wilayaOptions.find((w) => `${w.nameAr} (${w.nameFr})` === resolved);
-    if (!wilaya && resolvedOption) {
-      // The geofence result is authoritative for this coordinate. Selecting it
-      // here prevents a visible suggestion from remaining an unsubmitted form
-      // value while keeping the user free to choose another matching option.
-      setWilaya(`${resolvedOption.nameAr} (${resolvedOption.nameFr})`);
-      setWilayaNote({
-        kind: "suggest",
-        option: `${resolvedOption.nameAr} (${resolvedOption.nameFr})`,
-        textAr: `تم اعتماد الولاية تلقائيًا حسب الإحداثيات: ${resolvedOption.nameAr}`,
-        textFr: `Wilaya automatiquement confirmée par les coordonnées : ${resolvedOption.nameFr}`,
-      });
-      return;
-    }
-    if (wilaya) {
-      if (isResolvedWilayaMismatch(wilaya, resolved)) {
-        setWilayaNote({
-          kind: "mismatch",
-          textAr: `⚠️ إحداثياتك تقع في «${resolved.split(" (")[0]}» بينما اخترت ولاية مختلفة — سيرفض الخادم البلاغ ما لم تصحّح الاختيار.`,
-          textFr: `⚠️ Vos coordonnées sont dans «${resolved.split(" (")[0]}» mais vous avez choisi une autre wilaya — le serveur rejettera le rapport.`,
-        });
-        return;
-      }
-    }
-    setWilayaNote(null);
-  }, [lat, lng, wilaya, wilayaOptions]);
-
-  // Wilaya reconciliation (audit): while the fallback list is live the user
-  // may pick a fallback option that does not exist in the server's
-  // authoritative list. When the real list arrives (wilayaOptions identity
-  // swap), a stale selection is cleared WITH its derived note — the form can
-  // never submit a value the server cannot geofence; the user picks again
-  // from the authoritative options.
-  useEffect(() => {
-    if (!wilayas || wilayas.length === 0 || !wilaya) return;
-    if (!wilayaOptions.some((w) => `${w.nameAr} (${w.nameFr})` === wilaya)) {
-      setWilaya("");
-      setWilayaNote(null);
-    }
-  }, [wilayas, wilaya, wilayaOptions]);
-
-  const syncOfflineDrafts = async () => {
-    if (offlineDrafts.length === 0 || syncingDrafts.current) return;
-    syncingDrafts.current = true;
-    setIsSubmitting(true);
-    setSyncStatusMsg(isArabic ? "جاري مزامنة المسودات والتحقق من قبول الخادم..." : "Synchronisation des brouillons et vérification de l'acceptation serveur...");
-    
-    let successCount = 0;
-    const draftSnapshot = [...offlineDrafts];
-    const syncedIds = new Set<string>();
-    let failedDraftId: string | null = null;
-    let failedMessage: string | null = null;
-    
-    for (const draft of draftSnapshot) {
-      // clientGeneratedId lets the server answer idempotently — a draft that
-      // was already pushed (e.g. the tab closed mid-sync) is returned as-is
-      // instead of being duplicated.
-      const payload = {
-        lat: draft.lat,
-        lng: draft.lng,
-        locationName: draft.locationName,
-        wilaya: draft.wilaya,
-        severity: draft.severity,
-        description: draft.description,
-        reporterName: draft.reporterName,
-        reporterPhone: draft.reporterPhone,
-        reporterType: draft.reporterType,
-        reporterBadgeCode: draft.reporterBadgeCode,
-        image: draft.image,
-        clientGeneratedId: draft.id,
-      };
-      try {
-        const syncResult = normalizeSubmissionResult(await onSubmit(payload));
-        if (!syncResult.responseValid) {
-          throw new Error(syncResult.error || "Server did not confirm the draft");
-        }
-        successCount++;
-        syncedIds.add(draft.id); // remove only after server acceptance
-            } catch (err: unknown) {
-        console.error("Failed to sync draft", draft.id, err);
-        failedDraftId = draft.id;
-        failedMessage = err instanceof Error ? err.message : "sync failed";
-        break; // stop on first error to prevent losing ordering or flooding
-      }
-    }
-    const nextDrafts = draftSnapshot
-      .filter((draft) => !syncedIds.has(draft.id))
-      .map((draft) => draft.id === failedDraftId
-        ? { ...draft, retryCount: (Number.isFinite(draft.retryCount) ? draft.retryCount : 0) + 1, lastError: failedMessage, lastAttemptAt: new Date().toISOString() }
-        : draft);
-    let persistenceError = false;
-    try {
-      // ARC-L15: the store is a merge now — synced drafts are removed
-      // EXPLICITLY (tombstoned) instead of being dropped by full-list
-      // omission, which a stale second tab could resurrect.
-      await replaceOfflineDrafts(nextDrafts);
-      await removeOfflineDrafts([...syncedIds]);
-      setOfflineDrafts(nextDrafts);
-    } catch (error: unknown) {
-      persistenceError = true;
-      console.error("Failed to persist the remaining offline drafts", error);
-      // Do not claim successful synchronization or hide drafts in memory when
-      // the durable queue did not commit. The server idempotency key makes a
-      // later retry safe, while retaining the snapshot prevents local loss.
-      setOfflineDrafts(draftSnapshot);
-      setSyncStatusMsg(isArabic ? "تعذر تحديث طابور المسودات محليًا؛ أُبقيت المسودات للمحاولة لاحقًا." : "Impossible de mettre à jour la file locale ; les brouillons sont conservés pour une nouvelle tentative.");
-    }
-    
-    syncingDrafts.current = false;
-    setIsSubmitting(false);
-    if (persistenceError) return;
-    if (successCount > 0) {
-      setSyncStatusMsg(
-        isArabic 
-          ? `✓ تم قبول ومزامنة ${successCount} بلاغ(ات) ميدانية مع المرصد الرئيسي.`
-          : `✓ ${successCount} rapport(s) accepté(s) et synchronisé(s) avec l'observatoire.`
-      );
-      setTimeout(() => setSyncStatusMsg(null), 8000);
-    } else {
-      setSyncStatusMsg(
-        isArabic 
-          ? "⚠️ عذراً، فشلت عملية المزامنة. يرجى التحقق من اتصال الإنترنت وحاول مجدداً."
-          : "⚠️ Échec de la synchronisation. Vérifiez votre connexion."
-      );
-    }
-  };
-
-  // Automatic sync: the moment connectivity returns, stored drafts are pushed
-  // through either browser Internet or the active Mesh gateway. A failed retry
-  // preserves its draft and surfaces the existing recovery state.
-  useEffect(() => {
-    const handleConnectivityReturn = () => {
-      setIsOffline(false);
-      if (offlineDrafts.length > 0 && !syncingDrafts.current) {
-        void syncOfflineDrafts();
-      }
-    };
-    const handleOfflineStatus = () => setIsOffline(true);
-    window.addEventListener("online", handleConnectivityReturn);
-    window.addEventListener("mesh:online", handleConnectivityReturn);
-    window.addEventListener("offline", handleOfflineStatus);
-    return () => {
-      window.removeEventListener("online", handleConnectivityReturn);
-      window.removeEventListener("mesh:online", handleConnectivityReturn);
-      window.removeEventListener("offline", handleOfflineStatus);
-    };
-  }, [offlineDrafts.length]);
-
-  // Client-side distance calculation (Haversine formula in km)
-  const getDistance = (lat1: number, lng1: number, lat2: number, lng2: number): number =>
-    haversineKm(lat1, lng1, lat2, lng2);
-
-  // Client-side bearing calculation (compass degrees 0-360)
-  const calculateBearing = (lat1: number, lon1: number, lat2: number, lon2: number): number => {
-    const dLon = ((lon2 - lon1) * Math.PI) / 180;
-    const lat1Rad = (lat1 * Math.PI) / 180;
-    const lat2Rad = (lat2 * Math.PI) / 180;
-
-    const y = Math.sin(dLon) * Math.cos(lat2Rad);
-    const x =
-      Math.cos(lat1Rad) * Math.sin(lat2Rad) -
-      Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
-
-    let bearing = (Math.atan2(y, x) * 180) / Math.PI;
-    return (bearing + 360) % 360;
-  };
-
-  // Helper to convert bearing angle to cardinal direction
-  const getBearingDirection = (angle: number): string => {
-    const directions = isArabic 
-      ? ["شمال", "شمال شرقي", "شرق", "جنوب شرقي", "جنوب", "جنوب غربي", "غرب", "شمال غربي"]
-      : ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
-    const index = Math.round(((angle % 360) / 45)) % 8;
-    return directions[index];
-  };
-
-  // Listener for actual device orientation/compass sensors
-  // ARC-M20 fix: this listener fed setState directly from every sensor event
-  // (phones fire up to 60Hz with sub-degree jitter), re-rendering the entire
-  // ~1900-line component continuously. Updates are now throttled to 4Hz AND
-  // skipped when the rounded values did not change.
-  useEffect(() => {
-    const lastCompassValuesRef = { heading: null as number | null, pitch: null as number | null };
-    let lastUpdateAt = 0;
-
-    const handleOrientation = (e: DeviceOrientationEvent) => {
-      const now = Date.now();
-      if (now - lastUpdateAt < 250) return;
-
-      let currentHeading = null;
-      if ("webkitCompassHeading" in e) {
-        currentHeading = (e as any).webkitCompassHeading;
-      } else if (e.alpha !== null) {
-        // 360 - alpha is only an approximation of the compass bearing (device
-        // orientation vs. geographic north); it is treated as an estimate.
-        currentHeading = 360 - e.alpha;
-      }
-
-      const roundedHeading = currentHeading !== null ? Math.round(currentHeading) : null;
-      const roundedPitch = e.beta !== null ? Math.round(e.beta) : null;
-      if (roundedHeading === lastCompassValuesRef.heading && roundedPitch === lastCompassValuesRef.pitch) {
-        return;
-      }
-      lastUpdateAt = now;
-      lastCompassValuesRef.heading = roundedHeading;
-      lastCompassValuesRef.pitch = roundedPitch;
-
-      if (roundedHeading !== null) {
-        setHeading(roundedHeading);
-        setHeadingSource("sensor");
-      }
-      if (roundedPitch !== null) {
-        setPitch(roundedPitch);
-        setPitchSource("sensor");
-      }
-    };
-
-    window.addEventListener("deviceorientation", handleOrientation);
-    return () => {
-      window.removeEventListener("deviceorientation", handleOrientation);
-    };
-  }, []);
-
-  // Correlation effect: matches GPS + compass heading with current reports
-  // (an alignment estimate only — no bearing, no matching).
-  useEffect(() => {
-    if (!lat || !lng || heading === null || !reports || reports.length === 0) {
-      setMatchedReport(null);
-      setAlignmentAccuracy(null);
-      return;
-    }
-
-    const uLat = parseFloat(lat);
-    const uLng = parseFloat(lng);
-    if (isNaN(uLat) || isNaN(uLng)) return;
-
-    let bestMatch: any = null;
-    let maxScore = -1;
-
-    reports.forEach((rep) => {
-      if ((rep.status !== "pending" && rep.status !== "verified") || !isFreshThreatTimestamp(rep.timestamp) || !Number.isFinite(rep.lat) || !Number.isFinite(rep.lng)) return;
-      const dist = getDistance(uLat, uLng, rep.lat, rep.lng);
-      // Correlate reports within 15km
-      if (dist > 15) return;
-
-      const bearing = calculateBearing(uLat, uLng, rep.lat, rep.lng);
-      let diff = Math.abs(bearing - heading);
-      if (diff > 180) diff = 360 - diff;
-
-      // Only match if within 45 degrees of camera focus FOV
-      if (diff > 45) return;
-
-      // Score based on angular alignment and distance proximity
-      const angleScore = ((45 - diff) / 45) * 60; // Up to 60 points
-      const distScore = ((15 - dist) / 15) * 40;  // Up to 40 points
-      const score = angleScore + distScore;
-
-      if (score > maxScore) {
-        maxScore = score;
-        bestMatch = {
-          report: rep,
-          distance: dist,
-          bearing: bearing,
-          angleDiff: diff,
-        };
-      }
-    });
-
-    if (bestMatch) {
-      setMatchedReport(bestMatch.report);
-      const confidence = Math.round(40 + (maxScore / 100) * 55); // 40% to 95%
-      setAlignmentAccuracy(confidence);
-    } else {
-      setMatchedReport(null);
-      setAlignmentAccuracy(null);
-    }
-    }, [lat, lng, heading, reports]);
-  const safeAlignmentAccuracy = Number.isFinite(Number(alignmentAccuracy))
-    ? Math.max(0, Math.min(100, Number(alignmentAccuracy)))
-    : 0;
-  const safeMatchedDistance = matchedReport && Number.isFinite(Number(matchedReport.distance))
-    ? Number(matchedReport.distance).toFixed(1)
-    : "—";
-  const safeMatchedBearing = matchedReport && Number.isFinite(Number(matchedReport.bearing))
-    ? Number(matchedReport.bearing).toFixed(0)
-    : "—";
-  // Attach the media stream to the <video> the moment it exists — no arbitrary
-  // delay that races the element mount.
-  useEffect(() => {
-    if (stream && videoRef.current) {
-      videoRef.current.srcObject = stream;
-    }
-  }, [stream]);
-
-  // ARC-H12 fix: this component is conditionally mounted (tab switches unmount
-  // it) — without this cleanup an open camera stream kept the device camera
-  // hardware live with NO UI attached to it. When the stream changes or the
-  // component unmounts, the tracks are stopped.
-  useEffect(() => {
-    return () => {
-      stream?.getTracks().forEach((track) => track.stop());
-    };
-  }, [stream]);
-
-  // Camera stream activation
-  // ARC-H12 fix: a double-tap on the camera button used to race two
-  // getUserMedia calls — the first stream was overwritten by the second and
-  // leaked live (privacy). A reentrancy guard plus an unmount cleanup effect
-  // guarantee the hardware is released exactly once.
-  const cameraStartingRef = useRef(false);
-  const startCamera = async () => {
-    if (cameraStartingRef.current || stream) return;
-    cameraStartingRef.current = true;
-    try {
-      setIsCameraOpen(true);
-      setCameraStatus("closed");
-      setErrorMsg(null);
-      const constraints = {
-        video: { facingMode: "environment" },
-        audio: false,
-      };
-      const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      setStream(mediaStream);
-      setCameraStatus("active");
-      // iOS (Safari 13+) gates motion sensors behind an explicit permission
-      // prompt; request it within the camera gesture.
-      try {
-        const DOE = (window as any).DeviceOrientationEvent;
-        if (DOE && typeof DOE.requestPermission === "function") {
-          const permission = await DOE.requestPermission();
-          if (permission !== "granted") {
-            setHeading(null);
-            setPitch(null);
-            setHeadingSource(permission === "denied" ? "none" : headingSource);
-            setPitchSource("none");
-          }
-        }
-      } catch (err) {
-        console.warn("DeviceOrientation permission request failed", err);
-      }
-    } catch (err: unknown) {
-      console.warn("Camera hardware unavailable", err);
-      setCameraStatus("unavailable");
-      setStream(null);
-      setIsCameraOpen(false);
-      setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة." : "Caméra indisponible ou permission refusée. Vous pouvez joindre une photo ou continuer sans image.");
-    } finally {
-      cameraStartingRef.current = false;
-    }
-  };
-
-  const stopCamera = () => {
-    if (stream) {
-      stream.getTracks().forEach((track) => track.stop());
-      setStream(null);
-    }
-    setIsCameraOpen(false);
-    setCameraStatus("closed");
-    setHeading(null);
-    setPitch(null);
-    setHeadingSource("none");
-    setPitchSource("none");
-    setMatchedReport(null);
-    setAlignmentAccuracy(null);
-    setShowCalibrationGuide(false);
-  };
-
-  // High-fidelity image capture with embedded watermarked telemetry
+  // High-fidelity image capture with embedded watermarked telemetry — the
+  // canvas work itself is the pure stampCapture module; this composition
+  // wires the hook states in and applies the result (ported verbatim).
   const captureSnapshot = () => {
-    const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 480;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    if (stream && videoRef.current && videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-      const video = videoRef.current;
-      const videoWidth = video.videoWidth;
-      const videoHeight = video.videoHeight;
-      const targetRatio = 640 / 480;
-      let sourceX = 0;
-      let sourceY = 0;
-      let sourceWidth = videoWidth;
-      let sourceHeight = videoHeight;
-
-      if (videoWidth / videoHeight > targetRatio) {
-        sourceWidth = videoHeight * targetRatio;
-        sourceX = (videoWidth - sourceWidth) / 2;
-      } else {
-        sourceHeight = videoWidth / targetRatio;
-        sourceY = (videoHeight - sourceHeight) / 2;
-      }
-
-      ctx.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, 640, 480);
-    } else {
-      // Never fabricate a fake photo: if the camera is unavailable, tell the
-      // user and let the report proceed without an image (or via file upload).
-      setErrorMsg(
-        isArabic
-          ? "⚠️ الكاميرا غير متاحة. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة."
-          : "⚠️ Caméra indisponible. Vous pouvez joindre une photo ou continuer sans image."
-      );
+    const stamp = captureStampedFrame({
+      stream,
+      video: videoRef.current,
+      lat,
+      lng,
+      heading,
+      pitch,
+      headingSource,
+      pitchSource,
+      includeTelemetry,
+      matchedReport,
+      alignmentAccuracy,
+      isArabic,
+      bearingDirection: (angle: number) => getBearingDirection(angle, isArabic),
+    });
+    if (!stamp.ok) {
+      setErrorMsg(isArabic ? stamp.errorAr : stamp.errorFr);
       stopCamera();
       return;
     }
-
-    // Overlay technical HUD overlay onto the image
-    ctx.strokeStyle = "rgba(239, 68, 68, 0.5)";
-    ctx.lineWidth = 1.5;
-    
-    // Crosshair target
-    ctx.beginPath();
-    ctx.moveTo(320, 200);
-    ctx.lineTo(320, 280);
-    ctx.moveTo(280, 240);
-    ctx.lineTo(360, 240);
-    ctx.stroke();
-
-    // Technical bounds indicators
-    ctx.beginPath();
-    ctx.moveTo(20, 40); ctx.lineTo(40, 40); ctx.moveTo(20, 40); ctx.lineTo(20, 60);
-    ctx.moveTo(620, 40); ctx.lineTo(600, 40); ctx.moveTo(620, 40); ctx.lineTo(620, 60);
-    ctx.moveTo(20, 440); ctx.lineTo(40, 440); ctx.moveTo(20, 440); ctx.lineTo(20, 420);
-    ctx.moveTo(620, 440); ctx.lineTo(600, 440); ctx.moveTo(620, 440); ctx.lineTo(620, 420);
-    ctx.stroke();
-
-    // Branded telemetry watermark labels — factual only: GPS, UTC time, and
-    // sensor values (marked N/A when absent). No "secure proof" claims: the
-    // stamp is an evidentiary aid, not a cryptographic proof.
-    ctx.fillStyle = "rgba(248, 250, 252, 0.9)";
-    ctx.font = "bold 13px monospace";
-    ctx.fillText("MAGHREB WILDFIRE OBSERVATORY - TELEMETRY CAPTURE", 30, 70);
-    
-    ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
-    ctx.font = "10px monospace";
-    ctx.fillText("FIELD VISUAL ASSIST - ALIGNMENT ESTIMATE (NOT PROOF)", 30, 90);
-    
-    ctx.fillStyle = "rgba(241, 245, 249, 0.8)";
-    ctx.font = "9px monospace";
-    ctx.fillText(`GPS LAT: ${lat || "N/A"}`, 30, 115);
-    ctx.fillText(`GPS LNG: ${lng || "N/A"}`, 30, 130);
-    if (includeTelemetry) {
-      ctx.fillText(`BEARING: ${heading !== null ? `${heading}° ${getBearingDirection(heading)}` : "N/A"} (${headingSource.toUpperCase()})`, 30, 145);
-      ctx.fillText(`PITCH: ${pitch !== null ? `${pitch}° (${pitchSource.toUpperCase()})` : "N/A"}`, 30, 160);
-    } else {
-      ctx.fillText("SENSOR STAMP: OFF", 30, 145);
-    }
-    ctx.fillText(`UTC CAPTURE: ${new Date().toISOString().slice(0, 19)}Z`, 30, 175);
-
-    if (matchedReport) {
-      ctx.fillStyle = "rgba(34, 197, 94, 0.9)";
-      ctx.fillText(`ALIGNMENT WITH EXISTING REPORT: ${alignmentAccuracy}% (ESTIMATE)`, 30, 200);
-      ctx.fillText(`LOCATION: ${matchedReport.locationName.substring(0, 35).toUpperCase()}`, 30, 215);
-    } else {
-      ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
-      ctx.fillText("NO EXISTING REPORT WITHIN BEARING/RANGE", 30, 200);
-    }
-
-    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-    setImage(dataUrl);
-    // Live capture carries the GPS/UTC stamp in the frame; a file upload does
-    // not (warning surfaced to the reporter below).
-    setUploadWarning(null);
+    applyCapturedImage(stamp.dataUrl);
     // Note: telemetry overlay avoids raw image degradation while keeping a
     // high-fidelity snapshot for the Gemini vision verification.
-    runEdgeAiPreScan(dataUrl);
-
+    runEdgeAiPreScan(stamp.dataUrl);
     stopCamera();
-  };
-
-  // Automated browser-side GPS acquisition
-  const handleGetLocation = () => {
-    if (!navigator.geolocation) {
-      setErrorMsg(geoErrorMessage(undefined, isArabic));
-      return;
-    }
-
-    setIsLocating(true);
-    setErrorMsg(null);
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setLat(position.coords.latitude.toFixed(6));
-        setLng(position.coords.longitude.toFixed(6));
-        setIsLocating(false);
-      },
-      // Same actionable per-code wording as the rest of the app (permission
-      // blocked vs no signal vs timeout — each has a different fix).
-      (error) => {
-        setIsLocating(false);
-        setErrorMsg(geoErrorMessage(error?.code, isArabic));
-      },
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-  };
-
-  // --- LIGHTWEIGHT ON-DEVICE HEURISTIC PRE-SCANNER ---
-  // Note: this is a coarse color-based heuristic (feasible in-browser without a
-  // model download). It never verifies a report — final verification is done
-  // by the backend Gemini vision model. It only nudges the user to frame the
-  // fire clearly.
-  const runEdgeAiPreScan = (dataUrl: string, compressionPercent: number | null = null) => {
-    const tempImg = new Image();
-    tempImg.onload = () => {
-      const tempCanvas = document.createElement("canvas");
-      tempCanvas.width = 50;
-      tempCanvas.height = 50;
-      const tempCtx = tempCanvas.getContext("2d");
-      if (!tempCtx) return;
-      
-      tempCtx.drawImage(tempImg, 0, 0, 50, 50);
-      const imgData = tempCtx.getImageData(0, 0, 50, 50).data;
-      
-      let fireScore = 0;
-      let smokeScore = 0;
-      for (let i = 0; i < imgData.length; i += 4) {
-        const r = imgData[i];
-        const g = imgData[i+1];
-        const b = imgData[i+2];
-        
-        // Fire colors: High Red, moderate Green, low Blue
-        if (r > 130 && g > 55 && r > g * 1.3 && b < 100) {
-          fireScore++;
-        }
-        // Smoke colors: Gray, muted, near-equal R, G, B channels
-        if (Math.abs(r - g) < 20 && Math.abs(g - b) < 20 && r > 90 && r < 210) {
-          smokeScore++;
-        }
-      }
-      
-      const totalPixels = 50 * 50;
-      const fireRatio = fireScore / totalPixels;
-      const smokeRatio = smokeScore / totalPixels;
-      const baseConfidence = (fireRatio * 600) + (smokeRatio * 400);
-      const confidence = Math.max(10, Math.min(99, Math.round(baseConfidence)));
-      
-      if (fireRatio > 0.008 || smokeRatio > 0.02) {
-        setEdgeAiStatus({
-          success: true,
-          confidence: Math.max(50, confidence),
-          messageAr: `🔎 فحص لوني بصري أولي (تقديري فقط — لا يُثبت وجود حريق؛ التحقق النهائي يتم بالذكاء الاصطناعي في الخادم عند وصول البلاغ): ألوان متوافقة مع ظلال نارية/دخانية (${Math.max(50, confidence)}%). تم ضغط الصورة بنسبة ${compressionPercent ?? 0}%.`,
-          messageFr: `🔎 Pré-scan visuel local (heuristique couleur uniquement — ne constitue pas une preuve ; la vérification finale est faite par l'IA serveur) : teintes compatibles feu/fumée (${Math.max(50, confidence)}%). Image compressée à ${compressionPercent ?? 0}%.`
-        });
-      } else {
-        setEdgeAiStatus({
-          success: false,
-          confidence,
-          messageAr: `⚠️ فحص لوني بصري أولي (تقديري فقط — لا يُثبت عدم وجود حريق): لم تُرصد تدرجات نارية/دخانية واضحة (${confidence}%). الالتقاط المقرّب والصريح يساعد التحقق الخادمي.`,
-          messageFr: `⚠️ Pré-scan visuel local : contraste feu/fumée faible (≈${confidence}%). Cadrez clairement pour faciliter la vérification serveur.`
-        });
-      }
-    };
-    tempImg.src = dataUrl;
-  };
-
-  // Image Upload & Smart Canvas Compression with Edge AI integration
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-    // ARC-M23 fix: the input value was never reset, so re-selecting the SAME
-    // photo fired no change event and the button appeared dead. Clearing the
-    // input value here (the File object is already captured) makes every
-    // selection — including the same file twice — a real change event.
-    e.target.value = "";
-    if (!file) return;
-    const isImageType = file.type.startsWith("image/");
-    const MAX_INPUT_BYTES = 15 * 1024 * 1024;
-    if (!isImageType || file.size > MAX_INPUT_BYTES) {
-      setErrorMsg(isArabic ? "الصورة غير صالحة أو أكبر من 15 ميغابايت." : "Image invalide ou supérieure à 15 Mo.");
-      e.target.value = "";
-      return;
-    }
-    setErrorMsg(null);
-    setOriginalSize((file.size / 1024).toFixed(1) + " KB");
-    setIsCompressing(true);
-
-    const reader = new FileReader();
-    reader.onerror = () => {
-      setIsCompressing(false);
-      setImage(null);
-      setErrorMsg(isArabic ? "تعذر قراءة الصورة المحددة." : "Impossible de lire l'image sélectionnée.");
-    };
-    reader.onload = (event) => {
-      const img = new Image();
-      img.onerror = () => {
-        setIsCompressing(false);
-        setImage(null);
-        setErrorMsg(isArabic ? "الصورة تالفة أو غير قابلة للفك." : "L'image est corrompue ou illisible.");
-      };
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const ctx = canvas.getContext("2d");
-        
-        const MAX_WIDTH = 600;
-        const MAX_HEIGHT = 600;
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
-          setImage(dataUrl);
-          
-          const stringLength = dataUrl.length - "data:image/jpeg;base64,".length;
-          const sizeInBytes = stringLength * (3 / 4);
-          if (sizeInBytes > 480_000) {
-            setImage(null);
-            setCompressedSize(null);
-            setUploadWarning(isArabic ? "الصورة المضغوطة ما زالت كبيرة جدًا للإرسال الآمن." : "L'image compressée reste trop volumineuse pour un envoi sûr.");
-            setIsCompressing(false);
-            return;
-          }
-          setCompressedSize((sizeInBytes / 1024).toFixed(1) + " KB");
-
-          const compressionPercent = file.size > 0
-            ? Math.min(99, Math.max(0, Math.round((1 - sizeInBytes / file.size) * 100)))
-            : 0;
-          
-          // Trigger local Edge AI analysis immediately
-          runEdgeAiPreScan(dataUrl, compressionPercent);
-          // A file upload has no in-app telemetry overlay. EXIF/GPS metadata is
-          // not inspected here, so it must not be described as absent or proof.
-          setUploadWarning(
-            isArabic
-              ? "⚠️ الصور المرفوعة لا تتضمن ختم القياس الميداني الخاص بالتصوير المباشر. لا يفحص التطبيق بيانات EXIF/GPS، لذلك لا تُعد هذه البيانات إثباتًا مستقلًا."
-              : "⚠️ Les photos jointes n'ont pas le marquage de télémétrie de la capture directe. L'application ne vérifie pas les métadonnées EXIF/GPS; elles ne constituent donc pas une preuve indépendante."
-          );
-        }
-        setIsCompressing(false);
-      };
-      img.src = event.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (submittingRef.current) return;
-    if (!lat || !lng) {
-      setErrorMsg(isArabic ? "يرجى تحديد الموقع الجغرافي للحرائق أولاً." : "Veuillez spécifier la position GPS.");
-      return;
-    }
-    const parsedLat = Number(lat);
-    const parsedLng = Number(lng);
-    if (!Number.isFinite(parsedLat) || !Number.isFinite(parsedLng)) {
-      setErrorMsg(isArabic ? "إحداثيات غير صالحة. يرجى تحديد الموقع من الخريطة." : "Coordonnées invalides. Veuillez choisir la position sur la carte.");
-      return;
-    }
-    if (parsedLat < 19 || parsedLat > 38 || parsedLng < -18 || parsedLng > 25) {
-      setErrorMsg(isArabic ? "الإحداثيات المدخلة خارج نطاق المراقبة (شمال أفريقيا فقط)." : "Coordonnées hors de la zone surveillée (Afrique du Nord uniquement).");
-      return;
-    }
-    if (!wilaya) {
-      setErrorMsg(isArabic ? "يرجى اختيار الولاية." : "Veuillez choisir la Wilaya.");
-      return;
-    }
-        const normalizedDescription = description.trim();
-    const normalizedLocationName = locationName.trim();
-    const normalizedName = reporterName.trim();
-    const normalizedPhone = reporterPhone.trim();
-    const normalizedBadge = reporterBadgeCode.trim();
-    if (normalizedDescription.length < 10) {
-      setErrorMsg(isArabic ? "يرجى إعطاء وصف تفصيلي لا يقل عن 10 أحرف." : "Description trop courte (min 10 caract.).");
-      return;
-    }
-    // ARC-L17: shared optional-phone policy (src/utils/phone.ts) — regex moved
-    // there verbatim; empty stays valid (the field is optional).
-    if (!isValidOptionalPhone(normalizedPhone)) {
-      setErrorMsg(isArabic ? "يرجى إدخال رقم هاتف صالح أو ترك الحقل فارغًا." : "Veuillez saisir un numéro de téléphone valide ou laisser le champ vide.");
-      return;
-    }
-    submittingRef.current = true;
-    setIsSubmitting(true);
-    setErrorMsg(null);
-
-    // Idempotency key: retries of the same submission (offline sync, double
-    // taps, tab reopen after a crash) resolve to the already-stored report
-    // instead of creating duplicates.
-    const clientGeneratedId = typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `cg-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-
-    const payload: any = {
-      lat: parsedLat,
-      lng: parsedLng,
-      locationName: normalizedLocationName,
-      wilaya: wilaya.trim(),
-      severity,
-      description: normalizedDescription,
-      reporterName: normalizedName || undefined,
-      reporterPhone: normalizedPhone || undefined,
-      reporterType,
-      reporterBadgeCode: normalizedBadge || undefined,
-      image,
-      clientGeneratedId,
-    };
-
-    // --- INTERCEPT FOR OFFLINE DRAFT MODE ---
-    const offlineMode = isOffline || isOfflineSimulation;
-    if (offlineMode) {
-      const draftReport = {
-        ...payload,
-        id: clientGeneratedId,
-        timestamp: new Date().toISOString(),
-        createdAt: new Date().toISOString(),
-        queuedAt: new Date().toISOString(),
-        schemaVersion: 1,
-        retryCount: 0,
-        isOfflineDraft: true,
-        responseValid: true,
-        consensusCount: 1,
-        status: "pending" as const,
-      };
-
-      // ARC-L10: append chronologically — the sync loop consumes the array in
-      // order, so the OLDEST queued draft must sit first. Prepending made the
-      // newest draft jump the queue (LIFO) while the sync path claimed to
-      // preserve ordering.
-      const updatedDrafts = [...offlineDrafts, draftReport];
-      try {
-        await replaceOfflineDrafts(updatedDrafts);
-      } catch (err: unknown) {
-        console.error("Failed to save drafts to storage", err);
-        setErrorMsg(isArabic ? "تعذر حفظ البلاغ محليًا. تحقق من مساحة التخزين أو أذونات المتصفح." : "Impossible d'enregistrer le brouillon localement. Vérifiez l'espace de stockage du navigateur.");
-        submittingRef.current = false;
-        setIsSubmitting(false);
-        return;
-      }
-      setOfflineDrafts(updatedDrafts);
-
-      setSuccessReport({
-        ...draftReport,
-        // No AI verification is fabricated on-device: Gemini runs on the
-        // server once the draft is pushed — and only then.
-        aiVerification: null,
-        aiComments: isArabic
-          ? `تم حفظ البلاغ كمسودة في ذاكرة الجهاز (${compressedSize || "0 KB"}). ستتم محاولة مزامنته عند عودة الاتصال — التحقق بالذكاء الاصطناعي يتم بعد وصوله للخادم.`
-          : `Signalement enregistré localement (${compressedSize || "0 KB"}). Une synchronisation sera tentée au retour du réseau ; la vérification IA se fait côté serveur.`,
-      });
-
-      // Offline drafts never grant trust: the badge must be validated by the
-      // server after synchronization before any client trust gate changes.
-      // Clear fields on success
-      setLocationName("");
-      setDescription("");
-      setImage(null);
-      setOriginalSize(null);
-      setCompressedSize(null);
-      setEdgeAiStatus(null);
-      setLat("");
-      setLng("");
-      setReporterName("");
-      setReporterPhone("");
-      setReporterBadgeCode("");
-      setReporterType("citizen");
-      setHeading(null);
-      setPitch(null);
-      setPitchSource("none");
-      setHeadingSource("none");
-      setMatchedReport(null);
-      setAlignmentAccuracy(null);
-      submittingRef.current = false;
-      setIsSubmitting(false);
-      return;
-    }
-    try {
-            const result = normalizeSubmissionResult(await onSubmit(payload));
-      setSuccessReport(result);
-      // Only a server-issued verified result may activate the local operator
-      // tone gate. A user-supplied code, pending response, or malformed
-      // response is never treated as client-side authority.
-      if (normalizedBadge && result?.status === "verified") setReporterBadge(normalizedBadge);
-      // Reset form on success
-      setLocationName("");
-      setDescription("");
-      setImage(null);
-      setOriginalSize(null);
-      setCompressedSize(null);
-      setEdgeAiStatus(null);
-      setLat("");
-      setLng("");
-      setReporterName("");
-      setReporterPhone("");
-      setReporterBadgeCode("");
-      setReporterType("citizen");
-      setHeading(null);
-      setPitch(null);
-      setPitchSource("none");
-      setHeadingSource("none");
-      setMatchedReport(null);
-      setAlignmentAccuracy(null);
-    } catch (err: unknown) {
-      const errorRecord = typeof err === "object" && err !== null ? err as Record<string, unknown> : {};
-      const responseRecord = typeof errorRecord.response === "object" && errorRecord.response !== null
-        ? errorRecord.response as Record<string, unknown>
-        : {};
-      const responseData = typeof responseRecord.data === "object" && responseRecord.data !== null
-        ? responseRecord.data as Record<string, unknown>
-        : {};
-      const serverMsgCandidate = typeof errorRecord.data === "object" && errorRecord.data !== null
-        ? (errorRecord.data as Record<string, unknown>).error
-        : responseData.error;
-      const serverMsg = typeof serverMsgCandidate === "string" ? serverMsgCandidate : undefined;
-      setErrorMsg(toUserFacingSubmitError(serverMsg, isArabic));
-    } finally {
-      submittingRef.current = false;
-      setIsSubmitting(false);
-    }
   };
 
   return (
@@ -1125,11 +153,11 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                       : (isArabic ? "لم تُؤكّد جاهزية الخادم — ستظهر النتيجة بعد الإرسال" : "La disponibilité du serveur n'est pas confirmée — le résultat apparaîtra après l'envoi")}
             </span>
           </div>
-          
+
           {allowOfflineSimulation && (
             <button
               type="button"
-              onClick={() => setIsOfflineSimulation((value) => !value)}
+              onClick={toggleOfflineSimulation}
               className={`px-2 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
                 isOfflineSimulation
                   ? "bg-amber-500/25 text-amber-400 border-amber-500/40 hover:bg-amber-500/45"
@@ -1239,7 +267,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           )}
 
           <button
-            onClick={() => setSuccessReport(null)}
+            onClick={dismissSuccess}
             className="w-full py-2.5 bg-zinc-800 hover:bg-zinc-700 text-slate-200 rounded-lg font-bold text-sm transition-colors cursor-pointer"
           >
             {isArabic ? "تقديم بلاغ آخر" : "Faire un autre signalement"}
@@ -1247,7 +275,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
-          
+
           {/* Coordinates Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -1432,7 +460,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
             <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
               {isArabic ? "التقاط أو إرفاق صورة ميدانية (تُضغط تلقائياً)" : "Prendre / Joindre une photo (compressée auto)"}
             </label>
-            
+
             <div className="flex flex-wrap items-center gap-3">
               <input
                 type="file"
@@ -1497,8 +525,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
                   {edgeAiStatus && (
                     <div className={`p-2.5 rounded-lg border text-[10px] flex items-start gap-2 leading-relaxed ${
-                      edgeAiStatus.success 
-                        ? "bg-emerald-950/20 border-emerald-500/20 text-emerald-400" 
+                      edgeAiStatus.success
+                        ? "bg-emerald-950/20 border-emerald-500/20 text-emerald-400"
                         : "bg-amber-950/25 border-amber-500/30 text-amber-400 animate-pulse"
                     }`}>
                       <span className="text-base leading-none">🤖</span>
@@ -1528,7 +556,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
       {/* 4. CAMERA VIEWPORT OVERLAY */}
       {isCameraOpen && (
         <div className="fixed inset-0 bg-slate-950/98 z-[9999] flex flex-col justify-between p-4 md:p-6 select-none font-mono text-slate-100">
-          
+
           {/* HUD Top Bar info */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-red-500/20 pb-3">
             <div>
@@ -1542,8 +570,8 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 {isArabic ? "توجيه الكاميرا وتقدير المواجهة مع البلاغات القريبة — تقديري ولا يثبت الحريق" : "Camera guidance & bearing estimate against nearby reports — an estimate, not a fire proof"}
               </p>
             </div>
-            
-            <button 
+
+            <button
               type="button"
               onClick={stopCamera}
               className="self-end md:self-auto px-3 py-1.5 bg-slate-900 border border-white/10 text-xs rounded hover:bg-slate-800 text-slate-300 font-bold"
@@ -1554,13 +582,13 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
           {/* Large Interactive Viewport */}
           <div className="relative flex-1 my-4 bg-black rounded-xl overflow-hidden border border-red-500/10 shadow-[inset_0_0_50px_rgba(239,68,68,0.2)] flex items-center justify-center">
-            
+
             {stream ? (
-              <video 
-                ref={videoRef} 
-                autoPlay 
-                playsInline 
-                muted 
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
                 className="absolute inset-0 w-full h-full object-cover"
               />
             ) : (
@@ -1577,7 +605,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 {/* Abstract guidance backdrop; no simulated fire or sensor claim. */}
                 <div className="relative h-48 w-full overflow-hidden opacity-80 mt-auto">
                   <div className="absolute bottom-0 w-full h-24 bg-slate-950 rounded-t-[100%] border-t border-red-500/20"></div>
-                  
+
                   {/* Abstract, non-evidentiary visual guidance marker */}
                   <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex flex-col items-center">
                     <div className="h-28 w-16 bg-gradient-to-t from-red-600/40 via-amber-500/20 to-transparent rounded-full blur-xl animate-pulse"></div>
@@ -1597,14 +625,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               <div className="absolute top-6 right-6 border-t-2 border-r-2 border-red-500/30 w-8 h-8"></div>
               <div className="absolute bottom-6 left-6 border-b-2 border-l-2 border-red-500/30 w-8 h-8"></div>
               <div className="absolute bottom-6 right-6 border-b-2 border-r-2 border-red-500/30 w-8 h-8"></div>
-              
+
               {/* Tactical circular reticle */}
               <div className="h-44 w-44 rounded-full border border-red-500/20 flex items-center justify-center animate-pulse">
                 <div className="h-32 w-32 rounded-full border border-red-500/30 border-dashed flex items-center justify-center">
                   <div className="h-4 w-4 rounded-full bg-red-600/40"></div>
                 </div>
               </div>
-              
+
               {/* Horizontal / Vertical crosshairs */}
               <div className="absolute h-px w-3/4 bg-red-500/20"></div>
               <div className="absolute w-px h-3/4 bg-red-500/20"></div>
@@ -1615,7 +643,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               <div className="flex justify-between items-center w-full mb-1">
                 <span className="text-xs font-black text-amber-500 tracking-wider flex items-center gap-1.5">
                   🧭 {heading !== null
-                    ? (isArabic ? `زاوية اتجاه البوصلة: ${heading}° ${getBearingDirection(heading)}` : `COMPASS BEARING: ${heading}° ${getBearingDirection(heading)}`)
+                    ? (isArabic ? `زاوية اتجاه البوصلة: ${heading}° ${getBearingDirection(heading, isArabic)}` : `COMPASS BEARING: ${heading}° ${getBearingDirection(heading, isArabic)}`)
                     : (isArabic ? "البوصلة: لا توجد بيانات من المستشعر" : "BEARING: NO SENSOR DATA")}
                   {headingSource === "sensor" && (
                     <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-1.5 py-0.5 rounded text-[8px] font-black normal-case">
@@ -1628,7 +656,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                     </span>
                   )}
                 </span>
-                
+
                 {/* Compass guide toggle (there is no fake calibration progress:
                     calibration is a user gesture, not a timer) */}
                 <button
@@ -1661,17 +689,14 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               )}
 
               {/* Compass scale slider allowing manual override / calibration */}
-              <input 
-                type="range" 
-                min="0" 
-                max="359" 
+              <input
+                type="range"
+                min="0"
+                max="359"
                   value={heading ?? 0}
                   aria-label={isArabic ? "اتجاه يدوي أو قراءة المستشعر" : "Direction manuelle ou lecture du capteur"}
                   aria-valuetext={heading === null ? (isArabic ? "لا توجد قراءة مستشعر؛ القيمة اليدوية غير محددة" : "Aucune lecture capteur ; réglage manuel non défini") : `${heading}°`}
-                  onChange={(e) => {
-                  setHeading(parseInt(e.target.value, 10));
-                  setHeadingSource("manual");
-                }}
+                  onChange={(e) => setManualHeading(parseInt(e.target.value, 10))}
                 className="w-full mt-2 accent-red-500 cursor-pointer h-1 bg-slate-800 rounded-lg appearance-none"
               />
               {headingSource === "none" && (
@@ -1697,15 +722,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 {isArabic ? "زاوية الارتفاع" : "PITCH"}
               </span>
               <div className="flex-1 flex flex-col items-center justify-center gap-2 w-full">
-                <input 
-                  type="range" 
-                  min="-60" 
-                  max="60" 
+                <input
+                  type="range"
+                  min="-60"
+                  max="60"
                   value={pitch ?? 0}
-                  onChange={(e) => {
-                    setPitch(parseInt(e.target.value, 10));
-                    setPitchSource("manual");
-                  }}
+                  onChange={(e) => setManualPitch(parseInt(e.target.value, 10))}
                   className="h-28 accent-amber-500 cursor-row-resize appearance-none bg-slate-800 rounded w-1"
                   style={{ WebkitAppearance: "slider-vertical" as any }}
                 />
@@ -1736,7 +758,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                     <span className="font-bold text-emerald-400">{safeAlignmentAccuracy}%</span>
                   </div>
                   <p className="text-slate-400 text-[8px] mt-1 leading-normal italic">
-                    {isArabic 
+                    {isArabic
                       ? `بلاغ قائم يتوافق مع الاتجاه والمدى (${safeMatchedDistance} كلم، زاوية ${safeMatchedBearing}°) — مطابقة تقديرية للموقع لا إثبات للمصدر.`
                       : `Signalement existant corrélé en orientation/distance (${safeMatchedDistance} km, bearing ${safeMatchedBearing}°) — correspondance estimée.`}
                   </p>
@@ -1747,7 +769,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                     ⚠️ {isArabic ? "لا بلاغات قريبة" : "NO NEARBY REPORT"}
                   </p>
                   <p className="text-slate-400 leading-normal text-[8px]">
-                    {isArabic 
+                    {isArabic
                       ? "لا توجد بلاغات مسجلة ضمن هذا الاتجاه والمدى من موقعك. حدّث نقطة الإرسال من الخريطة أو الـ GPS مباشرة."
                       : "Aucun signalement enregistré dans cet angle et cette portée. Renseignez la position via la carte ou le GPS."}
                   </p>
@@ -1834,7 +856,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   className="w-full bg-black/60 border border-amber-500/30 rounded-lg py-2 px-3 text-xs text-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500"
                 />
                 <p className="text-[9px] text-amber-400/80 italic leading-snug">
-                  {isArabic 
+                  {isArabic
                     ? "يُرسل الرمز إلى الخادم للتحقق فقط؛ لا يمنح هذا الحقل اعتمادًا أو صلاحية من الواجهة."
                     : "Le code est seulement vérifié par le serveur ; ce champ n'accorde aucune autorité depuis l'interface."}
                 </p>
