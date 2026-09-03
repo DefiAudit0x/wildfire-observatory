@@ -316,14 +316,25 @@ class AppRepository(
             return
         }
         scope.launch {
-            val result = io { api.post("/api/teams/join", joinBody) }
+            // Phase C (principal-cookie ghosts): send the persisted principal
+            // so the server recognizes the device and renews the SAME
+            // identity — without it (bare HttpURLConnection has no cookie
+            // jar) every rejoin minted a fresh principal = ghost member.
+            val cookie = readSavedPrincipalCookie()?.let { "${ObservatoryApi.PRINCIPAL_COOKIE_NAME}=$it" }
+            val result = io { api.post("/api/teams/join", joinBody, cookie) }
             if (!result.is2xx) {
                 val msg = (result as? ObservatoryApi.Result.HttpError)
                     ?.let { extractServerError(it.body) } ?: "تعذر الاتصال بالخادم"
                 onDone(false, null, msg)
                 return@launch
             }
-            val join = Parsers.parseTeamJoin((result as ObservatoryApi.Result.Ok).body)
+            val ok2xx = result as ObservatoryApi.Result.Ok
+            // Server-driven identity continuity: persist the principal cookie
+            // the server just sent (first issuance or sliding renewal).
+            ok2xx.setCookies?.let { headers ->
+                api.extractPrincipalCookie(headers)?.let { persistPrincipalCookie(it) }
+            }
+            val join = Parsers.parseTeamJoin(ok2xx.body)
             if (join == null) {
                 onDone(false, null, "رد غير مفهوم من الخادم")
                 return@launch
@@ -367,6 +378,10 @@ class AppRepository(
         // NOTE: only the CODE + display name are persisted. The 12h bearer
         // token NEVER touches disk (TeamLocationService doctrine) — a rejoin
         // after process death mints a fresh token from the saved code.
+        // The principal cookie (persisted separately below) is NOT a bearer
+        // credential — it is a device pseudonym that keeps the rejoin
+        // anchored to the SAME member identity; a browser would keep it in
+        // its cookie jar on disk all the same.
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("team_code", code)
             .putString("team_name", name)
@@ -376,6 +391,26 @@ class AppRepository(
                 put("teamNameAr", join.teamNameAr)
             }.toString())
             .apply()
+    }
+
+    /** Phase C: the persisted public_principal pseudonym (identity only, no authority). */
+    private fun readSavedPrincipalCookie(): String? {
+        return try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getString("principal_cookie", null)
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun persistPrincipalCookie(value: String) {
+        try {
+            context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString("principal_cookie", value).apply()
+        } catch (e: Exception) {
+            // Storage refusal must never break a join — the device just
+            // falls back to today's (pre-Phase-C) fresh-principal behavior.
+        }
     }
 
     private fun readSavedTeam(): Pair<String, String>? {
