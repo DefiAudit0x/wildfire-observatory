@@ -6,14 +6,12 @@ import StatCards, { UserLocationData } from "./command/StatCards";
 import CommandMap from "./command/CommandMap";
 import SosPanel from "./command/SosPanel";
 import ActivityFeed from "./command/ActivityFeed";
-import TeamsTable from "./command/TeamsTable";
 import RegisteredTeams from "./command/RegisteredTeams";
 import ActiveUsersTable from "./command/ActiveUsersTable";
 import ReportsTable from "./command/ReportsTable";
 import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
-import { getTeamsStatusAndPositions, getTeamNames, getTeamStatusBadge, TeamStatus } from "./command/teams";
 import { RegisteredTeam, MapTeamMember } from "./command/registeredTeams";
 import { apiFetch, isSessionExpiry } from "../utils/adminApi";
 
@@ -189,7 +187,9 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     };
   }, []);
 
-  const teams = getTeamsStatusAndPositions(fullSos);
+  // v2.3.0 (simulation purge): getTeamsStatusAndPositions — the six phantom
+  // units that glided toward SOS calls on a fabricated 2-minute timer — is
+  // gone. Every team surface below reads the live registered-team roster.
   // Memoized: the map's marker effect rebuilds on identity change — without
   // this, every unrelated CentralCommand render would churn the layer too.
   const mapTeamMembers: MapTeamMember[] = useMemo(
@@ -254,24 +254,10 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     }
   };
 
-  const handleDispatchSubmit = async (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string): Promise<boolean> => {
-    if (!teamId) return false;
-    setDispatchLoading(true);
-    const names = getTeamNames(teamId);
-    try {
-      return await sendDispatchRequest(sosId, {
-        type,
-        teamNameAr: names.nameAr,
-        teamNameFr: names.nameFr,
-        notes: notes || "",
-      });
-    } finally {
-      setDispatchLoading(false);
-    }
-  };
-
-  // Team Mode: dispatch a REGISTERED team by its server identity.
-  const handleDispatchRegistered = async (teamId: string, sosId: string, notes: string): Promise<boolean> => {
+  // v2.3.0: single dispatch path — a REGISTERED team by server identity.
+  // The legacy free-text dispatch (phantom unit names) was removed with the
+  // simulated tables; the server now rejects anything but teamId.
+  const handleDispatchRegistered = async (sosId: string, teamId: string, notes: string): Promise<boolean> => {
     setDispatchLoading(true);
     try {
       const ok = await sendDispatchRequest(sosId, { teamId, notes: notes || "" });
@@ -299,27 +285,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         </div>
       `,
     });
-  };
-
-  const handleDirectDispatch = async (teamId: string, sosId: string, notes: string): Promise<boolean> => {
-    setDispatchLoading(true);
-
-    const team = teams.find((t) => t.id === teamId);
-    if (!team) {
-      setDispatchLoading(false);
-      return false;
-    }
-
-    try {
-      return await sendDispatchRequest(sosId, {
-        type: team.type,
-        teamNameAr: team.teamNameAr,
-        teamNameFr: team.teamNameFr,
-        notes: notes || "",
-      });
-    } finally {
-      setDispatchLoading(false);
-    }
   };
 
   const handleResolveSos = async (sos: TrappedSOS) => {
@@ -350,21 +315,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         <div class="text-xs font-mono">
           <strong style="color:#ef4444;">🚨 SOS: ${esc(sos.name)}</strong><br/>
           ${sos.phone ? `Tél: ${esc(sos.phone)}` : ""}
-        </div>
-      `,
-    });
-  };
-
-  const handleTargetTeam = (team: TeamStatus) => {
-    const badge = getTeamStatusBadge(team, isArabic);
-    setFocus({
-      lat: team.currentLat,
-      lng: team.currentLng,
-      html: `
-        <div class="text-xs font-mono p-1 text-slate-100" dir="${isArabic ? "rtl" : "ltr"}">
-          <strong class="text-amber-400">${esc(team.emoji)} ${esc(isArabic ? team.teamNameAr : team.teamNameFr)}</strong><br/>
-          <span class="text-slate-300">${esc(badge.text)}</span><br/>
-          <span class="text-gray-500 text-[10px]">GPS: ${team.currentLat.toFixed(4)}, ${team.currentLng.toFixed(4)}</span>
         </div>
       `,
     });
@@ -425,7 +375,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         satellites={satellites}
         sosCalls={fullSos}
         activeUsers={activeUsers}
-        teams={teams}
+        registeredTeams={registeredTeams}
       />
 
       {/* Map + Activity Layout */}
@@ -436,7 +386,6 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           activeUsers={activeUsers}
           reports={reports}
           sosCalls={fullSos}
-          teams={teams}
           teamMembers={mapTeamMembers}
           focus={focus}
         />
@@ -447,7 +396,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
             isArabic={isArabic}
             sosCalls={fullSos}
             dispatchLoading={dispatchLoading}
-            onDispatch={handleDispatchSubmit}
+            registeredTeams={registeredTeams}
+            onDispatch={handleDispatchRegistered}
             onResolve={(sos) => setConfirmResolve(sos)}
             onFocusSos={handleFocusSos}
             onAudioError={() => push(isArabic ? "تعذر تحميل التسجيل الصوتي" : "Impossible de charger l'audio", "error")}
@@ -456,7 +406,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         </div>
       </div>
 
-      {/* Rescue & Support Teams Panel & Dispatcher Table */}
+      {/* Rescue & Support Teams Panel — the real registered roster (v2.3.0:
+          the simulated dispatch table that used to sit below was removed) */}
       <RegisteredTeams
         isArabic={isArabic}
         teams={registeredTeams}
@@ -470,19 +421,11 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           setShowInactiveTeams(next);
           void fetchRegisteredTeams(next);
         }}
-        onDispatch={handleDispatchRegistered}
+        onDispatch={(teamId, sosId, notes) => handleDispatchRegistered(sosId, teamId, notes)}
         onTargetMember={handleTargetMember}
         onTeamsChanged={fetchRegisteredTeams}
         onSessionExpired={() => setUnlocked(false)}
         notify={push}
-      />
-      <TeamsTable
-        isArabic={isArabic}
-        teams={teams}
-        sosCalls={fullSos}
-        dispatchLoading={dispatchLoading}
-        onDirectDispatch={handleDirectDispatch}
-        onTargetTeam={handleTargetTeam}
       />
 
       {/* Full Reports Registry */}

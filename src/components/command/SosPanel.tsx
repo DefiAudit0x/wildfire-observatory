@@ -1,20 +1,44 @@
 import { useState } from "react";
 import { Radio, Phone, MapPin, Check, Volume2, AlertTriangle, Clock } from "lucide-react";
 import { TrappedSOS } from "../../types";
-import { getTeamStatusText } from "./teams";
+import { RegisteredTeam } from "./registeredTeams";
 import { useNowTick } from "../../hooks/useNowTick";
 
 interface SosPanelProps {
   isArabic: boolean;
   sosCalls: TrappedSOS[];
   dispatchLoading: boolean;
-  onDispatch: (sosId: string, type: "protection_civile" | "volunteers", teamId: string, notes: string) => Promise<boolean>;
+  /** v2.3.0: real registered teams only — the hardcoded phantom roster is gone. */
+  registeredTeams: RegisteredTeam[];
+  onDispatch: (sosId: string, teamId: string, notes: string) => Promise<boolean>;
   onResolve: (sos: TrappedSOS) => void;
   onFocusSos: (sos: TrappedSOS) => void;
   onAudioError?: () => void;
 }
 
-export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispatch, onResolve, onFocusSos, onAudioError }: SosPanelProps) {
+/**
+ * v2.3.0 (simulation purge): getTeamStatusText used to fabricate "✓ وصلت
+ * للموقع" exactly 2 minutes after dispatch regardless of reality. The panel
+ * now reports only what is known: how long ago the dispatch was issued. The
+ * team's true position/status lives in the live roster (RegisteredTeams +
+ * map member markers), not in a timer.
+ */
+function dispatchElapsedText(dispatchedAt: string | { seconds?: number } | undefined, isArabic: boolean): string {
+  let dispatchedTime = Date.now();
+  if (typeof dispatchedAt === "string") {
+    dispatchedTime = new Date(dispatchedAt).getTime();
+  } else if (dispatchedAt && typeof dispatchedAt === "object" && (dispatchedAt as any).seconds) {
+    dispatchedTime = (dispatchedAt as any).seconds * 1000;
+  }
+  if (isNaN(dispatchedTime)) return isArabic ? "أُرسلت" : "Dépêchée";
+  const elapsedMin = Math.max(0, Math.floor((Date.now() - dispatchedTime) / 60000));
+  if (elapsedMin < 1) return isArabic ? "أُرسلت الآن" : "Dépêchée à l'instant";
+  if (elapsedMin < 60) return isArabic ? `أُرسلت قبل ${elapsedMin} د` : `Dépêchée il y a ${elapsedMin} min`;
+  const hours = Math.floor(elapsedMin / 60);
+  return isArabic ? `أُرسلت قبل ${hours} س` : `Dépêchée il y a ${hours} h`;
+}
+
+export default function SosPanel({ isArabic, sosCalls, dispatchLoading, registeredTeams, onDispatch, onResolve, onFocusSos, onAudioError }: SosPanelProps) {
   const [dispatchingSosId, setDispatchingSosId] = useState<string | null>(null);
   const [dispatchType, setDispatchType] = useState<'protection_civile' | 'volunteers'>('protection_civile');
   const [selectedTeam, setSelectedTeam] = useState('');
@@ -27,13 +51,18 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
 
   const handleDispatchSubmit = async (sosId: string) => {
     if (!selectedTeam) return;
-    const ok = await onDispatch(sosId, dispatchType, selectedTeam, dispatchNotes);
+    const ok = await onDispatch(sosId, selectedTeam, dispatchNotes);
     if (ok) {
       setDispatchingSosId(null);
       setSelectedTeam('');
       setDispatchNotes('');
     }
   };
+
+  // v2.3.0: real registered teams of the selected type — no hardcoded units.
+  const selectableTeams = registeredTeams.filter(
+    (t) => t.active !== false && t.type === dispatchType
+  );
 
   const fetchAudio = async (sos: TrappedSOS) => {
     if (audioUrls[sos.id] || loadingAudio === sos.id) return;
@@ -158,19 +187,14 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
                       {isArabic ? "الفرق الموجهة:" : "Dépêchés:"}
                     </span>
                     {sos.dispatchedTeams!.map((team, idx) => {
-                      const status = getTeamStatusText(team.dispatchedAt, isArabic);
                       return (
                         <div key={idx} className="bg-black/30 border border-white/5 rounded p-1 text-[10px] flex items-center justify-between gap-1">
                           <span className="font-bold text-slate-300 truncate max-w-[130px]">
                             {team.type === "protection_civile" ? "🚒 " : "💚 "}
                             {isArabic ? team.teamNameAr : team.teamNameFr}
                           </span>
-                          <span className={`text-[8px] font-extrabold border px-1 py-0.5 rounded shrink-0 ${
-                            status.arrived
-                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                              : "bg-amber-500/10 text-amber-400 border-amber-500/20"
-                          }`}>
-                            {status.text}
+                          <span className="text-[8px] font-extrabold border px-1 py-0.5 rounded shrink-0 bg-amber-500/10 text-amber-400 border-amber-500/20">
+                            {dispatchElapsedText(team.dispatchedAt, isArabic)}
                           </span>
                         </div>
                       );
@@ -219,20 +243,17 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, onDispat
                         onChange={(e) => setSelectedTeam(e.target.value)}
                         className="w-full bg-zinc-950 border border-white/10 rounded p-1 text-[10px] text-slate-300 focus:outline-none"
                       >
-                        <option value="">{isArabic ? "اختر فرقة" : "Sélectionner"}</option>
-                        {dispatchType === 'protection_civile' ? (
-                          <>
-                            <option value="unit_1">🚒 {isArabic ? "وحدة التدخل السريع 1" : "RAPIDE 1"}</option>
-                            <option value="unit_2">🚒 {isArabic ? "وحدة الدعم والإسناد" : "SOUTIEN"}</option>
-                            <option value="unit_3">🚒 {isArabic ? "وحدة الإنقاذ الجبلية" : "MONTAGNE"}</option>
-                          </>
-                        ) : (
-                          <>
-                            <option value="vol_1">💚 {isArabic ? "الهلال الأحمر الجزائري" : "CRA"}</option>
-                            <option value="vol_2">💚 {isArabic ? "رابطة المتطوعين" : "Assoc"}</option>
-                            <option value="vol_3">💚 {isArabic ? "فرقة الدراجات النارية" : "MOTO"}</option>
-                          </>
+                        <option value="">{isArabic ? "اختر فريقًا مسجّلًا" : "Équipe enregistrée..."}</option>
+                        {selectableTeams.length === 0 && (
+                          <option value="" disabled>{isArabic ? "لا توجد فرق مسجلة من هذا النوع" : "Aucune équipe enregistrée"}</option>
                         )}
+                        {selectableTeams.map((team) => (
+                          <option key={team.teamId} value={team.teamId}>
+                            {team.type === "protection_civile" ? "🚒 " : "💚 "}
+                            {isArabic ? team.nameAr : team.name}
+                            {team.activeMission ? (isArabic ? " — في مهمة" : " — en mission") : ""}
+                          </option>
+                        ))}
                       </select>
 
                       <input

@@ -1,5 +1,4 @@
 import { getDb, isAdminDb } from "./firebase.js";
-import { citizenReports } from "./data.js";
 import logger from "./logger.js";
 
 async function loadClientSdk() {
@@ -89,53 +88,10 @@ export async function getReportsFromFirestore() {
   return result.status === "ok" ? result.reports : null;
 }
 
-// ARC-L07: seeding used to await one set() per document — N sequential
-// round-trips per boot against Firestore. Batched writes (450 ops per batch,
-// Firestore's own 500 limit minus headroom) collapse this to ⌈N/450⌉ trips.
-const SEED_BATCH_SIZE = 450;
-
-export async function seedReportsToFirestore(): Promise<boolean> {
-  const db = getDb();
-  if (!db) return false;
-  try {
-    if (isAdminDb(db)) {
-      let batch = db.batch();
-      let ops = 0;
-      for (const rep of citizenReports) {
-        batch.set(db.collection("reports").doc(rep.id), rep);
-        ops += 1;
-        if (ops >= SEED_BATCH_SIZE) {
-          await batch.commit();
-          batch = db.batch();
-          ops = 0;
-        }
-      }
-      if (ops > 0) await batch.commit();
-    } else {
-      const { doc, writeBatch } = await loadClientSdk();
-      let batch = writeBatch(db);
-      let ops = 0;
-      for (const rep of citizenReports) {
-        batch.set(doc(db, "reports", rep.id), rep);
-        ops += 1;
-        if (ops >= SEED_BATCH_SIZE) {
-          await batch.commit();
-          batch = writeBatch(db);
-          ops = 0;
-        }
-      }
-      if (ops > 0) await batch.commit();
-    }
-    // ARC-L03 fix: seeding writes the exact documents the reports cache holds —
-    // serving a pre-seed cache afterwards hid the seeded rows for one TTL.
-    invalidateReportsCache();
-    logger.info(`Seeded initial reports to Firestore (${citizenReports.length} docs, batched)`);
-    return true;
-  } catch (err) {
-    logger.error({ err }, "Failed to seed reports");
-    return false;
-  }
-}
+// v2.3.0 (simulation purge): seedReportsToFirestore was removed. The server
+// no longer fabricates demo reports into an empty database — an empty reports
+// collection is now rendered as exactly that: no fires. Fire data comes from
+// real citizen reports and live NASA FIRMS feeds only.
 
 export type ReportSaveResult = "saved" | "no-db" | "error";
 

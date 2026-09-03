@@ -1,5 +1,4 @@
 import { Request, Response, Router } from "express";
-import { satelliteHotspots } from "../data.js";
 import { determineWilayaByCoords, isInKnownWilaya } from "../geo.js";
 import { SatelliteHotspot } from "../../src/types.js";
 import config from "../config.js";
@@ -122,18 +121,11 @@ export async function getLiveSatelliteData() {
     return unique;
   }
 
-  const fallback = satelliteHotspots.map((sat) => {
-    const nowD = new Date();
-    const timePart = sat.scanTime.split("T")[1];
-    const [hours, minutes] = timePart.split(":");
-    nowD.setUTCHours(parseInt(hours, 10), parseInt(minutes, 10), 0, 0);
-    return { ...sat, scanTime: nowD.toISOString(), isFallback: true };
-  });
-  // Cache the fallback too: avoids hammering the upstream on every request
-  // when FIRMS is unreachable (same 10-min window as live data).
-  cachedHotspots = fallback;
-  cacheTimestamp = now;
-  return fallback;
+  // v2.3.0 (simulation purge): the fabricated-hotspot fallback is gone. When
+  // FIRMS is unreachable or returns nothing, we serve zero hotspots — an
+  // honest empty sky — instead of six invented fires. The frontend already
+  // renders the empty state and fireRisk treats zero hotspots correctly.
+  return [];
 }
 
 router.get("/", async (_req: Request, res: Response) => {

@@ -4,14 +4,12 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import multer from "multer";
 import config from "../config.js";
-import { citizenReports } from "../data.js";
 import { str } from "../params.js";
 import { getAiClient, getAiModel } from "../ai.js";
 import { sanitizeForPrompt } from "./ai.js";
 import { getHaversineDistance, NA_BOUNDS, runClustering, wilayaContainsCoords } from "../geo.js";
 import {
   getReportsDbResult,
-  seedReportsToFirestore,
   saveReportWithIdempotency,
   lookupReportIdempotency,
 } from "../db.js";
@@ -215,8 +213,9 @@ function canonicalReportFingerprint(input: {
   return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
-let initialReportsSeeded = false;
-
+// v2.3.0 (simulation purge): the auto-seeder and the citizenReports fallback
+// are gone. An empty collection answers an empty list; a database outage is a
+// 503 — never a page of fabricated fires.
 function isClusterableReport(value: any): value is Report {
   return Boolean(value) &&
     typeof value.id === "string" && value.id.length > 0 &&
@@ -234,13 +233,9 @@ router.get("/", async (_req: Request, res: Response) => {
     res.status(503).json({ error: "Report data is currently unavailable" });
     return;
   }
-  if (result.status === "empty" && !initialReportsSeeded) {
-    initialReportsSeeded = true;
-    void seedReportsToFirestore().then((seeded) => {
-      if (!seeded) initialReportsSeeded = false;
-    });
-  }
-  const currentReports = result.status === "ok" ? result.reports : citizenReports;
+  // v2.3.0: no seeding, no demo rows — "empty" and "no-db" both mean zero
+  // reports, honestly.
+  const currentReports = result.status === "ok" ? result.reports : [];
   if (!currentReports.every(isClusterableReport)) {
     logger.error("Report dataset failed runtime validation before clustering");
     res.status(503).json({ error: "Report data is currently unavailable" });
@@ -549,33 +544,6 @@ const confirmLimiter = rateLimit({
   message: { error: "Too many confirmations. Slow down." },
 });
 
-// ARC-M02 fix: the no-database development ledger used to grow without bound
-// (one Set per report id, one entry per subject). Two hard caps keep the
-// process-local fallback bounded: 500 report ids (oldest evicted) and 50
-// subjects per report — the 5-vote verified threshold is reached long before
-// either cap matters for its purpose.
-const MAX_LOCAL_VOTE_REPORTS = 500;
-const MAX_LOCAL_VOTES_PER_REPORT = 50;
-const localPrincipalVotes = new Map<string, Set<string>>();
-
-function recordLocalPrincipalVote(reportId: string, subject: string): boolean {
-  const votes = localPrincipalVotes.get(reportId);
-  if (votes) {
-    if (votes.has(subject)) return false;
-    if (votes.size >= MAX_LOCAL_VOTES_PER_REPORT) {
-      // Same contract as the durable ledger: never evict a recorded voter.
-      return false;
-    }
-    votes.add(subject);
-    return true;
-  }
-  if (localPrincipalVotes.size >= MAX_LOCAL_VOTE_REPORTS) {
-    const oldestKey = localPrincipalVotes.keys().next().value;
-    if (oldestKey) localPrincipalVotes.delete(oldestKey);
-  }
-  localPrincipalVotes.set(reportId, new Set([subject]));
-  return true;
-}
 
 router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) => {
   const principal = getPublicPrincipal(req);
@@ -613,21 +581,9 @@ router.post("/:id/confirm", confirmLimiter, async (req: Request, res: Response) 
     res.status(503).json({ code: "CONSENSUS_DURABILITY_UNAVAILABLE", error: "Confirmation persistence is currently unavailable" });
     return;
   }
-  const report = citizenReports.find((item) => item.id === reportId);
-  if (!report) {
-    res.status(404).json({ error: "Report not found" });
-    return;
-  }
-  if (!recordLocalPrincipalVote(reportId, principal.subject)) {
-    res.status(409).json({ error: "Already confirmed" });
-    return;
-  }
-  report.consensusCount += 1;
-  if (report.consensusCount >= 5 && report.status === "pending") {
-    report.status = "verified";
-  }
-  meshHub.broadcast({ type: "report:confirm", id: reportId, consensusCount: report.consensusCount, status: report.status });
-  res.json({ success: true, consensusCount: report.consensusCount, status: report.status });
+  // v2.3.0: dev/no-db consensus previously confirmed votes against the static
+  // demo seed. Without a database there are no reports at all — 404 honestly.
+  res.status(404).json({ error: "Report not found" });
 });
 
 export default router;

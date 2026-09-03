@@ -97,19 +97,20 @@ describe("POST /api/sos/:id/dispatch — registered team (teamId)", () => {
   });
 });
 
-describe("POST /api/sos/:id/dispatch — legacy path unchanged", () => {
-  it("still dispatches by display names with the slugified mission id", async () => {
+describe("POST /api/sos/:id/dispatch — legacy free-text path removed (v2.3.0)", () => {
+  it("rejects dispatch by display names — only a registered teamId dispatches", async () => {
+    // The legacy path let an operator dispatch phantom teams that never
+    // existed ("متطوعو بجاية" with no entity behind it). v2.3.0 removed it
+    // with the simulated dispatch table: the schema now REQUIRES teamId.
     const res = await supertest(createApp())
       .post("/api/sos/sos-1/dispatch")
       .set(adminAuth())
       .send({ type: "volunteers", teamNameAr: "متطوعو بجاية", teamNameFr: "Volontaires Béjaïa" });
-    expect(res.status).toBe(200);
-    const [, dispatchItem, missionTeamId] = fsMock.appendSosDispatch.mock.calls[0];
-    expect(missionTeamId).toBe("volunteers:متطوعو-بجاية"); // space → slug dash
-    expect(dispatchItem.teamId).toBeUndefined();
+    expect(res.status).toBe(400);
+    expect(fsMock.appendSosDispatch).not.toHaveBeenCalled();
   });
 
-  it("400 when NEITHER teamId NOR a complete legacy triple is provided", async () => {
+  it("400 when teamId is missing or malformed", async () => {
     const app = createApp();
     expect((await supertest(app).post("/api/sos/sos-1/dispatch").set(adminAuth()).send({})).status).toBe(400);
     expect((await supertest(app).post("/api/sos/sos-1/dispatch").set(adminAuth()).send({ type: "volunteers" })).status).toBe(400);
