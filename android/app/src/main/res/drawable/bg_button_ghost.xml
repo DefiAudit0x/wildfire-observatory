@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Secondary action: quiet stroked pill (attach photo, record voice, send) -->
+<!-- v2.8.0 secondary action (web: bg-black/40 + border-white/10, rounded-lg) -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#FF0D1626" />
-    <corners android:radius="14dp" />
-    <stroke android:width="1dp" android:color="#FF314468" />
+    <solid android:color="#660A0A0A" />
+    <corners android:radius="12dp" />
+    <stroke android:width="1dp" android:color="@color/border_glass" />
 </shape>

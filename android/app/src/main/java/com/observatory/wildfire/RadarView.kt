@@ -63,28 +63,30 @@ class RadarView @JvmOverloads constructor(
     }
 
     // Paints are built once; onDraw allocates nothing (jank discipline).
+    // v2.8.0 (S2): canvas re-tinted to the WEB radar's zinc/red glass —
+    // rings and rims in white/red glass tints over the shared #0A0505 body.
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFF0B1220.toInt()
+        color = 0xFF0A0505.toInt()
     }
     private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF2A3B55.toInt()
+        color = 0x1FFFFFFF // white/12 glass ring (web border-white/10 tier)
         strokeWidth = 2f
     }
     private val ringLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF7C8DA6.toInt()
+        color = 0xFF8A8A93.toInt() // zinc-500-ish
         textSize = 22f
         textAlign = Paint.Align.CENTER
     }
     private val compassPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF9FB3CC.toInt()
+        color = 0xFFCBD5E1.toInt() // slate-300
         textSize = 30f
         textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
     private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFF3B4F6B.toInt()
+        color = 0x33EF4444.toInt() // red-500/20 ticks
         strokeWidth = 3f
     }
     private val sweepPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -114,21 +116,21 @@ class RadarView @JvmOverloads constructor(
     }
     private val userPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.FILL
-        color = 0xFFE2E8F0.toInt()
+        color = 0xFFF8FAFC.toInt()
     }
     private val windPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF94A3B8.toInt()
+        color = 0xFF9CA3AF.toInt()
         strokeWidth = 5f
     }
     private val rimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF3B4F6B.toInt()
+        color = 0x4DEF4444.toInt() // red-500/30 rim — the observatory signature
         strokeWidth = 3f
     }
     private val headPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xFF94A3B8.toInt()
+        color = 0xFFEF4444.toInt() // sweep head rides the brand red
         strokeWidth = 5f
     }
     private val rectF = RectF()
@@ -145,11 +147,11 @@ class RadarView @JvmOverloads constructor(
         if (radius <= 0f) return
         glowShader = RadialGradient(
             cx, cy, radius,
-            intArrayOf(0x14382B55, 0x000B1220),
+            intArrayOf(0x14331818, 0x000A0505), // faint red glow → body
             floatArrayOf(0f, 1f),
             android.graphics.Shader.TileMode.CLAMP
         )
-        sweepShader = SweepGradient(cx, cy, intArrayOf(0x33EF4444, 0x000B1220), floatArrayOf(0f, 1f))
+        sweepShader = SweepGradient(cx, cy, intArrayOf(0x40EF4444, 0x000A0505), floatArrayOf(0f, 1f))
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -160,7 +162,7 @@ class RadarView @JvmOverloads constructor(
         val cy = h / 2f
         val radius = minOf(w, h) / 2f - 34f
 
-        canvas.drawColor(0xFF0B1220.toInt())
+        canvas.drawColor(0xFF0A0505.toInt())
 
         // Faint center glow for depth.
         bgPaint.shader = glowShader
