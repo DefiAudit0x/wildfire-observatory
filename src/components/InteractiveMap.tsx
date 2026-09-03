@@ -9,12 +9,6 @@ function esc(str: unknown): string {
   return div.innerHTML;
 }
 
-function safeImageSrc(src: unknown): string {
-  const value = String(src ?? "");
-  if (value.startsWith("data:image/") || value.startsWith("https://")) return value;
-  return "";
-}
-
 function safeNumber(value: unknown, fallback = 0): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -289,7 +283,7 @@ export default function InteractiveMap({
         .join(";"),
       visibleReports
         .map((r) =>
-          `${r.id}|${r.lat}|${r.lng}|${r.severity}|${r.status}|${r.locationName}|${r.wilaya}|${r.timestamp}|${r.description}|${r.image || ""}|${r.reporterType || ""}|${r.consensusCount}|${r.clusterSize || 0}|${r.clusterId || ""}|${r.isClusterLeader ? 1 : 0}|${r.aiVerification?.isVerified ? 1 : 0}|${r.aiVerification?.confidence || ""}|${r.aiVerification?.aiComments || ""}|${r.aiVerification?.suggestedSeverity || ""}|${r.aiVerification?.detectedSigns?.join(",") || ""}|${isArabic ? 1 : 0}`
+          `${r.id}|${r.lat}|${r.lng}|${r.severity}|${r.status}|${r.locationName}|${r.wilaya}|${r.timestamp}|${r.description}|${r.hasImage ? 1 : 0}|${r.reporterType || ""}|${r.consensusCount}|${r.clusterSize || 0}|${r.clusterId || ""}|${r.isClusterLeader ? 1 : 0}|${r.aiVerification?.isVerified ? 1 : 0}|${r.aiVerification?.confidence || ""}|${r.aiVerification?.aiComments || ""}|${r.aiVerification?.suggestedSeverity || ""}|${r.aiVerification?.detectedSigns?.join(",") || ""}|${isArabic ? 1 : 0}`
         )
         .join(";"),
     ].join("~");
@@ -436,7 +430,7 @@ export default function InteractiveMap({
         </div>
         <p class="text-xs text-slate-300 mt-2 bg-slate-900/60 p-2 rounded border border-slate-800 leading-relaxed">${esc(rep.description)}</p>
         
-        ${rep.image ? `<img src="${safeImageSrc(rep.image)}" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
+        ${rep.hasImage ? `<img src="/api/reports/${encodeURIComponent(rep.id)}/image" class="w-full h-24 object-cover rounded mt-2 border border-slate-700" alt="Wildfire image" referrerPolicy="no-referrer" />` : ""}
         
         ${clusterHtml}
         ${aiStatusHtml}

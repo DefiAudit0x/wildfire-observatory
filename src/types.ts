@@ -12,7 +12,8 @@ export interface Report {
   description: string;
   severity: ReportSeverity;
   status: 'pending' | 'verified' | 'rejected' | 'resolved';
-  image?: string; // Base64 image
+  image?: string; // Base64 image — OUTGOING (submission) only; the wire never carries it (S-H2)
+  hasImage?: boolean; // S-H2: photo exists server-side — fetch /api/reports/:id/image
   reporterName?: string;
   reporterPhone?: string;
   reporterType?: ReporterType;

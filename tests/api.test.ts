@@ -12,6 +12,18 @@ const mockState = vi.hoisted(() => ({
 
 vi.mock("../server/db.js", () => ({
   getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: mockState.reports })),
+  // v2.4.0 (S-H2): the route serves the pre-sanitized wire — the mock mirrors
+  // that contract (no clustering needed: the seed shape is already valid).
+  getPublicReportsWire: vi.fn(async () => ({ status: "ok", reports: mockState.reports })),
+  getReportImageDataUrl: vi.fn(async (reportId: string) =>
+    reportId === "seed-report" ? "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg" : null),
+  getReportPrivate: vi.fn(async () => null),
+  sanitizePublicReport: (report: any) => {
+    if (!report) return report;
+    const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, image: _img, ...safe } = report;
+    if (safe.hasImage === undefined && typeof report.image === "string" && report.image.length > 0) safe.hasImage = true;
+    return safe;
+  },
   seedReportsToFirestore: vi.fn(async () => true),
   lookupReportIdempotency: vi.fn(async (id: string) => {
     const entry = mockState.idempotency.get(id);
@@ -210,5 +222,27 @@ describe("POST /api/reports", () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
     expect(second.body.id).not.toBe(first.body.id);
+  });
+});
+
+describe("GET /api/reports/:id/image — S-H2 companion route", () => {
+  it("serves the photo bytes with an image content-type", async () => {
+    const app = createTestApp();
+    const res = await supertest(app).get("/api/reports/seed-report/image");
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("image/png");
+    expect(res.headers["cache-control"]).toContain("max-age");
+  });
+
+  it("answers 404 when the report carries no photo", async () => {
+    const app = createTestApp();
+    const res = await supertest(app).get("/api/reports/no-such-report/image");
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects a malformed report id", async () => {
+    const app = createTestApp();
+    const res = await supertest(app).get(`/api/reports/${"x".repeat(200)}/image`);
+    expect(res.status).toBe(400);
   });
 });

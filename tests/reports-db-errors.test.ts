@@ -15,6 +15,36 @@ vi.mock("../server/mesh.js", () => ({
 
 vi.mock("../server/db.js", () => ({
   getReportsDbResult: vi.fn(async () => dbState.result),
+  // v2.4.0 (S-H2): the route serves the pre-sanitized wire — the mock mirrors
+  // the real gate (validate → sanitize) so the 503-on-invalid-dataset test
+  // still exercises the route's honest-failure semantics.
+  getPublicReportsWire: vi.fn(async () => {
+    if (dbState.result.status !== "ok") return dbState.result;
+    const clusterable = (r: any) =>
+      Boolean(r) && typeof r.id === "string" && r.id.length > 0 &&
+      Number.isFinite(r.lat) && r.lat >= -90 && r.lat <= 90 &&
+      Number.isFinite(r.lng) && r.lng >= -180 && r.lng <= 180 &&
+      typeof r.timestamp === "string" && !Number.isNaN(Date.parse(r.timestamp)) &&
+      Number.isInteger(r.consensusCount) && r.consensusCount >= 0 &&
+      ["low", "medium", "high", "critical"].includes(r.severity) &&
+      ["pending", "verified", "rejected", "resolved"].includes(r.status);
+    if (!dbState.result.reports.every(clusterable)) return { status: "error" as const };
+    const sanitize = (report: any) => {
+      if (!report) return report;
+      const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, image: _img, ...safe } = report;
+      if (safe.hasImage === undefined && typeof report.image === "string" && report.image.length > 0) safe.hasImage = true;
+      return safe;
+    };
+    return { status: "ok" as const, reports: dbState.result.reports.map(sanitize) };
+  }),
+  getReportImageDataUrl: vi.fn(async () => null),
+  getReportPrivate: vi.fn(async () => null),
+  sanitizePublicReport: (report: any) => {
+    if (!report) return report;
+    const { reporterPhone: _rp, reporterName: _rn, reporterBadgeCode: _rbc, deviceId: _did, image: _img, ...safe } = report;
+    if (safe.hasImage === undefined && typeof report.image === "string" && report.image.length > 0) safe.hasImage = true;
+    return safe;
+  },
   saveReportToFirestore: vi.fn(async () => "saved"),
   saveReportWithIdempotency: vi.fn(async (report: any) => report.clientGeneratedId === "cg-durable-0001"
     ? { status: "existing", report: { ...report, id: "rep-durable-1" } }

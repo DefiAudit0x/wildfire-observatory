@@ -28,6 +28,11 @@ const sosSchema = z.object({
   audioUrl: z.string().max(MAX_AUDIO_BASE64_LENGTH).optional(),
   audioDuration: z.union([z.number(), z.string()]).optional(),
   textMessage: z.string().max(500).optional(),
+  // F4 fix: idempotency key — reports carried one since v1, SOS did not, so a
+  // 5xx-timeout retry (the Android queue replays up to 8 attempts) created
+  // duplicate SOS calls. Same contract as reports: same key + same logical
+  // SOS ⇒ the FIRST stored SOS is replayed, never a duplicate.
+  clientGeneratedId: z.string().min(8).max(64).optional(),
 });
 
 const dispatchSchema = z.object({
@@ -62,6 +67,20 @@ function bindProfileDevice(req: Request, res: Response, deviceId: string): boole
 }
 
 const memorySos: any[] = [];
+
+// F4: durable idempotency ledger — clientGeneratedId → sosId. Memory-first
+// (same window as memorySos), Firestore-backed so a retry after process death
+// still replays instead of duplicating.
+const SOS_IDEMPOTENCY_COLLECTION = "sosIdempotency";
+
+async function lookupSosByIdempotencyKey(clientGeneratedId: string): Promise<any | null> {
+  const mem = memorySos.find((s: any) => s.clientGeneratedId === clientGeneratedId);
+  if (mem) return mem;
+  const key = await docGet(SOS_IDEMPOTENCY_COLLECTION, clientGeneratedId);
+  const sosId = key?.sosId;
+  if (typeof sosId !== "string" || !sosId) return null;
+  return await docGet("trappedSos", sosId);
+}
 
 export interface SosSummary {
   id: string;
@@ -315,6 +334,24 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
     ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
     : undefined;
 
+  // F4: a retried submission (same clientGeneratedId) replays the FIRST
+  // stored SOS — checked before the admission window, so a retry after the
+  // 5-minute deviceId dedup window still returns the original, never a dupe.
+  if (data.clientGeneratedId) {
+    try {
+      const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId);
+      if (replay) {
+        logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
+        res.json(stripAudio(replay));
+        return;
+      }
+    } catch (err) {
+      // Ledger lookup failure must NEVER block an emergency call — fall
+      // through to admission (worst case: the old duplicate behavior).
+      logger.error({ err }, "SOS idempotency lookup failed; admitting without replay");
+    }
+  }
+
   const newSos: any = {
     id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
     deviceId: data.deviceId,
@@ -332,6 +369,7 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
       : null,
     nearbyFireCorroborated,
     priority,
+    clientGeneratedId: data.clientGeneratedId || undefined,
   };
 
   // Persist PII-safe snapshot to Firestore: strip the raw audio body (kept in memory),
@@ -355,6 +393,18 @@ router.post("/", sosPostLimiter, async (req: Request, res: Response) => {
   memorySos.unshift(newSos);
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
+  }
+  if (data.clientGeneratedId) {
+    const keyStored = await docSet(SOS_IDEMPOTENCY_COLLECTION, data.clientGeneratedId, {
+      sosId: newSos.id,
+      deviceId: data.deviceId,
+      createdAt: newSos.timestamp,
+    });
+    if (!keyStored) {
+      // The SOS itself is durably admitted; only the replay ledger write
+      // failed. Log loudly — in-memory replay still covers this process.
+      logger.warn({ sosId: newSos.id }, "SOS idempotency key persistence failed");
+    }
   }
   logger.info({ sosId: newSos.id, lat, lng, priority, nearbyFireCorroborated }, "New SOS created");
   res.json(stripAudio(newSos));

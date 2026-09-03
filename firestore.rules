@@ -4,9 +4,28 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Public map reports: readable by everyone, writable only by the server
     // (server writes bypass rules via the Admin SDK service account).
+    // S-H1 fix (v2.4.0): this document holds ONLY operational fields —
+    // reporter identity (name/phone/badge/deviceId) lives in reportPrivate/
+    // and the photo body in reportImages/, both server-only below.
     match /reports/{report} {
       allow read: if true;
       allow write: if false;
+    }
+
+    // S-H1: reporter identity shard — server only. Never client-readable.
+    match /reportPrivate/{report} {
+      allow read, write: if false;
+    }
+
+    // S-H2: report image shard (base64 body) — server only. Clients fetch
+    // images through GET /api/reports/:id/image, never direct SDK reads.
+    match /reportImages/{report} {
+      allow read, write: if false;
+    }
+
+    // F4: SOS idempotency ledger (clientGeneratedId → sosId) — server only.
+    match /sosIdempotency/{key} {
+      allow read, write: if false;
     }
 
     // Email subscribers: private — server only.
