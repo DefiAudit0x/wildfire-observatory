@@ -353,9 +353,20 @@ export async function joinTeamAtomically(
         if (codeDoc.revoked === true) return { status: "code-invalid" };
         const expiresAt = typeof codeDoc.expiresAt === "number" ? codeDoc.expiresAt : Date.parse(codeDoc.expiresAt);
         if (Number.isFinite(expiresAt) && now >= expiresAt) return { status: "code-expired" };
+
+        // Rejoin-budget (Phase C): the member doc must be read BEFORE the
+        // budget gate. An ACTIVE member's refresh rejoin is not a use — the
+        // old order burned one of the code's maxUses on every refresh (6
+        // vehicles × 2 refreshes/day exhausted a 12-use code within a shift).
+        // Only a FIRST join or a re-admission after a removal (doc absent or
+        // active:false) consumes the budget.
+        const memberRef = db.collection("teamMembers").doc(memberId);
+        const memberSnap = await tx.get(memberRef);
+        const activeRefresh = memberSnap.exists && memberSnap.data()?.active !== false;
+
         const uses = Number(codeDoc.uses) || 0;
         const maxUses = Number(codeDoc.maxUses) || 0;
-        if (maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
+        if (!activeRefresh && maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
 
         const teamRef = db.collection("teams").doc(codeDoc.teamId);
         const teamSnap = await tx.get(teamRef);
@@ -366,8 +377,6 @@ export async function joinTeamAtomically(
           return { status: "principal-blocked" };
         }
 
-        const memberRef = db.collection("teamMembers").doc(memberId);
-        const memberSnap = await tx.get(memberRef);
         const tokenGen = Number(memberSnap.data()?.tokenGen) || 0;
         const member = {
           ...memberData,
@@ -383,7 +392,11 @@ export async function joinTeamAtomically(
           tokenGen: undefined,
         };
         tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
-        tx.update(codeRef, { uses: FieldValue.increment(1), lastUsedAt: now });
+        // Rejoin-budget: an active refresh refreshes the timestamp only; a
+        // genuine first join or re-admission consumes one use.
+        tx.update(codeRef, activeRefresh
+          ? { lastUsedAt: now }
+          : { uses: FieldValue.increment(1), lastUsedAt: now });
         return { status: "joined", member, tokenGen };
       });
     }
@@ -398,9 +411,15 @@ export async function joinTeamAtomically(
       if (codeDoc.revoked === true) return { status: "code-invalid" };
       const expiresAt = typeof codeDoc.expiresAt === "number" ? codeDoc.expiresAt : Date.parse(codeDoc.expiresAt);
       if (Number.isFinite(expiresAt) && now >= expiresAt) return { status: "code-expired" };
+
+      // Rejoin-budget (Phase C): mirror of the admin-SDK branch above.
+      const memberRef = doc(db, "teamMembers", memberId);
+      const memberSnap = await tx.get(memberRef);
+      const activeRefresh = memberSnap.exists() && memberSnap.data()?.active !== false;
+
       const uses = Number(codeDoc.uses) || 0;
       const maxUses = Number(codeDoc.maxUses) || 0;
-      if (maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
+      if (!activeRefresh && maxUses > 0 && uses >= maxUses) return { status: "code-exhausted" };
 
       const teamRef = doc(db, "teams", codeDoc.teamId);
       const teamSnap = await tx.get(teamRef);
@@ -411,8 +430,6 @@ export async function joinTeamAtomically(
         return { status: "principal-blocked" };
       }
 
-      const memberRef = doc(db, "teamMembers", memberId);
-      const memberSnap = await tx.get(memberRef);
       const tokenGen = Number(memberSnap.data()?.tokenGen) || 0;
       const member = {
         ...memberData,
@@ -423,7 +440,10 @@ export async function joinTeamAtomically(
         tokenGen: undefined,
       };
       tx.set(memberRef, stripUndefinedDeep(member), { merge: true });
-      tx.update(codeRef, { uses: increment(1), lastUsedAt: now });
+      // Rejoin-budget: mirror of the admin-SDK branch above.
+      tx.update(codeRef, activeRefresh
+        ? { lastUsedAt: now }
+        : { uses: increment(1), lastUsedAt: now });
       return { status: "joined", member, tokenGen };
     });
   } catch (err) {

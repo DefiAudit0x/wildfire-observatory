@@ -142,6 +142,42 @@ describe("POST /api/teams/join — happy path", () => {
     expect(otherTeam.body.memberId).not.toBe(first.body.memberId);
   });
 
+  it("Phase C: sliding renewal — a returning principal gets a FRESH cookie with the SAME subject", async () => {
+    fsMock.docGet.mockImplementation(async (collection: string) => {
+      if (collection === "teamJoinCodes") return { teamId: "team-a1", revoked: false, expiresAt: Date.now() + 3_600_000, uses: 0, maxUses: 12 };
+      if (collection === "teams") return { teamId: "team-a1", name: "T", nameAr: "ت", active: true };
+      return null;
+    });
+    const app = createApp();
+    const agent = supertest.agent(app);
+    // Literal IPs (T2's lesson): the module-level join limiter is shared
+    // across this file's tests and nextIp() values collide across
+    // createApp() resets — the two joins here must not tax IPs other
+    // tests rely on staying under the 10/hour ceiling.
+    const first = await agent.post("/api/teams/join").set({ "X-Forwarded-For": "10.78.221.1" }).send({ code: "ABCD2345", name: "فريق" });
+    const second = await agent.post("/api/teams/join").set({ "X-Forwarded-For": "10.78.221.1" }).send({ code: "ABCD2345", name: "فريق" });
+
+    const principalCookie = (headers: any) =>
+      (headers["set-cookie"] as string[]).find((c: string) => c.startsWith("public_principal="));
+    const c1 = principalCookie(first.headers);
+    const c2 = principalCookie(second.headers);
+    // The renewal is the whole point: the second join RE-ISSUES the cookie.
+    expect(c1).toBeTruthy();
+    expect(c2).toBeTruthy();
+
+    const decode = (cookie: string) =>
+      JSON.parse(Buffer.from(cookie.split(";")[0].split("=").slice(1).join("=").split(".")[1], "base64url").toString("utf8"));
+    const p1 = decode(c1!);
+    const p2 = decode(c2!);
+    // Identity continuity: SAME subject (the member id derives from it).
+    expect(p2.subject).toBe(p1.subject);
+    // Fresh issuance: new jti and a re-armed (>= original) 30-day window.
+    expect(p2.jti).not.toBe(p1.jti);
+    expect(p2.exp).toBeGreaterThanOrEqual(p1.exp);
+    // And the deterministic member id rides the unchanged subject.
+    expect(second.body.memberId).toBe(first.body.memberId);
+  });
+
   it("normalizes codes: lowercase, separators and mistyped glyphs", async () => {
     fsMock.docGet.mockImplementation(async (collection: string) => {
       if (collection === "teamJoinCodes") return { teamId: "team-a1", revoked: false, expiresAt: Date.now() + 3_600_000 };

@@ -404,6 +404,63 @@ describe("Team join transaction — real-logic coverage (ARC-T1 first slice)", (
     expect((r as any).tokenGen).toBe(4);
   });
 
+  it("Phase C rejoin-budget: an ACTIVE member's refresh rejoin does NOT burn a code use", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamJoinCodes/REFRESH1", {
+      code: "REFRESH1", teamId: "team-rf", expiresAt: Date.now() + 3_600_000,
+      maxUses: 12, uses: 7, revoked: false,
+    });
+    state.docs.set("teams/team-rf", { teamId: "team-rf", active: true });
+    state.docs.set("teamMembers/tm-refresh00000001", {
+      memberId: "tm-refresh00000001", teamId: "team-rf", principal: "p", active: true,
+    });
+    const r = await joinTeamAtomically("REFRESH1", "tm-refresh00000001", { memberId: "tm-refresh00000001", teamId: "team-rf", name: "ن", principal: "p" });
+    expect(r.status).toBe("joined");
+    // The budget is untouched — a refresh is not a use.
+    expect(state.docs.get("teamJoinCodes/REFRESH1")!.uses).toBe(7);
+    // The join itself still happened (rejoinCount bumps, lastUsedAt stamps).
+    expect(state.docs.get("teamMembers/tm-refresh00000001")!.rejoinCount).toBe(1);
+    expect(state.docs.get("teamJoinCodes/REFRESH1")!.lastUsedAt).toBeGreaterThan(0);
+  });
+
+  it("Phase C rejoin-budget: an EXHAUSTED code still admits an active member's refresh", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamJoinCodes/EXHAUST1", {
+      code: "EXHAUST1", teamId: "team-ex", expiresAt: Date.now() + 3_600_000,
+      maxUses: 12, uses: 12, revoked: false,
+    });
+    state.docs.set("teams/team-ex", { teamId: "team-ex", active: true });
+    state.docs.set("teamMembers/tm-exhaust00000001", {
+      memberId: "tm-exhaust00000001", teamId: "team-ex", principal: "p", active: true,
+    });
+    const r = await joinTeamAtomically("EXHAUST1", "tm-exhaust00000001", { memberId: "tm-exhaust00000001", teamId: "team-ex", name: "ن", principal: "p" });
+    // The refresh path bypasses the budget gate entirely.
+    expect(r.status).toBe("joined");
+    expect(state.docs.get("teamJoinCodes/EXHAUST1")!.uses).toBe(12);
+    // …while a genuinely NEW member on the same exhausted code still fails.
+    const r2 = await joinTeamAtomically("EXHAUST1", "tm-exhaust00000002", { memberId: "tm-exhaust00000002", teamId: "team-ex", name: "ب", principal: "p2" });
+    expect(r2.status).toBe("code-exhausted");
+  });
+
+  it("Phase C rejoin-budget: a re-admission after removal (active:false) DOES burn a use", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamJoinCodes/READD1", {
+      code: "READD1", teamId: "team-ra", expiresAt: Date.now() + 3_600_000,
+      maxUses: 12, uses: 3, revoked: false,
+    });
+    state.docs.set("teams/team-ra", { teamId: "team-ra", active: true });
+    state.docs.set("teamMembers/tm-readmit00000001", {
+      memberId: "tm-readmit00000001", teamId: "team-ra", principal: "p", active: false,
+    });
+    const r = await joinTeamAtomically("READD1", "tm-readmit00000001", { memberId: "tm-readmit00000001", teamId: "team-ra", name: "ن", principal: "p" });
+    expect(r.status).toBe("joined");
+    // Re-admission is a genuine capability consumption — the counter moves.
+    expect(state.docs.get("teamJoinCodes/READD1")!.uses).toBe(4);
+  });
+
   it("B2: rejects a principal the dispatcher explicitly blocked (inside the tx)", async () => {
     state.docs.clear();
     state.queue = Promise.resolve();
