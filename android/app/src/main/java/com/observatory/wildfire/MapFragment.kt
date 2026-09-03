@@ -53,6 +53,14 @@ class MapFragment : Fragment() {
     private var mapReady = false
     private var lastUserLatLng: Pair<Double, Double>? = null
 
+    // F2: named listener so onDestroyView can deregister from the
+    // application-scoped engine (an inline lambda leaked this view forever).
+    private val locationListener: (LocationEngine.State) -> Unit = { state ->
+        activity?.runOnUiThread {
+            state.fix?.let { onFix(it) }
+        }
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -123,11 +131,7 @@ class MapFragment : Fragment() {
 
         routeButton?.setOnClickListener { fetchEvacuationRoute() }
 
-        app.locationEngine.addListener { state ->
-            activity?.runOnUiThread {
-                state.fix?.let { onFix(it) }
-            }
-        }
+        app.locationEngine.addListener(locationListener)
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -306,6 +310,7 @@ class MapFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        app.locationEngine.removeListener(locationListener)
         map?.onDetach()
         map = null
         userMarker = null

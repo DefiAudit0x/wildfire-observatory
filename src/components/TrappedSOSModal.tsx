@@ -62,6 +62,10 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  // F4 mirror: mint the SOS idempotency key ONCE per modal session and reuse
+  // it across retries — the server replays the FIRST stored SOS for the same
+  // key, so a retry after a timeout can never become a second emergency call.
+  const sosClientGeneratedIdRef = useRef<string | null>(null);
 
   // Load the user's saved (server-encrypted) identity once.
   useEffect(() => {
@@ -425,6 +429,10 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           deviceId: storedId,
+          clientGeneratedId:
+            sosClientGeneratedIdRef.current ??=
+            (globalThis.crypto?.randomUUID?.().replace(/-/g, "") ||
+              `${Date.now()}${Math.random().toString(36).slice(2, 10)}`),
           lat: userLocation.lat,
           lng: userLocation.lng,
           name: finalName,
