@@ -6,6 +6,7 @@ import logger from "../logger.js";
 import { collectionGet } from "../fs.js";
 import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
+import { logAdminAction, actorFromRequest } from "./audit.js";
 
 const router = Router();
 
@@ -154,14 +155,22 @@ router.post("/auth/central-command", centralCommandLimiter, async (req: Request,
     res.status(401).json({ valid: false });
     return;
   }
-  const token = generateAdminToken();
+  // S-M3: the central-command gate mints a DISTINCT "superadmin" role. It
+  // used to downgrade to the same generateAdminToken() as the ordinary admin
+  // password, making the two privilege levels indistinguishable in /api/admin
+  // /session and the audit log. requireAdmin/requireRole already accept both;
+  // nothing else changes for callers.
+  const token = generateAdminToken("superadmin");
   res.cookie("admin_token", token, {
     httpOnly: true,
     sameSite: "lax",
     secure: config.cookieSecure,
     maxAge: 24 * 60 * 60 * 1000,
   });
-  res.json({ valid: true });
+  // S-M8: a superadmin login is a privilege shift — it must leave a durable
+  // audit entry even when everything after it fails.
+  logAdminAction("central-command.login", { success: true, role: "superadmin" }, actorFromRequest(req)).catch(() => {});
+  res.json({ valid: true, role: "superadmin" });
 });
 
 router.get("/locations", requireAdmin, async (_req: Request, res: Response) => {

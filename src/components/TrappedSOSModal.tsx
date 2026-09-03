@@ -59,6 +59,15 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  // W-H1: the recording visualizer minted its OWN AudioContext per recording
+  // and never closed it — one leaked context per take, plus the synthetic
+  // fallback's context on its error path. Every context the modal creates is
+  // now tracked and closed deterministically.
+  const recordingAudioCtxRef = useRef<AudioContext | null>(null);
+  // W-H2: the first successful recording is cached here — a retry after a
+  // send failure reuses the REAL recording instead of silently replacing it
+  // with a freshly synthesized siren (and never sends an empty audio body).
+  const capturedAudioRef = useRef<string>("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -155,7 +164,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       if (timerRef.current) clearInterval(timerRef.current);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
       if (audioCtxRef.current) {
-        audioCtxRef.current.close();
+        try { audioCtxRef.current.close(); } catch { /* ignore */ }
+      }
+      // W-H1: the per-recording analyzer context is closed here too, not just
+      // the siren-test context.
+      if (recordingAudioCtxRef.current) {
+        try { recordingAudioCtxRef.current.close(); } catch { /* ignore */ }
+        recordingAudioCtxRef.current = null;
       }
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach(track => track.stop());
@@ -218,6 +233,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         try {
           const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
           const audioCtx = new AudioCtx();
+          // W-H1: tracked so stopRecordingAndSend + unmount can always close it.
+          recordingAudioCtxRef.current = audioCtx;
           const source = audioCtx.createMediaStreamSource(stream);
           const analyser = audioCtx.createAnalyser();
           analyser.fftSize = 64;
@@ -285,9 +302,10 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   // siren-like tone; the informative payload travels as `textMessage`.
   const generateVoiceAlertBase64 = async (finalName: string): Promise<string> => {
     return new Promise((resolve) => {
+      let ctx: AudioContext | null = null;
       try {
         const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-        const ctx = new AudioCtx();
+        ctx = new AudioCtx();
         const dest = ctx.createMediaStreamDestination();
         const osc = ctx.createOscillator();
         const gain = ctx.createGain();
@@ -309,9 +327,18 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         recorder.onstop = () => {
           const blob = new Blob(chunks, { type: "audio/webm" });
           const reader = new FileReader();
+          const closeCtx = () => {
+            // W-H1: the synthetic-alert context is closed on EVERY terminal
+            // path, not only the happy reader.onloadend one.
+            try { ctx?.close(); } catch { /* ignore */ }
+          };
           reader.onloadend = () => {
             resolve(reader.result as string);
-            try { ctx.close(); } catch {}
+            closeCtx();
+          };
+          reader.onerror = () => {
+            resolve("");
+            closeCtx();
           };
           reader.readAsDataURL(blob);
         };
@@ -322,6 +349,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           osc.stop();
         }, 3000);
       } catch {
+        // W-H1: a failure AFTER the context was created must not leak it.
+        try { ctx?.close(); } catch { /* ignore */ }
         resolve("");
       }
     });
@@ -384,11 +413,29 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       mediaStreamRef.current = null;
     }
 
+    // W-H1: the recording analyzer's AudioContext is done the moment the
+    // recording ends — close it here instead of leaving it open until unmount.
+    if (recordingAudioCtxRef.current) {
+      try { recordingAudioCtxRef.current.close(); } catch { /* ignore */ }
+      recordingAudioCtxRef.current = null;
+    }
+
+    // W-H2: keep the REAL recording across retries. The old flow regenerated a
+    // synthetic siren on every retry (the recorder is already inactive by then)
+    // and could fall back to an empty audio body — the victim's actual voice
+    // note was silently discarded. Once a real take is captured it is reused
+    // verbatim, and an empty/short body is never sent as audioUrl.
+    if (finalAudioBase64 && finalAudioBase64.length >= 100) {
+      capturedAudioRef.current = finalAudioBase64;
+    } else if (capturedAudioRef.current && capturedAudioRef.current.length >= 100) {
+      finalAudioBase64 = capturedAudioRef.current;
+    }
+
     const finalName = name.trim() || (isArabic ? "مواطن محاصر" : "Citoyen Piégé");
 
     // If no audio chunk was captured (e.g. mic disabled), generate a synthetic
     // alert sound and speak the emergency message aloud as a live fallback.
-    if (!finalAudioBase64 || finalAudioBase64.length < 100) {
+    if ((!finalAudioBase64 || finalAudioBase64.length < 100)) {
       finalAudioBase64 = await generateVoiceAlertBase64(finalName);
       speakEmergency(finalName);
     }
@@ -437,7 +484,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           lng: userLocation.lng,
           name: finalName,
           phone: phone.trim(),
-          audioUrl: finalAudioBase64 || undefined,
+          // W-H2: only a REAL, non-trivial audio body travels — never "".
+          audioUrl: finalAudioBase64 && finalAudioBase64.length >= 100 ? finalAudioBase64 : undefined,
           audioDuration: recordingTime || 5,
           textMessage: buildTextMessage(finalName),
         }),
