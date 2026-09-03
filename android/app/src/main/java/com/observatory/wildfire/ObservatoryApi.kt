@@ -37,7 +37,7 @@ class ObservatoryApi(private val baseUrl: String) {
         // release train (bump together with android/app/build.gradle).
         // (v2.11.0: the pin had drifted to 2.7.0 across the S2–S4 trains —
         // restored in step and the trains now bump it together.)
-        const val USER_AGENT = "WildfireObservatory-Android/2.11.0"
+        const val USER_AGENT = "WildfireObservatory-Android/2.12.0"
         private const val MAX_RESPONSE_BYTES = 32 * 1024
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000
