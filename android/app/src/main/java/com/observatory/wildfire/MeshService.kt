@@ -1,8 +1,6 @@
 package com.observatory.wildfire
 
 import android.app.*
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.le.*
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
@@ -10,14 +8,12 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Base64
 import android.util.Log
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
-import kotlin.collections.set
 import kotlin.math.min
 import java.security.SecureRandom
 
@@ -29,6 +25,18 @@ import java.security.SecureRandom
  * - Smart Sleep Scheduling for battery preservation
  * - Anti-replay nonce tracking
  * - Brotli-inspired compression (deflate)
+ *
+ * ARC-H16: this class is now the ANDROID SHELL + ORCHESTRATOR. All pure,
+ * clock-driven state lives in four JVM-tested modules and moved VERBATIM:
+ * - [MeshQueue]      — store-and-forward queue + delivery bookkeeping
+ * - [MeshReputation] — TOFU device records + scoring + bounded cap
+ * - [MeshPeerRegistry] — transport handles + connection dedupe state
+ * - [MeshInbound]    — the inbound gate chain + anti-replay seen-cache
+ * The service wires the Nearby transport, the notification/foreground
+ * lifecycle, power management, the single ephemeral-rotation clock and the
+ * trickle timer — and composes the modules in exactly the original order.
+ * The public surface (binder, listeners, broadcastMessage, reputation/
+ * peers getters, every companion constant) is unchanged.
  */
 class MeshService : Service() {
 
@@ -36,34 +44,29 @@ class MeshService : Service() {
         const val TAG = "SecureMesh"
         const val CHANNEL_ID = "mesh_channel_01"
         const val SERVICE_ID = "com.observatory.wildfire.mesh"
-        const val MESSAGE_TYPE_REPORT = "report"
-        const val MESSAGE_TYPE_ECHO = "echo"
-        // NOTE (audit round 12): MESSAGE_TYPE_REPUTATION was removed. It was
-        // whitelisted in the bridge but had NO wire protocol handling — the
-        // receiver has no reputation branch, so advertising a type nothing
-        // processes is a dead + misleading protocol surface. Reputation is
-        // scored from authenticated traffic (reports/echoes) only.
-        // Wire constants live in MeshWire (pure JVM, unit-tested); these
-        // companion aliases keep call sites readable.
+        // Wire constants live in MeshWire / the ARC-H16 modules (pure JVM,
+        // unit-tested); these companion aliases keep call sites readable.
+        const val MESSAGE_TYPE_REPORT = MeshInbound.TYPE_REPORT
+        const val MESSAGE_TYPE_ECHO = MeshInbound.TYPE_ECHO
         const val MAX_HOPS = MeshWire.MAX_HOPS
         const val PROTOCOL_VERSION = MeshWire.PROTOCOL_VERSION
-        const val REPUTATION_INITIAL = 50
+        const val REPUTATION_INITIAL = MeshReputation.REPUTATION_INITIAL
         // ARC-L24: REPUTATION_GOOD_REPORT (15) and REPUTATION_FALSE_REPORT
         // (-50) were deleted — reputation is scored from AUTHENTICATED
         // traffic quality elsewhere; these two were never referenced and
         // implied a report-quality link that does not exist.
-        const val REPUTATION_CONFIRM_MATCH = 5
+        const val REPUTATION_CONFIRM_MATCH = MeshReputation.REPUTATION_CONFIRM_MATCH
         // Audit B2: penalties are differentiated by offense severity — garbage
         // bytes are often environmental noise, a failed PoW is cheap to fake,
         // a wrong difficulty signals a modified client, and a bad signature is
         // active tampering. A single flat penalty made every offense worth the
         // same (de)credit.
-        const val REPUTATION_MALFORMED_FRAME = -10
-        const val REPUTATION_BAD_POW = -20
-        const val REPUTATION_BAD_DIFFICULTY = -30
-        const val REPUTATION_BAD_SIGNATURE = -40
-        const val REPUTATION_MIN = -100
-        const val REPUTATION_MAX = 100
+        const val REPUTATION_MALFORMED_FRAME = MeshReputation.REPUTATION_MALFORMED_FRAME
+        const val REPUTATION_BAD_POW = MeshReputation.REPUTATION_BAD_POW
+        const val REPUTATION_BAD_DIFFICULTY = MeshReputation.REPUTATION_BAD_DIFFICULTY
+        const val REPUTATION_BAD_SIGNATURE = MeshReputation.REPUTATION_BAD_SIGNATURE
+        const val REPUTATION_MIN = MeshReputation.REPUTATION_MIN
+        const val REPUTATION_MAX = MeshReputation.REPUTATION_MAX
 
         // Trickle constants (milliseconds)
         const val TRICKLE_I_MIN = 1000L
@@ -77,26 +80,15 @@ class MeshService : Service() {
         // the trickle rework (ARC-H14): the active rate is TRICKLE_I_MIN,
         // not a fixed scan period.
 
-        // Store-and-forward hygiene: a queued message lives at most 10 minutes
-        // since its LAST delivery attempt — never since it was queued, so a
-        // message that waited for peers is not penalized for time it could not
-        // act — and the queue is capped so an idle mesh can never grow
-        // unbounded. Messages that were NEVER attempted (no peer in range)
-        // wait indefinitely and are only evicted by the queue cap.
-        // (Audit round 12: the old MESSAGE_TTL_WINDOWS delivery budget was
-        // removed — 3 trickle windows expired messages in well under a minute
-        // even when every attempt was retryable, making the stated 10-minute
-        // TTL a lie. Expiry is now purely time-based.)
-        const val MESSAGE_TTL_MS = 10 * 60 * 1000L
+        // Store-and-forward hygiene constants live in MeshQueue (unit-tested);
+        // MESSAGE_TTL_MS is shared with the inbound freshness gate below.
+        const val MESSAGE_TTL_MS = MeshQueue.MESSAGE_TTL_MS
         // Admission freshness policy: the signed origin timestamp must be
         // within the message lifetime, with a small allowance for clock skew.
         const val MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000L
-        const val MAX_PENDING_MESSAGES = 200
-        const val PEER_STALE_MS = 10 * 60 * 1000L
-        // ARC-L24: named (was an inline 300_000L). Forwarded markers expire
-        // 5 minutes after their last delivery attempt so a peer that dropped
-        // out can accept a re-send when it returns.
-        const val FORWARDED_MARKER_TTL_MS = 300_000L
+        const val MAX_PENDING_MESSAGES = MeshQueue.MAX_PENDING_MESSAGES
+        const val PEER_STALE_MS = MeshPeerRegistry.PEER_STALE_MS
+        const val FORWARDED_MARKER_TTL_MS = MeshQueue.FORWARDED_MARKER_TTL_MS
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
         const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
         const val MAX_BRIDGE_JSON_BYTES = 512 * 1024 // JSON envelope before parsing
@@ -108,28 +100,12 @@ class MeshService : Service() {
         // "difficulty 999999" frame is dropped, not computed).
         const val PO_W_DIFFICULTY = MeshWire.NETWORK_POW_DIFFICULTY
 
-        // Seen-hash cache bound (audit): the 5-minute TTL limits LIFETIME but
-        // not SIZE — an attacker flooding unique garbage could grow the map
-        // unbounded in the window. The cap evicts the OLDEST entry as soon as
-        // it is exceeded (see handleIncomingMessage / trickleTick).
-        //
-        // Threat budget (audit round 12 — why 4096): entries are only added
-        // AFTER full authentication (PoW + ECDSA), so the cache grows at the
-        // rate of VALID traffic. 4096 spans ~13.6 verified messages/second
-        // across the whole 5-minute window — far beyond the capacity of a
-        // battery-powered P2P cluster — so eviction under normal operation
-        // never shrinks the effective replay window. The residual trade-off:
-        // an authenticated flooding sender can truncate the replay window by
-        // outrunning the cap — the cap caps MEMORY, not the replay policy.
-        const val MAX_SEEN_HASHES = 4096
+        // Seen-hash cache bound lives in MeshInbound (unit-tested).
+        const val MAX_SEEN_HASHES = MeshInbound.MAX_SEEN_HASHES
         // Secure randomness for protocol nonces and identifiers.
         private val protocolRandom = SecureRandom()
-        // Device records (TOFU identity — audit round 12): reputation and
-        // first/last-seen are anchored on the peer's ADVERTISED PUBLIC KEY,
-        // not on the transport endpointId, which is a Nearby session id that
-        // changes every re-announce. The cap bounds distinct devices seen;
-        // a larger herd evicts the least-recently-seen record.
-        const val MAX_DEVICE_RECORDS = 1024
+        // Device records cap lives in MeshReputation (unit-tested).
+        const val MAX_DEVICE_RECORDS = MeshReputation.MAX_DEVICE_RECORDS
     }
 
     // Binder for activity communication
@@ -142,140 +118,19 @@ class MeshService : Service() {
     // Nearby Connections API
     private lateinit var connectionsClient: ConnectionsClient
 
+    // ARC-H16 pure modules (per-service-instance state, cleared in onDestroy
+    // exactly like the original in-service maps).
+    private val queue = MeshQueue()
+    private val registry = MeshPeerRegistry()
+    private val reputation = MeshReputation()
+    private val meshInbound = MeshInbound(
+        verifySignature = { msg -> CryptoEngine.verifyMessageSignature(msg) },
+        decrypt = { msg -> CryptoEngine.decryptFromPeer(msg) }
+    )
+
     // Identity
     private var currentEphemeralId: String = ""
     private var lastEphemeralRotation: Long = 0L
-    private val seenMessageHashes = ConcurrentHashMap<String, Long>()  // anti-broadcast storm
-    // Anti-replay lives in seenMessageHashes (messageId + nonce) — see
-    // handleIncomingMessage. A nonce-only set would reject legitimately
-    // distinct messages from a fast sender.
-
-    // TOFU device identity (audit round 12): reputation and first/last-seen
-    // are anchored on the peer's ADVERTISED PUBLIC KEY — the key IS the
-    // device identity in this anonymous proximity mesh. The Nearby
-    // endpointId is merely a transport session handle that changes on every
-    // re-announce, so keying reputation on it let state outlive peers
-    // (accumulating forever) and lost all history when a device re-announced.
-    // Records are created at first sight (trust-on-first-use), keyed forever
-    // by the public key, and bounded by MAX_DEVICE_RECORDS.
-    //
-    // Authenticated-key-exchange caveat (audit round 12): "peer key from the
-    // Nearby name" binds a public key to an endpoint NAME, and the device
-    // that OWNS the private half of that key can prove it when decrypting —
-    // but without an out-of-band channel there is no way to prove WHICH
-    // physical device the key belongs to (any nearby device can name itself
-    // and hold a key). E2EE here therefore guarantees "only the holder of
-    // the private key can read it", not "this specific device I met before".
-    // Device-level attestation (binding an ephemeral key to the keystore
-    // identity in a challenge/response) is future work — it needs an
-    // out-of-band trust bootstrap (QR pairing / human confirmation), which
-    // this headless mesh does not have.
-    private data class DeviceRecord(
-        var reputation: Int,
-        var firstSeen: Long,
-        var lastSeen: Long
-    )
-    private val deviceRecords = ConcurrentHashMap<String, DeviceRecord>()
-
-    // Known peers: endpointId -> EndpointInfo (transport registry; the
-    // identity/reputation anchor is the public key — see DeviceRecord).
-    // Audit round 12: the old EndpointInfo.ephemeralId ("unknown" forever)
-    // and hopCount fields were removed — they were never populated from a
-    // real source, and a misleading "identity-looking" field invites future
-    // misuse. hop state lives on MeshMessage/wire frames only.
-    private data class EndpointInfo(
-        val endpointId: String,
-        val publicKey: String,
-        var lastSeen: Long
-    )
-    private val peers = ConcurrentHashMap<String, EndpointInfo>()
-
-    // Connection state machine (audit A4): Nearby re-fires onEndpointFound
-    // repeatedly while discovery is active. Tracking pending + established
-    // connections here means one requestConnection per endpoint — no duplicate
-    // handshakes, no reconnect storms while a session is already in flight.
-    private val connectingPeers = ConcurrentHashMap.newKeySet<String>()
-    private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
-
-    // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
-    // so intermediate nodes never see plaintext. The wire identity of a message
-    // (nonce, coordinates, sender timestamp/signature) travels unchanged across
-    // every hop; only hopsLeft decays (hopCount is SIGNED and immutable — see
-    // MeshWire).
-    private data class MeshMessage(
-        val messageId: String,
-        val type: String,
-        val payloadB64: String,
-        val iv: String,
-        val hopCount: Int,
-        val hopsLeft: Int,
-        val origEphemeralId: String,
-        val origPublicKey: String,
-        val timestamp: Long,
-        val signature: String,
-        val nonce: Int,
-        val lat: Double,
-        val lng: Double,
-        val powNonce: Int,
-        val powDifficulty: Int,
-        // The exact ephemeral material this message was (or will be) signed
-        // and encrypted with (audit round 11): the PoW prefix, origEphemeralId,
-        // origPublicKey and the E2EE signature must ALL derive from ONE
-        // snapshot, otherwise rotation between reads yields a frame every
-        // peer rejects. Locally generated messages carry the snapshot; relayed
-        // messages carry null and re-emit the stored frame verbatim.
-        //
-        // Audit round 12: this is the SHARED immutable key-generation handle
-        // — every queued message of one generation references the SAME
-        // instance (no per-message key material copies). Memory per queued
-        // message is three references, and the 1h rotation period dwarfs the
-        // 10-minute message TTL, so the bounded queue can hold at most two
-        // generations at once. The snapshot keeps working after rotation —
-        // signing/encrypting with a retired sender key is valid because the
-        // frame carries that generation's id+pubkey and the signature is
-        // verified against them.
-        val snapshot: CryptoEngine.EphemeralSnapshot? = null,
-        // Delivery bookkeeping. Expiry is TIME-BASED since the last actual
-        // send (audit round 12: the old per-window attempt budget expired
-        // messages in seconds even when every attempt stayed retryable).
-        // lastSendAttemptAt anchors the clock; 0 means "never sent to
-        // anyone" (such messages wait indefinitely, evicted only by the
-        // queue cap — store-and-forward semantics).
-        var lastSendAttemptAt: Long = 0L,
-        // Endpoints this message was actually handed to the transport for
-        // (one frame per endpoint). Delivery ACKs arrive via
-        // onPayloadTransferUpdate; a message whose every attempted endpoint
-        // acknowledged delivery can be evicted early. Failed/canceled
-        // transfers REMOVE their endpoint so the eviction check above never
-        // counts a failed attempt as "delivered pending" (audit round 11).
-        val attemptedTargets: MutableSet<String> = ConcurrentHashMap.newKeySet(),
-        // Real in-flight guard (audit round 11): checked in trickleTick's
-        // batch selection and cleared in a finally block. The old field was
-        // only ever SET and never READ — a marker, not a guard; now a message
-        // currently inside a send loop cannot be picked up by a concurrent
-        // tick (defense in depth against a future async send path).
-        var inFlight: Boolean = false,
-        // Locally generated messages are queued as plaintext and encrypted
-        // SEPARATELY FOR EACH target peer at send time — the ciphertext is
-        // never shared between recipients.
-        val needsEncryption: Boolean = false,
-        val plaintext: String = ""
-    )
-    private val pendingMessages = CopyOnWriteArrayList<MeshMessage>()
-    // Send-attempt dedup markers: "the same frame was handed to the transport
-    // for this peer at time t". These are NOT delivery acknowledgements —
-    // delivery is accounted separately in deliveredTargets.
-    private val forwardedMessages = ConcurrentHashMap<String, Long>()
-    // Nearby payload id -> (endpointId, mesh messageId): lets
-    // onPayloadTransferUpdate attribute an outgoing transfer outcome to its
-    // mesh message AND lets peer-cleanup drop mappings whose endpoint is
-    // gone (audit round 12 — the mapping used to be endpoint-agnostic, so a
-    // peer vanishing without a final transfer callback leaked the entry).
-    private data class PayloadBinding(val endpointId: String, val messageId: String)
-    private val payloadToMessage = ConcurrentHashMap<Long, PayloadBinding>()
-    // messageId -> set of endpointIds whose transfer acknowledged SUCCESS.
-    // Only this set counts as "delivered" (sendPayload ≠ delivery).
-    private val deliveredTargets = ConcurrentHashMap<String, MutableSet<String>>()
 
     // Trickle state
     private var trickleInterval = TRICKLE_I_MIN
@@ -343,13 +198,13 @@ class MeshService : Service() {
             if (it.isHeld) it.release()
         }
         wakeLock = null
-        peers.clear()
-        deviceRecords.clear()
-        pendingMessages.clear()
-        forwardedMessages.clear()
-        payloadToMessage.clear()
-        deliveredTargets.clear()
-        seenMessageHashes.clear()
+        registry.peers.clear()
+        reputation.deviceRecords.clear()
+        queue.pending.clear()
+        queue.forwardedMessages.clear()
+        queue.payloadToMessage.clear()
+        queue.deliveredTargets.clear()
+        meshInbound.seenMessageHashes.clear()
         stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
@@ -482,11 +337,11 @@ class MeshService : Service() {
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
                 Log.d(TAG, "Connected: $endpointId")
-                connectingPeers.remove(endpointId)
-                connectedPeers.add(endpointId)
+                registry.connectingPeers.remove(endpointId)
+                registry.connectedPeers.add(endpointId)
                 // Preserve any key already learned from discovery/initiation
                 // instead of wiping it (audit round 11).
-                val known = peers[endpointId]
+                val known = registry.peers[endpointId]
                 if (known != null && known.publicKey.isNotBlank()) {
                     registerPeer(endpointId, known.publicKey)
                 }
@@ -498,15 +353,15 @@ class MeshService : Service() {
                 // (handleIncomingMessage).
             } else {
                 Log.d(TAG, "Connection failed: $endpointId")
-                connectingPeers.remove(endpointId)
+                registry.connectingPeers.remove(endpointId)
                 peerCleanup(endpointId)
             }
         }
 
         override fun onDisconnected(endpointId: String) {
             Log.d(TAG, "Disconnected: $endpointId")
-            connectingPeers.remove(endpointId)
-            connectedPeers.remove(endpointId)
+            registry.connectingPeers.remove(endpointId)
+            registry.connectedPeers.remove(endpointId)
             peerCleanup(endpointId)
         }
     }
@@ -528,22 +383,16 @@ class MeshService : Service() {
             // a new endpointId keeps its history, and a device that vanishes
             // stops accumulating state. Records are evicted only by the
             // bounded cap (MAX_DEVICE_RECORDS, least-recently-seen).
-            deviceRecords.getOrPut(advertisedKey) {
-                DeviceRecord(
-                    reputation = REPUTATION_INITIAL,
-                    firstSeen = System.currentTimeMillis(),
-                    lastSeen = System.currentTimeMillis()
-                ).also { capDeviceRecords() }
-            }
-            if (deviceRecords[advertisedKey]!!.reputation > REPUTATION_MIN / 2) {
+            reputation.sight(advertisedKey, System.currentTimeMillis())
+            if (reputation.isAdmitted(advertisedKey)) {
                 // Upsert the transport handle: a re-announcement (fresh
                 // endpointId or rotated key) updates the CURRENT key instead
                 // of being ignored by putIfAbsent (audit round 12).
                 registerPeer(endpointId, advertisedKey)
                 // Audit A4: dedupe the handshake — onEndpointFound can fire
                 // repeatedly for the same endpoint while discovery runs.
-                if (!connectingPeers.contains(endpointId) && !connectedPeers.contains(endpointId)) {
-                    connectingPeers.add(endpointId)
+                if (!registry.connectingPeers.contains(endpointId) && !registry.connectedPeers.contains(endpointId)) {
+                    registry.connectingPeers.add(endpointId)
                     connectionsClient.requestConnection(
                         CryptoEngine.getPublicKeyBase64(),
                         endpointId,
@@ -555,8 +404,8 @@ class MeshService : Service() {
 
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "Lost endpoint: $endpointId")
-            connectingPeers.remove(endpointId)
-            connectedPeers.remove(endpointId)
+            registry.connectingPeers.remove(endpointId)
+            registry.connectedPeers.remove(endpointId)
             peerCleanup(endpointId)
         }
     }
@@ -567,6 +416,9 @@ class MeshService : Service() {
      * after a peer rotated its ephemeral key and re-announced, the registry
      * kept encrypting to the STALE key. Every sighting (discovery,
      * connection-initiated, connection-result) refreshes the CURRENT key.
+     * The identity validation gate runs HERE, at the service boundary
+     * (shape + cryptographic SPKI decode); the pure registry stores only
+     * validated keys.
      */
     @Synchronized
     private fun registerPeer(endpointId: String, publicKey: String) {
@@ -574,48 +426,23 @@ class MeshService : Service() {
             Log.w(TAG, "Ignoring peer with invalid identity: $endpointId")
             return
         }
-        val now = System.currentTimeMillis()
-        val existing = peers[endpointId]
-        val lastSeen = if (existing != null) maxOf(existing.lastSeen, now) else now
-        peers[endpointId] = EndpointInfo(endpointId = endpointId, publicKey = publicKey, lastSeen = lastSeen)
+        registry.register(endpointId, publicKey, System.currentTimeMillis())
     }
 
     /**
      * Unified session-bound teardown (audit round 12): EVERY peer-gone event
      * — endpoint lost, disconnected, connection failed, auto-disconnect —
-     * runs the SAME cleanup: the transport handle goes, as do the forwarded
-     * markers (retry gate), the in-flight payload bindings (with no final
-     * transfer callback, the old code leaked the mapping), the per-message
-     * attempted-target set and the delivered set for that endpoint. The TOFU
-     * device RECORD survives deliberately (reputation is identity history,
-     * keyed by the key, bounded by MAX_DEVICE_RECORDS).
+     * runs the SAME cleanup: the transport handle goes ([MeshPeerRegistry]),
+     * as do the forwarded markers (retry gate), the in-flight payload
+     * bindings, the per-message attempted-target set and the delivered set
+     * for that endpoint ([MeshQueue]). The TOFU device RECORD survives
+     * deliberately (reputation is identity history, keyed by the key,
+     * bounded by MAX_DEVICE_RECORDS).
      */
     @Synchronized
     private fun peerCleanup(endpointId: String) {
-        peers.remove(endpointId)
-        // Audit A4: every teardown path (lost/disconnect/failed/quarantine)
-        // also clears the handshake dedupe flags.
-        connectingPeers.remove(endpointId)
-        connectedPeers.remove(endpointId)
-        forwardedMessages.keys.removeAll { it.startsWith("$endpointId:") }
-        payloadToMessage.entries.removeAll { (_, binding) -> binding.endpointId == endpointId }
-        // A vanished peer can never deliver: drop it from every message's
-        // attempted/delivered bookkeeping so those messages stay re-openable.
-        pendingMessages.forEach { it.attemptedTargets.remove(endpointId) }
-        deliveredTargets.values.forEach { it.remove(endpointId) }
-    }
-
-    /**
-     * Bound the TOFU record table (audit round 12): distinct near-mesh
-     * devices are bounded by MAX_DEVICE_RECORDS; overflow evicts the
-     * least-recently-seen record so an anonymous herd cannot grow memory
-     * forever.
-     */
-    private fun capDeviceRecords() {
-        while (deviceRecords.size > MAX_DEVICE_RECORDS) {
-            deviceRecords.entries.minByOrNull { it.value.lastSeen }
-                ?.let { deviceRecords.remove(it.key) } ?: break
-        }
+        registry.forget(endpointId)
+        queue.onPeerGone(endpointId)
     }
 
     private val payloadCallback = object : PayloadCallback() {
@@ -640,11 +467,11 @@ class MeshService : Service() {
             // attributed and sent again (audit round 11: CANCELED used to be
             // lumped into the "keep waiting" branch, leaving the forwarded
             // marker behind and starving that peer of retries).
-            val binding = payloadToMessage[update.payloadId] ?: return
+            val binding = queue.payloadToMessage[update.payloadId] ?: return
             when (update.status) {
                 PayloadTransferUpdate.Status.SUCCESS -> {
-                    deliveredTargets.getOrPut(binding.messageId) { ConcurrentHashMap.newKeySet() }.add(endpointId)
-                    payloadToMessage.remove(update.payloadId)
+                    queue.deliveredTargets.getOrPut(binding.messageId) { ConcurrentHashMap.newKeySet() }.add(endpointId)
+                    queue.payloadToMessage.remove(update.payloadId)
                 }
                 PayloadTransferUpdate.Status.FAILURE,
                 PayloadTransferUpdate.Status.CANCELED -> {
@@ -655,9 +482,9 @@ class MeshService : Service() {
                     // window retries honestly. attemptedTargets cleanup: a
                     // failed attempt must not count toward the "every target
                     // delivered" eviction condition.
-                    forwardedMessages.remove("$endpointId:${binding.messageId}")
-                    payloadToMessage.remove(update.payloadId)
-                    pendingMessages.firstOrNull { it.messageId == binding.messageId }
+                    queue.forwardedMessages.remove("$endpointId:${binding.messageId}")
+                    queue.payloadToMessage.remove(update.payloadId)
+                    queue.pending.firstOrNull { it.messageId == binding.messageId }
                         ?.attemptedTargets?.remove(endpointId)
                 }
                 else -> { /* IN_PROGRESS — keep waiting */ }
@@ -732,105 +559,48 @@ class MeshService : Service() {
      * AUTHENTICATED frames (PoW + signature + anti-replay all passed) — the
      * caller uses that to advance lastActivityTime so garbage bytes cannot
      * keep the device awake (audit round 11).
+     *
+     * ARC-H16: the gate CHAIN lives in [MeshInbound] (unit-tested); this
+     * orchestration applies its verdict with the original log strings,
+     * penalties and side-effect order. One documented reordering: the
+     * peer lastSeen touch now runs after the (pure) decrypt step inside
+     * evaluate instead of between admission and decryption — both steps
+     * are state-independent of each other, so the observable transition
+     * sequence is identical.
      */
     private fun handleIncomingMessage(endpointId: String, bytes: ByteArray): Boolean {
         try {
-            // Wire format: only magic-framed frames (deflate or raw-flagged)
-            // are accepted. Decoding a raw frame as JSON would defeat the
-            // format gate and risk parsing attacker-chosen bytes as JSON.
-            val json = MeshWire.decompress(bytes) ?: run {
-                Log.w(TAG, "Incoming frame missing compression magic")
-                updateReputation(endpointId, REPUTATION_MALFORMED_FRAME)
-                return false
-            }
-            val payload = MeshWire.parseFrame(json) ?: return false
-
-            // Signature validity alone does not imply freshness. Reject old
-            // frames and timestamps too far in the future before spending CPU
-            // on PoW or cryptographic verification. The timestamp is signed,
-            // so this gate cannot be bypassed by a relay changing metadata.
-            val now = System.currentTimeMillis()
-            if (!MeshWire.isFreshTimestamp(
-                    payload.timestamp,
-                    now,
-                    MESSAGE_TTL_MS,
-                    MESSAGE_CLOCK_SKEW_MS
-                )
-            ) {
-                Log.w(TAG, "Rejecting stale or future-dated mesh frame")
-                updateReputation(endpointId, REPUTATION_MALFORMED_FRAME)
-                return false
-            }
-
-            // Proof-of-Work verification: the nonce is carried in the payload
-            // and checked at every hop — solving without transmitting/verifying
-            // would be a no-op. Difficulty is clamped to a sane band: solving
-            // more than our constant is a marker of a modified (non-stock)
-            // client and is rejected, keeping the network uniform.
-            if (payload.powDifficulty != PO_W_DIFFICULTY) {
-                Log.w(TAG, "Out-of-band proof-of-work difficulty")
-                updateReputation(endpointId, REPUTATION_BAD_DIFFICULTY)
-                return false
-            }
-            // Canonical challenge framing (audit round 11): same
-            // length-prefixed composition the origin used to solve.
-            val powPrefix = MeshWire.ProofOfWork.wirePrefix(payload.messageId, payload.origEphemeralId)
-            if (!MeshWire.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
-                Log.w(TAG, "Invalid proof-of-work on wire message")
-                updateReputation(endpointId, REPUTATION_BAD_POW)
-                return false
-            }
-
-            // Verify the ECDSA signature over the CANONICAL SIGNED METADATA
-            // (ciphertext + iv + messageId + type + hopCount + origEphemeralId
-            // + origPublicKey + timestamp + nonce + lat + lng) — public-key
-            // integrity check available to every relay, independent of the AES
-            // key. A relay cannot alter lat/lng/type/nonce/messageId anymore
-            // without invalidating the signature (audit).
-            //
-            // Audit round 11: the signature check is now UNCONDITIONAL. The
-            // old `type != ECHO` exemption let anyone (a peer with a valid PoW
-            // budget, i.e. any nearby device) push UNVERIFIED plaintext into
-            // notifyListeners — ECHO's payload is decoded directly, so an
-            // attacker could inject arbitrary text into the UI with zero
-            // cryptographic proof. No legitimate caller emits ECHO today, so
-            // exempting nothing costs nothing.
-            val secureMsg = CryptoEngine.SecureMessage(
-                ephemeralId = payload.origEphemeralId,
-                senderPublicKey = payload.origPublicKey,
-                ciphertext = payload.payloadB64,
-                iv = payload.iv,
-                signature = payload.signature,
-                timestamp = payload.timestamp,
-                lat = payload.lat,
-                lng = payload.lng,
-                nonce = payload.nonce,
-                messageId = payload.messageId,
-                type = payload.type,
-                hopCount = payload.hopCount
+            val verdict = meshInbound.evaluate(
+                bytes,
+                now = System.currentTimeMillis(),
+                messageTtlMs = MESSAGE_TTL_MS,
+                clockSkewMs = MESSAGE_CLOCK_SKEW_MS,
+                networkPowDifficulty = PO_W_DIFFICULTY
             )
-
-            if (!CryptoEngine.verifyMessageSignature(secureMsg)) {
-                Log.w(TAG, "Invalid signature on wire message")
-                updateReputation(endpointId, REPUTATION_BAD_SIGNATURE)
+            if (verdict is MeshInbound.Verdict.Rejected) {
+                when (verdict.reason) {
+                    MeshInbound.RejectReason.MAGIC ->
+                        Log.w(TAG, "Incoming frame missing compression magic")
+                    // Parse failures were never logged nor penalized in the
+                    // original (frame dropped silently).
+                    MeshInbound.RejectReason.PARSE -> {}
+                    MeshInbound.RejectReason.STALE ->
+                        Log.w(TAG, "Rejecting stale or future-dated mesh frame")
+                    MeshInbound.RejectReason.DIFFICULTY ->
+                        Log.w(TAG, "Out-of-band proof-of-work difficulty")
+                    MeshInbound.RejectReason.POW ->
+                        Log.w(TAG, "Invalid proof-of-work on wire message")
+                    MeshInbound.RejectReason.SIGNATURE ->
+                        Log.w(TAG, "Invalid signature on wire message")
+                    // Replay: silent reject, no penalty (the frame is
+                    // authenticated — the sender did nothing new).
+                    MeshInbound.RejectReason.REPLAY -> {}
+                }
+                verdict.penalty?.let { updateReputation(endpointId, it) }
                 return false
             }
-
-            // Anti-replay / anti-broadcast-storm — ONLY AFTER authentication:
-            // recording (messageId + nonce) BEFORE the PoW + signature checks
-            // let a forged invalid frame poison the cache and block the valid
-            // one (audit). Only authenticated frames may enter the seen-cache.
-            val msgHash = MeshWire.seenMessageHash(payload.messageId, payload.nonce)
-            val seenAt = System.currentTimeMillis()
-            // Atomic admission prevents two concurrent Nearby callbacks from
-            // accepting the same authenticated frame at the same time.
-            if (seenMessageHashes.putIfAbsent(msgHash, seenAt) != null) return false
-            if (seenMessageHashes.size > MAX_SEEN_HASHES) {
-                // Unbounded cache = untrusted growth window (audit): evict
-                // the OLDEST entry as soon as the cap is exceeded.
-                seenMessageHashes.entries.minByOrNull { it.value }
-                    ?.let { seenMessageHashes.remove(it.key) }
-            }
+            verdict as MeshInbound.Verdict.Accepted
+            val payload = verdict.frame
 
             // Audit round 11: the peer's OWN key now comes from the Nearby
             // name exchange (onEndpointFound / onConnectionInitiated) — never
@@ -847,20 +617,9 @@ class MeshService : Service() {
             // (relay-only) must not go stale (audit round 11: lastSeen was
             // only advanced on connection, so 10 minutes of one-way traffic
             // made us stop sending to an active neighbor).
-            peers[endpointId]?.let { info ->
-                val now = System.currentTimeMillis()
-                if (now - info.lastSeen > 1000) {
-                    peers[endpointId] = info.copy(lastSeen = now)
-                }
-            }
+            registry.touch(endpointId, System.currentTimeMillis())
 
-            val decrypted = if (payload.type == MESSAGE_TYPE_ECHO) {
-                // Echo messages are plaintext hop counters by design — but
-                // they are SIGNED like every other frame (see above).
-                Base64.decode(payload.payloadB64, Base64.NO_WRAP)
-            } else {
-                CryptoEngine.decryptFromPeer(secureMsg)
-            }
+            val decrypted = verdict.decrypted
 
             // Store-and-forward relay FIRST (audit B1): enqueue relay BEFORE
             // notifying local listeners so a listener exception cannot stop propagation.
@@ -869,8 +628,8 @@ class MeshService : Service() {
                 // broadcastMessage — otherwise a peer flooding unique valid
                 // frames grows pendingMessages without limit (OOM on a device
                 // that must stay alive for an emergency).
-                evictIfQueueFull()
-                pendingMessages.add(MeshMessage(
+                queue.evictIfFull()
+                queue.pending.add(MeshQueue.MeshMessage(
                     messageId = payload.messageId,
                     type = payload.type,
                     payloadB64 = payload.payloadB64,
@@ -913,32 +672,7 @@ class MeshService : Service() {
         }
     }
 
-/**
-     * H1 fix: single eviction policy shared by the local broadcast and relay
-     * paths. Entries that have never been sent to anyone (no reachable peers
-     * yet) are shielded from eviction — they carry the newest reports and
-     * would otherwise be the first to die under load. Already-attempted
-     * entries go first (their 10-minute clock is ordered by lastSendAttemptAt).
-     */
-    @Synchronized
-    private fun evictIfQueueFull() {
-        if (pendingMessages.size < MAX_PENDING_MESSAGES) return
-        val evictable = pendingMessages
-            .withIndex()
-            .filter { it.value.lastSendAttemptAt > 0 }
-            .minByOrNull { it.value.lastSendAttemptAt }
-        if (evictable != null) {
-            pendingMessages.removeAt(evictable.index)
-        } else {
-            // Everything is un-attempted and alive: drop the oldest
-            // entry to keep the queue bounded.
-            if (pendingMessages.isNotEmpty()) {
-                pendingMessages.removeAt(0)
-            }
-        }
-    }
-
-/**
+    /**
      * Send a message to the mesh. The plaintext is queued as a store-and-forward
      * entry and encrypted for the best known peer key at send time: a missing
      * peer key or empty peer list never drops the report, it simply waits.
@@ -981,9 +715,9 @@ class MeshService : Service() {
         // the newest reports and would otherwise be the first to die under
         // load. Already-attempted entries go first (their 10-minute clock is
         // ordered by lastSendAttemptAt).
-        evictIfQueueFull()
+        queue.evictIfFull()
 
-        pendingMessages.add(MeshMessage(
+        queue.pending.add(MeshQueue.MeshMessage(
             messageId = messageId,
             type = reportType,
             payloadB64 = "",
@@ -1074,43 +808,23 @@ class MeshService : Service() {
         // message whose every attempted target delivered is evicted early.
         // Never-attempted messages (no peer in range) wait indefinitely —
         // bounded by the queue cap — because they could not act.
-        val cutoff = now - MESSAGE_TTL_MS
-        pendingMessages.removeAll { msg ->
-            (msg.lastSendAttemptAt > 0 && msg.lastSendAttemptAt < cutoff) ||
-                (msg.attemptedTargets.isNotEmpty() &&
-                    msg.attemptedTargets.all { ep -> deliveredTargets[msg.messageId]?.contains(ep) == true })
-        }
+        queue.sweepExpiredMessages(now)
         val replayCutoff = now - (MESSAGE_TTL_MS + MESSAGE_CLOCK_SKEW_MS)
-        seenMessageHashes.entries.removeAll { it.value < replayCutoff }
+        meshInbound.sweepReplayWindow(replayCutoff)
         // Bound enforcement as a safety net (audit): the cap is primarily
         // enforced at insert time (handleIncomingMessage); this catches any
         // growth from the window between inserts.
-        while (seenMessageHashes.size > MAX_SEEN_HASHES) {
-            seenMessageHashes.entries.minByOrNull { it.value }
-                ?.let { seenMessageHashes.remove(it.key) } ?: break
-        }
-        // ARC-L24: named — forwarded markers expire 5 minutes after their
-        // last delivery attempt so a peer that dropped can accept a re-send.
-        val forwardedCutoff = now - FORWARDED_MARKER_TTL_MS
-        forwardedMessages.entries.removeAll { it.value < forwardedCutoff }
-        val liveMessageIds = pendingMessages.map { it.messageId }.toSet()
-        // Delivery sets for evicted messages can go; in-flight mapping entries
-        // for gone messages too (bounded by payloads actually in flight).
-        deliveredTargets.keys.retainAll(liveMessageIds)
-        payloadToMessage.entries.removeAll { (_, binding) -> binding.messageId !in liveMessageIds }
+        meshInbound.enforceSeenCap()
+        // ARC-L24: forwarded markers expire 5 minutes after their last
+        // delivery attempt so a peer that dropped can accept a re-send.
+        queue.sweepMarkers(now)
 
         // Trickle-K with O(F) counting (audit round 12): the old batch filter
         // ran a full forwardedMessages scan PER queued message — O(M×F) per
         // tick, quadratic in the mesh size. Count forwards ONCE into a small
         // map (O(F)), then filter in O(M).
-        val forwardsPerMessage = HashMap<String, Int>()
-        for ((key, ts) in forwardedMessages) {
-            if (now - ts >= trickleInterval) continue
-            val sep = key.indexOf(':')
-            if (sep <= 0 || sep == key.length - 1) continue
-            forwardsPerMessage.merge(key.substring(sep + 1), 1, Int::plus)
-        }
-        val batch = pendingMessages.filter { msg ->
+        val forwardsPerMessage = queue.forwardsInWindow(now, trickleInterval)
+        val batch = queue.pending.filter { msg ->
             !msg.inFlight && (forwardsPerMessage[msg.messageId] ?: 0) < TRICKLE_K
         }
 
@@ -1127,11 +841,9 @@ class MeshService : Service() {
             // cannot pick up a message the send loop is processing.
             msg.inFlight = true
             try {
-                val targetPeers = peers.filter { (id, info) ->
-                    connectedPeers.contains(id) &&
-                    (deviceRecords[info.publicKey]?.reputation ?: REPUTATION_INITIAL) > REPUTATION_MIN / 2 &&
-                        now - info.lastSeen < PEER_STALE_MS &&
-                        !forwardedMessages.containsKey("$id:${msg.messageId}")
+                val targetPeers = registry.connectedFreshCandidates(now).filter { (id, info) ->
+                    (reputation.score(info.publicKey)) > REPUTATION_MIN / 2 &&
+                        !queue.isForwarded(id, msg.messageId)
                 }
                 if (targetPeers.isEmpty()) {
                     // Store-and-forward: no candidate peer this window. The
@@ -1185,7 +897,7 @@ class MeshService : Service() {
                             // to the same peer twice within a window. A SEND
                             // attempt marker, not a delivery ack (outcome lives
                             // in deliveredTargets).
-                            forwardedMessages["$endpointId:${msg.messageId}"] = now
+                            queue.markForwarded(endpointId, msg.messageId, now)
                         }
                     } catch (e: Exception) {
                         // EXCEPTION CONTAINMENT (audit round 12): the tick
@@ -1219,12 +931,8 @@ class MeshService : Service() {
      */
     @Synchronized
     private fun quarantinePeer(endpointId: String) {
-        peers[endpointId]?.publicKey?.takeIf { it.isNotBlank() }?.let { key ->
-            deviceRecords.computeIfPresent(key) { _, record ->
-                record.reputation = REPUTATION_MIN / 2 - 1
-                record.lastSeen = System.currentTimeMillis()
-                record
-            }
+        registry.peers[endpointId]?.publicKey?.takeIf { it.isNotBlank() }?.let { key ->
+            reputation.quarantine(key, System.currentTimeMillis())
         }
         peerCleanup(endpointId)
     }
@@ -1280,36 +988,33 @@ class MeshService : Service() {
      * state (its record is evicted only by the bounded cap). A reputation
      * update for an unregistered endpoint is a no-op — anonymous
      * connections were already gated out at admission, so there is no
-     * keyless reputation path to abuse.
+     * keyless reputation path to abuse. Scoring/clamping live in
+     * [MeshReputation] (unit-tested); this composition adds the endpointId
+     * lookup and the transport-level auto-disconnect.
      */
     @Synchronized
     fun updateReputation(endpointId: String, delta: Int) {
-        val info = peers[endpointId] ?: run {
+        val info = registry.peers[endpointId] ?: run {
             Log.d(TAG, "Reputation update for unknown endpoint $endpointId: ignored")
             return
         }
         if (info.publicKey.isBlank()) return
         val now = System.currentTimeMillis()
-        val record = deviceRecords.compute(info.publicKey) { _, existing ->
-            val base = existing ?: DeviceRecord(REPUTATION_INITIAL, now, now)
-            base.reputation = (base.reputation + delta).coerceIn(REPUTATION_MIN, REPUTATION_MAX)
-            base.lastSeen = now
-            base
-        } ?: return
+        val newScore = reputation.update(info.publicKey, delta, now)
 
-        Log.d(TAG, "Reputation $endpointId (${info.publicKey.take(8)}…): ${record.reputation - delta} → ${record.reputation} (Δ$delta)")
+        Log.d(TAG, "Reputation $endpointId (${info.publicKey.take(8)}…): ${newScore - delta} → $newScore (Δ$delta)")
 
         // Auto-disconnect malicious peers
-        if (record.reputation <= REPUTATION_MIN / 2) {
+        if (newScore <= REPUTATION_MIN / 2) {
             connectionsClient.disconnectFromEndpoint(endpointId)
             peerCleanup(endpointId)
         }
     }
 
     fun getReputation(endpointId: String): Int {
-        return peers[endpointId]?.publicKey
+        return registry.peers[endpointId]?.publicKey
             ?.takeIf { it.isNotBlank() }
-            ?.let { deviceRecords[it]?.reputation }
+            ?.let { reputation.score(it) }
             ?: REPUTATION_INITIAL
     }
 
@@ -1318,7 +1023,7 @@ class MeshService : Service() {
         // from onEndpointFound, before requestConnection completes), so
         // mapping it whole reported still-CONNECTING endpoints as connected
         // to the WebView UI. Filter to the ACTUALLY-connected set.
-        return peers.filterKeys { connectedPeers.contains(it) }.map { (id, info) ->
+        return registry.connectedSnapshot().map { (id, info) ->
             mapOf(
                 "endpointId" to id,
                 // The public key is the peer's mesh identity (audit round
@@ -1326,7 +1031,7 @@ class MeshService : Service() {
                 // hopCount was unused — removed as misleading state).
                 "publicKey" to info.publicKey,
                 "lastSeen" to info.lastSeen,
-                "reputation" to (deviceRecords[info.publicKey]?.reputation ?: REPUTATION_INITIAL)
+                "reputation" to reputation.score(info.publicKey)
             )
         }
     }
@@ -1340,7 +1045,7 @@ class MeshService : Service() {
      * block relays the stored ciphertext verbatim (store-and-forward); a
      * non-null one carries a fresh per-target E2EE encryption.
      */
-    private fun sendToTarget(endpointId: String, msg: MeshMessage, encrypted: CryptoEngine.SecureMessage?): Boolean {
+    private fun sendToTarget(endpointId: String, msg: MeshQueue.MeshMessage, encrypted: CryptoEngine.SecureMessage?): Boolean {
         val frame = if (encrypted != null) {
             MeshWire.Frame(
                 protocolVersion = PROTOCOL_VERSION,
@@ -1403,7 +1108,7 @@ class MeshService : Service() {
         // that vanishes without a final transfer callback can be cleaned up
         // by peerCleanup instead of leaking). The binding is removed on
         // SUCCESS/FAILURE/CANCELED, so a retry attributes cleanly.
-        payloadToMessage[payload.id] = PayloadBinding(endpointId = endpointId, messageId = msg.messageId)
+        queue.bindOutgoing(payload.id, endpointId, msg.messageId)
         msg.attemptedTargets.add(endpointId)
         // Audit round 11 (B11): the sendPayload Task used to be fire-and-
         // forget — a client-side failure (buffer full, endpoint just died)
@@ -1415,18 +1120,13 @@ class MeshService : Service() {
                 MeshDeliveryRetry.onTransportFailure(
                     endpointId,
                     msg.messageId,
-                    forwardedMessages,
+                    queue.forwardedMessages,
                     msg.attemptedTargets
                 )
-                payloadToMessage.remove(payload.id)
+                queue.payloadToMessage.remove(payload.id)
             }
         // Update lastSeen for this peer since we successfully handed off a frame to the transport.
-        peers[endpointId]?.let { info ->
-            val now = System.currentTimeMillis()
-            if (now - info.lastSeen > 1000) {
-                peers[endpointId] = info.copy(lastSeen = now)
-            }
-        }
+        registry.touch(endpointId, System.currentTimeMillis())
         return true
     }
 
