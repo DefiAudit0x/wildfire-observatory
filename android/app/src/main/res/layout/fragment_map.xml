@@ -91,7 +91,7 @@
         android:gravity="center"
         android:padding="2dp"
         android:text="© OpenStreetMap · CARTO"
-        android:textColor="#FF556070"
+        android:textColor="@color/text_faint"
         android:textSize="9sp" />
 
     <TextView
@@ -113,7 +113,7 @@
         android:gravity="center"
         android:padding="15dp"
         android:text="@string/route_button"
-        android:textColor="#FFFFFFFF"
+        android:textColor="@color/text_primary"
         android:textSize="15sp"
         android:textStyle="bold" />
 </LinearLayout>

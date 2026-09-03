@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Status pill: full-round chip (v2.1.0 design pass) -->
+<!-- v2.8.0 status pill (web: bg-zinc-900 + border-white/10, rounded-full) -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#FF1B2A45" />
+    <solid android:color="#8018181B" />
     <corners android:radius="99dp" />
-    <stroke android:width="1dp" android:color="#FF2E4062" />
+    <stroke android:width="1dp" android:color="@color/border_glass" />
 </shape>
