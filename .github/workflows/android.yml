@@ -47,6 +47,15 @@ jobs:
           api-level: 33
           target: google_apis
           arch: x86_64
+          # First run hung: the emulator launched but never reported
+          # sys.boot_completed within the default window. Hardened boot:
+          # explicit headless options (software GPU, no snapshots/audio/
+          # cameras/boot animation — the netsim wifi backend is the
+          # known-hang path on CI images), animations off, and a 15-min
+          # boot budget instead of the default 5.
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-boot-timeout: 900
+          disable-animations: true
           script: gradle -p android connectedDebugAndroidTest --stacktrace
 
   # Release build: signs when the keystore secrets are present (they are
