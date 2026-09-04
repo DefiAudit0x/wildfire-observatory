@@ -185,9 +185,9 @@ class AppRepository(
     }
 
     /** Broadcast field intel to nearby peers over BLE (works fully offline). */
-    fun broadcastMeshIntel(kind: String, text: String, lat: Double, lng: Double): Boolean {
+    fun broadcastMeshIntel(kind: String, text: String, lat: Double?, lng: Double?): Boolean {
         val svc = meshService ?: return false
-        val json = ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
+        val json = ApiPayloads.buildMeshIntelJson(kind, text, lat ?: Double.NaN, lng ?: Double.NaN, System.currentTimeMillis())
         val ok = svc.broadcastMessage(json, if (kind == "sos") "echo" else "report", lat, lng)
         if (ok) {
             val entry = MeshChatEntry(
@@ -196,7 +196,7 @@ class AppRepository(
                 kind = kind,
                 fromMe = true,
                 tsMs = System.currentTimeMillis(),
-                hasCoords = true
+                hasCoords = lat != null && lng != null
             )
             _state.value = _state.value.copy(
                 meshChat = (_state.value.meshChat + entry).takeLast(MESH_CHAT_MAX)
@@ -257,7 +257,7 @@ class AppRepository(
     }
 
     fun sendSos(
-        deviceId: String, lat: Double, lng: Double,
+        deviceId: String, lat: Double?, lng: Double?,
         name: String?, phone: String?, textMessage: String?,
         audioDataUri: String?, audioDurationSec: Int?,
         onDone: (ok: Boolean, outcome: SosOutcome?, userError: String?) -> Unit
@@ -276,7 +276,11 @@ class AppRepository(
             return
         }
         _state.value = _state.value.copy(sos = SosUiState(sending = true))
-        broadcastMeshIntel("sos", textMessage ?: "نداء استغاثة!", lat, lng)
+        // v2.15.0: no-fix SOS gossips WITHOUT coordinates — peers must not
+        // receive a fabricated position (the old Algiers fallback put every
+        // no-fix caller in the same square kilometer of Algiers).
+        if (lat != null && lng != null) broadcastMeshIntel("sos", textMessage ?: "نداء استغاثة!", lat, lng)
+        else broadcastMeshIntel("sos", "⚠ بدون تحديد GPS — " + (textMessage ?: "نداء استغاثة!"), null, null)
         scope.launch {
             val result = io { api.post("/api/sos", body) }
             if (result.is2xx) {

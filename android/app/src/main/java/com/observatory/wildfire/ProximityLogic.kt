@@ -70,7 +70,15 @@ object ProximityLogic {
         var best: Double? = null
         for (t in threats) {
             if (!isFresh(t.timestampMs, nowMs)) continue
+            // v2.15.0 audit fix: same validation contract as evaluate() — a
+            // NaN-coordinate pin made km = NaN, and since `km < NaN` is
+            // always false, one poisoned pin permanently returned NaN and
+            // rendered a literal "NaN" in the proximity banner.
+            if (!t.lat.isFinite() || !t.lng.isFinite() ||
+                t.lat < -90.0 || t.lat > 90.0 || t.lng < -180.0 || t.lng > 180.0
+            ) continue
             val km = TeamLocationLogic.haversineMeters(userLat, userLng, t.lat, t.lng) / 1000.0
+            if (!km.isFinite()) continue
             if (best == null || km < best) best = km
         }
         return best

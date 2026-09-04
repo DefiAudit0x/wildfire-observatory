@@ -628,8 +628,7 @@ class MeshService : Service() {
                 // broadcastMessage — otherwise a peer flooding unique valid
                 // frames grows pendingMessages without limit (OOM on a device
                 // that must stay alive for an emergency).
-                queue.evictIfFull()
-                queue.pending.add(MeshQueue.MeshMessage(
+                queue.admit(MeshQueue.MeshMessage(
                     messageId = payload.messageId,
                     type = payload.type,
                     payloadB64 = payload.payloadB64,
@@ -715,9 +714,7 @@ class MeshService : Service() {
         // the newest reports and would otherwise be the first to die under
         // load. Already-attempted entries go first (their 10-minute clock is
         // ordered by lastSendAttemptAt).
-        queue.evictIfFull()
-
-        queue.pending.add(MeshQueue.MeshMessage(
+        queue.admit(MeshQueue.MeshMessage(
             messageId = messageId,
             type = reportType,
             payloadB64 = "",

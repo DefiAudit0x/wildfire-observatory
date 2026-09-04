@@ -15,6 +15,11 @@ object LocationLogic {
 
     const val FIX_FRESH_MS = 60_000L          // < 1 min: live fix
     const val FIX_STALE_DROP_MS = 10 * 60_000L // > 10 min: too old to trust
+    // v2.15.0 audit fix: a FUTURE fix timestamp (clock skew or a hostile
+    // source) used to pass every gate — (now - future) was negative, so it
+    // read as "fresher than fresh" and ranked first in chooseBest. One
+    // shared skew allowance now bounds how far ahead a timestamp may lie.
+    const val CLOCK_SKEW_MS = 60_000L
     const val SEARCHING_AFTER_MS = 15_000L     // no fix within 15s → "searching"
 
     enum class Status {
@@ -65,7 +70,9 @@ object LocationLogic {
     fun chooseBest(fixes: List<FixSnapshot>, nowMs: Long): FixSnapshot? {
         val usable = fixes.filter {
             it.lat.isFinite() && it.lng.isFinite() &&
-                it.timeMs > 0 && (nowMs - it.timeMs) <= FIX_STALE_DROP_MS
+                it.timeMs > 0 &&
+                (nowMs - it.timeMs) >= -CLOCK_SKEW_MS && // never a future fix beyond skew
+                (nowMs - it.timeMs) <= FIX_STALE_DROP_MS
         }
         if (usable.isEmpty()) return null
         return usable.minByOrNull { fix ->
@@ -78,5 +85,7 @@ object LocationLogic {
 
     /** True when a fix is presentable as "live" on screen. */
     fun isFreshFix(fix: FixSnapshot?, nowMs: Long): Boolean =
-        fix != null && (nowMs - fix.timeMs) <= FIX_FRESH_MS
+        fix != null &&
+            (nowMs - fix.timeMs) >= -CLOCK_SKEW_MS && // v2.15.0: never future
+            (nowMs - fix.timeMs) <= FIX_FRESH_MS
 }

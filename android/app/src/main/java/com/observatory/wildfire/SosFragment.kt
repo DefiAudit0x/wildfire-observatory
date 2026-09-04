@@ -46,12 +46,10 @@ class SosFragment : Fragment() {
         /**
          * A trapped person with no fix should NOT have their SOS silently
          * geolocated to (0,0) — the server's north-Africa geofence would 400
-         * it anyway. The honest fallback is ALGIERS, and the payload carries
-         * an explicit "بدون تحديد GPS" marker so dispatchers never treat it
-         * as a measured position.
+         * it anyway. v2.15.0: the payload carries NULL coordinates +
+         * hasLocation:false and the explicit "بدون تحديد GPS" marker — the
+         * fabricated Algiers fallback is gone from the whole app.
          */
-        private const val DEFAULT_FALLBACK_LAT = 36.7538
-        private const val DEFAULT_FALLBACK_LNG = 3.0588
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -187,8 +185,12 @@ class SosFragment : Fragment() {
 
     private fun doSend(fix: LocationLogic.FixSnapshot?) {
         val hasFix = fix != null
-        val lat = fix?.lat ?: DEFAULT_FALLBACK_LAT
-        val lng = fix?.lng ?: DEFAULT_FALLBACK_LNG
+        // v2.15.0 audit fix: no more fabricated Algiers coordinates — the
+        // server accepts an honest null-coordinate SOS (hasLocation:false)
+        // and derives NO priority/corroboration from a position nobody
+        // measured.
+        val lat = fix?.lat
+        val lng = fix?.lng
         val audio = takeRecording()
         // Honesty in-band: a no-fix SOS travels with the Algiers fallback
         // coords AND an explicit marker so dispatchers never chase a phantom

@@ -84,7 +84,12 @@ object TelemetryCamera {
             "شمال", "شمال شرقي", "شرق", "جنوب شرقي",
             "جنوب", "جنوب غربي", "غرب", "شمال غربي"
         )
-        val idx = Math.round(((angleDeg % 360.0) / 45.0)).toInt() % 8
+        // v2.15.0 audit fix (crash): Kotlin's % keeps the sign of the
+        // dividend — a negative heading (-30°) produced index -1 and an
+        // ArrayIndexOutOfBoundsException on the capture path. Normalize
+        // into [0, 360) first; the sweep -360..360 can never throw now.
+        val normalized = ((angleDeg % 360.0) + 360.0) % 360.0
+        val idx = Math.round((normalized / 45.0)).toInt() % 8
         return dirs[idx]
     }
 

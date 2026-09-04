@@ -214,4 +214,22 @@ class MeshQueueTest {
         assertFalse(q.deliveredTargets["m1"]!!.contains("ep1"))
         assertTrue(q.deliveredTargets["m1"]!!.contains("ep2"))
     }
+
+    // v2.15.0: admit() makes evict+add atomic — the 200 cap is an invariant
+    // even under concurrent relay/broadcast admission (it exists as OOM
+    // protection on a device that must survive an emergency).
+    @Test
+    fun admit_neverExceedsTheCap_underConcurrentAdmission() {
+        val q = MeshQueue()
+        val threads = (1..8).map { t ->
+            Thread {
+                repeat(50) { i ->
+                    q.admit(msg("m-$t-$i"))
+                }
+            }
+        }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+        org.junit.Assert.assertTrue("cap exceeded: ${q.pending.size}", q.pending.size <= 200)
+    }
 }

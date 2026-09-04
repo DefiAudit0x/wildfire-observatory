@@ -192,10 +192,12 @@ class TeamFragment : Fragment() {
         val text = chatInput?.text?.toString()?.trim().orEmpty()
         if (text.isEmpty()) return
         val fix = app.locationEngine.currentFix()
-        val ok = app.repository.broadcastMeshIntel(
-            "report", text,
-            fix?.lat ?: 36.7538, fix?.lng ?: 3.0588
-        )
+        // v2.15.0: no fix → no coordinates, never a fabricated Algiers fix.
+        val ok = if (fix != null) {
+            app.repository.broadcastMeshIntel("report", text, fix.lat, fix.lng)
+        } else {
+            app.repository.broadcastMeshIntel("report", "⚠ بدون تحديد GPS — $text", null, null)
+        }
         chatInput?.setText("")
         Toast.makeText(
             ctx,

@@ -92,3 +92,20 @@ class LocationLogicTest {
         assertTrue(!LocationLogic.isFreshFix(null, now))
     }
 }
+
+    // v2.15.0: future fix timestamps (clock skew / hostile source) are
+    // rejected instead of ranking as "fresher than fresh".
+    @Test
+    fun chooseBest_and_isFreshFix_rejectFutureTimestamps() {
+        val now = 10_000_000L
+        val past = LocationLogic.FixSnapshot(36.8, 7.6, 10f, now - 5_000, "gps")
+        val future = LocationLogic.FixSnapshot(36.8, 7.7, 5f, now + 5 * 60_000L, "gps")
+
+        org.junit.Assert.assertSame(past, LocationLogic.chooseBest(listOf(past, future), now))
+        org.junit.Assert.assertNull(LocationLogic.chooseBest(listOf(future), now))
+        org.junit.Assert.assertFalse(LocationLogic.isFreshFix(future, now))
+        org.junit.Assert.assertTrue(LocationLogic.isFreshFix(past, now))
+        // The 60s skew allowance still tolerates a tiny drift backwards.
+        val slightlyFuture = LocationLogic.FixSnapshot(36.8, 7.6, 10f, now + 30_000L, "gps")
+        org.junit.Assert.assertSame(slightlyFuture, LocationLogic.chooseBest(listOf(slightlyFuture), now))
+    }

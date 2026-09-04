@@ -57,3 +57,26 @@ class ProximityLogicTest {
         assertNull(ProximityLogic.evaluate(36.75, 3.05, emptyList(), now))
     }
 }
+
+    // v2.15.0: a NaN-coordinate pin must not poison nearestFreshKm — the old
+    // code let NaN become the best and stuck forever ("NaN" banner).
+    @Test
+    fun nearestFreshKm_skipsPoisonedCoordinates() {
+        val now = 10_000_000L
+        val freshValid = ProximityLogic.ThreatPin(36.8, 7.6, now - 1_000)
+        val poisonedNaN = ProximityLogic.ThreatPin(Double.NaN, 7.7, now - 1_000)
+        val poisonedRange = ProximityLogic.ThreatPin(200.0, 7.7, now - 1_000)
+        val freshCloser = ProximityLogic.ThreatPin(36.79, 7.61, now - 2_000)
+
+        val km = ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(poisonedNaN, poisonedRange, freshValid, freshCloser), now)
+        org.junit.Assert.assertNotNull(km)
+        org.junit.Assert.assertTrue(km!!.isFinite())
+        org.junit.Assert.assertTrue(km < ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(freshValid), now)!!)
+    }
+
+    @Test
+    fun nearestFreshKm_returnsNullWhenOnlyPoisonedPinsRemain() {
+        val now = 10_000_000L
+        val km = ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(ProximityLogic.ThreatPin(Double.NaN, Double.NaN, now - 1_000)), now)
+        org.junit.Assert.assertNull(km)
+    }

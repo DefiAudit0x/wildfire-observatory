@@ -149,6 +149,21 @@ class MeshQueue {
     }
 
     /**
+     * v2.15.0 audit fix (admission race): evictIfFull() + pending.add() used
+     * to be two unsynchronized steps on two concurrent paths (relay and
+     * broadcast), so two threads could both pass the size check and overshoot
+     * MAX_PENDING_MESSAGES — the cap exists specifically as OOM protection.
+     * admit() makes check+evict+add ONE atomic step; the 200 cap is now an
+     * invariant, not an aspiration.
+     */
+    fun admit(message: MeshMessage): Boolean {
+        synchronized(this) {
+            evictIfFull()
+            return pending.add(message)
+        }
+    }
+
+    /**
      * Store-and-forward hygiene FIRST (audit round 12): the old code ran
      * this AFTER the batch-empty early return, so an idle queue (empty
      * batch) skipped the whole cleanup — stale sees, forwarded markers,

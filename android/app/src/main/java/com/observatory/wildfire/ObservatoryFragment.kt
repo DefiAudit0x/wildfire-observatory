@@ -123,10 +123,18 @@ class ObservatoryFragment : Fragment() {
         meshChip?.setTextColor(if (snap.meshState == "connected") 0xFF22D3EE.toInt() else 0xFF94A3B8.toInt())
 
         // Risk gauge from the SAME freshness rule as the banner (one authority).
+        // v2.15.0 audit fix: RESOLVED fires no longer feed the CURRENT-risk
+        // gauge (verified==resolved was double-counting an extinguished fire
+        // forever), and reports are FRESHNESS-gated before scoring (the list
+        // variable used to be named "fresh" while never gating on freshness).
+        // Resolved incidents still count in the honest detail line below.
         val now = System.currentTimeMillis()
-        val freshReports = snap.reports.filter { it.status != "rejected" }
+        val scoredReports = snap.reports.filter {
+            it.status != "rejected" && it.status != "resolved" &&
+                ProximityLogic.isFresh(it.timestampMs, now)
+        }
         val score = RiskScore.score(
-            freshReports.map { it.severity to (it.status == "verified" || it.status == "resolved") },
+            scoredReports.map { it.severity to (it.status == "verified") },
             snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
         )
         riskScoreText?.text = score.toString()
@@ -142,8 +150,8 @@ class ObservatoryFragment : Fragment() {
         riskLabelText?.text = RiskScore.labelAr(score)
         riskDetailText?.text = getString(
             R.string.risk_detail_fmt,
-            freshReports.count { it.status == "verified" },
-            freshReports.count { it.status != "verified" },
+            snap.reports.count { it.status == "verified" },
+            snap.reports.count { it.status != "verified" && it.status != "rejected" && it.status != "resolved" },
             snap.hotspots.count { it.confidence >= 70 }
         )
 
