@@ -93,4 +93,11 @@
     <color name="sev_medium">#F59E0B</color>
     <color name="sev_high">#F97316</color>
     <color name="sev_critical">#EF4444</color>
+
+    <!-- ── Legacy-surface tokens (restore commit) ────
+         Referenced by v2.8.0-era drawables kept for zero-regression:
+         bg_card_danger (border-red-500/30) and bg_glass_header
+         (bg-black/60 approximated over the M3 base #0B1220). -->
+    <color name="border_red_soft">#4DEF4444</color>
+    <color name="glass_fill">#990B1220</color>
 </resources>
