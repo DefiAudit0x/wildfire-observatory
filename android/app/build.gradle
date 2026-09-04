@@ -22,10 +22,13 @@ android {
         applicationId 'com.observatory.wildfire'
         minSdk 26
         targetSdk 36
-        versionCode 23
-        versionName '2.15.0'
+        versionCode 24
+        versionName '2.16.0'
 
         vectorDrawables.useSupportLibrary = true
+        // v2.16.0 (audit wave 3): instrumented tests land (androidTest layer
+        // + the CI emulator job) — the JVM suite cannot execute android.jar.
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
 
     signingConfigs {
@@ -110,4 +113,10 @@ dependencies {
 
     // JVM unit tests (MeshWire is Android-free by design — see MeshWire.kt)
     testImplementation 'junit:junit:4.13.2'
+
+    // v2.16.0 (audit wave 3): instrumented tests — real Keystore for the
+    // CryptoEngine identity path, real LocationManager for the tier wiring.
+    androidTestImplementation 'androidx.test.ext:junit:1.2.1'
+    androidTestImplementation 'androidx.test:runner:1.6.2'
+    androidTestImplementation 'androidx.test.espresso:espresso-core:3.6.1'
 }

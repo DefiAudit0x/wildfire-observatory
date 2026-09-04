@@ -24,6 +24,31 @@ jobs:
       - name: Build and test Android app
         run: gradle -p android test assembleDebug --stacktrace
 
+  # v2.16.0 (audit wave 3): instrumented tests on a REAL emulator. The JVM
+  # unit suite cannot execute android.jar (stubbed): the AndroidKeyStore
+  # identity path, the LocationManager tier wiring and the ContextCompat
+  # permission reads only run here. API 33 is the fastest-booting stable
+  # image on CI hardware; KVM is available on ubuntu-latest runners.
+  instrumented:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Run instrumented tests on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          script: gradle -p android connectedDebugAndroidTest --stacktrace
+
   # Release build: signs when the keystore secrets are present (they are
   # for same-repo runs; fork PRs have no secrets and fall back to an
   # UNSIGNED release — the job still verifies compile+R8 health, which is
