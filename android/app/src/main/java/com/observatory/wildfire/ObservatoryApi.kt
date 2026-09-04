@@ -42,6 +42,21 @@ class ObservatoryApi(private val baseUrl: String) {
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000
         const val PRINCIPAL_COOKIE_NAME = "public_principal"
+
+        /**
+         * v2.16.0 (audit wave 3 — host allowlist for absolute URLs): the ONLY
+         * third-party hosts an absolute URL handed to this API may target.
+         * Nominatim reverse-geocoding rides the server's /api/geo/reverse
+         * proxy; FIRMS rides the server proxy + the Cloudflare worker — the
+         * two survivors are the OSRM router and the Open-Meteo forecast,
+         * both built by ApiPayloads. Anything else (a URL echoed back by a
+         * server response, a crafted report field, a future mistake) is
+         * refused closed before a socket exists.
+         */
+        val EXTERNAL_HOSTS = setOf(
+            "router.project-osrm.org",
+            "api.open-meteo.com"
+        )
     }
 
     sealed class Result {
@@ -74,14 +89,53 @@ class ObservatoryApi(private val baseUrl: String) {
         return null
     }
 
-    private fun request(method: String, path: String, bodyJson: String?, cookie: String?): Result {
-        // External services (Open-Meteo, OSRM, Nominatim) arrive as absolute
-        // URLs; API paths arrive relative and get the base prefix. A full URL
-        // that already starts with the base is normalized, never doubled.
+    /**
+     * v2.16.0 (audit wave 3 — host allowlist): resolve the request target
+     * for [path]. Pure and unit-testable.
+     *
+     *  - API paths arrive relative and get the base prefix;
+     *  - a full URL that already starts with the base is normalized, never
+     *    doubled (same-host absolute URLs are allowed);
+     *  - external services arrive as absolute URLs and are admitted ONLY
+     *    when their host is in [EXTERNAL_HOSTS] AND the scheme is https —
+     *    any other host is refused (null) before a socket exists, so a
+     *    URL echoed back from a server response or crafted report field
+     *    can never turn this client into an exfiltration channel.
+     */
+    fun resolveTarget(path: String): String? {
         val target = when {
             path.startsWith("http://") || path.startsWith("https://") -> path
             else -> baseUrl + path
         }
+        val host = hostOf(target) ?: return null
+        if (!hostOf(baseUrl).isNullOrEmpty() && host == hostOf(baseUrl)) return target
+        return if (host in EXTERNAL_HOSTS && target.startsWith("https://")) target else null
+    }
+
+    /**
+     * v2.16.0 (audit wave 3 — cookie scoping): the principal cookie is
+     * identity for the OBSERVATORY server. It must never ride a request to
+     * a third-party host (OSRM/Open-Meteo do not need it; a future bug that
+     * routed an absolute URL off-base must not leak it). Pure; tested.
+     */
+    fun sendsPrincipalCookie(target: String): Boolean {
+        val host = hostOf(target) ?: return false
+        val base = hostOf(baseUrl)
+        return !base.isNullOrEmpty() && host == base
+    }
+
+    private fun hostOf(url: String): String? = try {
+        java.net.URI(url).host?.lowercase()
+    } catch (e: Exception) {
+        null
+    }
+
+    private fun request(method: String, path: String, bodyJson: String?, cookie: String?): Result {
+        // v2.16.0: the allowlist decides before any socket is opened. A
+        // disallowed target is a TransportFailure — callers already treat
+        // that as "queue it and retry later", which is the honest outcome
+        // for a request we refuse to make.
+        val target = resolveTarget(path) ?: return Result.TransportFailure
         val http = try {
             URL(target).openConnection() as HttpURLConnection
         } catch (e: Exception) {
@@ -94,7 +148,9 @@ class ObservatoryApi(private val baseUrl: String) {
             http.readTimeout = READ_TIMEOUT_MS
             http.setRequestProperty("User-Agent", USER_AGENT)
             http.setRequestProperty("Accept", "application/json")
-            if (cookie != null) http.setRequestProperty("Cookie", cookie)
+            if (cookie != null && sendsPrincipalCookie(target)) {
+                http.setRequestProperty("Cookie", cookie)
+            }
             if (bodyJson != null) {
                 http.doOutput = true
                 http.setRequestProperty("Content-Type", "application/json")
