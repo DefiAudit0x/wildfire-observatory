@@ -534,7 +534,16 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     logger.warn({ reporterType, badgeLogId: badgeLogId(transactionalBadgeCode) }, "Invalid badge code attempt");
   }
   const safeReport = sanitizePublicReport(saved.report);
-  if (safeReport.severity === "critical" || safeReport.severity === "high") {
+  // v2.15.0 audit fix (alert pipeline): severity is CLIENT-CHOSEN, so firing
+  // the fan-out email alert on raw submission let anyone with a script mint
+  // unlimited "critical" alert emails to every verified subscriber (the
+  // 0.5 km spatial dedupe is trivially evaded by a small offset). Alerting is
+  // now gated on the TRUSTED verification paths: badge-verified creation
+  // (here) and operator moderation (admin update-status → verified).
+  if (
+    safeReport.status === "verified" &&
+    (safeReport.severity === "critical" || safeReport.severity === "high")
+  ) {
     sendFireAlert(safeReport).catch((err) =>
       logger.error({ err }, "Failed to send fire alert email")
     );

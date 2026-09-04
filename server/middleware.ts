@@ -77,15 +77,31 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
  * fail-open ON PURPOSE: the admin password remains the real credential, and
  * locking the control room out during a Firestore outage would trade a
  * revocation edge case for an availability emergency.
+ *
+ * v2.15.0 audit hardening: the fail-open is no longer absolute. Successful
+ * checks are cached in process memory, and a token ALREADY SEEN REVOKED stays
+ * denied even when the register later goes down — an outage can no longer
+ * resurrect a stolen, logged-out session. Tokens never seen revoked keep the
+ * availability-first fail-open during an outage (the documented trade-off).
  */
+const revocationSeen = new Map<string, number>(); // jti → expMs of a token seen revoked
 async function isAdminSessionRevoked(jti: string): Promise<boolean> {
   try {
     const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti);
     if (!entry) return false;
     const exp = typeof entry.exp === "number" ? entry.exp : Date.parse(entry.exp);
     if (Number.isFinite(exp) && exp < Date.now()) return false;
+    revocationSeen.set(jti, exp);
     return true;
   } catch (err) {
+    // Register unreadable: a token previously seen revoked stays revoked
+    // (its cached expiry governs); unknown tokens fail open as documented.
+    const cachedExp = revocationSeen.get(jti);
+    if (cachedExp !== undefined) {
+      if (Number.isFinite(cachedExp) && cachedExp < Date.now()) return false;
+      logger.warn({ jti }, "Admin revocation register down — using last-known revoked state");
+      return true;
+    }
     logger.warn({ err }, "Admin revocation check failed — failing open");
     return false;
   }

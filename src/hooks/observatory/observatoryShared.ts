@@ -52,10 +52,10 @@ export const EMPTY_OUTCOME: FetchOutcome = { hasActiveActivity: false, allOk: fa
  */
 export const FETCH_TIMEOUT_MS = 15000;
 
-export function fetchWithTimeout(url: string, signal?: AbortSignal): Promise<Response> {
+export function fetchWithTimeout(url: string, signal?: AbortSignal, init?: RequestInit): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-  return fetch(url, { signal: combinedSignal });
+  return fetch(url, { ...init, signal: combinedSignal });
 }
 
 /**

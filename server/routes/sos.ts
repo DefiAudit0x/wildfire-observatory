@@ -21,8 +21,14 @@ const MAX_AUDIO_DURATION_SEC = 20;
 
 const sosSchema = z.object({
   deviceId: z.string().min(1).max(128),
-  lat: z.union([z.number(), z.string()]),
-  lng: z.union([z.number(), z.string()]),
+  // v2.15.0 (audit — no fake coordinates): a device WITHOUT a GPS fix may
+  // submit an SOS with null coordinates (Android had been substituting
+  // Algiers constants, which silently drove priority/corroboration math).
+  // Absent/null coords are honest; if present they must be finite and
+  // inside the coverage geofence.
+  lat: z.union([z.number(), z.string(), z.null()]).optional(),
+  lng: z.union([z.number(), z.string(), z.null()]).optional(),
+  hasLocation: z.boolean().optional(),
   name: z.string().max(120).optional(),
   phone: z.string().max(30).optional(),
   audioUrl: z.string().max(MAX_AUDIO_BASE64_LENGTH).optional(),
@@ -326,14 +332,25 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
     return;
   }
   const data = parsed.data;
-  const lat = Number(data.lat);
-  const lng = Number(data.lng);
+  // v2.15.0: honest no-fix SOS — null coordinates skip the geofence and the
+  // proximity/priority derivation entirely (they were computed from nothing).
+  const hasLocation = data.hasLocation === true || (data.lat != null && data.lng != null);
+  const lat = hasLocation ? Number(data.lat) : Number.NaN;
+  const lng = hasLocation ? Number(data.lng) : Number.NaN;
 
   // Geofence: only accept SOS within monitoring coverage (North Africa)
-  if (!Number.isFinite(lat) || !Number.isFinite(lng) ||
+  if (hasLocation &&
+      (!Number.isFinite(lat) || !Number.isFinite(lng) ||
       lat < NA_BOUNDS.minLat || lat > NA_BOUNDS.maxLat ||
-      lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng) {
+      lng < NA_BOUNDS.minLng || lng > NA_BOUNDS.maxLng)) {
     res.status(400).json({ error: "Location is outside the monitoring coverage area" });
+    return;
+  }
+
+  // v2.15.0: NaN can never persist — a non-numeric audioDuration is a 400,
+  // while the pinned numeric clamp (999 → ≤20s) is kept.
+  if (data.audioDuration != null && !Number.isFinite(Number(data.audioDuration))) {
+    res.status(400).json({ error: "Invalid audioDuration" });
     return;
   }
 
@@ -344,27 +361,29 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   let nearestFireDistanceKm: number | null = null;
   let nearbyFireCorroborated = false;
   let priority: string = "unknown";
-  try {
-    const dbResult = await getReportsDbResult();
-    const active = dbResult.status === "ok" ? dbResult.reports.filter(
-      (r: any) => r.status !== "resolved" && r.status !== "rejected"
-    ) : [];
-    if (active.length > 0) {
-      nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
-        const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
-        return Math.min(min, d);
-      }, Infinity);
-      nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
+  if (hasLocation) {
+    try {
+      const dbResult = await getReportsDbResult();
+      const active = dbResult.status === "ok" ? dbResult.reports.filter(
+        (r: any) => r.status !== "resolved" && r.status !== "rejected"
+      ) : [];
+      if (active.length > 0) {
+        nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
+          const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
+          return Math.min(min, d);
+        }, Infinity);
+        nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
+      }
+    } catch (err) {
+      logger.error({ err }, "SOS proximity check error");
     }
-  } catch (err) {
-    logger.error({ err }, "SOS proximity check error");
-  }
-  if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
-    priority =
-      nearestFireDistanceKm <= 2 ? "critical"
-      : nearestFireDistanceKm <= 5 ? "high"
-      : nearestFireDistanceKm <= 10 ? "medium"
-      : "low";
+    if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
+      priority =
+        nearestFireDistanceKm <= 2 ? "critical"
+        : nearestFireDistanceKm <= 5 ? "high"
+        : nearestFireDistanceKm <= 10 ? "medium"
+        : "low";
+    }
   }
 
   const audioDuration = data.audioDuration != null
@@ -392,8 +411,9 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   const newSos: any = {
     id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
     deviceId: data.deviceId,
-    lat,
-    lng,
+    lat: hasLocation ? lat : null,
+    lng: hasLocation ? lng : null,
+    hasLocation,
     name: data.name || "شخص محاصر",
     phone: data.phone || "",
     audioUrl: data.audioUrl || undefined,
@@ -418,7 +438,19 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   if (newSos.audioUrl) clean.hasAudio = true;
   const acceptedAt = Date.now();
   const admissionId = createHash("sha256").update(data.deviceId).digest("hex");
-  const admission = await createSosWithAdmission(newSos.id, clean, admissionId, acceptedAt, DUPLICATE_WINDOW_MS);
+  const admission = await createSosWithAdmission(newSos.id, clean, admissionId, acceptedAt, DUPLICATE_WINDOW_MS,
+    data.clientGeneratedId
+      ? {
+          collection: SOS_IDEMPOTENCY_COLLECTION,
+          key: data.clientGeneratedId,
+          record: {
+            sosId: newSos.id,
+            deviceId: data.deviceId,
+            createdAt: newSos.timestamp,
+          },
+        }
+      : undefined
+  );
   if (admission === "duplicate") {
     res.status(409).json({ error: "An SOS from this device was already received recently" });
     return;
@@ -431,19 +463,7 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
   }
-  if (data.clientGeneratedId) {
-    const keyStored = await docSet(SOS_IDEMPOTENCY_COLLECTION, data.clientGeneratedId, {
-      sosId: newSos.id,
-      deviceId: data.deviceId,
-      createdAt: newSos.timestamp,
-    });
-    if (!keyStored) {
-      // The SOS itself is durably admitted; only the replay ledger write
-      // failed. Log loudly — in-memory replay still covers this process.
-      logger.warn({ sosId: newSos.id }, "SOS idempotency key persistence failed");
-    }
-  }
-  logger.info({ sosId: newSos.id, lat, lng, priority, nearbyFireCorroborated }, "New SOS created");
+  logger.info({ sosId: newSos.id, lat: hasLocation ? lat : null, lng: hasLocation ? lng : null, priority, nearbyFireCorroborated }, "New SOS created");
   res.json(stripAudio(newSos));
 });
 

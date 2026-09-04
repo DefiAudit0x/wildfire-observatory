@@ -83,6 +83,13 @@ vi.mock("../server/ai.js", () => ({
   getAiModel: () => "gemini-3-flash-preview",
 }));
 
+// v2.15.0: alert-pipeline gate — spy on the fan-out email; never hit a real
+// provider from tests.
+const emailSpy = vi.hoisted(() => ({ sendFireAlert: vi.fn(async (_report: any) => {}) }));
+vi.mock("../server/email.js", () => ({
+  sendFireAlert: emailSpy.sendFireAlert,
+}));
+
 const { default: reportsRouter } = await import("../server/routes/reports.js");
 
 function createApp() {
@@ -240,6 +247,64 @@ describe("POST /api/reports — badge trust hardening", () => {
       .post("/api/reports")
       .send({ ...baseReport(), lat: 36.5, lng: 8.5 });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/reports — v2.15.0 alert pipeline gate", () => {
+  // Fixed, well-inside-Annaba coords (the shared annabaCoords() counter has
+  // marched east past the wilaya bounds by the time this block runs) and
+  // >0.5km apart so the in-memory duplicate window never dedupes them.
+  const alertCoords: Array<{ lat: number; lng: number; cg: string }> = [
+    { lat: 36.77, lng: 7.44, cg: "cg-alert-1" },
+    { lat: 36.77, lng: 7.49, cg: "cg-alert-2" },
+    { lat: 36.77, lng: 7.54, cg: "cg-alert-3" },
+  ];
+  let alertIdx = 0;
+  function alertReport(extra: Record<string, unknown>) {
+    const c = alertCoords[alertIdx++]!;
+    return {
+      lat: c.lat,
+      lng: c.lng,
+      locationName: "غابة سيريدي",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "حريق غابة اختبار بوابة التنبيهات",
+      clientGeneratedId: c.cg,
+      ...extra,
+    };
+  }
+
+  it("does NOT alert on a citizen critical report that is still pending", async () => {
+    emailSpy.sendFireAlert.mockClear();
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send(alertReport({ severity: "critical" }));
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pending");
+    expect(emailSpy.sendFireAlert).not.toHaveBeenCalled();
+  });
+
+  it("alerts when a badge-verified report is high/critical (trusted path)", async () => {
+    emailSpy.sendFireAlert.mockClear();
+    mockDocs.set("badgeCodes/808", { isActive: true, type: "official" });
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send(alertReport({ severity: "critical", reporterType: "official", reporterBadgeCode: "808" }));
+    expect(res.body.status).toBe("verified");
+    await vi.waitFor(() => expect(emailSpy.sendFireAlert).toHaveBeenCalledTimes(1));
+    expect(emailSpy.sendFireAlert.mock.calls[0][0]).toMatchObject({ severity: "critical", status: "verified" });
+  });
+
+  it("does NOT alert on a badge-verified low/medium report", async () => {
+    emailSpy.sendFireAlert.mockClear();
+    mockDocs.set("badgeCodes/809", { isActive: true, type: "official" });
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send(alertReport({ severity: "medium", reporterType: "official", reporterBadgeCode: "809" }));
+    expect(res.body.status).toBe("verified");
+    expect(emailSpy.sendFireAlert).not.toHaveBeenCalled();
   });
 });
 

@@ -3,7 +3,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import logger from "../logger.js";
-import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache } from "../fs.js";
+import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache, removeTeamMemberAtomically } from "../fs.js";
 import { joinTeamAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { getPublicPrincipal, issuePublicPrincipal, renewPublicPrincipal } from "../public-principal.js";
@@ -78,6 +78,9 @@ const heartbeatSchema = z.object({
   // its fix keeps re-sending the SAME stale coordinates every beat and the
   // command map renders a moving member that may have been dark for an hour.
   // Absent on legacy clients — treated as "unknown age", never fabricated.
+  // v2.15.0 (audit): a FUTURE fixTimeMs (clock skew or hostile device) is
+  // rejected at the door — surfaces render fixTimeMs directly, so letting a
+  // +24h stamp through would display fabricated freshness.
   fixTimeMs: z.coerce.number().finite().int().nonnegative().optional(),
 });
 
@@ -503,6 +506,13 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     res.status(400).json({ error: "Coordinates are outside the coverage area" });
     return;
   }
+  // v2.15.0: reject future GPS fix timestamps beyond a 2-minute clock-skew
+  // allowance (freshness/online is computed from server lastSeen, but the
+  // fix stamp itself is rendered on roster/command surfaces).
+  if (fixTimeMs !== undefined && fixTimeMs > Date.now() + 2 * 60 * 1000) {
+    res.status(400).json({ error: "Future GPS fix timestamp rejected" });
+    return;
+  }
 
   const now = Date.now();
   const lastSeen = heartbeatMemberTimes.get(token.memberId);
@@ -895,22 +905,26 @@ router.delete("/:id/members/:memberId", requireAdmin, async (req: Request, res: 
     return;
   }
 
-  // Order matters: the gen bump FIRST (dead token before anything else can
-  // race), then deactivation + GPS purge, then the optional blocklist write.
-  const bumped = await incrementDocField("teamMembers", memberId, "tokenGen", 1);
-  if (!bumped) {
+  // v2.15.0: ONE atomic transaction — tokenGen bump + active:false + GPS
+  // purge commit together or not at all. No more ignored partial failures
+  // behind an ok:true. The security-critical kill (token bump) and the
+  // deactivation can no longer diverge.
+  const removed = await removeTeamMemberAtomically(memberId);
+  if (removed.status === "unavailable") {
     res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable" });
     return;
   }
-  await docUpdate("teamMembers", memberId, { active: false, removedAt: Date.now() });
-  await docDeleteFields("teamMembers", memberId, ["lastKnownLat", "lastKnownLng", "lastSeenAt"]);
+  if (removed.status === "missing") {
+    res.status(404).json({ error: "Member not found in this team" });
+    return;
+  }
   removeMember(memberId);
   let blockedPrincipal = false;
   if (blockRequested) {
     const blockResult = await setPrincipalBlocked(teamId, principal, true);
     blockedPrincipal = blockResult === "blocked";
   }
-  logger.info({ memberId, teamId, blockedPrincipal }, "Team member removed by dispatcher");
+  logger.info({ memberId, teamId, tokenGen: removed.tokenGen, blockedPrincipal }, "Team member removed by dispatcher (atomic)");
   res.json({ ok: true, tokenRevoked: true, gpsPurged: true, blockedPrincipal });
 });
 

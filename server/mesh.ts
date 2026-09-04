@@ -29,8 +29,23 @@ const MAX_NODES = 250;
 // could previously relay arbitrary report:new / report:confirm payloads to
 // every client; the web layer validates locally, but the displayed consensus
 // numbers could be briefly poisoned until the next HTTP refresh.
+//
+// v2.15.0 audit fix (mesh authenticity): authentication ≠ authorization ≠
+// data authenticity. A mesh node is a GOSSIP SOURCE, never a trust authority:
+// node-relayed frames are stripped of every trust-bearing field (status,
+// consensusCount) before re-broadcast, so no client can ever inherit a
+// forged "verified" / inflated consensus from the mesh. Trust values only
+// ever originate from the hub itself (confirmation-ledger broadcasts) or
+// from the HTTP API. Offline-origin reports still propagate — honestly
+// marked origin:"mesh" and admitted as pending by clients.
 const VALID_SEVERITIES = new Set(["low", "medium", "high", "critical"]);
 const VALID_STATUSES = new Set(["pending", "verified", "rejected", "resolved"]);
+
+/** Trust-bearing fields a mesh node may NOT vouch for. */
+function stripTrustFields(report: Record<string, unknown>): Record<string, unknown> {
+  const { status: _status, consensusCount: _consensusCount, verified: _verified, ...rest } = report;
+  return { ...rest, origin: "mesh" };
+}
 
 function isValidRelayedReport(report: unknown): boolean {
   if (!report || typeof report !== "object") return false;
@@ -50,10 +65,10 @@ function isValidRelayedReport(report: unknown): boolean {
 }
 
 function isValidRelayedConfirm(message: MeshMessage): boolean {
-  const { id, consensusCount, status } = message;
+  // v2.15.0: a node-relayed confirm carries ONLY the report id — the hub
+  // strips consensusCount/status, so they must not be required here.
+  const { id } = message;
   if (typeof id !== "string" || id.length === 0 || id.length > 64) return false;
-  if (typeof consensusCount !== "number" || !Number.isFinite(consensusCount) || consensusCount < 0 || consensusCount > 1_000_000) return false;
-  if (status !== undefined && !VALID_STATUSES.has(String(status))) return false;
   return true;
 }
 // C3 fix: the upgrade path must not be an unauthenticated resource drain.
@@ -182,7 +197,12 @@ class MeshHub {
               this.send(ws, { type: "error", message: "Invalid report payload" });
               break;
             }
-            this.broadcast({ type: "report:new", report: message.report, from: nodeId }, nodeId);
+            // v2.15.0: relay a SANITIZED copy — the node may gossip the
+            // report's existence, never its trust level.
+            this.broadcast(
+              { type: "report:new", report: stripTrustFields(message.report as Record<string, unknown>), from: nodeId },
+              nodeId,
+            );
             break;
           case "report:confirm":
             if (!isValidRelayedConfirm(message)) {
@@ -190,13 +210,11 @@ class MeshHub {
               this.send(ws, { type: "error", message: "Invalid confirm payload" });
               break;
             }
-            this.broadcast({
-              type: "report:confirm",
-              id: message.id,
-              consensusCount: message.consensusCount,
-              status: message.status,
-              from: nodeId,
-            }, nodeId);
+            // v2.15.0: relay the REPORT ID only. consensusCount/status from a
+            // node are attacker-controlled; clients reconcile against the
+            // HTTP API (or the hub's own ledger broadcast, which carries no
+            // `from` field).
+            this.broadcast({ type: "report:confirm", id: message.id, from: nodeId }, nodeId);
             break;
           default:
             this.send(ws, { type: "error", message: `Unknown message type: ${message.type}` });

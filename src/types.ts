@@ -28,6 +28,7 @@ export interface Report {
     suggestedSeverity: string;
   };
   consensusCount: number; // how many people confirmed this
+  communityConfirmed?: boolean; // v2.15.0: community threshold reached — distinct from operator/badge verified
   clusterId?: string;
   clusterSize?: number;
   isClusterLeader?: boolean;

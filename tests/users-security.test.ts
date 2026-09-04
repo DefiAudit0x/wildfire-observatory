@@ -161,3 +161,53 @@ describe("S-M8: privilege shifts land in the audit trail", () => {
     );
   });
 });
+
+describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalation)", () => {
+  it("password-admin JWT CANNOT create a superadmin staff account", async () => {
+    const token = generateAdminToken("admin");
+    const res = await supertest(createApp())
+      .post("/api/users")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ agentId: "new-super", name: "New Super", role: "superadmin", unitId: "unit-dz16", password: "Passw0rd123" });
+    expect(res.status).toBe(403);
+    expect(res.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
+    expect(state.createUserIfUnitExists).not.toHaveBeenCalled();
+  });
+
+  it("true superadmin JWT CAN create a superadmin staff account", async () => {
+    const token = generateAdminToken("superadmin");
+    const res = await supertest(createApp())
+      .post("/api/users")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ agentId: "new-super-2", name: "New Super 2", role: "superadmin", unitId: "unit-dz16", password: "Passw0rd123" });
+    expect(res.status).toBe(201);
+    expect(res.body.role).toBe("superadmin");
+  });
+
+  it("password-admin JWT CANNOT upgrade an existing account to superadmin, nor mutate/delete a superadmin doc", async () => {
+    const token = generateAdminToken("admin");
+
+    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "agent" });
+    const upgrade = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ role: "superadmin" });
+    expect(upgrade.status).toBe(403);
+    expect(upgrade.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
+
+    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "superadmin" });
+    const mutate = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Renamed Super" });
+    expect(mutate.status).toBe(403);
+    expect(mutate.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
+
+    const del = await supertest(createApp())
+      .delete("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`);
+    expect(del.status).toBe(403);
+    expect(del.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
+    expect(state.docDelete).not.toHaveBeenCalled();
+  });
+});

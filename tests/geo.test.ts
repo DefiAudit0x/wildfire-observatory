@@ -92,3 +92,17 @@ describe("runClustering", () => {
     expect(result[0].clusterId).not.toBe(result[1].clusterId);
   });
 });
+
+describe("v2.15.0: overlapping-rectangle disambiguation", () => {
+  it("classifies a point in the Annaba∩Skikda overlap by the SMALLEST containing rectangle (deterministic)", () => {
+    // (36.85, 7.45) sits inside Annaba (36.7-37.0 / 7.4-7.95, area 0.15) AND
+    // Skikda (36.6-37.0 / 6.2-7.5, area 0.32). The old first-match `find()`
+    // answered by array order; the smallest-area rule is stable and specific.
+    expect(determineWilayaByCoords(36.85, 7.45)).toContain("عنابة");
+  });
+
+  it("still resolves unambiguous wilayas correctly", () => {
+    expect(determineWilayaByCoords(36.95, 7.7)).toContain("عنابة"); // Annaba only
+    expect(determineWilayaByCoords(36.95, 6.4)).toContain("سكيكدة"); // Skikda only (outside Jijel lat cap)
+  });
+});

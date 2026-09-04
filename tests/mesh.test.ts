@@ -71,7 +71,7 @@ describe("mesh hub", () => {
     expect(joinedMessage.nodeCount).toBe(2);
   });
 
-  it("relays report:new from one node to all other nodes", async () => {
+  it("relays report:new from one node to all other nodes — with trust fields STRIPPED (v2.15.0)", async () => {
     const nodeA = clients[0];
     const nodeB = clients[1];
     expect(nodeA).toBeDefined();
@@ -80,15 +80,20 @@ describe("mesh hub", () => {
     const received = waitForMessage(nodeB, "report:new");
     nodeA.send(JSON.stringify({
       type: "report:new",
-      report: { id: "rep-mesh-1", locationName: "غابة تجريبية" },
+      report: { id: "rep-mesh-1", locationName: "غابة تجريبية", status: "verified", consensusCount: 999 },
     }));
 
     const message = await received;
     expect(message.from).toBe("node-A");
+    // A mesh node may gossip a report's EXISTENCE, never its trust level:
+    // the relayed copy must not carry the node's claimed status/consensus.
     expect(message.report).toEqual(expect.objectContaining({ id: "rep-mesh-1" }));
+    expect(message.report).toMatchObject({ origin: "mesh" });
+    expect((message.report as Record<string, unknown>).status).toBeUndefined();
+    expect((message.report as Record<string, unknown>).consensusCount).toBeUndefined();
   });
 
-  it("relays report:confirm broadcasts", async () => {
+  it("relays report:confirm as an id-only refetch hint (v2.15.0)", async () => {
     const nodeA = clients[0];
     const nodeB = clients[1];
 
@@ -102,8 +107,10 @@ describe("mesh hub", () => {
 
     const message = await received;
     expect(message.id).toBe("rep-mesh-1");
-    expect(message.consensusCount).toBe(6);
-    expect(message.status).toBe("verified");
+    expect(message.from).toBe("node-A");
+    // Attacker-controlled trust values never traverse the hub.
+    expect(message.consensusCount).toBeUndefined();
+    expect(message.status).toBeUndefined();
   });
 
   it("rejects messages before hello", async () => {

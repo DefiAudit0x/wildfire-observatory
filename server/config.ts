@@ -50,10 +50,14 @@ function parseRateLimitMax(raw: string | undefined, fallback: number): number {
  * ARC-L06 fix: a malformed PORT ("3000px", empty string with no default…) used
  * to become NaN and the server silently listened on "NaN" → crash at boot with
  * an unrelated error. Clamp to the valid range with an explicit fallback.
+ * v2.15.0 audit fix: parseInt() PREFIX-parsed ("3000px" → 3000, "3000.5" →
+ * 3000), contradicting this comment and its strict sibling parseRateLimitMax.
+ * Now Number() + integer + range, mirroring that sibling: a malformed value
+ * falls back instead of being silently truncated into a bindable port.
  */
 function parsePort(raw: string | undefined, fallback: number): number {
-  const parsed = parseInt(raw || String(fallback), 10);
-  return Number.isFinite(parsed) && parsed > 0 && parsed < 65536 ? parsed : fallback;
+  const parsed = Number(raw === undefined || raw === "" ? String(fallback) : raw);
+  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : fallback;
 }
 
 const config = {

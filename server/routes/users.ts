@@ -28,6 +28,16 @@ function requireScopedCommander(res: Response, admin: any): string | null { cons
 // unit's agents only, agent = nothing.
 const MANAGE_USERS_ROLES = ["superadmin", "admin", "commander"] as const;
 
+// v2.15.0 (audit fix — privilege separation): the password-minted "admin"
+// JWT and the true "superadmin" credential both pass MANAGE_USERS_ROLES, so
+// an ADMIN_PASSWORD session could mint/upgrade a STAFF account to role
+// "superadmin" (and mutate/delete existing superadmin docs) — collapsing the
+// deliberate two-credential separation into one escalation path. Granting or
+// touching superadmin staff now requires the superadmin credential itself.
+function isTrueSuperadmin(admin: any): boolean {
+  return admin?.role === "superadmin";
+}
+
 router.get("/", requireRole(...MANAGE_USERS_ROLES), async (req: Request, res: Response) => {
   try { const admin = (req as any).admin; const { unitId, isSuperadmin } = callerUnit(admin); if (requireScopedCommander(res, admin) === null && !isSuperadmin) return; let users = (await collectionGet("users")) || []; if (!isSuperadmin && unitId) users = users.filter((u: any) => u.unitId === unitId); res.json({ users: users.map(sanitizeUser) }); }
   catch (err) { logger.error({ err }, "Failed to list users"); res.status(500).json({ error: "Internal server error" }); }
@@ -43,6 +53,7 @@ router.post("/", requireRole(...MANAGE_USERS_ROLES), async (req: Request, res: R
     if (parsed.data.role !== "agent") { res.status(403).json({ error: "Commanders can only create agent accounts" }); return; }
     if (parsed.data.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only add staff to their own unit" }); return; }
   }
+  if (parsed.data.role === "superadmin" && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can create superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
   try {
     const passwordHash = await bcrypt.hash(parsed.data.password, 10);
     const now = new Date().toISOString();
@@ -65,6 +76,7 @@ router.put("/:agentId", requireRole(...MANAGE_USERS_ROLES), async (req: Request,
     const existing = await docGet("users", agentId); if (!existing) { res.status(404).json({ error: "User not found" }); return; }
     if (!isSuperadmin) { if (existing.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only manage their own unit's staff" }); return; } if (parsed.data.role && parsed.data.role !== "agent") { res.status(403).json({ error: "Commanders cannot change roles outside of agent" }); return; } if (parsed.data.unitId && parsed.data.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders cannot move staff between units" }); return; }
     }
+    if ((parsed.data.role === "superadmin" || existing.role === "superadmin") && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can modify superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
     if (parsed.data.unitId) { const unit = await docGet("units", toUnitId(parsed.data.unitId)); if (!unit) { res.status(404).json({ error: "Unit not found" }); return; } }
     const update: Record<string, any> = {}; if (parsed.data.name) update.name = parsed.data.name; if (parsed.data.role) update.role = parsed.data.role; if (parsed.data.unitId) update.unitId = parsed.data.unitId; if (parsed.data.isActive !== undefined) update.isActive = parsed.data.isActive; if (parsed.data.password) update.passwordHash = await bcrypt.hash(parsed.data.password, 10); update.updatedAt = new Date().toISOString(); update.updatedBy = admin?.agentId || "admin";
     const ok = await docUpdate("users", agentId, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
@@ -84,6 +96,7 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
   try {
     const existing = await docGet("users", agentId);
     if (!existing) { res.status(404).json({ error: "User not found" }); return; }
+    if (existing.role === "superadmin" && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can delete superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
     const ok = await docDelete("users", agentId);
     if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
     // S-M8: account deletion is the harshest privilege action — audit it

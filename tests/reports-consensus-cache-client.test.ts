@@ -5,10 +5,11 @@ type StoredReport = {
   timestamp: string;
   consensusCount: number;
   status: string;
+  communityConfirmed?: boolean;
   voters?: string[];
 };
 
-const state = vi.hoisted(() => ({ reports: new Map<string, StoredReport>(), failTransaction: false }));
+const state = vi.hoisted(() => ({ reports: new Map<string, StoredReport>(), confirmations: new Set<string>(), failTransaction: false }));
 const clientDb = vi.hoisted(() => ({ kind: "client" }));
 
 vi.mock("../server/firebase.js", () => ({
@@ -17,7 +18,18 @@ vi.mock("../server/firebase.js", () => ({
 }));
 
 vi.mock("firebase/firestore", () => ({
-  doc: (_db: unknown, collection: string, id: string) => ({ collection, id }),
+  doc: (_db: unknown, collection: string, id: string) => ({
+    id,
+    // Ledger subcollection surface: reports/{id}/confirmations/{subject}
+    collection(sub: string) {
+      return {
+        doc(subId: string) {
+          return { id: subId, path: `${collection}/${id}/${sub}/${subId}` };
+        },
+      };
+    },
+    path: `${collection}/${id}`,
+  }),
   collection: (_db: unknown, name: string) => ({ name }),
   query: (collection: { name: string }) => ({ collection }),
   orderBy: () => ({}),
@@ -34,28 +46,42 @@ vi.mock("firebase/firestore", () => ({
       state.failTransaction = false;
       throw new Error("simulated transaction failure");
     }
-    const writes: Array<{ id: string; update: Partial<StoredReport> }> = [];
+    const writes: Array<{ key: string; update: Partial<StoredReport> }> = [];
+    const creates: string[] = [];
     const tx = {
-      get: async (ref: { id: string }) => {
+      get: async (ref: { id: string; path?: string }) => {
+        if (ref.path && ref.path.includes("confirmations")) {
+          return { exists: () => state.confirmations.has(ref.path!), data: () => (state.confirmations.has(ref.path!) ? { subject: ref.id } : undefined) };
+        }
         const report = state.reports.get(ref.id);
         return { exists: () => Boolean(report), data: () => report };
       },
-      update: (ref: { id: string }, update: Partial<StoredReport>) => writes.push({ id: ref.id, update }),
+      update: (ref: { path?: string; id: string }, update: Partial<StoredReport>) => writes.push({ key: ref.path ?? ref.id, update }),
+      create: (ref: { path: string }, _data: unknown) => creates.push(ref.path),
     };
     const result = await callback(tx);
     for (const write of writes) {
-      const existing = state.reports.get(write.id);
-      if (existing) state.reports.set(write.id, { ...existing, ...write.update });
+      if (write.key.includes("confirmations")) continue;
+      const existing = state.reports.get(write.key);
+      if (existing) state.reports.set(write.key, { ...existing, ...write.update });
     }
+    for (const path of creates) state.confirmations.add(path);
     return result;
   },
 }));
 
-const { confirmReportInFirestore, getReportsDbResult, invalidateReportsCache } = await import("../server/db.js");
+// v2.15.0: the ledger is the only live confirmation contract; the legacy
+// optional-voterId db.confirm API was dead code and was deleted.
+const { getReportsDbResult, invalidateReportsCache } = await import("../server/db.js");
+const { confirmReportWithPrincipal } = await import("../server/confirmation-ledger.js");
 
-describe("client confirmation cache consistency", () => {
-  it("invalidates a cached reports read after a successful client transaction", async () => {
+describe("v2.15.0 — ledger requires the admin SDK (client-kind db is honestly no_db)", () => {
+  it("returns no_db for a client-kind Firestore handle — no phantom confirm path", async () => {
+    // The legacy confirmReportInFirestore had a client-SDK branch that no
+    // route ever reached. The ledger is admin-SDK only: a client-kind handle
+    // is an honest no_db, not a second confirmation contract.
     state.reports.clear();
+    state.confirmations.clear();
     invalidateReportsCache();
     state.reports.set("rep-client-cache", {
       id: "rep-client-cache",
@@ -64,32 +90,9 @@ describe("client confirmation cache consistency", () => {
       status: "pending",
     });
 
-    const before = await getReportsDbResult();
-    expect(before).toMatchObject({ status: "ok", reports: [{ consensusCount: 1 }] });
-
-    await expect(confirmReportInFirestore("rep-client-cache", "client-voter"))
-      .resolves.toMatchObject({ status: "confirmed", consensusCount: 2, statusValue: "pending" });
-
-    const after = await getReportsDbResult();
-    expect(after).toMatchObject({ status: "ok", reports: [{ consensusCount: 2 }] });
-  });
-
-  it("does not invalidate the cache after a failed client transaction", async () => {
-    state.reports.clear();
-    invalidateReportsCache();
-    state.reports.set("rep-client-failure", {
-      id: "rep-client-failure",
-      timestamp: "2026-08-20T00:00:00.000Z",
-      consensusCount: 1,
-      status: "pending",
-    });
-
-    const before = await getReportsDbResult();
-    expect(before).toMatchObject({ status: "ok", reports: [{ consensusCount: 1 }] });
-
-    state.failTransaction = true;
-    await expect(confirmReportInFirestore("rep-client-failure", "client-voter-failure"))
-      .resolves.toEqual({ status: "error" });
-    expect(await getReportsDbResult()).toMatchObject({ status: "ok", reports: [{ consensusCount: 1 }] });
+    await expect(confirmReportWithPrincipal("rep-client-cache", "client-voter"))
+      .resolves.toEqual({ status: "no_db" });
+    // Nothing was written behind the caller's back.
+    expect(state.reports.get("rep-client-cache")).toMatchObject({ consensusCount: 1, status: "pending" });
   });
 });
