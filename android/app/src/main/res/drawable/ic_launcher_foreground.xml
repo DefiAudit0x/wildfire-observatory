@@ -1,13 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v2.16.0 brand launcher glyph: the observatory mark — a white shield
+     carrying a stylised tree, with the orange "observation network" nodes on
+     the shield's trailing edge — over the brand-green adaptive background
+     (@color/ic_launcher_background = #006233). Safe zone: 66dp centred. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Shield body (white) -->
     <path
-        android:fillColor="#FF6D00"
-        android:pathData="M54,28 C61,40 70,46 70,58 C70,68 63,76 54,76 C45,76 38,68 38,58 C38,46 47,40 54,28 Z" />
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,24 L76,31 L76,52 C76,66 66,77 54,84 C42,77 32,66 32,52 L32,31 Z" />
+
+    <!-- Shield inner (brand green) -->
     <path
-        android:fillColor="#FFD54F"
-        android:pathData="M54,44 C58,51 63,54 63,60 C63,66 59,70 54,70 C49,70 45,66 45,60 C45,54 50,51 54,44 Z" />
+        android:fillColor="#FF006233"
+        android:pathData="M54,29 L72,34.5 L72,52 C72,63.5 64,73 54,79 C44,73 36,63.5 36,52 L36,34.5 Z" />
+
+    <!-- Tree canopy: three stacked tiers (white) -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,36 L61,47 L47,47 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,42 L63.5,55 L44.5,55 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M54,49 L66,64 L42,64 Z" />
+    <!-- Trunk -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M52,64 L56,64 L56,71 L52,71 Z" />
+
+    <!-- Observation network on the shield's right edge (brand orange) -->
+    <path
+        android:strokeColor="#FFFF6B35"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M70,40 L65,50 M65,50 L70,58 M70,58 L64,66 M65,50 L60,58 M60,58 L70,58" />
+    <path
+        android:fillColor="#FFFF6B35"
+        android:pathData="M70,40 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" />
+    <path
+        android:fillColor="#FFFF6B35"
+        android:pathData="M65,50 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" />
+    <path
+        android:fillColor="#FFFF6B35"
+        android:pathData="M70,58 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" />
+    <path
+        android:fillColor="#FFFF6B35"
+        android:pathData="M60,58 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" />
+    <path
+        android:fillColor="#FFFF6B35"
+        android:pathData="M64,66 m-2.4,0 a2.4,2.4 0 1,0 4.8,0 a2.4,2.4 0 1,0 -4.8,0" />
 </vector>

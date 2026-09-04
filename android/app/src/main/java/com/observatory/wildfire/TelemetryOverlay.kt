@@ -41,7 +41,7 @@ object TelemetryOverlay {
         val canvas = Canvas(bitmap)
 
         // Crosshair target (web: vertical 320,200→320,280; horizontal 280,240→360,240)
-        val cross = strokePaint(1.5f * scale, 0x80EF4444.toInt())
+        val cross = strokePaint(1.5f * scale, 0x80D21034.toInt())
         canvas.drawLine(x(320f), y(200f), x(320f), y(280f), cross)
         canvas.drawLine(x(280f), y(240f), x(360f), y(240f), cross)
 
@@ -59,7 +59,7 @@ object TelemetryOverlay {
         )
         canvas.drawText(
             "FIELD VISUAL ASSIST - ALIGNMENT ESTIMATE (NOT PROOF)", x(30f), y(90f),
-            textPaint(10f, 0xE6EF4444.toInt(), bold = false, scale = scale)
+            textPaint(10f, 0xE6D21034.toInt(), bold = false, scale = scale)
         )
         val body = textPaint(9f, 0xCCF1F5F9.toInt(), bold = false, scale = scale)
         canvas.drawText("GPS LAT: ${stamp.latText}", x(30f), y(115f), body)
@@ -73,14 +73,14 @@ object TelemetryOverlay {
         canvas.drawText(stamp.utcText, x(30f), y(175f), body)
 
         if (alignment != null) {
-            val matched = textPaint(9f, 0xE622C55E.toInt(), bold = false, scale = scale)
+            val matched = textPaint(9f, 0xE62E9E5B.toInt(), bold = false, scale = scale)
             val lines = TelemetryCamera.alignmentStampLines(alignment)
             canvas.drawText(lines[0], x(30f), y(200f), matched)
             canvas.drawText(lines[1], x(30f), y(215f), matched)
         } else {
             canvas.drawText(
                 TelemetryCamera.alignmentStampLines(null)[0], x(30f), y(200f),
-                textPaint(9f, 0xE6EF4444.toInt(), bold = false, scale = scale)
+                textPaint(9f, 0xE6D21034.toInt(), bold = false, scale = scale)
             )
         }
         return bitmap
@@ -145,7 +145,7 @@ object TelemetryOverlay {
 
     /** One L-shaped corner mark: two 20-ref-px strokes from (px,py) inward. */
     private fun corner(canvas: Canvas, px: Float, py: Float, dx: Float, dy: Float, scale: Float) {
-        val p = strokePaint(1.5f * scale, 0x80EF4444.toInt())
+        val p = strokePaint(1.5f * scale, 0x80D21034.toInt())
         canvas.drawLine(px, py, px + dx * (20f * scale), py, p)
         canvas.drawLine(px, py, px, py + dy * (20f * scale), p)
     }

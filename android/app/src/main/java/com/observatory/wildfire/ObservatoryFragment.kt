@@ -75,9 +75,9 @@ class ObservatoryFragment : Fragment() {
         val ctx = context ?: return
         val (text, color) = when (state.status) {
             LocationLogic.Status.NO_PERMISSION ->
-                getString(R.string.gps_no_permission) to 0xFFF59E0B.toInt()
+                getString(R.string.gps_no_permission) to 0xFFFF6B35.toInt()
             LocationLogic.Status.PROVIDERS_OFF ->
-                getString(R.string.gps_providers_off) to 0xFFF59E0B.toInt()
+                getString(R.string.gps_providers_off) to 0xFFFF6B35.toInt()
             LocationLogic.Status.SEARCHING ->
                 getString(R.string.gps_searching) to 0xFF38BDF8.toInt()
             LocationLogic.Status.FIXED -> {
@@ -89,7 +89,7 @@ class ObservatoryFragment : Fragment() {
                 } else {
                     getString(R.string.gps_stale_fmt, acc)
                 }
-                label to 0xFF10B981.toInt()
+                label to 0xFF2E9E5B.toInt()
             }
         }
         gpsChip?.text = text
@@ -118,7 +118,7 @@ class ObservatoryFragment : Fragment() {
         val ctx = context ?: return
 
         netChip?.text = if (snap.online) getString(R.string.net_online) else getString(R.string.net_offline)
-        netChip?.setTextColor(if (snap.online) 0xFF10B981.toInt() else 0xFFF87171.toInt())
+        netChip?.setTextColor(if (snap.online) 0xFF2E9E5B.toInt() else 0xFFE63A55.toInt())
         meshChip?.text = getString(R.string.mesh_state_fmt, meshLabel(snap.meshState), snap.meshPeers)
         meshChip?.setTextColor(if (snap.meshState == "connected") 0xFF22D3EE.toInt() else 0xFF94A3B8.toInt())
 
@@ -139,12 +139,15 @@ class ObservatoryFragment : Fragment() {
         )
         riskScoreText?.text = score.toString()
         // v2.1.0: band the number's color — a calm 6/100 must never scream red.
+        // v2.16.0: bands follow the brand book's 5-level fire danger scale
+        // (Low / Moderate / High / Very High / Extreme).
         riskScoreText?.setTextColor(
             when {
-                score < 25 -> 0xFF10B981.toInt()
-                score < 50 -> 0xFFF59E0B.toInt()
-                score < 75 -> 0xFFF97316.toInt()
-                else -> 0xFFEF4444.toInt()
+                score < 20 -> 0xFFC5D9BF.toInt() // 1 — Low (pale sage)
+                score < 40 -> 0xFF8DB63C.toInt() // 2 — Moderate (lime green)
+                score < 60 -> 0xFFFF6B35.toInt() // 3 — High (brand orange)
+                score < 80 -> 0xFFF04E1F.toInt() // 4 — Very High (burnt orange)
+                else -> 0xFFD21034.toInt()       // 5 — Extreme (brand red)
             }
         )
         riskLabelText?.text = RiskScore.labelAr(score)
@@ -185,8 +188,8 @@ class ObservatoryFragment : Fragment() {
                     )
                     banner?.setBackgroundColor(
                         when (level) {
-                            ProximityLogic.Level.CRITICAL -> 0x33EF4444
-                            ProximityLogic.Level.WARNING -> 0x33F59E0B
+                            ProximityLogic.Level.CRITICAL -> 0x33D21034
+                            ProximityLogic.Level.WARNING -> 0x33FF6B35
                             ProximityLogic.Level.WATCH -> 0x3338BDF8
                         }
                     )

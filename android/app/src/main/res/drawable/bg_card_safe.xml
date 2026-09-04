@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.16.0 safe card (verified / safe-zone surfaces): brand-green tinted
+     glass with brand-green/20 stroke. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:startColor="#33006233" android:endColor="#1A1B4332" android:angle="270" />
+    <corners android:radius="16dp" />
+    <stroke android:width="1dp" android:color="@color/border_green_soft" />
+</shape>
