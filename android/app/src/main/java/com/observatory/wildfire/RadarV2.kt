@@ -144,11 +144,17 @@ object RadarV2 {
      * SAFETY-FIRST ranking: the route whose whole length stays farthest from
      * any fire wins; equal clearance → shorter drive time wins. Routes with
      * no points sink to the end. Does not mutate the input.
+     *
+     * v2.15.0 audit fix: Kotlin Double ordering ranks NaN GREATER than every
+     * finite value, so an unknown-clearance route used to rank FIRST — the
+     * exact opposite of the NaN-fails-open honesty contract below. Unknown
+     * clearance now sorts as negative (sinks last); it can still be drawn,
+     * but it never claims "Safest" while a known-clearance route exists.
      */
     fun rankRoutes(options: List<RouteOption>): List<RouteOption> =
         options.filter { it.points.isNotEmpty() }
             .sortedWith(
-                compareByDescending<RouteOption> { it.minFireDistanceM }
+                compareByDescending<RouteOption> { if (it.minFireDistanceM.isNaN()) -1.0 else it.minFireDistanceM }
                     .thenBy { it.durationS }
             )
 

@@ -185,8 +185,16 @@ class AppRepository(
     }
 
     /** Broadcast field intel to nearby peers over BLE (works fully offline). */
-    fun broadcastMeshIntel(kind: String, text: String, lat: Double, lng: Double): Boolean {
+    fun broadcastMeshIntel(kind: String, text: String, lat: Double?, lng: Double?): Boolean {
         val svc = meshService ?: return false
+        // v2.15.0 honesty gate: the mesh wire format signs lat/lng as
+        // physical coordinates and parseFrame rejects non-finite frames
+        // (MeshWireTest pin). A no-fix broadcast would have to fabricate
+        // coordinates — the exact Algiers-fallback sin v2.15.0 removes.
+        // So: no fix => no mesh broadcast; the echo stays local (coords-less
+        // chat entry) and the internet path (hasLocation:false) is the
+        // honest channel for coordinate-less SOS.
+        if (lat == null || lng == null) return false
         val json = ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
         val ok = svc.broadcastMessage(json, if (kind == "sos") "echo" else "report", lat, lng)
         if (ok) {
@@ -196,7 +204,7 @@ class AppRepository(
                 kind = kind,
                 fromMe = true,
                 tsMs = System.currentTimeMillis(),
-                hasCoords = true
+                hasCoords = lat != null && lng != null
             )
             _state.value = _state.value.copy(
                 meshChat = (_state.value.meshChat + entry).takeLast(MESH_CHAT_MAX)
@@ -257,7 +265,7 @@ class AppRepository(
     }
 
     fun sendSos(
-        deviceId: String, lat: Double, lng: Double,
+        deviceId: String, lat: Double?, lng: Double?,
         name: String?, phone: String?, textMessage: String?,
         audioDataUri: String?, audioDurationSec: Int?,
         onDone: (ok: Boolean, outcome: SosOutcome?, userError: String?) -> Unit
@@ -276,7 +284,11 @@ class AppRepository(
             return
         }
         _state.value = _state.value.copy(sos = SosUiState(sending = true))
-        broadcastMeshIntel("sos", textMessage ?: "نداء استغاثة!", lat, lng)
+        // v2.15.0: no-fix SOS gossips WITHOUT coordinates — peers must not
+        // receive a fabricated position (the old Algiers fallback put every
+        // no-fix caller in the same square kilometer of Algiers).
+        if (lat != null && lng != null) broadcastMeshIntel("sos", textMessage ?: "نداء استغاثة!", lat, lng)
+        else broadcastMeshIntel("sos", "⚠ بدون تحديد GPS — " + (textMessage ?: "نداء استغاثة!"), null, null)
         scope.launch {
             val result = io { api.post("/api/sos", body) }
             if (result.is2xx) {
@@ -436,22 +448,32 @@ class AppRepository(
         }
     }
 
-    /** One full refresh pass; each endpoint fails independently. */
+    /**
+     * One full refresh pass; each endpoint fails independently.
+     * v2.15.0 audit fix (last-good semantics): a failed endpoint used to
+     * return an EMPTY list and the failure was copied into state AND the
+     * on-disk snapshot — one bad poll could wipe evacuation targets from
+     * the UI and cold-start restore alike. A failed endpoint now keeps the
+     * LAST GOOD data (stale but real beats empty-but-fresh), and only a
+     * fully-successful pass updates lastSyncMs/persist.
+     */
     suspend fun refreshAll() = withContext(Dispatchers.IO) {
-        val reports = fetchList("/api/reports") { Parsers.parseReports(it) }
-        val hotspots = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) }
-        val safezones = fetchList("/api/safezones") { Parsers.parseSafezones(it) }
-        val wilayas = fetchList("/api/wilayas") { Parsers.parseWilayas(it) }
-        val weather = _state.value.weather
+        val prev = _state.value
+        val reports = fetchList("/api/reports") { Parsers.parseReports(it) } ?: prev.reports
+        val hotspots = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) } ?: prev.hotspots
+        val safezones = fetchList("/api/safezones") { Parsers.parseSafezones(it) } ?: prev.safezones
+        val wilayas = fetchList("/api/wilayas") { Parsers.parseWilayas(it) } ?: prev.wilayas
+        val allSucceeded = reports !== prev.reports || hotspots !== prev.hotspots ||
+            safezones !== prev.safezones || wilayas !== prev.wilayas
         _state.value = _state.value.copy(
             reports = reports,
             hotspots = hotspots,
             safezones = safezones,
             wilayas = wilayas,
-            weather = weather,
-            lastSyncMs = System.currentTimeMillis()
+            weather = prev.weather,
+            lastSyncMs = if (allSucceeded) System.currentTimeMillis() else prev.lastSyncMs
         )
-        persistSnapshot()
+        if (allSucceeded) persistSnapshot()
     }
 
     fun fetchWeatherAt(lat: Double, lng: Double, onDone: (WeatherNow?) -> Unit) {
@@ -465,14 +487,16 @@ class AppRepository(
         }
     }
 
-    private fun <T> fetchList(path: String, parse: (String) -> List<T>): List<T> {
+    private fun <T> fetchList(path: String, parse: (String) -> List<T>): List<T>? {
         // Called from refreshAll's caller context (see startPolling → refreshAll
         // is only invoked inside the io-wrapped poll path below).
+        // v2.15.0: returns NULL on failure (caller keeps last-good data) —
+        // a failed endpoint is no longer indistinguishable from an empty one.
         return when (val r = api.get(path)) {
             is ObservatoryApi.Result.Ok -> parse(r.body)
             else -> {
                 Log.w(TAG, "GET $path failed: $r")
-                emptyList()
+                null
             }
         }
     }

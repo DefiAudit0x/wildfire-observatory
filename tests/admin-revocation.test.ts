@@ -107,6 +107,23 @@ describe("S-M1: admin token jti + revocation register", () => {
     expect(res.status).toBe(200);
   });
 
+  it("v2.15.0: a token SEEN REVOKED stays denied even when the register later goes down", async () => {
+    state.dbPresent = true;
+    const token = generateAdminToken("admin");
+    state.docGet.mockResolvedValueOnce(null); // first check: not revoked
+    await supertest(appWith()).get("/protected").set("Authorization", `Bearer ${token}`);
+    state.docGet.mockResolvedValueOnce({ revokedAt: new Date().toISOString(), exp: Date.now() + 3_600_000 });
+    await supertest(appWith())
+      .get("/protected")
+      .set("Authorization", `Bearer ${token}`)
+      .expect((res) => { if (res.status !== 401) throw new Error("expected revoked 401, got " + res.status); });
+    // Register outage AFTER the revocation was observed: last-known state
+    // governs — an outage can no longer resurrect a stolen session.
+    state.docGet.mockRejectedValue(new Error("register down"));
+    const res = await supertest(appWith()).get("/protected").set("Authorization", `Bearer ${token}`);
+    expect(res.status).toBe(401);
+  });
+
   it("revokeAdminSession persists a revocation entry carrying the token's exp", async () => {
     const token = generateAdminToken("admin");
     const decoded = jwt.decode(token) as any;

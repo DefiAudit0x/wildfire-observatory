@@ -468,10 +468,16 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     const res = await postSos(app).send(sosBody(cgid));
     expect(res.status).toBe(200);
     expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
-    expect(fsMock.docSet).toHaveBeenCalledWith(
-      "sosIdempotency",
-      cgid,
-      expect.objectContaining({ sosId: res.body.id }),
+    // v2.15.0: the replay key rides INSIDE the admission transaction (6th
+    // arg) — no separate best-effort docSet that could be skipped by a
+    // crash, leaving an admitted SOS without its dedupe key.
+    const admissionArgs = fsMock.createSosWithAdmission.mock.calls[0];
+    expect(admissionArgs[5]).toEqual(
+      expect.objectContaining({
+        collection: "sosIdempotency",
+        key: cgid,
+        record: expect.objectContaining({ sosId: res.body.id }),
+      }),
     );
   });
 
@@ -483,5 +489,62 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     expect(b.status).toBe(200);
     expect(a.body.id).not.toBe(b.body.id);
     expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("v2.15.0 — honest no-fix SOS + NaN hardening", () => {
+  it("accepts an SOS with NULL coordinates when the device has no GPS fix — no proximity math is fabricated", async () => {
+    const app = createApp();
+    const res = await postSos(app).send({
+      deviceId: uniqueDevice(),
+      lat: null,
+      lng: null,
+      hasLocation: false,
+      textMessage: "لا يوجد GPS — أرسل بدون موقع",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.hasLocation).toBe(false);
+    expect(res.body.lat).toBeNull();
+    expect(res.body.lng).toBeNull();
+    // No fake Algiers-derived priority/corroboration: unknown means unknown.
+    expect(res.body.priority).toBe("unknown");
+    expect(res.body.nearestFireDistanceKm).toBeNull();
+    expect(res.body.nearbyFireCorroborated).toBe(false);
+  });
+
+  it("still geofences SOS when coordinates ARE provided", async () => {
+    const app = createApp();
+    const res = await postSos(app).send({
+      deviceId: uniqueDevice(),
+      lat: 51.5,
+      lng: -0.12,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("monitoring coverage");
+  });
+
+  it("400s a non-numeric audioDuration instead of persisting NaN", async () => {
+    const app = createApp();
+    const res = await postSos(app).send({
+      deviceId: uniqueDevice(),
+      lat: 36.75,
+      lng: 7.6,
+      audioDuration: "NaN",
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain("audioDuration");
+  });
+
+  it("keeps the pinned numeric clamp: 999 seconds → ≤20", async () => {
+    const app = createApp();
+    const res = await postSos(app).send({
+      deviceId: uniqueDevice(),
+      lat: 36.75,
+      lng: 7.6,
+      audioDuration: 999,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.audioDuration).toBeLessThanOrEqual(20);
+    expect(res.body.audioDuration).toBeGreaterThanOrEqual(1);
   });
 });

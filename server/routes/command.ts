@@ -151,24 +151,32 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
           logger.warn({ badge: badgeCode, claimedDevice: deviceId, boundDevice }, "Heartbeat badge claim rejected: bound to another device");
           badgeBoundToDevice = true;
         } else if (deviceProven) {
-          finalName = match.ownerName;
-          finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
-          identityVerified = true;
           if (!boundDevice) {
             // First verified claim binds the badge to THIS device durably.
+            // v2.15.0 audit fix (fail-open): the bind write now happens BEFORE
+            // the identity is adopted — if persistence fails, this beat stays
+            // an unproven citizen (fail CLOSED) and the next beat retries the
+            // binding. Adopting a verified identity while the lock write is
+            // down left a window where any second device knowing the code
+            // could race the adopt and impersonate the staff identity.
             const persisted = await docUpdate("badgeCodes", badgeCode, {
               boundDeviceId: deviceId,
               boundAt: new Date().toISOString(),
             });
             if (persisted) {
               match.boundDeviceId = deviceId;
+              finalName = match.ownerName;
+              finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
+              identityVerified = true;
               logAdminAction("badge.device_bind", { badge: badgeCode, deviceId }, actorFromRequest(req)).catch(() => {});
             } else {
-              // Persistence down: adopt for this beat but do NOT lock the
-              // binding — an unbound adoption keeps the pre-S-H4 window open,
-              // so log it loudly instead of silently trusting it.
-              logger.warn({ badge: badgeCode }, "Badge device-bind persistence failed; identity adopted without lock");
+              logger.warn({ badge: badgeCode }, "Badge device-bind persistence failed — identity NOT adopted (fail closed)");
             }
+          } else {
+            // Binding already durable — normal verified beat.
+            finalName = match.ownerName;
+            finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
+            identityVerified = true;
           }
         } else {
           // Possession not proven YET: issue the signed cookie so the next

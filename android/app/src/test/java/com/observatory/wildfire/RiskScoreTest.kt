@@ -9,7 +9,7 @@ class RiskScoreTest {
     @Test
     fun `empty field is zero`() {
         assertEquals(0, RiskScore.score(emptyList(), 0))
-        assertEquals("لا خطر مرصود", RiskScore.labelAr(0))
+        assertEquals("لا توجد مؤشرات خطر حالية", RiskScore.labelAr(0))
     }
 
     @Test

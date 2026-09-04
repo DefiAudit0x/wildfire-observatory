@@ -295,12 +295,25 @@ object Parsers {
         val app = o.optString("app", "")
         val kind = o.optString("kind", "")
         if (app != "wlfire" || (kind != "report" && kind != "sos")) return@runCatching null
+        // v2.15.0 audit hardening (trust boundary): a mesh peer's intel is
+        // authenticated but NOT authoritative. Coordinates must be finite
+        // and physical or they are DROPPED to null (a NaN/out-of-range pair
+        // used to flow straight into map markers and proximity math), the
+        // display text is clamped against memory abuse (the 256KB wire
+        // ceiling is not a display budget), and the timestamp may not be
+        // future-fabricated beyond a 2-minute skew.
+        val rawLat = safeDouble(o, "lat")
+        val rawLng = safeDouble(o, "lng")
+        val lat = rawLat?.takeIf { it.isFinite() && it >= -90.0 && it <= 90.0 }
+        val lng = rawLng?.takeIf { it.isFinite() && it >= -180.0 && it <= 180.0 }
+        val ts = (if (o.has("t")) o.optLong("t", 0L) else 0L)
+            .coerceAtMost(System.currentTimeMillis() + 2 * 60_000L)
         MeshIntel(
             kind = kind,
-            text = o.optString("text", ""),
-            lat = safeDouble(o, "lat"),
-            lng = safeDouble(o, "lng"),
-            tsMs = if (o.has("t")) o.optLong("t", 0L) else 0L
+            text = o.optString("text", "").take(300),
+            lat = lat,
+            lng = lng,
+            tsMs = ts
         )
     }.getOrNull()
 }

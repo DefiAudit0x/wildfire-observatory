@@ -208,4 +208,22 @@ class RadarV2Test {
             RadarV2.aiCacheKey(null, null, "ar", 17123)
         )
     }
+
+    // v2.15.0: Kotlin Double ordering ranks NaN ABOVE every finite value —
+    // an unknown-clearance route used to win the "Safest" slot. It must sink.
+    @Test
+    fun rankRoutes_unknownClearanceNeverRanksFirst() {
+        val known = RadarV2.RouteOption(
+            points = listOf(36.8 to 7.6, 36.81 to 7.61),
+            distanceM = 1_000.0, durationS = 120.0, minFireDistanceM = 5_000.0,
+        )
+        val unknown = RadarV2.RouteOption(
+            points = listOf(36.8 to 7.6, 36.82 to 7.62),
+            distanceM = 1_100.0, durationS = 110.0, minFireDistanceM = Double.NaN,
+        )
+        val ranked = RadarV2.rankRoutes(listOf(unknown, known))
+        org.junit.Assert.assertSame(known, ranked.first())
+        org.junit.Assert.assertSame(unknown, ranked.last())
+        org.junit.Assert.assertSame(known, RadarV2.pickSafest(listOf(unknown, known)))
+    }
 }

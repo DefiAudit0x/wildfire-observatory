@@ -30,7 +30,7 @@ export async function confirmReportWithPrincipal(reportId: string, subject: stri
       if (!reportSnapshot.exists) return { status: "not_found" as const };
       if (confirmationSnapshot.exists) return { status: "already_voted" as const };
 
-      const data = reportSnapshot.data() as { consensusCount?: number; status?: string; voters?: unknown };
+      const data = reportSnapshot.data() as { consensusCount?: number; status?: string; voters?: unknown; communityConfirmed?: boolean };
       // Preserve legacy bounded history as a migration guard: a principal that
       // appears there must not regain a vote merely because it predates the
       // durable subcollection.
@@ -39,12 +39,18 @@ export async function confirmReportWithPrincipal(reportId: string, subject: stri
       }
 
       const consensusCount = (Number(data.consensusCount) || 0) + 1;
-      const statusValue = consensusCount >= 5 && (data.status || "pending") === "pending"
-        ? "verified"
-        : (data.status || "pending");
+      // v2.15.0 (audit fix — Sybil-resistant consensus): anonymous public
+      // principals can no longer flip a report to "verified" by count alone
+      // (five fresh cookies from one IP used to mint authority). Reaching the
+      // community threshold now records communityConfirmed — displayed as the
+      // distinct "مؤكد مجتمعياً" state — while VERIFIED stays reserved for the
+      // trusted paths: official/volunteer badge verification at creation and
+      // operator moderation.
+      const communityConfirmed = consensusCount >= 5 || data.communityConfirmed === true;
+      const statusValue = data.status || "pending";
 
       tx.create(confirmationRef, { subject, createdAt: Date.now() });
-      tx.update(reportRef, { consensusCount, status: statusValue });
+      tx.update(reportRef, { consensusCount, status: statusValue, communityConfirmed });
       return { status: "confirmed" as const, consensusCount, statusValue };
     });
     if (result.status === "confirmed") invalidateReportsCache();

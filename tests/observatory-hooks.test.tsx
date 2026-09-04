@@ -198,7 +198,7 @@ describe("observatory poll — dataset commits and failure isolation", () => {
 });
 
 describe("mesh sync — gossip admission and consensus protocol", () => {
-  it("admits a valid gossip report and dedupes by report id", async () => {
+  it("admits a valid gossip report and dedupes by report id — forced honest pending + mesh origin (v2.15.0)", async () => {
     installFetch(fullRouter());
     const { result } = await mount();
 
@@ -207,6 +207,12 @@ describe("mesh sync — gossip admission and consensus protocol", () => {
 
     emitMessage({ type: "report:new", report: validReport("rep-mesh"), ts: 2, lat: 36.7, lng: 5.05 });
     expect(result.current.reports.filter((r) => r.id === "rep-mesh")).toHaveLength(1);
+
+    // Mesh peers may gossip EXISTENCE, never trust: even a frame claiming
+    // verified/999 is admitted honestly as pending with a mesh origin mark.
+    const admitted = result.current.reports.find((r) => r.id === "rep-mesh") as unknown as Record<string, unknown>;
+    expect(admitted.status).toBe("pending");
+    expect(admitted.origin).toBe("mesh");
   });
 
   it("validates the report BEFORE recording the gossip hash (audit B10) and rejects garbage", async () => {
@@ -218,12 +224,18 @@ describe("mesh sync — gossip admission and consensus protocol", () => {
     expect(broadcastMessage).not.toHaveBeenCalled();
   });
 
-  it("applies consensus only for protocol-clean updates (integer count, real status)", async () => {
+  it("applies consensus ONLY from hub-authoritative confirms — node-relayed values ignored (v2.15.0)", async () => {
     installFetch(fullRouter());
     const { result } = await mount();
     await waitFor(() => expect(result.current.reports).toHaveLength(1));
     const id = result.current.reports[0].id;
 
+    // Node-relayed frame (carries `from`): attacker-controlled trust values
+    // must be ignored entirely — the next poll reconciles the truth.
+    emitMessage({ type: "report:confirm", id, status: "verified", consensusCount: 999999, from: "evil-node" });
+    expect(result.current.reports.find((r) => r.id === id)?.status).not.toBe("verified");
+
+    // Hub-authoritative frame (no `from`): a real ledger confirmation.
     emitMessage({ type: "report:confirm", id, status: "verified", consensusCount: 3 });
     await waitFor(() => {
       const updated = result.current.reports.find((r) => r.id === id);

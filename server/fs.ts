@@ -162,7 +162,8 @@ export async function createSosWithAdmission(
   sosData: Record<string, any>,
   admissionId: string,
   acceptedAt: number,
-  windowMs: number
+  windowMs: number,
+  idempotency?: { collection: string; key: string; record: Record<string, any> }
 ): Promise<SosAdmissionResult> {
   const db = getDb();
   if (!db) return "unavailable";
@@ -181,6 +182,14 @@ export async function createSosWithAdmission(
           expiresAt: acceptedAt + windowMs,
           sosId,
         });
+        // v2.15.0 audit fix: the replay key commits in the SAME transaction
+        // as the SOS. It used to be a separate non-atomic docSet AFTER
+        // admission — a process crash or ledger-write failure between the
+        // two left an admitted SOS with no replay key, so a client retry
+        // (after the 5-min device window) created a true duplicate.
+        if (idempotency) {
+          tx.set(db.collection(idempotency.collection).doc(idempotency.key), idempotency.record);
+        }
         return "created";
       });
       if (outcome === "created") {
@@ -206,6 +215,10 @@ export async function createSosWithAdmission(
         expiresAt: acceptedAt + windowMs,
         sosId,
       });
+      // v2.15.0: same transaction on the client-SDK branch.
+      if (idempotency) {
+        tx.set(doc(db, idempotency.collection, idempotency.key), idempotency.record);
+      }
       return "created";
     });
     if (outcome === "created") {
@@ -471,6 +484,69 @@ export async function docDeleteFields(
   } catch (err) {
     logger.error({ err, collectionName, id }, "Firestore field delete failed");
     return false;
+  }
+}
+
+export type TeamMemberRemovalResult =
+  | { status: "removed"; tokenGen: number }
+  | { status: "missing" }
+  | { status: "unavailable" };
+
+const MEMBER_GPS_FIELDS = ["lastKnownLat", "lastKnownLng", "lastSeenAt"];
+
+/**
+ * v2.15.0 audit fix — atomic member removal. The dispatcher's DELETE used to
+ * be three sequential writes (incrementDocField tokenGen bump → docUpdate
+ * active:false → docDeleteFields GPS purge) whose failures after the first
+ * step were IGNORED while the route still answered ok:true — a removed member
+ * could remain active:true with retained GPS residue and a misleading
+ * success. Now the generation bump, the deactivation, and the GPS purge are
+ ONE Firestore transaction on both SDK paths: a removed member can never be
+ observed as active:true-with-bumped-gen, and ANY failure is surfaced as a
+ 503 instead of a fake success. (The security-critical order is preserved by
+ construction: the token bump and the deactivation commit atomically.)
+ */
+export async function removeTeamMemberAtomically(memberId: string): Promise<TeamMemberRemovalResult> {
+  const db = getDb();
+  if (!db) return { status: "unavailable" };
+  try {
+    if (isAdminDb(db)) {
+      const { FieldValue } = await import("firebase-admin/firestore");
+      const outcome = await db.runTransaction(async (tx: any): Promise<TeamMemberRemovalResult> => {
+        const ref = db.collection("teamMembers").doc(memberId);
+        const snap = await tx.get(ref);
+        if (!snap.exists) return { status: "missing" };
+        const tokenGen = (Number(snap.data()?.tokenGen) || 0) + 1;
+        const update: Record<string, any> = { tokenGen, active: false, removedAt: Date.now() };
+        for (const f of MEMBER_GPS_FIELDS) update[f] = FieldValue.delete();
+        tx.update(ref, update);
+        return { status: "removed", tokenGen };
+      });
+      if (outcome.status === "removed") {
+        invalidateCollectionCache("teamMembers");
+        invalidateDocCache("teamMembers", memberId);
+      }
+      return outcome;
+    }
+    const { doc, runTransaction, deleteField } = await loadClientSdk();
+    const outcome = await runTransaction(db, async (tx: any): Promise<TeamMemberRemovalResult> => {
+      const ref = doc(db, "teamMembers", memberId);
+      const snap = await tx.get(ref);
+      if (!snap.exists()) return { status: "missing" };
+      const tokenGen = (Number(snap.data()?.tokenGen) || 0) + 1;
+      const update: Record<string, any> = { tokenGen, active: false, removedAt: Date.now() };
+      for (const f of MEMBER_GPS_FIELDS) update[f] = deleteField();
+      tx.update(ref, update);
+      return { status: "removed", tokenGen };
+    });
+    if (outcome.status === "removed") {
+      invalidateCollectionCache("teamMembers");
+      invalidateDocCache("teamMembers", memberId);
+    }
+    return outcome;
+  } catch (err) {
+    logger.error({ err, memberId }, "Atomic team-member removal transaction failed");
+    return { status: "unavailable" };
   }
 }
 

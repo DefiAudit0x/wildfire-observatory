@@ -158,6 +158,16 @@ export default function ReportsTable({ isArabic, reports, onChanged, notify }: R
                     <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${sevMeta.cls}`}>
                       {isArabic ? sevMeta.labelAr : sevMeta.labelFr}
                     </span>
+                    {/* v2.15.0: community confirmations are an honest distinct
+                        state — never displayed as official verification. */}
+                    {rep.status === "pending" && rep.communityConfirmed && (
+                      <span
+                        className="ml-1 text-[8px] font-black px-1.5 py-0.5 rounded border bg-teal-500/10 text-teal-400 border-teal-500/20"
+                        title={isArabic ? `أكّده ${rep.consensusCount} من المجتمع` : `Confirmé par ${rep.consensusCount} citoyens`}
+                      >
+                        {isArabic ? "مؤكد مجتمعياً" : "Confirmé"}
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-2">
                     <span className={`text-[8px] font-black px-1.5 py-0.5 rounded border ${sMeta.cls}`}>

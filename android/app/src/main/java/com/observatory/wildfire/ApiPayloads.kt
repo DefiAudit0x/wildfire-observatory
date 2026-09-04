@@ -104,8 +104,8 @@ object ApiPayloads {
      */
     fun buildSosJson(
         deviceId: String,
-        lat: Double,
-        lng: Double,
+        lat: Double?,
+        lng: Double?,
         name: String?,
         phone: String?,
         textMessage: String?,
@@ -114,8 +114,15 @@ object ApiPayloads {
         clientGeneratedId: String? = null
     ): Pair<String?, String?>? {
         if (deviceId.isBlank() || deviceId.length > 128) return null to "معرّف الجهاز غير صالح"
-        if (!lat.isFinite() || lat < -90.0 || lat > 90.0) return null to "إحداثيات غير صالحة"
-        if (!lng.isFinite() || lng < -180.0 || lng > 180.0) return null to "إحداثيات غير صالحة"
+        // v2.15.0 audit fix (no fake coordinates): a no-fix SOS now ships
+        // null coordinates + hasLocation:false instead of fabricated Algiers
+        // constants that silently drove the server's priority/corroboration
+        // math. Coords are validated only when actually present.
+        val hasLocation = lat != null && lng != null
+        if (hasLocation) {
+            if (!lat!!.isFinite() || lat < -90.0 || lat > 90.0) return null to "إحداثيات غير صالحة"
+            if (!lng!!.isFinite() || lng < -180.0 || lng > 180.0) return null to "إحداثيات غير صالحة"
+        }
         if (audioDataUri != null && audioDataUri.length > MAX_AUDIO_DATAURI_CHARS) {
             return null to "التسجيل الصوتي أكبر من الحد المسموح"
         }
@@ -124,8 +131,12 @@ object ApiPayloads {
         clientGeneratedId?.let {
             sb.append(",\"clientGeneratedId\":\"").append(jsonEscape(it)).append('"')
         }
-        sb.append(",\"lat\":").append(jsonNum(lat))
-        sb.append(",\"lng\":").append(jsonNum(lng))
+        if (hasLocation) {
+            sb.append(",\"lat\":").append(jsonNum(lat!!))
+            sb.append(",\"lng\":").append(jsonNum(lng!!))
+        } else {
+            sb.append(",\"lat\":null,\"lng\":null,\"hasLocation\":false")
+        }
         name?.trim()?.takeIf { it.isNotEmpty() }?.let {
             sb.append(",\"name\":\"").append(jsonEscape(it.take(120))).append('"')
         }
@@ -206,8 +217,12 @@ object ApiPayloads {
         "https://api.open-meteo.com/v1/forecast?latitude=${fmt(lat)}&longitude=${fmtLng(lng)}" +
             "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m"
 
-    private fun fmt(d: Double): String = String.format("%.6f", d)
-    private fun fmtLng(d: Double): String = String.format("%.6f", d)
+    // v2.15.0 audit fix: without an explicit Locale, an ar-DZ device
+    // formatted coordinates with Arabic-Indic digits / a comma decimal
+    // separator — silently corrupting every OSRM/Nominatim/Open-Meteo URL
+    // AND the AI guidance JSON body. Locale.US pins the wire contract.
+    private fun fmt(d: Double): String = String.format(java.util.Locale.US, "%.6f", d)
+    private fun fmtLng(d: Double): String = String.format(java.util.Locale.US, "%.6f", d)
 
     /**
      * Mesh plaintext envelope for offline field intel. Native-to-native the

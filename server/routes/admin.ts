@@ -12,6 +12,7 @@ import {
   getReportPrivate,
 } from "../db.js";
 import { createNotification } from "./notifications.js";
+import { sendFireAlert } from "../email.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
 import { liveHub } from "../live.js";
 import logger from "../logger.js";
@@ -197,6 +198,31 @@ router.post("/reports/:id/update-status", requireAdmin, adminActionLimiter, asyn
       notificationDeviceId = typeof priv?.deviceId === "string" ? priv.deviceId : undefined;
     }
     await buildStatusNotification({ ...(report || updateData), deviceId: notificationDeviceId }, status);
+    // v2.15.0 audit fix (alert pipeline): the operator's verify action is the
+    // alert trigger for the moderation path — severity is client-chosen at
+    // submission, so only a trusted verification (badge at creation or
+    // operator moderation) may fan out email alerts to subscribers.
+    const effectiveSeverity = severity ?? report?.severity;
+    if (
+      status === "verified" &&
+      (effectiveSeverity === "critical" || effectiveSeverity === "high")
+    ) {
+      sendFireAlert({
+        ...(report ?? {}),
+        id,
+        severity: effectiveSeverity,
+        status: "verified",
+        locationName: report?.locationName ?? "",
+        wilaya: report?.wilaya ?? "",
+        description: report?.description ?? "",
+        lat: report?.lat ?? 0,
+        lng: report?.lng ?? 0,
+        timestamp: report?.timestamp ?? new Date().toISOString(),
+        reporterType: report?.reporterType ?? "official",
+      } as any).catch((err) =>
+        logger.error({ err, id }, "Failed to send fire alert email after operator verification")
+      );
+    }
     logAdminAction("report.update-status", { id, status, severity }, actorFromRequest(req)).catch(() => {});
     liveHub.broadcast("report:update", { id, status, severity });
     res.json({ success: true });

@@ -81,14 +81,21 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
       res.status(404).json({ error: "Safe zone not found" });
       return;
     }
-    const zone = { ...existing, id, ...parsed.data, createdAt: existing.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
-    if (!(await docSet("safeZones", id, zone))) {
+    // v2.15.0 audit fix (lost update): the update used to spread the
+    // possibly-stale cached `existing` over the WHOLE document and write it
+    // back with docSet — a second admin instance (or any writer) committing
+    // inside the 60s zone cache TTL (plus the 30s collection cache) had its
+    // fields silently reverted. The write is now a MERGE of only the fields
+    // this request owns (docUpdate), so concurrent writers compose instead
+    // of overwrite; the merged result is recomputed for the response.
+    const merged = { ...existing, ...parsed.data, id, createdAt: existing.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (!(await docUpdate("safeZones", id, { ...parsed.data, updatedAt: merged.updatedAt }))) {
       res.status(503).json({ error: "Safe-zone data is currently unavailable" });
       return;
     }
     cachedZones = null;
     liveHub.broadcast("safezones:changed", { id });
-    res.json(zone);
+    res.json(merged);
   } catch (err) {
     logger.error({ err, id }, "Safe zone update failed");
     res.status(503).json({ error: "Safe-zone data is currently unavailable" });

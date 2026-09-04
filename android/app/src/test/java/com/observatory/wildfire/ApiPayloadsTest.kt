@@ -168,4 +168,51 @@ class ApiPayloadsTest {
             // expected
         }
     }
+
+    // v2.15.0: coordinates must format identically under ANY default locale —
+    // an ar-DZ device used to emit Arabic-Indic digits/comma decimals into
+    // OSRM/Nominatim/Open-Meteo URLs and the AI guidance JSON body.
+    @Test
+    fun urlBuilders_areLocaleInvariant() {
+        val original = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("ar", "DZ"))
+            val url = ApiPayloads.buildOpenMeteoUrl(36.7538, 3.0588)
+            org.junit.Assert.assertTrue(url, url.contains("latitude=36.753800"))
+            org.junit.Assert.assertTrue(url, url.contains("longitude=3.058800"))
+            // ASCII commas are LEGAL in the URL (current=temperature_2m,relative_humidity_2m,…).
+            // The locale-corruption signature is Arabic-Indic digits (٠-٩)
+            // and the Arabic decimal separator (٫) — pin against THOSE.
+            org.junit.Assert.assertFalse(url, url.any { it in '٠'..'٩' || it == '٫' })
+            val osrm = ApiPayloads.buildOsrmUrl(36.7538, 3.0588, 36.9, 7.6)
+            org.junit.Assert.assertFalse(osrm, osrm.contains(",3.") && osrm.contains("36,"))
+        } finally {
+            java.util.Locale.setDefault(original)
+        }
+    }
+
+    // v2.15.0: a no-fix SOS ships null coordinates + hasLocation:false —
+    // the fabricated Algiers fallback is gone end-to-end.
+    @Test
+    fun buildSosJson_emitsHonestNullCoordsWhenNoFix() {
+        val pair = ApiPayloads.buildSosJson(
+            "device-ok", null, null,
+            name = null, phone = null,
+            textMessage = "بدون GPS", audioDataUri = null, audioDurationSec = null,
+        )
+        val body = pair?.first!!
+        org.junit.Assert.assertTrue(body, body.contains("\"lat\":null"))
+        org.junit.Assert.assertTrue(body, body.contains("\"lng\":null"))
+        org.junit.Assert.assertTrue(body, body.contains("\"hasLocation\":false"))
+    }
+
+    @Test
+    fun buildSosJson_stillValidatesPresentCoordinates() {
+        val bad = ApiPayloads.buildSosJson(
+            "device-ok", 95.0, 3.0,
+            name = null, phone = null,
+            textMessage = null, audioDataUri = null, audioDurationSec = null,
+        )
+        org.junit.Assert.assertNull(bad?.first)
+    }
 }

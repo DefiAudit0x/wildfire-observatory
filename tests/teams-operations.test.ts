@@ -28,6 +28,7 @@ const fsMock = vi.hoisted(() => ({
   docDelete: vi.fn(async (..._a: any[]) => true as any),
   docDeleteFields: vi.fn(async (..._a: any[]) => true as any),
   incrementDocField: vi.fn(async (..._a: any[]) => true as any),
+  removeTeamMemberAtomically: vi.fn(async (..._a: any[]) => ({ status: "removed", tokenGen: 1 }) as any),
   invalidateCollectionCache: vi.fn(),
   invalidateDocCache: vi.fn(),
 }));
@@ -81,6 +82,7 @@ beforeEach(() => {
   fsMock.docDelete.mockReset().mockResolvedValue(true);
   fsMock.docDeleteFields.mockReset().mockResolvedValue(true);
   fsMock.incrementDocField.mockReset().mockResolvedValue(true);
+  fsMock.removeTeamMemberAtomically.mockReset().mockResolvedValue({ status: "removed", tokenGen: 1 } as any);
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
   atomicMock.clearTeamMissionAtomically.mockReset().mockResolvedValue({ status: "cleared", mission: {} });
   atomicMock.setPrincipalBlocked.mockReset().mockResolvedValue("blocked");
@@ -442,15 +444,22 @@ describe("DELETE /api/teams/:id/members/:memberId — dispatcher removes a membe
 
     const ok = await supertest(app).delete(`/api/teams/team-a1/members/${memberId}`).set(adminAuth()).set(nextIp());
     expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ ok: true, tokenRevoked: true, gpsPurged: true });
     expect(listPositions()).toHaveLength(0);
-    expect(fsMock.docUpdate).toHaveBeenCalledWith("teamMembers", memberId, expect.objectContaining({ active: false }));
-    // B1: the generation bump — every token of this member dies at the gates.
-    expect(fsMock.incrementDocField).toHaveBeenCalledWith("teamMembers", memberId, "tokenGen", 1);
-    // B2 (owner decision 4): last-known GPS is purged from the member doc.
-    expect(fsMock.docDeleteFields).toHaveBeenCalledWith("teamMembers", memberId, ["lastKnownLat", "lastKnownLng", "lastSeenAt"]);
+    // v2.15.0: bump + deactivation + GPS purge are ONE atomic transaction —
+    // the old three-write sequence with ignored partial failures is gone.
+    expect(fsMock.removeTeamMemberAtomically).toHaveBeenCalledWith(memberId);
+    expect(fsMock.incrementDocField).not.toHaveBeenCalledWith("teamMembers", memberId, "tokenGen", 1);
+
+    // v2.15.0: a transaction failure is an honest 503 — never ok:true.
+    fsMock.removeTeamMemberAtomically.mockResolvedValueOnce({ status: "unavailable" } as any);
+    const fail = await supertest(app).delete(`/api/teams/team-a1/members/${memberId}`).set(adminAuth()).set(nextIp());
+    expect(fail.status).toBe(503);
+    expect(fail.body.code).toBe("TEAMS_STORAGE_UNAVAILABLE");
 
     // B2: blockPrincipal:true also bars the device from re-joining via code.
     atomicMock.setPrincipalBlocked.mockClear();
+    fsMock.removeTeamMemberAtomically.mockResolvedValue({ status: "removed", tokenGen: 2 } as any);
     fsMock.docGet.mockImplementation(async (collection: string) => {
       if (collection === "teamMembers") return { ...memberFixture(memberId), principal: "principal-abc123" };
       return null;

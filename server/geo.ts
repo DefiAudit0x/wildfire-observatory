@@ -36,9 +36,22 @@ export function getHaversineDistance(lat1: number, lng1: number, lat2: number, l
 }
 
 export function determineWilayaByCoords(lat: number, lng: number): string {
-  // 1) Exact match against known bounds (most precise)
-  const matched = WILAYA_BOUNDS.find((b) => pointInBounds(lat, lng, b));
-  if (matched) return matched.name;
+  // 1) Exact match against known bounds. v2.15.0 audit fix: the rectangles
+  // genuinely OVERLAP (e.g. Annaba ∩ Skikda on lat 36.7-37.0 / lng 7.4-7.5),
+  // and `find()` returned whichever came first in array order — a
+  // deterministic-but-wrong attribution. When several wilayas contain the
+  // point, the SMALLEST containing rectangle wins (most specific match): a
+  // documented, stable rule that removes the arbitrary array-order bias
+  // until polygon data replaces the rectangles.
+  const containing = WILAYA_BOUNDS.filter((b) => pointInBounds(lat, lng, b));
+  if (containing.length > 0) {
+    const smallest = containing.reduce((best, b) => {
+      const area = (b.maxLat - b.minLat) * (b.maxLng - b.minLng);
+      const bestArea = (best.maxLat - best.minLat) * (best.maxLng - best.minLng);
+      return area < bestArea ? b : best;
+    });
+    return smallest.name;
+  }
 
   // 2) Country-level fallback heuristic
   if (lng < -1.0 && lat > 27.0 && lat < 36.5) return "المغرب - منطقة أخرى (Maroc - Autre)";

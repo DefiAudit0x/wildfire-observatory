@@ -14,9 +14,13 @@ import { buildLocalPendingReport } from "./observatoryPendingReport";
  * stripped. Coordinates that are not finite points inside physical bounds are
  * NEVER forwarded silently — a silent (0,0) mesh report would poison the map
  * on every peer.
+ * v2.15.0 (audit — device first-claim): deviceId is REMOVED from the gossip
+ * allow-list. Mesh peers are authenticated strangers, not trusted holders of
+ * identity handles; leaking the id over the air was the one realistic
+ * channel for racing a victim's notification-device binding.
  */
 const MESH_REPORT_FIELDS = [
-  "id", "clientGeneratedId", "deviceId", "lat", "lng", "locationName", "wilaya",
+  "id", "clientGeneratedId", "lat", "lng", "locationName", "wilaya",
   "description", "severity", "status", "timestamp", "consensusCount",
 ] as const;
 

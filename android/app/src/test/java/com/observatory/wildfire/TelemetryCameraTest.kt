@@ -273,4 +273,18 @@ class TelemetryCameraTest {
         val lines = TelemetryCamera.alignmentStampLines(alignment)
         assertEquals(35, lines[1].removePrefix("LOCATION: ").length)
     }
+
+    // v2.15.0: negative headings normalized — the old %-arithmetic indexed
+    // dirs[-1] (ArrayIndexOutOfBoundsException) on the capture path.
+    @Test
+    fun bearingDirectionAr_normalizesNegativeAngles() {
+        assertEquals(TelemetryCamera.bearingDirectionAr(330.0), TelemetryCamera.bearingDirectionAr(-30.0))
+        assertEquals(TelemetryCamera.bearingDirectionAr(0.0), TelemetryCamera.bearingDirectionAr(-360.0))
+        assertEquals(TelemetryCamera.bearingDirectionAr(45.0), TelemetryCamera.bearingDirectionAr(-315.0))
+        var angle = -360.0
+        while (angle <= 360.0) {
+            TelemetryCamera.bearingDirectionAr(angle) // must never throw
+            angle += 7.5
+        }
+    }
 }

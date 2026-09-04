@@ -50,8 +50,28 @@ export function useMeshSync(
           message.lng,
         ]);
         if (!checkAndRecordMessageHash(gossipId)) return;
-        admitMeshReport(report);
+        // v2.15.0 mesh-authenticity fix: a mesh peer may gossip a report's
+        // EXISTENCE, never its trust level. Whatever the frame claims, a
+        // mesh-admitted report is displayed honestly as PENDING with an
+        // explicit mesh-origin marker until the HTTP API says otherwise.
+        // (The hub already strips status/consensusCount server-side; this
+        // client-side clamp keeps older hubs honest too.)
+        const meshReport = {
+          ...(report as unknown as Record<string, unknown>),
+          status: "pending",
+          origin: "mesh",
+        } as unknown;
+        admitMeshReport(meshReport);
       } else if (message.type === "report:confirm") {
+        // v2.15.0 mesh-authenticity fix: node-RELAYED confirm frames (which
+        // carry a `from` nodeId) contain NO trust data anymore — the hub
+        // strips consensusCount/status before rebroadcasting, because a
+        // mesh peer must never vouch for verification. They act purely as a
+        // refetch hint; the next HTTP poll reconciles the truth.
+        // The hub's OWN ledger broadcast (a real server-side confirmation,
+        // no `from` field) remains trustworthy and is applied as before.
+        const hubAuthoritative = message.from === undefined;
+        if (!hubAuthoritative) return;
         const id = String(message.id);
         const rawStatus = message.status;
         const consensusCount = Number(message.consensusCount);

@@ -108,6 +108,15 @@ export async function createNotification(notif: { deviceId: string; titleAr: str
   return newNotif;
 }
 
+// v2.15.0: enrollment limiter — the binding endpoint is identity-adjacent,
+// so it gets the same conservative shape as the other identity surfaces.
+const enrollLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const verifyLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 10,
@@ -178,17 +187,41 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
   const deviceId = str(req.params.deviceId);
   // M2 fix: ownership is a server-signed cookie, not a first-come plain one.
   // A valid signed cookie for the claimed device reads it; a signed cookie
-  // for a DIFFERENT device is an IDOR probe — refuse; no cookie binds now.
+  // for a DIFFERENT device is an IDOR probe — refuse.
+  // v2.15.0 audit fix (device first-claim): this endpoint no longer ISSUES a
+  // binding for whatever id the URL claims — identity is never read from a
+  // URL. Enrollment is explicit: POST /enroll (below) binds this browser;
+  // then this GET serves the bound device only.
   if (!ownsDevice(req, deviceId)) {
     const bound = (req as any).cookies?.["device_sig"];
     if (bound) {
-      res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device." });
-      return;
+      res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device.", code: "DEVICE_MISMATCH" });
+    } else {
+      res.status(401).json({ error: "Device enrollment required", code: "DEVICE_ENROLLMENT_REQUIRED" });
     }
-    issueDeviceCookie(res, deviceId);
+    return;
   }
   const notifs = await getNotificationsFromDb(deviceId);
   res.json(notifs);
+});
+
+// v2.15.0: explicit enrollment. The signed binding cookie is issued ONLY
+// here (and in the command-staff bootstrap) — never implicitly from a GET
+// that echoes a client-claimed id. Rate-limited like the other identity
+// surfaces so it cannot be used as a binding-refresh oracle at scale.
+router.post("/enroll", enrollLimiter, async (req: Request, res: Response) => {
+  const parsed = z.object({ deviceId: z.string().min(8).max(128).regex(/^web_[A-Za-z0-9_-]+$/) }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid deviceId" });
+    return;
+  }
+  const bound = boundDeviceId(req);
+  if (bound && bound !== parsed.data.deviceId) {
+    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device.", code: "DEVICE_MISMATCH" });
+    return;
+  }
+  issueDeviceCookie(res, parsed.data.deviceId);
+  res.json({ ok: true, deviceId: parsed.data.deviceId });
 });
 
 router.post("/:id/read", async (req: Request, res: Response) => {

@@ -133,12 +133,30 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     // All five endpoint requests issue in PARALLEL: the poll waits for the
     // slowest response, not the sum of the five. The schema validation lives
     // per-source inside commit and still gates each commit independently.
+    // v2.15.0: notifications require an explicit device enrollment — a 401
+    // (DEVICE_ENROLLMENT_REQUIRED) enrolls this browser once, then the read
+    // retries. Identity is never bound implicitly from a GET URL anymore.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
       commit("reports", fetchWithTimeout("/api/reports", cycleController.signal)),
       commit("satellites", fetchWithTimeout("/api/satellite-data", cycleController.signal)),
       commit("wilayas", fetchWithTimeout("/api/wilayas", cycleController.signal)),
       commit("sos", fetchWithTimeout("/api/sos", cycleController.signal)),
-      commit("notifications", fetchWithTimeout(`/api/notifications/${deviceId}`, cycleController.signal)),
+      commit(
+        "notifications",
+        (async () => {
+          const url = `/api/notifications/${deviceId}`;
+          let res = await fetchWithTimeout(url, cycleController.signal);
+          if (res.status === 401) {
+            await fetchWithTimeout("/api/notifications/enroll", cycleController.signal, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ deviceId }),
+            });
+            res = await fetchWithTimeout(url, cycleController.signal);
+          }
+          return res;
+        })(),
+      ),
     ]);
 
     const outcomes: Record<DatasetKey, DatasetAttempt> = {
