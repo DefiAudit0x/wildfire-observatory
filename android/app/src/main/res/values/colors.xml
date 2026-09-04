@@ -100,4 +100,12 @@
          (bg-black/60 approximated over the M3 base #0B1220). -->
     <color name="border_red_soft">#4DEF4444</color>
     <color name="glass_fill">#990B1220</color>
+
+    <!-- ── v0 brand-palette tokens consumed by merged main-side files ──
+         nav_item_color.xml (accent_green_bright) and bg_card_safe.xml
+         (border_green_soft) arrive from main v2.17.0 and keep their
+         official brand-book values. -->
+    <color name="accent_green_bright">#2E9E5B</color>
+    <color name="border_green_soft">#33006233</color>
+    <color name="border_glass">#1AFFFFFF</color>
 </resources>

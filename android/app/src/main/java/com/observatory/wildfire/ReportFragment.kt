@@ -140,15 +140,15 @@ class ReportFragment : Fragment() {
 
     private fun setSeverity(key: String) {
         severity = key
-        val activeColor = 0xFFEF4444.toInt()
+        val activeColor = 0xFFD21034.toInt()
         val idleColor = 0xFF94A3B8.toInt()
         for ((k, btn) in severityButtons) {
             btn.alpha = if (k == key) 1f else 0.45f
             when (k) {
-                "low" -> (btn as? TextView)?.setTextColor(if (k == key) 0xFF10B981.toInt() else idleColor)
+                "low" -> (btn as? TextView)?.setTextColor(if (k == key) 0xFF2E9E5B.toInt() else idleColor)
                 "critical" -> (btn as? TextView)?.setTextColor(if (k == key) activeColor else idleColor)
-                "high" -> (btn as? TextView)?.setTextColor(if (k == key) 0xFFF97316.toInt() else idleColor)
-                else -> (btn as? TextView)?.setTextColor(if (k == key) 0xFFF59E0B.toInt() else idleColor)
+                "high" -> (btn as? TextView)?.setTextColor(if (k == key) 0xFFF04E1F.toInt() else idleColor)
+                else -> (btn as? TextView)?.setTextColor(if (k == key) 0xFFFF6B35.toInt() else idleColor)
             }
         }
     }
