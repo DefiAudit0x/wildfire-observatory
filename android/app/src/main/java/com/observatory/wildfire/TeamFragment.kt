@@ -169,7 +169,7 @@ class TeamFragment : Fragment() {
                 )
                 setTextColor(
                     if (entry.fromMe) 0xFF7DD3FC.toInt()
-                    else if (entry.kind == "sos") 0xFFFCA5A5.toInt()
+                    else if (entry.kind == "sos") 0xFFF28B9B.toInt()
                     else 0xFFCBD5E1.toInt()
                 )
                 textSize = 13f

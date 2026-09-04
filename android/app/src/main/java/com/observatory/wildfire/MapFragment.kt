@@ -297,8 +297,8 @@ class MapFragment : Fragment() {
         }
         conePolygon = Polygon(mv).apply {
             points = pts.map { GeoPoint(it.first, it.second) }
-            fillPaint.color = 0x47F97316.toInt() // orange-500 at ~28% (web sector tint)
-            outlinePaint.color = 0x66F97316.toInt()
+            fillPaint.color = 0x47FF6B35.toInt() // orange-500 at ~28% (web sector tint)
+            outlinePaint.color = 0x66FF6B35.toInt()
             outlinePaint.strokeWidth = 1.5f
         }
         mv.overlays.add(conePolygon)
@@ -628,7 +628,7 @@ class MapFragment : Fragment() {
         routeLine?.let { mv.overlays.remove(it) }
         val line = Polyline(mv).apply {
             setPoints(opt.points.map { GeoPoint(it.first, it.second) })
-            outlinePaint.color = if (opt.crossesFire) 0xFFEF4444.toInt() else 0xFF10B981.toInt()
+            outlinePaint.color = if (opt.crossesFire) 0xFFD21034.toInt() else 0xFF2E9E5B.toInt()
             outlinePaint.strokeWidth = 12f
         }
         routeLine = line
