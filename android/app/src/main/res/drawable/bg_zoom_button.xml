@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v2.8.0 map control: bg-black/80 glass, readable over any tiles -->
+<!-- v2.16.0 map control: forest black/80 glass, readable over any tiles -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <solid android:color="#CC0A0505" />
+    <solid android:color="#CC070B09" />
     <corners android:radius="12dp" />
     <stroke android:width="1dp" android:color="@color/border_glass" />
 </shape>

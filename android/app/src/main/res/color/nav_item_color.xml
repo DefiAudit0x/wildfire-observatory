@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- v2.16.0 brand: active tab = brand green (identity), idle = muted. -->
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:color="@color/accent_red" android:state_checked="true" />
+    <item android:color="@color/accent_green_bright" android:state_checked="true" />
     <item android:color="@color/text_muted" />
 </selector>
