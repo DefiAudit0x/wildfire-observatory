@@ -117,11 +117,18 @@ class ObservatoryApi(private val baseUrl: String) {
      * identity for the OBSERVATORY server. It must never ride a request to
      * a third-party host (OSRM/Open-Meteo do not need it; a future bug that
      * routed an absolute URL off-base must not leak it). Pure; tested.
+     *
+     * Relative paths are same-origin BY CONSTRUCTION (resolveTarget prefixes
+     * the base) — allowed. Absolute URLs: allowed only when the parsed host
+     * equals the base host; an unparsable absolute URL is refused.
      */
     fun sendsPrincipalCookie(target: String): Boolean {
-        val host = hostOf(target) ?: return false
-        val base = hostOf(baseUrl)
-        return !base.isNullOrEmpty() && host == base
+        val base = hostOf(baseUrl) ?: return false
+        if (target.startsWith("http://") || target.startsWith("https://")) {
+            val host = hostOf(target) ?: return false
+            return host == base
+        }
+        return true
     }
 
     private fun hostOf(url: String): String? = try {

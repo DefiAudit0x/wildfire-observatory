@@ -68,11 +68,26 @@ class OfflineQueueTest {
     fun `poisoned entry dropped after max attempts`() {
         val q = OfflineQueue<String>()
         q.enqueue("k", "bad")
-        repeat(OfflineQueue.MAX_ATTEMPTS) {
-            q.reserveDue(10, nowMs = 0)
-            q.commit(nowMs = 0, deliveredKeys = emptySet())
+        // v2.16.0: the backoff gate is REAL — each retry round must advance
+        // the clock past the previous deadline (the drain loop does exactly
+        // this in production; a flat nowMs would prove nothing).
+        repeat(OfflineQueue.MAX_ATTEMPTS) { round ->
+            val now = round * OfflineQueue.BACKOFF_MAX_MS
+            q.reserveDue(10, nowMs = now)
+            q.commit(nowMs = now, deliveredKeys = emptySet())
         }
         assertEquals(0, q.size())
+    }
+
+    @Test
+    fun `backoff keeps a failing entry unreserved before its deadline`() {
+        val q = OfflineQueue<String>()
+        q.enqueue("k", "bad")
+        q.reserveDue(10, nowMs = 0)
+        q.commit(nowMs = 0, deliveredKeys = emptySet()) // attempts=1, due at +30s
+        // Same-clock retries (the old drain behavior) must NOT happen now.
+        assertTrue(q.reserveDue(10, nowMs = 0).isEmpty())
+        assertEquals(1, q.size())
     }
 
     @Test
