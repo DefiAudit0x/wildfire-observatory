@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    fragment_sos.xml — v3.0 Professional UI
+    High-urgency emergency SOS screen.
+    Preserves all existing View IDs for SosFragment.kt.
+-->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg">
 
-    <ScrollView
+    <androidx.core.widget.NestedScrollView
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:fillViewport="true"
@@ -14,111 +20,203 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical"
-            android:padding="14dp">
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="28dp">
 
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/sos_title"
-                android:textColor="@color/accent_red"
-                android:textSize="18sp"
-                android:textStyle="bold" />
-
-            <EditText
-                android:id="@+id/sos_name"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:background="@drawable/bg_input"
-                android:hint="@string/sos_name_hint"
-                android:inputType="textPersonName"
-                android:maxLines="1"
-                android:padding="13dp"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_muted" />
-
-            <EditText
-                android:id="@+id/sos_phone"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/bg_input"
-                android:hint="@string/sos_phone_hint"
-                android:inputType="phone"
-                android:maxLines="1"
-                android:padding="13dp"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_muted" />
-
-            <TextView
-                android:id="@+id/sos_location"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="@string/sos_location_label"
-                android:textColor="@color/accent_cyan"
-                android:textSize="12sp" />
-
-            <EditText
-                android:id="@+id/sos_message"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:background="@drawable/bg_input"
-                android:hint="@string/sos_message_hint"
-                android:inputType="text"
-                android:maxLines="2"
-                android:padding="13dp"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_muted" />
-
+            <!-- Screen Header -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:orientation="horizontal">
+                android:layout_marginBottom="12dp">
 
                 <TextView
-                    android:id="@+id/sos_record"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:background="@drawable/bg_button_ghost"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="14dp"
-                    android:paddingTop="10dp"
-                    android:paddingBottom="10dp"
-                    android:text="@string/sos_record"
-                    android:textColor="@color/accent_amber"
-                    android:textSize="13sp"
-                    android:textStyle="bold" />
+                    android:text="🆘"
+                    android:textSize="22sp"
+                    android:layout_marginEnd="8dp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="@string/sos_title"
+                        android:textColor="@color/accent_red"
+                        android:textSize="18sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="إرسال إشارة استغاثة لفرق الإنقاذ والمحيطين"
+                        android:textColor="@color/text_muted"
+                        android:textSize="11sp" />
+                </LinearLayout>
             </LinearLayout>
 
-            <TextView
-                android:id="@+id/sos_record_state"
+            <!-- Location Status Card -->
+            <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:textColor="@color/text_muted"
-                android:textSize="12sp" />
+                android:layout_marginBottom="12dp"
+                app:cardBackgroundColor="@color/surface"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/border"
+                app:strokeWidth="1dp">
 
-            <!-- THE button -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="horizontal"
+                    android:gravity="center_vertical"
+                    android:padding="12dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="📍"
+                        android:textSize="16sp"
+                        android:layout_marginEnd="8dp" />
+
+                    <TextView
+                        android:id="@+id/sos_location"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/sos_location_label"
+                        android:textColor="@color/accent_cyan"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- Sender Identity & Info Card -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="14dp"
+                app:cardBackgroundColor="@color/surface"
+                app:cardCornerRadius="16dp"
+                app:cardElevation="0dp"
+                app:strokeColor="@color/border"
+                app:strokeWidth="1dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="بيانات المستغيث"
+                        android:textColor="@color/text_muted"
+                        android:textSize="11sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp" />
+
+                    <EditText
+                        android:id="@+id/sos_name"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:background="@drawable/bg_input"
+                        android:hint="@string/sos_name_hint"
+                        android:inputType="textPersonName"
+                        android:maxLines="1"
+                        android:padding="13dp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_hint"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/sos_phone"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_input"
+                        android:hint="@string/sos_phone_hint"
+                        android:inputType="phone"
+                        android:maxLines="1"
+                        android:padding="13dp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_hint"
+                        android:textSize="14sp" />
+
+                    <EditText
+                        android:id="@+id/sos_message"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_input"
+                        android:hint="@string/sos_message_hint"
+                        android:inputType="text"
+                        android:maxLines="2"
+                        android:padding="13dp"
+                        android:textColor="@color/text_primary"
+                        android:textColorHint="@color/text_hint"
+                        android:textSize="14sp" />
+
+                    <!-- Voice Note Action Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <TextView
+                            android:id="@+id/sos_record"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:background="@drawable/bg_button_ghost"
+                            android:paddingStart="14dp"
+                            android:paddingEnd="14dp"
+                            android:paddingTop="10dp"
+                            android:paddingBottom="10dp"
+                            android:text="@string/sos_record"
+                            android:textColor="@color/accent_amber"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <TextView
+                        android:id="@+id/sos_record_state"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="6dp"
+                        android:textColor="@color/text_muted"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
+            <!-- THE BIG SOS BUTTON -->
             <TextView
                 android:id="@+id/sos_button"
                 android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:layout_marginTop="16dp"
+                android:layout_height="124dp"
                 android:background="@drawable/bg_sos_button"
                 android:gravity="center"
                 android:text="@string/sos_button_label"
-                android:textColor="@color/text_primary"
-                android:textSize="34sp"
-                android:textStyle="bold" />
+                android:textColor="#FFFFFFFF"
+                android:textSize="36sp"
+                android:textStyle="bold"
+                android:elevation="6dp" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="10dp"
                 android:gravity="center"
                 android:text="@string/sos_mesh_note"
                 android:textColor="@color/text_muted"
@@ -132,59 +230,63 @@
                 android:gravity="center"
                 android:text="…"
                 android:textColor="@color/accent_amber"
-                android:textSize="13sp"
+                android:textSize="14sp"
                 android:visibility="gone" />
 
+            <!-- Outcome result card -->
             <TextView
                 android:id="@+id/sos_result"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
+                android:layout_marginTop="12dp"
                 android:background="@drawable/bg_card"
-                android:padding="12dp"
+                android:padding="14dp"
                 android:textColor="@color/text_primary"
                 android:textSize="13sp"
+                android:lineSpacingMultiplier="1.3"
                 android:visibility="gone" />
         </LinearLayout>
-    </ScrollView>
+    </androidx.core.widget.NestedScrollView>
 
-    <!-- Countdown overlay -->
+    <!-- Countdown overlay with frosted dark panel -->
     <LinearLayout
         android:id="@+id/sos_countdown_overlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/glass_fill"
+        android:background="#F20B1220"
         android:gravity="center"
         android:orientation="vertical"
+        android:padding="24dp"
         android:visibility="gone">
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/sos_countdown_hint"
-            android:textColor="@color/text_muted"
-            android:textSize="15sp" />
+            android:textColor="@color/text_secondary"
+            android:textSize="16sp" />
 
         <TextView
             android:id="@+id/sos_countdown_text"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="12dp"
             android:text="3"
             android:textColor="@color/accent_red"
-            android:textSize="90sp"
-            android:textStyle="bold" />
+            android:textSize="96sp"
+            android:textStyle="bold"
+            android:fontFamily="sans-serif-condensed" />
 
         <TextView
             android:id="@+id/sos_cancel"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="24dp"
             android:background="@drawable/bg_button_ghost"
-            android:paddingStart="28dp"
-            android:paddingEnd="28dp"
-            android:paddingTop="12dp"
-            android:paddingBottom="12dp"
+            android:paddingStart="32dp"
+            android:paddingEnd="32dp"
+            android:paddingTop="14dp"
+            android:paddingBottom="14dp"
             android:text="@string/cancel"
             android:textColor="@color/text_primary"
             android:textSize="16sp"

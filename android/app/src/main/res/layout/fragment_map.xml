@@ -1,40 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    fragment_map.xml — v3.0 Professional UI
+    Field interactive map with overlaid HUD controls and evacuation status bar.
+    Preserves all existing View IDs for MapFragment.kt.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg"
     android:orientation="vertical">
 
-    <TextView
+    <!-- Top status bar -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:padding="12dp"
-        android:paddingBottom="6dp"
-        android:text="@string/map_title"
-        android:textColor="@color/text_primary"
-        android:textSize="16sp"
-        android:textStyle="bold" />
+        android:orientation="vertical"
+        android:background="@color/surface"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="10dp">
 
-    <TextView
-        android:id="@+id/map_status"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingBottom="6dp"
-        android:text="@string/gps_searching"
-        android:textColor="@color/text_muted"
-        android:textSize="12sp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
 
-    <!-- S4 Radar v2: radar controls row — rings toggle + AI briefing chip,
-         then the live wind line and the honest spread-cone disclaimer. -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🗺️"
+                android:textSize="16sp"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/map_title"
+                android:textColor="@color/text_primary"
+                android:textSize="16sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/map_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/gps_searching"
+            android:textColor="@color/text_muted"
+            android:textSize="12sp" />
+    </LinearLayout>
+
+    <!-- RESTORED (S4): radar controls row — rings toggle + AI briefing chip,
+         then the live wind line; below it the honest spread-cone disclaimer
+         and the mission line (both hidden until the code shows them). -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="8dp"
         android:paddingBottom="4dp">
 
         <TextView
@@ -81,8 +112,8 @@
         android:id="@+id/radar_note"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
         android:paddingBottom="4dp"
         android:text="@string/radar_note"
         android:textColor="@color/accent_orange"
@@ -93,15 +124,14 @@
         android:id="@+id/mission_chip"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
         android:paddingBottom="4dp"
         android:textColor="@color/accent_red"
         android:textSize="11sp"
         android:visibility="gone" />
 
-    <!-- Zoom controls live OVER the map (osmdroid's stock white +/- are
-         hidden in code); "end" flips to the correct side under RTL. -->
+    <!-- Map container with floating controls -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -112,66 +142,84 @@
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
 
+        <!-- Floating Zoom & Recenter Controls -->
         <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|end"
-            android:layout_margin="12dp"
+            android:layout_margin="16dp"
             android:orientation="vertical">
 
             <TextView
                 android:id="@+id/zoom_in"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:background="@drawable/bg_zoom_button"
                 android:gravity="center"
                 android:text="+"
                 android:textColor="@color/text_primary"
-                android:textSize="26sp"
-                android:textStyle="bold" />
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:elevation="4dp" />
 
             <TextView
                 android:id="@+id/zoom_out"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_marginTop="8dp"
                 android:background="@drawable/bg_zoom_button"
                 android:gravity="center"
                 android:text="−"
                 android:textColor="@color/text_primary"
-                android:textSize="26sp"
-                android:textStyle="bold" />
+                android:textSize="24sp"
+                android:textStyle="bold"
+                android:elevation="4dp" />
 
-            <!-- F11: explicit recenter control. Auto-recenter no longer
-                 hijacks the view on every fix — the user can pan freely and
-                 pull the dot back themselves. -->
             <TextView
                 android:id="@+id/recenter_button"
-                android:layout_width="52dp"
-                android:layout_height="52dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_marginTop="8dp"
                 android:background="@drawable/bg_zoom_button"
                 android:gravity="center"
                 android:text="◎"
-                android:textColor="@color/text_primary"
+                android:textColor="@color/accent_cyan"
                 android:textSize="22sp"
-                android:textStyle="bold" />
+                android:textStyle="bold"
+                android:elevation="4dp" />
         </LinearLayout>
 
-        <!-- S4: AI safety briefing card — floats over the map, closed by
-             default. Content comes ONLY from the server's guidance endpoint
-             (sanitized server-side, rate-limited 6/min, fallback body when
-             the AI provider is down); the client never authors guidance. -->
+        <!-- Attributions overlay at bottom center -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:layout_margin="8dp"
+            android:background="#990B1220"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp"
+            android:text="© OpenStreetMap · CARTO"
+            android:textColor="@color/text_hint"
+            android:textSize="9sp" />
+
+        <!-- RESTORED (S4): AI safety briefing card — floats over the map,
+             closed by default. Content comes ONLY from the server's
+             guidance endpoint (sanitized server-side, rate-limited 6/min,
+             fallback body when the AI provider is down); the client never
+             authors guidance. -->
         <LinearLayout
             android:id="@+id/ai_card"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom"
-            android:layout_margin="12dp"
+            android:layout_margin="16dp"
             android:background="@drawable/bg_card"
             android:orientation="vertical"
             android:padding="12dp"
-            android:visibility="gone">
+            android:visibility="gone"
+            android:elevation="6dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -217,56 +265,60 @@
         </LinearLayout>
     </FrameLayout>
 
-    <TextView
+    <!-- Bottom route info & evacuation bar -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center"
-        android:padding="2dp"
-        android:text="© OpenStreetMap · CARTO"
-        android:textColor="@color/text_faint"
-        android:textSize="9sp" />
-
-    <!-- S4: route ALTERNATIVES chips (safety-ranked). Hidden until an OSRM
-         response carries candidates; tapping a chip redraws that road. -->
-    <HorizontalScrollView
-        android:id="@+id/route_chips_scroll"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:orientation="vertical"
         android:background="@color/surface"
-        android:scrollbars="none"
-        android:visibility="gone">
+        android:padding="12dp">
 
-        <LinearLayout
-            android:id="@+id/route_chips_row"
-            android:layout_width="wrap_content"
+        <!-- RESTORED (S4): route ALTERNATIVES chips (safety-ranked). Hidden
+             until an OSRM response carries candidates; tapping a chip
+             redraws that road. -->
+        <HorizontalScrollView
+            android:id="@+id/route_chips_scroll"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingStart="8dp"
-            android:paddingEnd="8dp"
-            android:paddingTop="6dp"
-            android:paddingBottom="6dp" />
-    </HorizontalScrollView>
+            android:background="@color/surface"
+            android:scrollbars="none"
+            android:visibility="gone">
 
-    <TextView
-        android:id="@+id/route_info"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="@color/surface"
-        android:padding="10dp"
-        android:text="@string/route_note"
-        android:textColor="@color/text_primary"
-        android:textSize="12sp" />
+            <LinearLayout
+                android:id="@+id/route_chips_row"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp" />
+        </HorizontalScrollView>
 
-    <TextView
-        android:id="@+id/route_button"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_margin="12dp"
-        android:background="@drawable/bg_button_safe"
-        android:gravity="center"
-        android:padding="15dp"
-        android:text="@string/route_button"
-        android:textColor="@color/text_primary"
-        android:textSize="15sp"
-        android:textStyle="bold" />
+        <TextView
+            android:id="@+id/route_info"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_card"
+            android:padding="10dp"
+            android:text="@string/route_note"
+            android:textColor="@color/text_secondary"
+            android:textSize="12sp"
+            android:lineSpacingMultiplier="1.2" />
+
+        <TextView
+            android:id="@+id/route_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/bg_button_safe"
+            android:gravity="center"
+            android:padding="14dp"
+            android:text="@string/route_button"
+            android:textColor="#FFFFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:elevation="2dp" />
+    </LinearLayout>
+
 </LinearLayout>

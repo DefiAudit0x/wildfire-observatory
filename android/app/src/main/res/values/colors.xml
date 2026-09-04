@@ -1,79 +1,111 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- v2.16.0 (brand alignment): dark console shell re-tinted to the official
-         brand guidelines of the Algerian Observatory for Forest Fires and
-         Disasters. Brand palette (from the brand book):
-           #006233 green   — primary / identity / verified
-           #1B4332 deep green — safe zones, safe actions
-           #D21034 red     — EMERGENCY only (alerts, SOS, evacuation)
-           #FF6B35 orange  — warnings / advisories / pending
-           #8B4513 brown   — extreme danger tier (level 5 scale end)
-           #FFFFFF white   — text on brand fills
-         Surfaces stay dark (emergency-console legibility at night, in smoke),
-         but shifted from zinc/red-black to a deep forest black so the green
-         identity reads instead of the old ember-red cast. -->
+    <color name="ic_launcher_background">#1B5E20</color>
 
-    <!-- Brand primitives (never re-tint these; they are the identity) -->
-    <color name="brand_green">#006233</color>
-    <color name="brand_green_deep">#1B4332</color>
-    <color name="brand_red">#D21034</color>
-    <color name="brand_orange">#FF6B35</color>
-    <color name="brand_brown">#8B4513</color>
-    <color name="brand_white">#FFFFFF</color>
+    <!-- ═══════════════════════════════════════════════════════════════
+         Observatory Dark Palette — v3.0 Professional UI
+         Mirrors the web console's dark navy aesthetic.
+    ════════════════════════════════════════════════════════════════ -->
 
-    <color name="ic_launcher_background">@color/brand_green</color>
+    <!-- Backgrounds -->
+    <color name="bg">#0B1220</color>
+    <color name="surface">#131C2E</color>
+    <color name="surface_alt">#0F172A</color>
+    <color name="surface_elevated">#18243A</color>
+    <color name="surface_dialog">#1A2744</color>
 
-    <!-- Base surfaces (forest black: green-tinted near-black, not warm red) -->
-    <color name="bg">#070B09</color>
-    <color name="surface">#121A16</color>            <!-- lifted card -->
-    <color name="surface_alt">#0C120F</color>        <!-- lifted panel -->
-    <color name="surface_recessed">#090D0B</color>   <!-- wells / inputs -->
-
-    <!-- Glass fills (translucent layered panels over bg) -->
-    <color name="glass_fill">#99070B09</color>       <!-- headers: bg/60 -->
-    <color name="glass_fill_strong">#CC070B09</color><!-- tab bar: bg/80 -->
-    <color name="glass_card_top">#D9121A16</color>   <!-- card top: surface/85 -->
-    <color name="glass_card_bottom">#B30C120F</color><!-- card bottom: alt/70 -->
-
-    <!-- Borders -->
-    <color name="border">#1F2B24</color>             <!-- forest hairline -->
-    <color name="border_glass">#1AFFFFFF</color>     <!-- white/10 -->
-    <color name="border_glass_soft">#14FFFFFF</color><!-- white/8 -->
-    <color name="border_green_soft">#33006233</color><!-- brand green/20 -->
-    <color name="border_green_strong">#66006233</color><!-- brand green/40 -->
-    <color name="border_red_soft">#33D21034</color>  <!-- brand red/20 -->
-    <color name="border_red_strong">#66D21034</color><!-- brand red/40 -->
+    <!-- Borders & Dividers -->
+    <color name="border">#1E293B</color>
+    <color name="border_subtle">#162032</color>
+    <color name="border_strong">#2A3F5F</color>
+    <color name="divider">#1A2B42</color>
 
     <!-- Text -->
-    <color name="text_primary">#F8FAFC</color>
+    <color name="text_primary">#E2E8F0</color>
     <color name="text_secondary">#CBD5E1</color>
-    <color name="text_muted">#9CA3AF</color>
-    <color name="text_faint">#71717A</color>
+    <color name="text_muted">#94A3B8</color>
+    <color name="text_hint">#475569</color>
+    <color name="text_on_accent">#FFFFFF</color>
+    <color name="text_on_danger">#FFFFFF</color>
 
-    <!-- Semantic accents (mapped onto the brand palette).
-         accent_red    = emergency (brand red)      accent_green = verified/safe
-         accent_amber  = warning/pending (brand orange)
-         accent_orange = severity high (brand orange)
-         accent_brown  = extreme tier               accent_cyan  = mesh/network -->
-    <color name="accent_red">@color/brand_red</color>
-    <color name="accent_red_bright">#E63A55</color>  <!-- brand red lifted for text on dark -->
-    <color name="accent_red_deep">#8F0B23</color>    <!-- brand red pressed / gradient end -->
-    <color name="accent_green">@color/brand_green</color>
-    <color name="accent_green_bright">#2E9E5B</color><!-- brand green lifted for text on dark -->
-    <color name="accent_green_deep">@color/brand_green_deep</color>
-    <color name="accent_amber">@color/brand_orange</color>
-    <color name="accent_amber_bright">#FF8A5C</color>
-    <color name="accent_orange">@color/brand_orange</color>
-    <color name="accent_brown">@color/brand_brown</color>
-    <color name="accent_cyan">#22D3EE</color>        <!-- mesh/telemetry only; not a brand hue -->
+    <!-- ── Accent Colors ─────────────────────────────── -->
+    <!-- Red → Danger / Fire / SOS -->
+    <color name="accent_red">#EF4444</color>
+    <color name="accent_red_dark">#B91C1C</color>
+    <color name="accent_red_dim">#991B1B</color>
+    <color name="accent_red_container">#1F0808</color>
+    <color name="accent_red_on_container">#FCA5A5</color>
 
-    <!-- 5-level fire danger scale (brand book "Fire Danger Level Indicator") -->
-    <color name="danger_1_low">#C5D9BF</color>
-    <color name="danger_2_moderate">#8DB63C</color>
-    <color name="danger_3_high">#FF6B35</color>
-    <color name="danger_4_very_high">#F04E1F</color>
-    <color name="danger_5_extreme">#D21034</color>
+    <!-- Green → Safe / Confirmed / Connected -->
+    <color name="accent_green">#10B981</color>
+    <color name="accent_green_dark">#059669</color>
+    <color name="accent_green_container">#052318</color>
+    <color name="accent_green_on_container">#6EE7B7</color>
 
-    <!-- Legacy aliases kept for earlier code paths -->
-    <color name="text_secondary_legacy">#CBD5E1</color>
+    <!-- Amber → Warning / Pending / Recording -->
+    <color name="accent_amber">#F59E0B</color>
+    <color name="accent_amber_dark">#D97706</color>
+    <color name="accent_amber_container">#1C1505</color>
+    <color name="accent_amber_on_container">#FCD34D</color>
+
+    <!-- Cyan → Info / Mesh / GPS -->
+    <color name="accent_cyan">#22D3EE</color>
+    <color name="accent_cyan_dark">#0891B2</color>
+    <color name="accent_cyan_container">#042028</color>
+    <color name="accent_cyan_on_container">#A5F3FC</color>
+
+    <!-- Orange → Hotspot / High-severity -->
+    <color name="accent_orange">#F97316</color>
+    <color name="accent_orange_dark">#EA580C</color>
+    <color name="accent_orange_container">#1C0D03</color>
+
+    <!-- ── UI State Colors ──────────────────────────── -->
+    <color name="ripple_primary">#33EF4444</color>
+    <color name="ripple_on_surface">#1FFFFFFF</color>
+    <color name="scrim">#CC0B1220</color>
+    <color name="overlay_critical">#E60B1220</color>
+    <color name="overlay_warning">#B30B1220</color>
+    <color name="shadow">#660B1220</color>
+
+    <!-- ── Navigation ──────────────────────────────── -->
+    <color name="nav_bg">#0E1928</color>
+    <color name="nav_active">#EF4444</color>
+    <color name="nav_inactive">#475569</color>
+    <color name="nav_indicator">#1FEF4444</color>
+
+    <!-- ── Input Fields ────────────────────────────── -->
+    <color name="input_bg">#111B2D</color>
+    <color name="input_border">#1E293B</color>
+    <color name="input_border_focused">#22D3EE</color>
+    <color name="input_text">#E2E8F0</color>
+    <color name="input_hint">#475569</color>
+
+    <!-- ── Chip States ─────────────────────────────── -->
+    <color name="chip_bg">#18243A</color>
+    <color name="chip_border">#243349</color>
+    <color name="chip_gps_active">#10B981</color>
+    <color name="chip_net_active">#22D3EE</color>
+    <color name="chip_mesh_active">#F59E0B</color>
+    <color name="chip_offline">#475569</color>
+
+    <!-- ── Severity Scale ──────────────────────────── -->
+    <color name="sev_low">#10B981</color>
+    <color name="sev_medium">#F59E0B</color>
+    <color name="sev_high">#F97316</color>
+    <color name="sev_critical">#EF4444</color>
+
+    <!-- ── Legacy-surface tokens (restore commit) ────
+         Referenced by v2.8.0-era drawables kept for zero-regression:
+         bg_card_danger (border-red-500/30) and bg_glass_header
+         (bg-black/60 approximated over the M3 base #0B1220). -->
+    <color name="border_red_soft">#4DEF4444</color>
+    <color name="glass_fill">#990B1220</color>
+
+    <!-- ── v0 brand-palette tokens consumed by merged main-side files ──
+         nav_item_color.xml (accent_green_bright) and bg_card_safe.xml
+         (border_green_soft) arrive from main v2.17.0 and keep their
+         official brand-book values. -->
+    <color name="accent_green_bright">#2E9E5B</color>
+    <color name="border_green_soft">#33006233</color>
+    <color name="border_glass">#1AFFFFFF</color>
 </resources>
