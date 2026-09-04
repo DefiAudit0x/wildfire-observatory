@@ -38,7 +38,13 @@ class LocationEngine(private val context: Context) : LocationListener {
         private const val STATUS_POLL_MS = 3_000L
     }
 
-    data class State(val status: LocationLogic.Status, val fix: LocationLogic.FixSnapshot?)
+    data class State(
+        val status: LocationLogic.Status,
+        val fix: LocationLogic.FixSnapshot?,
+        /** v2.16.0: the active permission tier — the UI can distinguish a
+         *  precise fix from a coarse-only one without re-querying perms. */
+        val tier: LocationLogic.Tier = LocationLogic.Tier.NONE
+    )
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArrayList<(State) -> Unit>()
@@ -54,9 +60,25 @@ class LocationEngine(private val context: Context) : LocationListener {
         }
     }
 
+    /** Precise-location grant (the historical hasPermission). */
     fun hasPermission(): Boolean = ContextCompat.checkSelfPermission(
         context, Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
+
+    /** Approximate-location grant (Android 12+ "approximate only"). */
+    fun hasCoarsePermission(): Boolean = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.ACCESS_COARSE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+
+    /** Any usable location grant — coarse-only users get a WORKING engine. */
+    fun hasAnyLocationPermission(): Boolean = hasPermission() || hasCoarsePermission()
+
+    /** v2.16.0: the active permission tier (NONE / COARSE / FINE). */
+    fun permissionTier(): LocationLogic.Tier = when {
+        hasPermission() -> LocationLogic.Tier.FINE
+        hasCoarsePermission() -> LocationLogic.Tier.COARSE
+        else -> LocationLogic.Tier.NONE
+    }
 
     fun addListener(listener: (State) -> Unit) {
         listeners.add(listener)
@@ -112,7 +134,7 @@ class LocationEngine(private val context: Context) : LocationListener {
     private fun compute(): LocationLogic.Status {
         val ageMs = lastFix?.let { System.currentTimeMillis() - it.timeMs }
         return LocationLogic.computeStatus(
-            permissionGranted = hasPermission(),
+            permissionTier = permissionTier(),
             gpsEnabled = gpsEnabled(),
             networkEnabled = networkEnabled(),
             lastFixAgeMs = ageMs
@@ -121,16 +143,25 @@ class LocationEngine(private val context: Context) : LocationListener {
 
     private fun registerProviders() {
         val manager = lm ?: return
-        if (!hasPermission()) return
+        // v2.16.0 (permission tier): coarse-only users get the NETWORK
+        // provider (an approximate fix beats no fix — and beats a lying
+        // "grant permission" screen); requesting GPS_PROVIDER updates with
+        // only ACCESS_COARSE_LOCATION throws on API 31+, so GPS is
+        // FINE-tier exclusively. The PASSIVE seed inherits the caller's
+        // grant and stays FINE-tier too for the same reason.
+        val tier = permissionTier()
+        if (tier == LocationLogic.Tier.NONE) return
         val looper = Looper.getMainLooper()
-        try {
-            if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
-                manager.requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER, REQUEST_INTERVAL_MS, REQUEST_DISTANCE_M, this, looper
-                )
+        if (tier == LocationLogic.Tier.FINE) {
+            try {
+                if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+                    manager.requestLocationUpdates(
+                        LocationManager.GPS_PROVIDER, REQUEST_INTERVAL_MS, REQUEST_DISTANCE_M, this, looper
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "GPS provider register failed", e)
             }
-        } catch (e: Exception) {
-            Log.w(TAG, "GPS provider register failed", e)
         }
         try {
             if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
@@ -143,12 +174,17 @@ class LocationEngine(private val context: Context) : LocationListener {
         }
         // Seed from lastKnownLocation across providers so the map/SOS have
         // something honest (with its real age) within the first second.
-        val seeds = ArrayList<LocationLogic.FixSnapshot>(2)
-        for (provider in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
+        val seedProviders = if (tier == LocationLogic.Tier.FINE) {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        } else {
+            listOf(LocationManager.NETWORK_PROVIDER)
+        }
+        val seeds = ArrayList<LocationLogic.FixSnapshot>(seedProviders.size)
+        for (provider in seedProviders) {
             try {
                 if (!manager.allProviders.contains(provider)) continue
                 val loc: Location? = manager.getLastKnownLocation(provider)
-                if (loc != null) seeds.add(toSnapshot(loc))
+                if (loc != null) seeds.add(toSnapshot(loc, tier))
             } catch (e: SecurityException) {
                 // permission revoked mid-flight — the status poller will show it
             } catch (e: Exception) {
@@ -165,7 +201,7 @@ class LocationEngine(private val context: Context) : LocationListener {
 
     override fun onLocationChanged(location: Location) {
         if (!location.latitude.isFinite() || !location.longitude.isFinite()) return
-        val snapshot = toSnapshot(location)
+        val snapshot = toSnapshot(location, permissionTier())
         val current = lastFix
         // Accept if fresher, or if the current fix is old and this one exists.
         if (current == null || snapshot.timeMs >= current.timeMs) {
@@ -186,19 +222,20 @@ class LocationEngine(private val context: Context) : LocationListener {
         publish(compute())
     }
 
-    private fun toSnapshot(loc: Location) = LocationLogic.FixSnapshot(
+    private fun toSnapshot(loc: Location, tier: LocationLogic.Tier) = LocationLogic.FixSnapshot(
         lat = loc.latitude,
         lng = loc.longitude,
         accuracyM = if (loc.hasAccuracy()) loc.accuracy else 0f,
         timeMs = loc.time,
-        provider = loc.provider ?: "unknown"
+        provider = loc.provider ?: "unknown",
+        approximate = tier == LocationLogic.Tier.COARSE
     )
 
     private fun publish(state: LocationLogic.Status) {
         // Notify when the status changed OR a fresh fix arrived (map follows).
         if (state == lastNotifiedStatus && state != LocationLogic.Status.FIXED) return
         lastNotifiedStatus = state
-        val payload = State(state, lastFix)
+        val payload = State(state, lastFix, permissionTier())
         for (l in listeners) {
             try {
                 l(payload)
