@@ -509,20 +509,43 @@ class AppRepository(
         scope.launch {
             while (true) {
                 if (_state.value.online) {
-                    val before = reportQueue.size() + sosQueue.size()
-                    val n1 = io { reportQueue.drain(3, System.currentTimeMillis()) { api.post("/api/reports", it).is2xx } }
-                    val n2 = io { sosQueue.drain(3, System.currentTimeMillis()) { api.post("/api/sos", it).is2xx } }
-                    val after = reportQueue.size() + sosQueue.size()
-                    if (n1 + n2 > 0) {
-                        Log.i(TAG, "Offline queue drained: reports=$n1 sos=$n2")
-                    }
-                    if (after != before) {
-                        // Delivered or poisoned entries were removed — sync disk
-                        // so a process death cannot resurrect delivered items.
+                    // v2.16.0 (audit — I/O under lock): two-phase drain. The
+                    // queue hands DUE entries over atomically, the blocking
+                    // POSTs run OUTSIDE every queue monitor, and one atomic
+                    // commit() records the outcome. enqueue/snapshot/size
+                    // callers are never stalled behind a 10s-timeout send,
+                    // and per-entry exponential backoff keeps a dead
+                    // endpoint from burning a send every 20s tick.
+                    val now = System.currentTimeMillis()
+                    val reservedR = io { reportQueue.reserveDue(3, now) }
+                    val reservedS = io { sosQueue.reserveDue(3, now) }
+                    if (reservedR.isNotEmpty() || reservedS.isNotEmpty()) {
+                        val deliveredR = HashSet<String>()
+                        val deliveredS = HashSet<String>()
+                        for (e in reservedR) {
+                            if (io { api.post("/api/reports", e.payload).is2xx }) deliveredR.add(e.key)
+                        }
+                        for (e in reservedS) {
+                            if (io { api.post("/api/sos", e.payload).is2xx }) deliveredS.add(e.key)
+                        }
+                        io {
+                            reportQueue.commit(now, deliveredR)
+                            sosQueue.commit(now, deliveredS)
+                        }
+                        Log.i(
+                            TAG,
+                            "Offline queue round: delivered=${deliveredR.size + deliveredS.size} " +
+                                "reserved=${reservedR.size + reservedS.size}"
+                        )
+                        // Delivered/poisoned/backoff-timed entries all changed
+                        // on disk's behalf — sync so a process death cannot
+                        // resurrect delivered items or lose attempt history.
                         persistQueues()
                         bumpQueueSize()
-                        persistSnapshot()
-                        if (n2 > 0 && sosQueue.size() == 0) {
+                        if (deliveredR.isNotEmpty() || deliveredS.isNotEmpty()) {
+                            persistSnapshot()
+                        }
+                        if (deliveredS.isNotEmpty() && sosQueue.size() == 0) {
                             // The queued SOS went out: clear the "queued" flag
                             // so no screen keeps promising a send that happened.
                             _state.value = _state.value.copy(
@@ -576,7 +599,8 @@ class AppRepository(
                     payload = payload,
                     attempts = o.optInt("attempts", 0),
                     lastAttemptMs = o.optLong("lastAttemptMs", 0L),
-                    lastError = o.optString("lastError", "").takeIf { it.isNotEmpty() }
+                    lastError = o.optString("lastError", "").takeIf { it.isNotEmpty() },
+                    nextAttemptMs = o.optLong("nextAttemptMs", 0L)
                 )
             )
         }
@@ -612,6 +636,7 @@ class AppRepository(
                         put("attempts", e.attempts)
                         put("lastAttemptMs", e.lastAttemptMs)
                         put("lastError", e.lastError ?: JSONObject.NULL)
+                        put("nextAttemptMs", e.nextAttemptMs)
                     }
                 )
             }

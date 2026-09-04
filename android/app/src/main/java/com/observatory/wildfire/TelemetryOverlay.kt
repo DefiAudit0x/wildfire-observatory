@@ -87,10 +87,12 @@ object TelemetryOverlay {
     }
 
     /**
-     * Decode the captured JPEG EXIF-rotated to upright pixels (so the stamp
-     * is never sideways) and bounded by [maxDim] through PhotoPipeline's
-     * sampler. Returns null when the file cannot be decoded — the caller
-     * keeps the unstamped file rather than inventing an image.
+     * Decode the captured JPEG EXIF-uprighted (so the stamp is never
+     * sideways — and never MIRRORED: v2.16.0 applies the real flip/transpose
+     * transforms instead of folding them into a 180° rotation) and bounded
+     * by [maxDim] through PhotoPipeline's sampler. Returns null when the
+     * file cannot be decoded — the caller keeps the unstamped file rather
+     * than inventing an image.
      */
     fun decodeUpright(file: File, maxDim: Int = PhotoPipeline.MAX_DIM_PX): Bitmap? {
         val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -100,23 +102,17 @@ object TelemetryOverlay {
             inSampleSize = PhotoPipeline.targetSample(bounds.outWidth, bounds.outHeight, maxDim)
         }
         val raw = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
-        val rotationDeg = when (exifRotationDegrees(file)) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-            ExifInterface.ORIENTATION_FLIP_HORIZONTAL, ExifInterface.ORIENTATION_FLIP_VERTICAL,
-            ExifInterface.ORIENTATION_TRANSPOSE, ExifInterface.ORIENTATION_TRANSVERSE -> {
-                // Rare sensor cases: normalize to the nearest pure rotation —
-                // the stamp must stay level more than it must stay mirrored.
-                180f
-            }
-            else -> 0f
-        }
-        if (rotationDeg == 0f) return raw
-        val matrix = Matrix().apply { postRotate(rotationDeg) }
-        val rotated = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
-        if (rotated != raw) raw.recycle()
-        return rotated
+        // The pure plan decides; Matrix only executes it. postRotate then
+        // postScale(-1,1) applies the rotation first, then the mirror —
+        // exactly the decomposition TelemetryCamera.exifPlan pins.
+        val plan = TelemetryCamera.exifPlan(exifOrientation(file))
+        if (plan.rotateDeg == 0f && !plan.flipH) return raw
+        val matrix = Matrix()
+        if (plan.rotateDeg != 0f) matrix.postRotate(plan.rotateDeg)
+        if (plan.flipH) matrix.postScale(-1f, 1f)
+        val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
+        if (upright != raw) raw.recycle()
+        return upright
     }
 
     /** 50×50 ARGB downsample for TelemetryCamera.preScan (device bridge). */
@@ -128,7 +124,7 @@ object TelemetryOverlay {
         return pixels
     }
 
-    private fun exifRotationDegrees(file: File): Int = try {
+    private fun exifOrientation(file: File): Int = try {
         ExifInterface(file.absolutePath).getAttributeInt(
             ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
         )

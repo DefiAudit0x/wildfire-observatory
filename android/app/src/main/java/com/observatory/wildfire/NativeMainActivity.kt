@@ -178,7 +178,9 @@ class NativeMainActivity : AppCompatActivity() {
         super.onStart()
         // Visible = own the GPS stream (LocationEngine kdoc contract). The
         // team FGS keeps its own independent stream in the background.
-        if ((application as ObservatoryApp).locationEngine.hasPermission()) {
+        // v2.16.0: ANY location grant starts the engine — a coarse-only
+        // user gets a working approximate engine, not a dead screen.
+        if ((application as ObservatoryApp).locationEngine.hasAnyLocationPermission()) {
             (application as ObservatoryApp).locationEngine.start()
         }
     }
@@ -236,14 +238,30 @@ class NativeMainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode != PERMISSION_REQUEST_CODE) return
-        val granted = grantResults.isNotEmpty() &&
-            grantResults[0] == PackageManager.PERMISSION_GRANTED
         // Stage 1 = location, stage 2 = mesh, stage 3 = notifications.
         when (permissionStage) {
-            1 -> onLocationPermissionOutcome(granted)
-            2 -> onMeshPermissionOutcome(granted)
+            1 -> onLocationPermissionOutcome(granted = anyLocationGranted(permissions, grantResults))
+            2 -> onMeshPermissionOutcome(
+                granted = grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+            )
             else -> Unit
         }
+    }
+
+    /**
+     * v2.16.0 (audit wave 3 — permission tier): Android 12+ can grant
+     * COARSE while denying FINE (the "approximate only" choice). A grant
+     * is a grant — the engine downgrades to the coarse tier and keeps
+     * working instead of reporting a permission the system says exists.
+     */
+    private fun anyLocationGranted(permissions: Array<out String>, results: IntArray): Boolean {
+        val fine = permissions.indexOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        val coarse = permissions.indexOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+        val grantedAt = { idx: Int ->
+            idx >= 0 && idx < results.size && results[idx] == PackageManager.PERMISSION_GRANTED
+        }
+        return grantedAt(fine) || grantedAt(coarse)
     }
 
     private var permissionStage = 0
@@ -299,8 +317,11 @@ class NativeMainActivity : AppCompatActivity() {
 
     /** Called by fragments when a lazily-granted permission lands (mic). */
     fun notifyPermissionGranted(permission: String) {
-        // Location grants can arrive from Settings deep-links too.
-        if (permission == Manifest.permission.ACCESS_FINE_LOCATION) {
+        // Location grants can arrive from Settings deep-links too — either
+        // tier counts (v2.16.0: coarse-only is a working engine tier).
+        if (permission == Manifest.permission.ACCESS_FINE_LOCATION ||
+            permission == Manifest.permission.ACCESS_COARSE_LOCATION
+        ) {
             (application as ObservatoryApp).locationEngine.onPermissionGranted()
         }
     }

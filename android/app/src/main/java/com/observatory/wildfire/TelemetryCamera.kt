@@ -36,6 +36,59 @@ object TelemetryCamera {
     const val THREAT_MAX_AGE_MS = 30 * 60_000L
     const val THREAT_MAX_FUTURE_SKEW_MS = 2 * 60_000L
 
+    // ============================
+    // v2.16.0 (audit wave 3) — EXIF orientation plan
+    // ============================
+    //
+    // The overlay used to fold every mirror/transpose orientation into a
+    // plain 180° rotation ("the stamp must stay level more than it must
+    // stay mirrored") — level, but MIRRORED CONTENT: a flipped sensor
+    // frame was stamped as if it were the scene. Evidentiary fidelity
+    // demands the real transform. The plan is pure so the mapping is
+    // JVM-tested; TelemetryOverlay only executes it with Matrix.
+    //
+    // Numeric values are the android.media.ExifInterface constants,
+    // restated here (pure ints) so this file stays zero-android.
+    // Semantics (EXIF spec): the plan converts the STORED image into the
+    // upright scene — rotation FIRST, then horizontal mirror (the
+    // canonical decomposition; a mirror is size-preserving so output
+    // dimensions depend only on the rotation).
+
+    /** android.media.ExifInterface.ORIENTATION_* restated as pure ints. */
+    const val EXIF_NORMAL = 1
+    const val EXIF_FLIP_HORIZONTAL = 2
+    const val EXIF_ROTATE_180 = 3
+    const val EXIF_FLIP_VERTICAL = 4
+    const val EXIF_TRANSPOSE = 5
+    const val EXIF_ROTATE_90 = 6
+    const val EXIF_TRANSVERSE = 7
+    const val EXIF_ROTATE_270 = 8
+
+    /** Rotation degrees + horizontal mirror, applied in that order. */
+    data class ExifPlan(val rotateDeg: Float, val flipH: Boolean)
+
+    fun exifPlan(orientation: Int): ExifPlan = when (orientation) {
+        EXIF_ROTATE_90 -> ExifPlan(90f, false)
+        EXIF_ROTATE_180 -> ExifPlan(180f, false)
+        EXIF_ROTATE_270 -> ExifPlan(270f, false)
+        EXIF_FLIP_HORIZONTAL -> ExifPlan(0f, true)
+        // Flip-vertical = 180° rotation + mirror (identical to scaleY(-1)).
+        EXIF_FLIP_VERTICAL -> ExifPlan(180f, true)
+        // Transpose = mirror across the main diagonal: rotate 90 CW, then
+        // flip horizontally ((x,y) → (y,x) on a square frame — derived,
+        // not copied: the tests pin the decomposition).
+        EXIF_TRANSPOSE -> ExifPlan(90f, true)
+        // Transverse = mirror across the anti-diagonal: rotate 270 CW,
+        // then flip horizontally.
+        EXIF_TRANSVERSE -> ExifPlan(270f, true)
+        else -> ExifPlan(0f, false) // NORMAL / UNDEFINED / unknown → identity
+    }
+
+    /** Output dimensions after applying [plan] to a w×h bitmap. */
+    fun exifOutputSize(width: Int, height: Int, plan: ExifPlan): Pair<Int, Int> =
+        if (plan.rotateDeg == 90f || plan.rotateDeg == 270f) height to width
+        else width to height
+
     /** ARC-M20 mirror: compass updates throttled to 4 Hz. */
     const val COMPASS_THROTTLE_MS = 250L
 

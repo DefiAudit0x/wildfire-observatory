@@ -58,6 +58,62 @@ object CryptoEngine {
     private const val IDENTITY_PREFS = "mesh_crypto_identity"
     private const val IDENTITY_PUB_KEY = "identity_pub_b64"
     private const val IDENTITY_PRIV_KEY = "identity_priv_b64"
+    // v2.16.0 (audit wave 3): persisted identity-storage policy record.
+    private const val IDENTITY_STORAGE_KEY = "identity_storage_mode"
+    private const val IDENTITY_REGENERATED_KEY = "identity_regenerated"
+
+    /**
+     * v2.16.0 (audit wave 3 — legacy-key migration policy + prefs fallback
+     * gating): the DECISION layer for identity-key storage, pure and
+     * JVM-testable (IdentityKeyPolicyTest pins the full table).
+     *
+     * Policy (in force since the keystore became primary):
+     *  1. CONTINUITY FIRST — an install that predates the keystore keeps its
+     *     SharedPreferences identity. The legacy key is immutable-once-stored
+     *     and re-importing software key material into AndroidKeyStore is not
+     *     possible without a cert-generation strategy (documented in
+     *     docs/ARCHITECTURE_ROADMAP.md as a Phase-2 upgrade), so "migration"
+     *     here means: the legacy identity is EXPLICIT, recorded (identity_storage_mode
+     *     = legacy_prefs), and loud — never silently treated as a defect.
+     *  2. CORRUPTION IS AN EVENT — a stored legacy identity that fails to
+     *     decode is kept on disk (forensics), never overwritten, and the
+     *     regenerated identity is flagged (identity_regenerated = true).
+     *  3. THE SOFTWARE FALLBACK IS GATED — plaintext key material in prefs
+     *     happens ONLY when the keystore is genuinely unavailable (the gate:
+     *     [softwareFallbackAllowed]), is recorded (mode = software_fallback),
+     *     and is a one-time-per-install write so the identity is stable.
+     */
+    object IdentityKeyPolicy {
+        enum class StorageMode { KEYSTORE, LEGACY_PREFS, SOFTWARE_FALLBACK }
+
+        enum class Action {
+            /** Upgrade continuity: reuse the pre-keystore prefs identity. */
+            USE_LEGACY_IDENTITY,
+            /** Keystore alias exists (or was just created) — the normal path. */
+            USE_KEYSTORE_IDENTITY,
+            /** Legacy identity present but undecodable — regenerate loudly. */
+            REGENERATE_AFTER_CORRUPTION,
+            /** Keystore unavailable — gated software fallback. */
+            FALLBACK_TO_SOFTWARE
+        }
+
+        /** The decision table. Order matters: continuity beats regeneration,
+         *  regeneration beats fresh minting, the fallback is last resort. */
+        fun decide(
+            legacyPresent: Boolean,
+            legacyValid: Boolean,
+            keystoreUsable: Boolean
+        ): Action = when {
+            legacyPresent && legacyValid -> Action.USE_LEGACY_IDENTITY
+            legacyPresent && !legacyValid -> Action.REGENERATE_AFTER_CORRUPTION
+            keystoreUsable -> Action.USE_KEYSTORE_IDENTITY
+            else -> Action.FALLBACK_TO_SOFTWARE
+        }
+
+        /** The gate: software storage may ONLY follow a proven-unusable
+         *  keystore — never a preference, never a convenience. */
+        fun softwareFallbackAllowed(keystoreUsable: Boolean): Boolean = !keystoreUsable
+    }
 
     // Ephemeral identity — rotated ONLY on explicit request (audit round 12):
     // the previous implementation auto-rotated inside every key getter, which
@@ -153,13 +209,14 @@ object CryptoEngine {
         // primary storage to the keystore without a migration would mint a
         // BRAND-NEW identity on every upgrade (the keystore alias is absent
         // on the first post-upgrade launch), silently breaking any server-
-        // side trust/history keyed on the old identity. Legacy keys are
-        // immutable-once-stored (the app never rotates them), so the old
-        // storage remains a stable identity source; the keystore is the
-        // storage of choice for NEW installs (below).
+        // side trust/history keyed on the old identity.
+        // v2.16.0 (policy): every branch below records its storage mode +
+        // regeneration flag (IdentityKeyPolicy kdoc) — the storage posture
+        // of every install is now observable, not guessable from logs.
         val prefs = context.getSharedPreferences(IDENTITY_PREFS, Context.MODE_PRIVATE)
         val legacyPrivB64 = prefs.getString(IDENTITY_PRIV_KEY, null)
         val legacyPubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
+        var legacyCorrupt = false
         if (legacyPrivB64 != null && legacyPubB64 != null) {
             try {
                 val pubKey = KeyFactory.getInstance(EC_ALGORITHM)
@@ -168,12 +225,19 @@ object CryptoEngine {
                     .generatePrivate(PKCS8EncodedKeySpec(Base64.decode(legacyPrivB64, Base64.NO_WRAP)))
                 android.util.Log.i(
                     "CryptoEngine",
-                    "Reusing pre-keystore identity from SharedPreferences (upgrade continuity)"
+                    "Identity storage: LEGACY_PREFS (upgrade continuity — v2.16.0 policy USE_LEGACY_IDENTITY)"
                 )
+                recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false)
                 return KeyPair(pubKey, privKey)
             } catch (e: Exception) {
-                // Corrupt/partial stored identity: fall through to keystore.
-                android.util.Log.w("CryptoEngine", "Legacy stored identity unusable", e)
+                // v2.16.0 policy REGENERATE_AFTER_CORRUPTION: the undecodable
+                // material is KEPT (forensics, never overwritten) and the
+                // regeneration is flagged on disk.
+                legacyCorrupt = true
+                android.util.Log.w(
+                    "CryptoEngine",
+                    "Legacy stored identity unusable — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)", e
+                )
             }
         }
 
@@ -189,6 +253,7 @@ object CryptoEngine {
             if (ks.containsAlias(IDENTITY_KEYSTORE_ALIAS)) {
                 val priv = ks.getKey(IDENTITY_KEYSTORE_ALIAS, null) as PrivateKey
                 val pub = ks.getCertificate(IDENTITY_KEYSTORE_ALIAS).publicKey
+                recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = legacyCorrupt)
                 return KeyPair(pub, priv)
             }
             val kpg = KeyPairGenerator.getInstance(EC_ALGORITHM, "AndroidKeyStore")
@@ -205,28 +270,74 @@ object CryptoEngine {
             // NOTE: some OEM/emulator keystores return null for the private
             // half of a freshly generated pair via getKeyPair(); back the
             // pair with the aliased key material directly.
+            recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = legacyCorrupt)
             return KeyPair(kp.public, ks.getKey(IDENTITY_KEYSTORE_ALIAS, null) as PrivateKey)
         } catch (e: Exception) {
-            android.util.Log.w("CryptoEngine", "AndroidKeyStore unavailable, falling back to SharedPreferences", e)
+            android.util.Log.w("CryptoEngine", "AndroidKeyStore unavailable", e)
         }
 
-        // Fallback path (keystore-less emulators/devices): SharedPreferences
-        // with a loud warning — plaintext key material should never be the
-        // production default (audit round 11: the keystore is primary now).
-        // (Legacy keys were already consumed above; only a missing-clean
-        // install reaches this point, so a fresh pair is generated.)
+        // GATED fallback path (v2.16.0 policy): ONLY reachable when the
+        // keystore path threw — the software gate
+        // (IdentityKeyPolicy.softwareFallbackAllowed) demands exactly that.
+        // SharedPreferences with a loud warning — plaintext key material is
+        // a last resort, not the production default. (Legacy keys were
+        // already consumed above; only a missing-clean install reaches this
+        // point, so a fresh pair is generated.) commit() instead of apply()
+        // (audit): a process death between the async apply() flush and the
+        // write would silently drop a freshly generated identity, i.e. the
+        // device would rotate its identity by accident. This write is
+        // one-time per install — a synchronous commit is negligible there.
+        check(IdentityKeyPolicy.softwareFallbackAllowed(keystoreUsable = false)) {
+            "software identity fallback reached without a failed keystore path — policy gate violated"
+        }
         val fresh = generateECKeyPair()
-        // commit() instead of apply() (audit): a process death between the
-        // async apply() flush and the write would silently drop a freshly
-        // generated identity, i.e. the device would rotate its identity by
-        // accident. This write is one-time per install — a synchronous
-        // commit is negligible there.
         prefs.edit()
             .putString(IDENTITY_PUB_KEY, Base64.encodeToString(fresh.public.encoded, Base64.NO_WRAP))
             .putString(IDENTITY_PRIV_KEY, Base64.encodeToString(fresh.private.encoded, Base64.NO_WRAP))
             .commit()
+        recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
         return fresh
     }
+
+    /**
+     * v2.16.0: persist + expose the identity-storage posture. Recorded on
+     * every loadOrCreateIdentityKeyPair exit; readable via
+     * [identityStorageMode] for diagnostics/telemetry.
+     */
+    private fun recordIdentityStorage(
+        context: Context,
+        mode: IdentityKeyPolicy.StorageMode,
+        regenerated: Boolean
+    ) {
+        identityStorageModeField = mode.name
+        identityRegeneratedField = regenerated
+        runCatching {
+            context.getSharedPreferences(IDENTITY_PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(IDENTITY_STORAGE_KEY, mode.name)
+                .putBoolean(IDENTITY_REGENERATED_KEY, regenerated)
+                .apply()
+        }
+    }
+
+    @Volatile
+    private var identityStorageModeField: String = "unknown"
+
+    @Volatile
+    private var identityRegeneratedField: Boolean = false
+
+    /**
+     * v2.16.0 (policy observability): why the identity lives where it lives
+     * — KEYSTORE / LEGACY_PREFS / SOFTWARE_FALLBACK (or "unknown" before
+     * the first initialize). Pairs with [identityRegenerated].
+     */
+    @Synchronized
+    fun identityStorageMode(): String = identityStorageModeField
+
+    /** v2.16.0: true when the in-use identity was regenerated over a
+     *  corrupt/missing predecessor (policy REGENERATE_AFTER_CORRUPTION). */
+    @Synchronized
+    fun identityRegenerated(): Boolean = identityRegeneratedField
 
     @Synchronized
     fun getEphemeralId(): String = ephemeralId

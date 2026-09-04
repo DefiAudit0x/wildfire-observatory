@@ -26,14 +26,40 @@ object RadarModel {
 
     data class ScreenPoint(val x: Float, val y: Float, val insideRange: Boolean)
 
-    fun project(angleDeg: Double, distKm: Double, cx: Float, cy: Float, radiusPx: Float): ScreenPoint {
+    /**
+     * v2.16.0 (audit wave 3 — per-frame allocation hygiene): a REUSABLE
+     * projection target. onDraw runs at display cadence; the immutable
+     * ScreenPoint allocates once per blip per frame. Hot paths use
+     * projectInto() with a scratch holder instead — same math, single
+     * source of truth (project() delegates to projectInto()).
+     */
+    class MutableScreenPoint {
+        var x: Float = 0f
+        var y: Float = 0f
+        var insideRange: Boolean = false
+    }
+
+    fun projectInto(
+        angleDeg: Double,
+        distKm: Double,
+        cx: Float,
+        cy: Float,
+        radiusPx: Float,
+        out: MutableScreenPoint
+    ): MutableScreenPoint {
         val clampedKm = distKm.coerceIn(0.0, RANGE_KM)
         val r = radiusPx * (clampedKm / RANGE_KM).toFloat()
         val rad = Math.toRadians(angleDeg)
         // 0° up, clockwise: x = cx + r·sin(θ), y = cy − r·cos(θ)
-        val x = cx + (r * Math.sin(rad)).toFloat()
-        val y = cy - (r * Math.cos(rad)).toFloat()
-        return ScreenPoint(x, y, distKm <= RANGE_KM)
+        out.x = cx + (r * Math.sin(rad)).toFloat()
+        out.y = cy - (r * Math.cos(rad)).toFloat()
+        out.insideRange = distKm <= RANGE_KM
+        return out
+    }
+
+    fun project(angleDeg: Double, distKm: Double, cx: Float, cy: Float, radiusPx: Float): ScreenPoint {
+        val out = projectInto(angleDeg, distKm, cx, cy, radiusPx, MutableScreenPoint())
+        return ScreenPoint(out.x, out.y, out.insideRange)
     }
 
     /** Bearing + distance from the user to a lat/lng — the blip factory. */

@@ -33,33 +33,62 @@ object LocationLogic {
         FIXED
     }
 
+    /**
+     * v2.16.0 (audit wave 3 — permission tier): Android 12+ lets the user
+     * grant ONLY approximate (coarse) location while denying precise (fine).
+     * The old engine keyed everything on ACCESS_FINE_LOCATION, so a
+     * coarse-only grant — a perfectly valid system state — rendered as
+     * NO_PERMISSION: the app showed "grant permission" while the system
+     * showed "location granted", and every map/SOS feature died.
+     *
+     *  - NONE: no location permission at all;
+     *  - COARSE: approximate only — NETWORK-class fixes, honest about it;
+     *  - FINE: precise — GPS + NETWORK, full fidelity.
+     */
+    enum class Tier { NONE, COARSE, FINE }
+
     data class FixSnapshot(
         val lat: Double,
         val lng: Double,
         val accuracyM: Float,
         val timeMs: Long,
-        val provider: String
+        val provider: String,
+        /** v2.16.0: true when the grant tier is COARSE — the fix is a
+         *  network-class approximation and the UI may say so. */
+        val approximate: Boolean = false
     )
 
     /**
      * The single verdict function. Everything the UI shows about GPS flows
      * through here, so tests pin every combination once.
      *
-     * @param permissionGranted ACCESS_FINE_LOCATION granted?
+     * @param permissionTier v2.16.0: NONE / COARSE (approximate only) / FINE
      * @param gpsEnabled / networkEnabled provider switches (Settings)
      * @param lastFixAgeMs age of the best fix in hand, null = none yet
      */
+    fun computeStatus(
+        permissionTier: Tier,
+        gpsEnabled: Boolean,
+        networkEnabled: Boolean,
+        lastFixAgeMs: Long?
+    ): Status {
+        if (permissionTier == Tier.NONE) return Status.NO_PERMISSION
+        if (!gpsEnabled && !networkEnabled) return Status.PROVIDERS_OFF
+        val age = lastFixAgeMs ?: return Status.SEARCHING
+        return if (age in 0..FIX_STALE_DROP_MS) Status.FIXED else Status.SEARCHING
+    }
+
+    /** Legacy boolean form — a `true` here always meant FINE. Kept for the
+     *  existing call sites/tests; new code should pass the tier. */
     fun computeStatus(
         permissionGranted: Boolean,
         gpsEnabled: Boolean,
         networkEnabled: Boolean,
         lastFixAgeMs: Long?
-    ): Status {
-        if (!permissionGranted) return Status.NO_PERMISSION
-        if (!gpsEnabled && !networkEnabled) return Status.PROVIDERS_OFF
-        val age = lastFixAgeMs ?: return Status.SEARCHING
-        return if (age in 0..FIX_STALE_DROP_MS) Status.FIXED else Status.SEARCHING
-    }
+    ): Status = computeStatus(
+        if (permissionGranted) Tier.FINE else Tier.NONE,
+        gpsEnabled, networkEnabled, lastFixAgeMs
+    )
 
     /**
      * Pick the best fix among providers' lastKnownLocation snapshots.

@@ -139,12 +139,26 @@ class RadarView @JvmOverloads constructor(
     private var glowShader: RadialGradient? = null
     private var sweepShader: SweepGradient? = null
 
+    // v2.16.0 (audit wave 3 — per-frame allocation hygiene): everything
+    // onDraw touches at 60fps is pre-allocated. Paths rewind in place,
+    // projections write into scratch holders, and the ring list (+ labels)
+    // is cached with the shaders — onDraw now allocates NOTHING in steady
+    // state (GC churn mid-sweep read as radar jitter on low-end devices).
+    private val diamondPath = android.graphics.Path()
+    private val trianglePath = android.graphics.Path()
+    private val blipScratch = RadarModel.MutableScreenPoint()
+    private val windScratch = Array(5) { RadarModel.MutableScreenPoint() }
+    private var cachedRings: List<Pair<Float, String>> = emptyList()
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         val cx = w / 2f
         val cy = h / 2f
         val radius = minOf(w, h) / 2f - 34f
-        if (radius <= 0f) return
+        if (radius <= 0f) {
+            cachedRings = emptyList()
+            return
+        }
         glowShader = RadialGradient(
             cx, cy, radius,
             intArrayOf(0x14331818, 0x000A0505), // faint red glow → body
@@ -152,6 +166,7 @@ class RadarView @JvmOverloads constructor(
             android.graphics.Shader.TileMode.CLAMP
         )
         sweepShader = SweepGradient(cx, cy, intArrayOf(0x40EF4444, 0x000A0505), floatArrayOf(0f, 1f))
+        cachedRings = RadarModel.rings(radius).map { (px, km) -> px to "${km}كلم" }
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -181,9 +196,9 @@ class RadarView @JvmOverloads constructor(
         canvas.restore()
 
         // Rings + labels (RTL: numbers are fine as-is).
-        for ((px, km) in RadarModel.rings(radius)) {
+        for ((px, label) in cachedRings) {
             canvas.drawCircle(cx, cy, px, ringPaint)
-            canvas.drawText("${km}كلم", cx + px - 2f, cy - 10f, ringLabelPaint)
+            canvas.drawText(label, cx + px - 2f, cy - 10f, ringLabelPaint)
         }
         // Cross hairs.
         canvas.drawLine(cx - radius, cy, cx + radius, cy, ringPaint)
@@ -208,7 +223,7 @@ class RadarView @JvmOverloads constructor(
         // Blips.
         val pulse = 1f + 0.35f * Math.sin(System.currentTimeMillis() / 300.0).toFloat()
         for (blip in blips) {
-            val p = RadarModel.project(blip.angleDeg, blip.distKm, cx, cy, radius)
+            val p = RadarModel.projectInto(blip.angleDeg, blip.distKm, cx, cy, radius, blipScratch)
             when (blip.kind) {
                 RadarModel.Kind.HOTSPOT -> drawDiamond(canvas, p.x, p.y, 9f, hotspotPaint)
                 RadarModel.Kind.PENDING_REPORT -> canvas.drawCircle(p.x, p.y, 8f, pendingPaint)
@@ -226,13 +241,14 @@ class RadarView @JvmOverloads constructor(
 
         // Wind arrow: direction the wind COMES FROM, at a fixed offset ring.
         windFromDeg?.let { fromDeg ->
-            val p = RadarModel.project(fromDeg, 27.0, cx, cy, radius)
-            val tail = RadarModel.project(fromDeg, 21.0, cx, cy, radius)
+            val s = windScratch
+            val p = RadarModel.projectInto(fromDeg, 27.0, cx, cy, radius, s[0])
+            val tail = RadarModel.projectInto(fromDeg, 21.0, cx, cy, radius, s[1])
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windPaint)
             // Arrowhead pointing INWARD (from where the wind arrives).
-            val inP = RadarModel.project(fromDeg + 180.0, 27.6, cx, cy, radius)
-            val left = RadarModel.project(fromDeg + 20.0, 26.0, cx, cy, radius)
-            val right = RadarModel.project(fromDeg - 20.0, 26.0, cx, cy, radius)
+            val inP = RadarModel.projectInto(fromDeg + 180.0, 27.6, cx, cy, radius, s[2])
+            val left = RadarModel.projectInto(fromDeg + 20.0, 26.0, cx, cy, radius, s[3])
+            val right = RadarModel.projectInto(fromDeg - 20.0, 26.0, cx, cy, radius, s[4])
             canvas.drawLine(p.x, p.y, left.x, left.y, headPaint)
             canvas.drawLine(p.x, p.y, right.x, right.y, headPaint)
             canvas.drawLine(p.x, p.y, inP.x, inP.y, headPaint)
@@ -240,12 +256,12 @@ class RadarView @JvmOverloads constructor(
 
         // User triangle at center (or a dimmed dot when no fix yet).
         if (userHasFix) {
-            val path = android.graphics.Path()
-            path.moveTo(cx, cy - 14f)
-            path.lineTo(cx - 10f, cy + 10f)
-            path.lineTo(cx + 10f, cy + 10f)
-            path.close()
-            canvas.drawPath(path, userPaint)
+            trianglePath.rewind()
+            trianglePath.moveTo(cx, cy - 14f)
+            trianglePath.lineTo(cx - 10f, cy + 10f)
+            trianglePath.lineTo(cx + 10f, cy + 10f)
+            trianglePath.close()
+            canvas.drawPath(trianglePath, userPaint)
         } else {
             userPaint.alpha = 90
             canvas.drawCircle(cx, cy, 8f, userPaint)
@@ -254,13 +270,13 @@ class RadarView @JvmOverloads constructor(
     }
 
     private fun drawDiamond(canvas: Canvas, x: Float, y: Float, r: Float, paint: Paint) {
-        val path = android.graphics.Path()
-        path.moveTo(x, y - r)
-        path.lineTo(x + r, y)
-        path.lineTo(x, y + r)
-        path.lineTo(x - r, y)
-        path.close()
-        canvas.drawPath(path, paint)
+        diamondPath.rewind()
+        diamondPath.moveTo(x, y - r)
+        diamondPath.lineTo(x + r, y)
+        diamondPath.lineTo(x, y + r)
+        diamondPath.lineTo(x - r, y)
+        diamondPath.close()
+        canvas.drawPath(diamondPath, paint)
     }
 
     private fun drawSquare(canvas: Canvas, x: Float, y: Float, r: Float, paint: Paint) {
