@@ -159,6 +159,10 @@ class ObservatoryFragment : Fragment() {
         val fix = app.locationEngine.currentFix()
         banner?.visibility = View.GONE
         if (fix != null) {
+            // v2.15.0: threat pins exclude rejected AND resolved reports —
+            // a resolved fire must never raise "خطر مباشر" again (staleness
+            // is filtered inside ProximityLogic via `now`).
+            val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
             val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
                 snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
                 snap.meshIntel.mapNotNull { intel ->

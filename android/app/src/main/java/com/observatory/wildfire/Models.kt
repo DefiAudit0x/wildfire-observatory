@@ -304,8 +304,8 @@ object Parsers {
         // future-fabricated beyond a 2-minute skew.
         val rawLat = safeDouble(o, "lat")
         val rawLng = safeDouble(o, "lng")
-        val lat = if (rawLat.isFinite() && rawLat >= -90.0 && rawLat <= 90.0) rawLat else null
-        val lng = if (rawLng.isFinite() && rawLng >= -180.0 && rawLng <= 180.0) rawLng else null
+        val lat = rawLat?.takeIf { it.isFinite() && it >= -90.0 && it <= 90.0 }
+        val lng = rawLng?.takeIf { it.isFinite() && it >= -180.0 && it <= 180.0 }
         val ts = (if (o.has("t")) o.optLong("t", 0L) else 0L)
             .coerceAtMost(System.currentTimeMillis() + 2 * 60_000L)
         MeshIntel(

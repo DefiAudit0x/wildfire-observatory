@@ -187,7 +187,15 @@ class AppRepository(
     /** Broadcast field intel to nearby peers over BLE (works fully offline). */
     fun broadcastMeshIntel(kind: String, text: String, lat: Double?, lng: Double?): Boolean {
         val svc = meshService ?: return false
-        val json = ApiPayloads.buildMeshIntelJson(kind, text, lat ?: Double.NaN, lng ?: Double.NaN, System.currentTimeMillis())
+        // v2.15.0 honesty gate: the mesh wire format signs lat/lng as
+        // physical coordinates and parseFrame rejects non-finite frames
+        // (MeshWireTest pin). A no-fix broadcast would have to fabricate
+        // coordinates — the exact Algiers-fallback sin v2.15.0 removes.
+        // So: no fix => no mesh broadcast; the echo stays local (coords-less
+        // chat entry) and the internet path (hasLocation:false) is the
+        // honest channel for coordinate-less SOS.
+        if (lat == null || lng == null) return false
+        val json = ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
         val ok = svc.broadcastMessage(json, if (kind == "sos") "echo" else "report", lat, lng)
         if (ok) {
             val entry = MeshChatEntry(
