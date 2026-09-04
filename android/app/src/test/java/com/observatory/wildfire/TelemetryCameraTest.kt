@@ -273,7 +273,6 @@ class TelemetryCameraTest {
         val lines = TelemetryCamera.alignmentStampLines(alignment)
         assertEquals(35, lines[1].removePrefix("LOCATION: ").length)
     }
-}
 
     // v2.15.0: negative headings normalized — the old %-arithmetic indexed
     // dirs[-1] (ArrayIndexOutOfBoundsException) on the capture path.
@@ -288,3 +287,4 @@ class TelemetryCameraTest {
             angle += 7.5
         }
     }
+}

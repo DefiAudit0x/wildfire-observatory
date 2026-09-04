@@ -168,7 +168,6 @@ class ApiPayloadsTest {
             // expected
         }
     }
-}
 
     // v2.15.0: coordinates must format identically under ANY default locale —
     // an ar-DZ device used to emit Arabic-Indic digits/comma decimals into
@@ -213,3 +212,4 @@ class ApiPayloadsTest {
         )
         org.junit.Assert.assertNull(bad?.first)
     }
+}
