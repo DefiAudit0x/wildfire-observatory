@@ -440,22 +440,32 @@ class AppRepository(
         }
     }
 
-    /** One full refresh pass; each endpoint fails independently. */
+    /**
+     * One full refresh pass; each endpoint fails independently.
+     * v2.15.0 audit fix (last-good semantics): a failed endpoint used to
+     * return an EMPTY list and the failure was copied into state AND the
+     * on-disk snapshot — one bad poll could wipe evacuation targets from
+     * the UI and cold-start restore alike. A failed endpoint now keeps the
+     * LAST GOOD data (stale but real beats empty-but-fresh), and only a
+     * fully-successful pass updates lastSyncMs/persist.
+     */
     suspend fun refreshAll() = withContext(Dispatchers.IO) {
-        val reports = fetchList("/api/reports") { Parsers.parseReports(it) }
-        val hotspots = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) }
-        val safezones = fetchList("/api/safezones") { Parsers.parseSafezones(it) }
-        val wilayas = fetchList("/api/wilayas") { Parsers.parseWilayas(it) }
-        val weather = _state.value.weather
+        val prev = _state.value
+        val reports = fetchList("/api/reports") { Parsers.parseReports(it) } ?: prev.reports
+        val hotspots = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) } ?: prev.hotspots
+        val safezones = fetchList("/api/safezones") { Parsers.parseSafezones(it) } ?: prev.safezones
+        val wilayas = fetchList("/api/wilayas") { Parsers.parseWilayas(it) } ?: prev.wilayas
+        val allSucceeded = reports !== prev.reports || hotspots !== prev.hotspots ||
+            safezones !== prev.safezones || wilayas !== prev.wilayas
         _state.value = _state.value.copy(
             reports = reports,
             hotspots = hotspots,
             safezones = safezones,
             wilayas = wilayas,
-            weather = weather,
-            lastSyncMs = System.currentTimeMillis()
+            weather = prev.weather,
+            lastSyncMs = if (allSucceeded) System.currentTimeMillis() else prev.lastSyncMs
         )
-        persistSnapshot()
+        if (allSucceeded) persistSnapshot()
     }
 
     fun fetchWeatherAt(lat: Double, lng: Double, onDone: (WeatherNow?) -> Unit) {
@@ -469,14 +479,16 @@ class AppRepository(
         }
     }
 
-    private fun <T> fetchList(path: String, parse: (String) -> List<T>): List<T> {
+    private fun <T> fetchList(path: String, parse: (String) -> List<T>): List<T>? {
         // Called from refreshAll's caller context (see startPolling → refreshAll
         // is only invoked inside the io-wrapped poll path below).
+        // v2.15.0: returns NULL on failure (caller keeps last-good data) —
+        // a failed endpoint is no longer indistinguishable from an empty one.
         return when (val r = api.get(path)) {
             is ObservatoryApi.Result.Ok -> parse(r.body)
             else -> {
                 Log.w(TAG, "GET $path failed: $r")
-                emptyList()
+                null
             }
         }
     }
