@@ -2,47 +2,95 @@
 <resources>
     <color name="ic_launcher_background">#1B5E20</color>
 
-    <!-- v2.8.0 (S2 UI parity): the native shell now mirrors the WEB console's
-         zinc/red glassmorphism token-for-token (src/index.css + Tailwind
-         palette). Same hues, same translucency levels, same semantics — a
-         screenshot of either surface should read as the same product. -->
+    <!-- ═══════════════════════════════════════════════════════════════
+         Observatory Dark Palette — v3.0 Professional UI
+         Mirrors the web console's dark navy aesthetic.
+    ════════════════════════════════════════════════════════════════ -->
 
-    <!-- Base surfaces (web: body #0a0505, panels zinc-900/950) -->
-    <color name="bg">#0A0505</color>
-    <color name="surface">#18181B</color>            <!-- zinc-900 -->
-    <color name="surface_alt">#0F0D0F</color>        <!-- zinc-950 lifted -->
-    <color name="surface_recessed">#09090B</color>   <!-- zinc-950 -->
+    <!-- Backgrounds -->
+    <color name="bg">#0B1220</color>
+    <color name="surface">#131C2E</color>
+    <color name="surface_alt">#0F172A</color>
+    <color name="surface_elevated">#18243A</color>
+    <color name="surface_dialog">#1A2744</color>
 
-    <!-- Glass fills (web: bg-black/60 headers, bg-zinc-900/70 panels) -->
-    <color name="glass_fill">#990A0505</color>       <!-- black/60 over bg -->
-    <color name="glass_fill_strong">#CC0A0505</color><!-- black/80 tab bar -->
-    <color name="glass_card_top">#D918181B</color>   <!-- zinc-900/85 -->
-    <color name="glass_card_bottom">#B30F0D0F</color><!-- zinc-950/70 -->
+    <!-- Borders & Dividers -->
+    <color name="border">#1E293B</color>
+    <color name="border_subtle">#162032</color>
+    <color name="border_strong">#2A3F5F</color>
+    <color name="divider">#1A2B42</color>
 
-    <!-- Borders (web: border-white/10, red tints at 20/40%) -->
-    <color name="border">#26262B</color>             <!-- zinc-800 -->
-    <color name="border_glass">#1AFFFFFF</color>     <!-- white/10 -->
-    <color name="border_glass_soft">#14FFFFFF</color><!-- white/8 -->
-    <color name="border_red_soft">#33EF4444</color>  <!-- red-500/20 -->
-    <color name="border_red_strong">#66EF4444</color><!-- red-500/40 -->
-
-    <!-- Text (web: slate-50 primary, slate-300 secondary, gray-400 muted) -->
-    <color name="text_primary">#F8FAFC</color>
+    <!-- Text -->
+    <color name="text_primary">#E2E8F0</color>
     <color name="text_secondary">#CBD5E1</color>
-    <color name="text_muted">#9CA3AF</color>
-    <color name="text_faint">#71717A</color>         <!-- zinc-500 -->
+    <color name="text_muted">#94A3B8</color>
+    <color name="text_hint">#475569</color>
+    <color name="text_on_accent">#FFFFFF</color>
+    <color name="text_on_danger">#FFFFFF</color>
 
-    <!-- Accents (web primary = red-600; status = emerald/amber/cyan/orange) -->
-    <color name="accent_red">#DC2626</color>         <!-- red-600 -->
-    <color name="accent_red_bright">#EF4444</color>  <!-- red-500 -->
-    <color name="accent_red_deep">#991B1B</color>    <!-- red-800 -->
+    <!-- ── Accent Colors ─────────────────────────────── -->
+    <!-- Red → Danger / Fire / SOS -->
+    <color name="accent_red">#EF4444</color>
+    <color name="accent_red_dark">#B91C1C</color>
+    <color name="accent_red_dim">#991B1B</color>
+    <color name="accent_red_container">#1F0808</color>
+    <color name="accent_red_on_container">#FCA5A5</color>
+
+    <!-- Green → Safe / Confirmed / Connected -->
     <color name="accent_green">#10B981</color>
-    <color name="accent_green_bright">#34D399</color>
-    <color name="accent_amber">#F59E0B</color>
-    <color name="accent_amber_bright">#FBBF24</color>
-    <color name="accent_cyan">#22D3EE</color>
-    <color name="accent_orange">#F97316</color>      <!-- severity: high -->
+    <color name="accent_green_dark">#059669</color>
+    <color name="accent_green_container">#052318</color>
+    <color name="accent_green_on_container">#6EE7B7</color>
 
-    <!-- Legacy aliases kept for earlier code paths (values re-tinted) -->
-    <color name="text_secondary_legacy">#CBD5E1</color>
+    <!-- Amber → Warning / Pending / Recording -->
+    <color name="accent_amber">#F59E0B</color>
+    <color name="accent_amber_dark">#D97706</color>
+    <color name="accent_amber_container">#1C1505</color>
+    <color name="accent_amber_on_container">#FCD34D</color>
+
+    <!-- Cyan → Info / Mesh / GPS -->
+    <color name="accent_cyan">#22D3EE</color>
+    <color name="accent_cyan_dark">#0891B2</color>
+    <color name="accent_cyan_container">#042028</color>
+    <color name="accent_cyan_on_container">#A5F3FC</color>
+
+    <!-- Orange → Hotspot / High-severity -->
+    <color name="accent_orange">#F97316</color>
+    <color name="accent_orange_dark">#EA580C</color>
+    <color name="accent_orange_container">#1C0D03</color>
+
+    <!-- ── UI State Colors ──────────────────────────── -->
+    <color name="ripple_primary">#33EF4444</color>
+    <color name="ripple_on_surface">#1FFFFFFF</color>
+    <color name="scrim">#CC0B1220</color>
+    <color name="overlay_critical">#E60B1220</color>
+    <color name="overlay_warning">#B30B1220</color>
+    <color name="shadow">#660B1220</color>
+
+    <!-- ── Navigation ──────────────────────────────── -->
+    <color name="nav_bg">#0E1928</color>
+    <color name="nav_active">#EF4444</color>
+    <color name="nav_inactive">#475569</color>
+    <color name="nav_indicator">#1FEF4444</color>
+
+    <!-- ── Input Fields ────────────────────────────── -->
+    <color name="input_bg">#111B2D</color>
+    <color name="input_border">#1E293B</color>
+    <color name="input_border_focused">#22D3EE</color>
+    <color name="input_text">#E2E8F0</color>
+    <color name="input_hint">#475569</color>
+
+    <!-- ── Chip States ─────────────────────────────── -->
+    <color name="chip_bg">#18243A</color>
+    <color name="chip_border">#243349</color>
+    <color name="chip_gps_active">#10B981</color>
+    <color name="chip_net_active">#22D3EE</color>
+    <color name="chip_mesh_active">#F59E0B</color>
+    <color name="chip_offline">#475569</color>
+
+    <!-- ── Severity Scale ──────────────────────────── -->
+    <color name="sev_low">#10B981</color>
+    <color name="sev_medium">#F59E0B</color>
+    <color name="sev_high">#F97316</color>
+    <color name="sev_critical">#EF4444</color>
 </resources>

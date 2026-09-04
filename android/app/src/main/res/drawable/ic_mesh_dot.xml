@@ -2,6 +2,6 @@
 <!-- Mesh intel: cyan dot -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
     <solid android:color="#FF22D3EE" />
-    <stroke android:width="2dp" android:color="#0A0505" />
+    <stroke android:width="2dp" android:color="#0B1220" />
     <size android:width="14dp" android:height="14dp" />
 </shape>

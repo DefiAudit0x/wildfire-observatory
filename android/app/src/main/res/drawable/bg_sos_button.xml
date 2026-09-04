@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- v2.8.0 SOS button (web red-600 system): red-600→red-800 gradient disc-
-     cornered, deep rim + bright inner edge for the pulsing emergency read. -->
+<!-- SOS button: deep-red gradient, rounded, dark rim -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
-    <gradient android:startColor="#FFEF4444" android:endColor="#FF991B1B" android:angle="270" />
+    <gradient android:startColor="#FFF26056" android:endColor="#FF991B1B" android:angle="270" />
     <corners android:radius="28dp" />
     <stroke android:width="2dp" android:color="#FF7F1D1D" />
 </shape>
