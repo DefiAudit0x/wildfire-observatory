@@ -62,7 +62,9 @@ class ProximityLogicTest {
     @Test
     fun nearestFreshKm_skipsPoisonedCoordinates() {
         val now = 10_000_000L
-        val freshValid = ProximityLogic.ThreatPin(36.8, 7.6, now - 1_000)
+        // freshValid sits ~7 km away (NOT on the user position — a pin at
+        // the user's own coordinates is 0 km and nothing can be closer).
+        val freshValid = ProximityLogic.ThreatPin(36.85, 7.65, now - 1_000)
         val poisonedNaN = ProximityLogic.ThreatPin(Double.NaN, 7.7, now - 1_000)
         val poisonedRange = ProximityLogic.ThreatPin(200.0, 7.7, now - 1_000)
         val freshCloser = ProximityLogic.ThreatPin(36.79, 7.61, now - 2_000)

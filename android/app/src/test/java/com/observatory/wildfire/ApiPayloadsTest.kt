@@ -180,7 +180,10 @@ class ApiPayloadsTest {
             val url = ApiPayloads.buildOpenMeteoUrl(36.7538, 3.0588)
             org.junit.Assert.assertTrue(url, url.contains("latitude=36.753800"))
             org.junit.Assert.assertTrue(url, url.contains("longitude=3.058800"))
-            org.junit.Assert.assertFalse(url, url.contains(","))
+            // ASCII commas are LEGAL in the URL (current=temperature_2m,relative_humidity_2m,…).
+            // The locale-corruption signature is Arabic-Indic digits (٠-٩)
+            // and the Arabic decimal separator (٫) — pin against THOSE.
+            org.junit.Assert.assertFalse(url, url.any { it in '٠'..'٩' || it == '٫' })
             val osrm = ApiPayloads.buildOsrmUrl(36.7538, 3.0588, 36.9, 7.6)
             org.junit.Assert.assertFalse(osrm, osrm.contains(",3.") && osrm.contains("36,"))
         } finally {
