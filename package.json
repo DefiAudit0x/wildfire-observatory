@@ -55,7 +55,7 @@
     "@sentry/vite-plugin": "^5.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@testing-library/jest-dom": "^7.0.0",
-    "@testing-library/react": "^16.3.2",
+    "@testing-library/react": "^16.3.3",
     "@types/compression": "^1.8.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.17",
