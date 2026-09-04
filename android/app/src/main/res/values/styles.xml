@@ -28,7 +28,6 @@
         <item name="colorOnSurface">@color/text_primary</item>
         <item name="colorSurfaceVariant">@color/surface_elevated</item>
         <item name="colorOnSurfaceVariant">@color/text_muted</item>
-        <item name="colorBackground">@color/bg</item>
         <item name="colorOnBackground">@color/text_primary</item>
         <item name="android:colorBackground">@color/bg</item>
 
@@ -203,9 +202,16 @@
         <item name="android:background">@color/nav_bg</item>
         <item name="itemIconTint">@color/nav_item_color</item>
         <item name="itemTextColor">@color/nav_item_color</item>
-        <item name="itemActiveIndicatorColor">@color/nav_indicator</item>
+        <!-- fix: itemActiveIndicatorColor does not exist in Material 1.11.0 —
+             the active pill is set via itemActiveIndicatorStyle + drawable -->
+        <item name="itemActiveIndicatorStyle">@style/Observatory.ActiveIndicator</item>
         <item name="labelVisibilityMode">labeled</item>
         <item name="elevation">8dp</item>
+    </style>
+
+    <!-- Active-tab pill behind the selected destination (nav_indicator red 12%) -->
+    <style name="Observatory.ActiveIndicator">
+        <item name="android:background">@drawable/bg_nav_indicator</item>
     </style>
 
     <!-- ── Chips ─────────────────────────────────────────────── -->
@@ -221,6 +227,10 @@
     </style>
 
     <!-- ── Typography Text Appearances ──────────────────────── -->
+    <!-- Implicit-parent base: dotted names (SectionLabel, RiskScore, ...)
+         resolve their implicit parent from this style - it must exist. -->
+    <style name="TextAppearance.Observatory" parent="TextAppearance.Material3.BodyMedium" />
+
     <style name="TextAppearance.Observatory.HeadlineSmall" parent="TextAppearance.Material3.HeadlineSmall">
         <item name="android:textColor">@color/text_primary</item>
         <item name="android:textStyle">bold</item>
