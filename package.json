@@ -73,7 +73,7 @@
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.2",
-    "firebase-tools": "^15.27.0",
+    "firebase-tools": "^15.28.2",
     "husky": "^9.1.0",
     "jsdom": "^30.0.1",
     "supertest": "^7.0.0",
