@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.8.0 glass header bar (web: bg-black/60 backdrop-blur-md border-b white/5).
+     Native approximation of backdrop-blur: dense translucent black — content
+     scrolling beneath dims like a real blur without API-31 RenderEffect. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@color/glass_fill" />
+    <stroke android:width="0dp" android:color="@android:color/transparent" />
+</shape>

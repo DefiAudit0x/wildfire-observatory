@@ -128,6 +128,27 @@
     <string name="camera_permission_denied">إذن الكاميرا مرفوض — يمكنك اختيار صورة من المعرض بدلاً من التصوير</string>
     <string name="camera_open_fail">تعذر تشغيل الكاميرا — حاول مجددًا أو اختر صورة من المعرض</string>
 
+    <!-- v2.9.0 — telemetry camera (S3 web ReportForm parity): estimate-only
+         wording throughout, mirrors the web Arabic strings verbatim. -->
+    <string name="camera_compass_fmt">زاوية اتجاه البوصلة: %1$d° %2$s (%3$s)</string>
+    <string name="camera_compass_none">البوصلة: لا توجد بيانات من المستشعر</string>
+    <string name="camera_sensor_unavailable">حساس الاتجاه غير متاح — استخدم الضبط اليدوي وسيُعلَّم على الصورة</string>
+    <string name="camera_source_sensor">مستشعر</string>
+    <string name="camera_source_manual">ضبط يدوي</string>
+    <string name="camera_stamp_on">الختم: مفعّل</string>
+    <string name="camera_stamp_off">الختم: معطّل</string>
+    <string name="camera_manual_heading_hint">اتجاه يدوي</string>
+    <string name="camera_manual_pitch_hint">ميل يدوي</string>
+    <string name="camera_gps_not_set">غير محدد</string>
+    <string name="camera_status_fmt">GPS: %1$s — الاتجاه: %2$s — الميل: %3$s</string>
+    <string name="camera_alignment_match_fmt">تقاطع مع بلاغ قائم: %1$d%% — %2$s (%3$.1f كلم، زاوية %4$d°) — مطابقة تقديرية لا إثبات</string>
+    <string name="camera_alignment_none">لا بلاغات قريبة ضمن هذا الاتجاه والمدى</string>
+    <string name="camera_alignment_no_fix">يلزم تحديد الموقع والاتجاه أولاً للمطابقة التقديرية</string>
+    <string name="prescan_positive_fmt">فحص لوني بصري أولي (تقديري فقط — لا يُثبت وجود حريق؛ التحقق النهائي يتم في الخادم عند وصول البلاغ): ألوان متوافقة مع ظلال نارية/دخانية (%1$d%%).</string>
+    <string name="prescan_negative_fmt">فحص لوني بصري أولي (تقديري فقط — لا يُثبت عدم وجود حريق): لم تُرصد تدرجات نارية/دخانية واضحة (%1$d%%). الالتقاط المقرّب والصريح يساعد التحقق الخادمي.</string>
+    <string name="telemetry_alignment_fmt">تقاطع مع بلاغ قائم في هذا الاتجاه: %1$d%% (تقدير) — %2$s</string>
+    <string name="gallery_no_telemetry">الصور المرفوعة من المعرض لا تتضمن ختم القياس الميداني الخاص بالتصوير المباشر؛ لا تُعد بيانات EXIF إثباتًا مستقلًا.</string>
+
     <!-- Team / mesh -->
     <string name="team_title">الفريق والشبكة</string>
     <string name="team_code_hint">رمز الانضمام (من قائد الفريق)</string>
@@ -152,4 +173,23 @@
     <string name="mesh_queued_local">أُدرجت الرسالة في شبكة البلوتوث</string>
     <string name="mesh_unavailable_toast">الشبكة غير متاحة حاليًا</string>
     <string name="mesh_legend">الرسائل والبلاغات تنتقل بين الأجهزة عبر البلوتوث مع تشفير تام — بلوغت أجهزة دون إنترنت تظهر على رادارك وخرائطك</string>
+
+    <!-- S4 Radar v2 — integrated operational map -->
+    <string name="radar_rings_toggle">حلقات ٣٠ كم</string>
+    <string name="radar_ai_button">إحاطة السلامة</string>
+    <string name="wind_chip_fmt">🌬 %1$s كم/س · %2$s°C · %3$s — %4$s</string>
+    <string name="wind_no_fix">حدّد موقعك لعرض الرياح والمخروط التقديري</string>
+    <string name="radar_note">المخروط البرتقالي: اتجاه انتشار تقديري وفق الرياح — مرجع رياح وليس نموذج حريق</string>
+    <string name="route_chip_fmt">%1$.1f كلم · %2$d د — %3$s</string>
+    <string name="route_safe">آمن</string>
+    <string name="route_cross">يعبر خطراً</string>
+    <string name="route_safest_mark">★ %1$s</string>
+    <string name="ai_card_title">إحاطة السلامة — الذكاء الاصطناعي</string>
+    <string name="ai_loading">جارٍ توليد الإحاطة…</string>
+    <string name="ai_failed">تعذر جلب الإحاطة — تحقق من الشبكة وحاول مجددًا</string>
+    <string name="ai_wait">طلبات متقاربة — انتظر لحظات ثم أعد المحاولة</string>
+    <string name="ai_close">إغلاق</string>
+    <string name="mission_chip_fmt">مهمة نشطة — المرحلة: %1$s</string>
+    <string name="mission_target_title">هدف المهمة (SOS)</string>
+    <string name="mission_target_snippet">النقطة التي تُحوّل الفريق إليها من القيادة</string>
 </resources>
