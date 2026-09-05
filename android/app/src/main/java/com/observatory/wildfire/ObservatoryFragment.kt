@@ -148,7 +148,9 @@ class ObservatoryFragment : Fragment() {
             if (track.width == 0 || marker.width == 0) return@post
             val range = (track.width - marker.width).toFloat()
             if (range <= 0f) return@post
-            val targetX = (score / 100.0) * range - marker.left
+            // score/100f keeps this in Float space (translationX is a Float
+            // and Double arithmetic here was a compile error on CI).
+            val targetX = (score / 100f) * range - marker.left
             if (kotlin.math.abs(targetX - lastMarkerX) < 0.5f) return@post
             lastMarkerX = targetX
             marker.animate()

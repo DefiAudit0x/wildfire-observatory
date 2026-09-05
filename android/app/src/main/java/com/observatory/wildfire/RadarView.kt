@@ -81,9 +81,9 @@ class RadarView @JvmOverloads constructor(
     private val crossColor = 0x0DFFFFFF  // white/5 crosshair
     private val tickMinor = 0x1FFFFFFF
     private val tickMajor = 0x73006233   // brand green/45
-    private val tickCardinal = 0x8CFFFFFF
+    private val tickCardinal = 0x8CFFFFFF.toInt()
     private val letterColor = 0xFFE8F2EC.toInt()
-    private val labelColor = 0xB3FFFFFF  // white/70 ring labels
+    private val labelColor = 0xB3FFFFFF.toInt()  // white/70 ring labels
     private val neonColor = 0xFF00FF8C.toInt()
     private val neonSoft = 0x5500E676
 
@@ -131,7 +131,7 @@ class RadarView @JvmOverloads constructor(
     }
     private val sweepEdgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        color = 0xC400FF8C
+        color = 0xC400FF8C.toInt()
         strokeWidth = 2.4f
     }
     private val hotspotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -271,7 +271,7 @@ class RadarView @JvmOverloads constructor(
         )
         sweepCoreShader = SweepGradient(
             cx, cy,
-            intArrayOf(0x8800FF8C, 0x0000FF8C),
+            intArrayOf(0x8800FF8C.toInt(), 0x0000FF8C),
             floatArrayOf(0f, 0.16f)
         )
         cachedRings = RadarModel.rings(radius).map { (px, km) -> px to "${km}كلم" }
