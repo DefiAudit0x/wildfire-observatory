@@ -22,8 +22,8 @@ android {
         applicationId 'com.observatory.wildfire'
         minSdk 26
         targetSdk 36
-        versionCode 27
-        versionName '2.19.0'
+        versionCode 28
+        versionName '2.20.0'
 
         vectorDrawables.useSupportLibrary = true
         // v2.16.0 (audit wave 3): instrumented tests land (androidTest layer

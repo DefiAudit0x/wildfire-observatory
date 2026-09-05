@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.20.0 Neo risk meter marker: white core + glow halo, rides the
+     track at the current score position. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="center">
+        <shape android:shape="rectangle">
+            <solid android:color="#66FFFFFF" />
+            <corners android:radius="99dp" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:start="4dp" android:end="4dp" android:top="4dp" android:bottom="4dp">
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFFFF" />
+            <corners android:radius="99dp" />
+        </shape>
+    </item>
+</layer-list>

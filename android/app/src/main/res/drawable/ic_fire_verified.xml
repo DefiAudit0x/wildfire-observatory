@@ -1,8 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Verified fire report (brand book "Fire Markers"): solid brand red,
-     white rim so it separates from the red-tinted radar sweep. -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-    <solid android:color="#FFD21034" />
-    <stroke android:width="3dp" android:color="#FFFFFFFF" />
-    <size android:width="20dp" android:height="20dp" />
-</shape>
+<!-- v2.20.0 Neo map marker: soft halo + core dot (glow = 2025). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="30dp" android:height="30dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#40D21034" />
+        </shape>
+    </item>
+    <item android:width="22dp" android:height="22dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#00000000" />
+            <stroke android:width="2dp" android:color="#FFFFFFFF" />
+        </shape>
+    </item>
+    <item android:width="16dp" android:height="16dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#FFD21034" />
+        </shape>
+    </item>
+</layer-list>

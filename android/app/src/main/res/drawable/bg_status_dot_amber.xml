@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-    <solid android:color="@color/accent_amber" />
-    <size android:width="8dp" android:height="8dp" />
-</shape>
+<!-- v2.20.0 Neo glow dot: soft halo + solid core (no emoji anywhere). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#29FFC24B" />
+        </shape>
+    </item>
+    <item android:gravity="center" android:top="3dp" android:bottom="3dp" android:start="3dp" android:end="3dp">
+        <shape android:shape="oval">
+            <solid android:color="#FFFFC24B" />
+        </shape>
+    </item>
+</layer-list>

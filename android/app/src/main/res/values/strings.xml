@@ -215,4 +215,9 @@
     <string name="geo_status_failed">تعذر تحديد اسم الموقع — اضغط لإعادة المحاولة</string>
     <string name="geo_status_offline_fmt">خارج تغطية التسمية — الولاية (تقريبي): %1$s</string>
     <string name="report_tap_settings">افتح إعدادات الموقع لتفعيل GPS</string>
+
+    <!-- v2.20.0 — Neo design system: floating glass map controls -->
+    <string name="cd_zoom_in">تكبير الخريطة</string>
+    <string name="cd_zoom_out">تصغير الخريطة</string>
+    <string name="cd_recenter">توسيط الخريطة على موقعي</string>
 </resources>

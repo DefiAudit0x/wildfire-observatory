@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.20.0 Neo risk meter track: the brand 5-level danger scale as one
+     continuous gradient (low emerald → moderate lime → high orange →
+     very-high burnt orange → extreme crimson). -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient
+        android:startColor="#FF00E676"
+        android:centerColor="#FFFF6B35"
+        android:endColor="#FFD21034"
+        android:angle="0"
+        android:type="linear" />
+    <corners android:radius="99dp" />
+</shape>

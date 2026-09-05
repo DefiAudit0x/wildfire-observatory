@@ -3,108 +3,131 @@
     <color name="ic_launcher_background">#1B5E20</color>
 
     <!-- ═══════════════════════════════════════════════════════════════
-         Observatory Dark Palette — v3.0 Professional UI
-         Mirrors the web console's dark navy aesthetic.
+         AURORA OBSIDIAN — v4.0 Neo Design System (2025)
+         The 2024 navy-console era ends here. Green-tinted near-black
+         glass over which neon emerald and fire gradients glow. Every
+         name from the v3.0 palette is PRESERVED (Kotlin + drawables
+         reference them) — the values were re-tuned, not renamed.
     ════════════════════════════════════════════════════════════════ -->
 
-    <!-- Backgrounds -->
-    <color name="bg">#0B1220</color>
-    <color name="surface">#131C2E</color>
-    <color name="surface_alt">#0F172A</color>
-    <color name="surface_elevated">#18243A</color>
-    <color name="surface_dialog">#1A2744</color>
+    <!-- Backgrounds: deep green-black (was flat navy #0B1220) -->
+    <color name="bg">#060A08</color>
+    <color name="surface">#0C1310</color>
+    <color name="surface_alt">#0A0F0D</color>
+    <color name="surface_elevated">#121B16</color>
+    <color name="surface_dialog">#101915</color>
 
-    <!-- Borders & Dividers -->
-    <color name="border">#1E293B</color>
-    <color name="border_subtle">#162032</color>
-    <color name="border_strong">#2A3F5F</color>
-    <color name="divider">#1A2B42</color>
+    <!-- Borders: hairlines now live as glass strokes (white alphas) -->
+    <color name="border">#1DFFFFFF</color>
+    <color name="border_subtle">#10FFFFFF</color>
+    <color name="border_strong">#2EFFFFFF</color>
+    <color name="divider">#14FFFFFF</color>
 
-    <!-- Text -->
-    <color name="text_primary">#E2E8F0</color>
-    <color name="text_secondary">#CBD5E1</color>
-    <color name="text_muted">#94A3B8</color>
-    <color name="text_hint">#475569</color>
+    <!-- Text: soft minted whites (was blue-gray slate) -->
+    <color name="text_primary">#F2F6F4</color>
+    <color name="text_secondary">#C3CDC7</color>
+    <color name="text_muted">#8CA096</color>
+    <color name="text_hint">#54665C</color>
     <color name="text_on_accent">#FFFFFF</color>
     <color name="text_on_danger">#FFFFFF</color>
 
     <!-- ── Accent Colors ─────────────────────────────── -->
-    <!-- Red → Danger / Fire / SOS -->
-    <color name="accent_red">#EF4444</color>
-    <color name="accent_red_dark">#B91C1C</color>
-    <color name="accent_red_dim">#991B1B</color>
-    <color name="accent_red_container">#1F0808</color>
-    <color name="accent_red_on_container">#FCA5A5</color>
+    <!-- Red → Danger / Fire / SOS — brand crimson, brighter core -->
+    <color name="accent_red">#FF3B52</color>
+    <color name="accent_red_dark">#D21034</color>
+    <color name="accent_red_dim">#991B2B</color>
+    <color name="accent_red_container">#1E090E</color>
+    <color name="accent_red_on_container">#FFB3BE</color>
 
-    <!-- Green → Safe / Confirmed / Connected -->
-    <color name="accent_green">#10B981</color>
-    <color name="accent_green_dark">#059669</color>
-    <color name="accent_green_container">#052318</color>
-    <color name="accent_green_on_container">#6EE7B7</color>
+    <!-- Green → Safe / Confirmed / Connected — neon emerald -->
+    <color name="accent_green">#00E676</color>
+    <color name="accent_green_dark">#00A844</color>
+    <color name="accent_green_container">#062015</color>
+    <color name="accent_green_on_container">#7BFFB2</color>
 
     <!-- Amber → Warning / Pending / Recording -->
-    <color name="accent_amber">#F59E0B</color>
-    <color name="accent_amber_dark">#D97706</color>
-    <color name="accent_amber_container">#1C1505</color>
-    <color name="accent_amber_on_container">#FCD34D</color>
+    <color name="accent_amber">#FFC24B</color>
+    <color name="accent_amber_dark">#F59E0B</color>
+    <color name="accent_amber_container">#1E1604</color>
+    <color name="accent_amber_on_container">#FFDE8A</color>
 
     <!-- Cyan → Info / Mesh / GPS -->
-    <color name="accent_cyan">#22D3EE</color>
+    <color name="accent_cyan">#3AE8FF</color>
     <color name="accent_cyan_dark">#0891B2</color>
-    <color name="accent_cyan_container">#042028</color>
-    <color name="accent_cyan_on_container">#A5F3FC</color>
+    <color name="accent_cyan_container">#04222B</color>
+    <color name="accent_cyan_on_container">#A9F4FF</color>
 
-    <!-- Orange → Hotspot / High-severity -->
-    <color name="accent_orange">#F97316</color>
-    <color name="accent_orange_dark">#EA580C</color>
-    <color name="accent_orange_container">#1C0D03</color>
+    <!-- Orange → Hotspot / High-severity — brand fire orange -->
+    <color name="accent_orange">#FF6B35</color>
+    <color name="accent_orange_dark">#F04E1F</color>
+    <color name="accent_orange_container">#1E0C03</color>
+
+    <!-- ── Neo: brand & glow tokens (new) ───────────── -->
+    <!-- Neon radar emerald — the sweep's leading edge -->
+    <color name="neon_emerald">#00FF8C</color>
+    <!-- Brand Algerian green (rims, ticks) -->
+    <color name="brand_green">#006233</color>
+    <color name="brand_green_bright">#2E9E5B</color>
+    <!-- Glass fills/strokes for floating map + header panels.
+         NOTE: `glass_fill` itself stays the LEGACY dense value (line below,
+         bg_glass_header contract) — these are the Neo fills. -->
+    <color name="glass_fill_strong">#2E0F1712</color>
+    <color name="glass_stroke">#26FFFFFF</color>
+    <!-- Window gradient stops -->
+    <color name="window_top">#0B1410</color>
+    <color name="window_bottom">#040705</color>
+    <!-- Card gradient stops (surface → deeper) -->
+    <color name="card_top">#101A15</color>
+    <color name="card_bottom">#0A110D</color>
+    <!-- Glow pills behind hero elements -->
+    <color name="glow_green_16">#2900E676</color>
+    <color name="glow_red_20">#33FF3B52</color>
 
     <!-- ── UI State Colors ──────────────────────────── -->
-    <color name="ripple_primary">#33EF4444</color>
+    <color name="ripple_primary">#33FF3B52</color>
     <color name="ripple_on_surface">#1FFFFFFF</color>
-    <color name="scrim">#CC0B1220</color>
-    <color name="overlay_critical">#E60B1220</color>
-    <color name="overlay_warning">#B30B1220</color>
-    <color name="shadow">#660B1220</color>
+    <color name="scrim">#CC060A08</color>
+    <color name="overlay_critical">#E6060A08</color>
+    <color name="overlay_warning">#B3060A08</color>
+    <color name="shadow">#66060A08</color>
 
     <!-- ── Navigation ──────────────────────────────── -->
-    <color name="nav_bg">#0E1928</color>
-    <color name="nav_active">#EF4444</color>
-    <color name="nav_inactive">#475569</color>
-    <color name="nav_indicator">#1FEF4444</color>
+    <color name="nav_bg">#0C1511</color>
+    <color name="nav_active">#FF3B52</color>
+    <color name="nav_inactive">#54665C</color>
+    <color name="nav_indicator">#29FF3B52</color>
 
     <!-- ── Input Fields ────────────────────────────── -->
-    <color name="input_bg">#111B2D</color>
-    <color name="input_border">#1E293B</color>
-    <color name="input_border_focused">#22D3EE</color>
-    <color name="input_text">#E2E8F0</color>
-    <color name="input_hint">#475569</color>
+    <color name="input_bg">#0E1712</color>
+    <color name="input_border">#1DFFFFFF</color>
+    <color name="input_border_focused">#00E676</color>
+    <color name="input_text">#F2F6F4</color>
+    <color name="input_hint">#54665C</color>
 
     <!-- ── Chip States ─────────────────────────────── -->
-    <color name="chip_bg">#18243A</color>
-    <color name="chip_border">#243349</color>
-    <color name="chip_gps_active">#10B981</color>
-    <color name="chip_net_active">#22D3EE</color>
-    <color name="chip_mesh_active">#F59E0B</color>
-    <color name="chip_offline">#475569</color>
+    <color name="chip_bg">#141D18</color>
+    <color name="chip_border">#20FFFFFF</color>
+    <color name="chip_gps_active">#00E676</color>
+    <color name="chip_net_active">#3AE8FF</color>
+    <color name="chip_mesh_active">#FFC24B</color>
+    <color name="chip_offline">#54665C</color>
 
     <!-- ── Severity Scale ──────────────────────────── -->
-    <color name="sev_low">#10B981</color>
-    <color name="sev_medium">#F59E0B</color>
-    <color name="sev_high">#F97316</color>
-    <color name="sev_critical">#EF4444</color>
+    <color name="sev_low">#00E676</color>
+    <color name="sev_medium">#FFC24B</color>
+    <color name="sev_high">#FF6B35</color>
+    <color name="sev_critical">#FF3B52</color>
 
     <!-- ── Legacy-surface tokens (restore commit) ────
          Referenced by v2.8.0-era drawables kept for zero-regression:
-         bg_card_danger (border-red-500/30) and bg_glass_header
-         (bg-black/60 approximated over the M3 base #0B1220). -->
-    <color name="border_red_soft">#4DEF4444</color>
-    <color name="glass_fill">#990B1220</color>
+         bg_card_danger (border-red soft) and bg_glass_header
+         (glass fill over the Neo base #060A08). Names preserved. -->
+    <color name="border_red_soft">#4DFF3B52</color>
+    <color name="glass_fill">#99060A08</color>
 
     <!-- ── v0 brand-palette tokens consumed by merged main-side files ──
          nav_item_color.xml (accent_green_bright) and bg_card_safe.xml
-         (border_green_soft) arrive from main v2.17.0 and keep their
-         official brand-book values. -->
+         (border_green_soft) keep their official brand-book values. -->
     <color name="accent_green_bright">#2E9E5B</color>
     <color name="border_green_soft">#33006233</color>
     <color name="border_glass">#1AFFFFFF</color>

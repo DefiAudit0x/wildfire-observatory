@@ -1,9 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Active-tab pill for Observatory.BottomNav (itemActiveIndicatorStyle).
-     Fills the Material3 active-indicator slot with the M3 nav_indicator
-     token (accent red at 12%) instead of the library default container. -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android"
-    android:shape="rectangle">
+<!-- v2.20.0 Neo active tab: fire glow pill -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
     <solid android:color="@color/nav_indicator" />
-    <corners android:radius="24dp" />
+    <corners android:radius="99dp" />
 </shape>
