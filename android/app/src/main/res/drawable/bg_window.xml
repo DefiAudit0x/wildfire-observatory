@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.20.0 Neo: the app-wide window background — a deep green-black
+     vertical gradient that shows through the transparent system bars. -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <gradient android:startColor="@color/window_top" android:endColor="@color/window_bottom" android:angle="270" />
+</shape>

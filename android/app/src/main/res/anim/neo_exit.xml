@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.20.0 Neo motion: fragment EXIT — quick fade, no motion (the incoming
+     screen owns the movement). Shorter than the enter so the swap feels
+     snappy, not sluggish. -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/accelerate_quad">
+    <alpha
+        android:duration="150"
+        android:fromAlpha="1.0"
+        android:toAlpha="0.0" />
+</set>

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.20.0 Neo design system: Cairo — the modern geometric Arabic+Latin
+     face that replaces the 2014-era default Roboto. Four weights shipped
+     (~367 KB total): 400 regular body, 600 semibold emphasis, 700 bold
+     titles, 800 extrabold hero numerals. minSdk 26 = native font resource
+     support (no AppCompat compat namespace needed). -->
+<font-family xmlns:android="http://schemas.android.com/apk/res/android">
+    <font
+        android:font="@font/cairo_regular"
+        android:fontStyle="normal"
+        android:fontWeight="400" />
+    <font
+        android:font="@font/cairo_semibold"
+        android:fontStyle="normal"
+        android:fontWeight="600" />
+    <font
+        android:font="@font/cairo_bold"
+        android:fontStyle="normal"
+        android:fontWeight="700" />
+    <font
+        android:font="@font/cairo_extrabold"
+        android:fontStyle="normal"
+        android:fontWeight="800" />
+</font-family>

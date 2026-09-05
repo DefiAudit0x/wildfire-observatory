@@ -1,7 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Pending (unverified) report: brand orange ring, translucent fill -->
-<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="oval">
-    <solid android:color="#33FF6B35" />
-    <stroke android:width="3dp" android:color="#FFFF6B35" />
-    <size android:width="20dp" android:height="20dp" />
-</shape>
+<!-- v2.20.0 Neo map marker: soft halo + core dot (glow = 2025). -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:width="28dp" android:height="28dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#2EFF6B35" />
+        </shape>
+    </item>
+    <item android:width="20dp" android:height="20dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#00000000" />
+            <stroke android:width="2dp" android:color="#FFFF6B35" />
+        </shape>
+    </item>
+    <item android:width="14dp" android:height="14dp" android:gravity="center">
+        <shape android:shape="oval">
+            <solid android:color="#66FF6B35" />
+        </shape>
+    </item>
+</layer-list>

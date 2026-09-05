@@ -1,43 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    fragment_observatory.xml — v3.0 Professional UI
-    Main dashboard: status chips, proximity alert, risk gauge, HUD radar, weather.
-    All android:id values preserved exactly to avoid breaking ObservatoryFragment.kt.
-    Uses MaterialCardView + improved visual hierarchy.
+    fragment_observatory.xml — v2.20.0 NEO OBSERVATORY (2025)
+    Hero header, glass status pills, a 5-level gradient RISK METER with a
+    riding marker, and the neon radar inset inside a glass card.
+    All android:id values preserved exactly for ObservatoryFragment.kt
+    (+ new: observatory_content, risk_bar, risk_bar_marker).
 -->
 <androidx.core.widget.NestedScrollView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/bg"
+    android:background="@android:color/transparent"
     android:scrollbars="none"
     android:fillViewport="true">
 
     <LinearLayout
+        android:id="@+id/observatory_content"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:paddingTop="12dp"
+        android:paddingTop="14dp"
         android:paddingBottom="24dp">
 
-        <!-- ── App Header ───────────────────────────────────────── -->
+        <!-- ══ Hero header ═══════════════════════════════════════ -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="14dp">
+            android:layout_marginBottom="16dp">
 
-            <!-- Fire icon accent -->
-            <ImageView
-                android:layout_width="22dp"
-                android:layout_height="22dp"
-                android:src="@drawable/ic_hdr_flame"
-                android:layout_marginEnd="10dp"
-                android:contentDescription="@null" />
+            <FrameLayout
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:background="@drawable/bg_hero_flame"
+                android:layout_marginEnd="12dp">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_hdr_flame"
+                    app:tint="#FFFFFFFF"
+                    android:contentDescription="@null" />
+            </FrameLayout>
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -50,8 +59,8 @@
                     android:layout_height="wrap_content"
                     android:text="المرصد الجزائري"
                     android:textColor="@color/text_primary"
-                    android:textSize="17sp"
-                    android:textStyle="bold" />
+                    android:fontFamily="@font/cairo_bold"
+                    android:textSize="19sp" />
 
                 <TextView
                     android:layout_width="wrap_content"
@@ -69,19 +78,19 @@
                 android:text=""
                 android:textColor="@color/text_hint"
                 android:textSize="10sp"
-                android:background="@drawable/bg_chip"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:paddingTop="4dp"
-                android:paddingBottom="4dp" />
+                android:background="@drawable/bg_glass_soft"
+                android:paddingStart="10dp"
+                android:paddingEnd="10dp"
+                android:paddingTop="5dp"
+                android:paddingBottom="5dp" />
         </LinearLayout>
 
-        <!-- ── Status Chips Row ─────────────────────────────────── -->
+        <!-- ══ Status pills row ══════════════════════════════════ -->
         <HorizontalScrollView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:scrollbars="none"
-            android:layout_marginBottom="12dp">
+            android:layout_marginBottom="14dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -89,23 +98,23 @@
                 android:orientation="horizontal"
                 android:gravity="center_vertical">
 
-                <!-- GPS Chip -->
+                <!-- GPS pill -->
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
                     android:background="@drawable/bg_chip"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="12dp"
-                    android:paddingTop="7dp"
-                    android:paddingBottom="7dp">
+                    android:paddingStart="12dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp">
 
                     <View
-                        android:layout_width="6dp"
-                        android:layout_height="6dp"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
                         android:background="@drawable/bg_status_dot_cyan"
-                        android:layout_marginEnd="6dp" />
+                        android:layout_marginEnd="7dp" />
 
                     <TextView
                         android:id="@+id/chip_gps"
@@ -114,27 +123,28 @@
                         android:text="@string/gps_searching"
                         android:textSize="11sp"
                         android:textStyle="bold"
+                        android:fontFamily="@font/cairo_semibold"
                         android:textColor="@color/text_secondary" />
                 </LinearLayout>
 
-                <!-- Network Chip -->
+                <!-- Network pill -->
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
                     android:background="@drawable/bg_chip"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="12dp"
-                    android:paddingTop="7dp"
-                    android:paddingBottom="7dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp"
                     android:layout_marginStart="8dp">
 
                     <View
-                        android:layout_width="6dp"
-                        android:layout_height="6dp"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
                         android:background="@drawable/bg_status_dot_green"
-                        android:layout_marginEnd="6dp" />
+                        android:layout_marginEnd="7dp" />
 
                     <TextView
                         android:id="@+id/chip_net"
@@ -142,27 +152,28 @@
                         android:layout_height="wrap_content"
                         android:textSize="11sp"
                         android:textStyle="bold"
+                        android:fontFamily="@font/cairo_semibold"
                         android:textColor="@color/text_secondary" />
                 </LinearLayout>
 
-                <!-- Mesh Chip -->
+                <!-- Mesh pill -->
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
                     android:background="@drawable/bg_chip"
-                    android:paddingStart="10dp"
-                    android:paddingEnd="12dp"
-                    android:paddingTop="7dp"
-                    android:paddingBottom="7dp"
+                    android:paddingStart="12dp"
+                    android:paddingEnd="14dp"
+                    android:paddingTop="8dp"
+                    android:paddingBottom="8dp"
                     android:layout_marginStart="8dp">
 
                     <View
-                        android:layout_width="6dp"
-                        android:layout_height="6dp"
+                        android:layout_width="10dp"
+                        android:layout_height="10dp"
                         android:background="@drawable/bg_status_dot_amber"
-                        android:layout_marginEnd="6dp" />
+                        android:layout_marginEnd="7dp" />
 
                     <TextView
                         android:id="@+id/chip_mesh"
@@ -170,21 +181,22 @@
                         android:layout_height="wrap_content"
                         android:textSize="11sp"
                         android:textStyle="bold"
+                        android:fontFamily="@font/cairo_semibold"
                         android:textColor="@color/text_secondary" />
                 </LinearLayout>
 
             </LinearLayout>
         </HorizontalScrollView>
 
-        <!-- ── Proximity Alert Banner ──────────────────────────── -->
+        <!-- ══ Proximity alert banner ════════════════════════════ -->
         <com.google.android.material.card.MaterialCardView
             android:id="@+id/proximity_banner"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
+            android:layout_marginBottom="14dp"
             android:visibility="gone"
             app:cardBackgroundColor="@color/accent_red_container"
-            app:cardCornerRadius="16dp"
+            app:cardCornerRadius="22dp"
             app:cardElevation="0dp"
             app:strokeColor="@color/accent_red_dim"
             app:strokeWidth="1dp">
@@ -194,14 +206,14 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <!-- Left accent stripe -->
                 <View
-                    android:layout_width="3dp"
+                    android:layout_width="3.5dp"
                     android:layout_height="match_parent"
-                    android:layout_marginEnd="12dp"
-                    android:background="@color/accent_red"
+                    android:layout_marginEnd="13dp"
+                    android:background="@drawable/bg_button_primary"
                     android:minHeight="40dp" />
 
                 <!-- Alert icon + text -->
@@ -219,10 +231,10 @@
                         android:layout_marginBottom="4dp">
 
                         <ImageView
-                            android:layout_width="14dp"
-                            android:layout_height="14dp"
-                            android:src="@drawable/ic_hdr_warning"
-                            android:layout_marginEnd="6dp"
+                            android:layout_width="15dp"
+                            android:layout_height="15dp"
+                            android:src="@drawable/ic_sos_alert"
+                            android:layout_marginEnd="7dp"
                             android:contentDescription="@null" />
 
                         <TextView
@@ -231,7 +243,8 @@
                             android:layout_height="wrap_content"
                             android:textColor="@color/accent_red_on_container"
                             android:textSize="13sp"
-                            android:textStyle="bold" />
+                            android:textStyle="bold"
+                            android:fontFamily="@font/cairo_semibold" />
                     </LinearLayout>
 
                     <TextView
@@ -249,13 +262,13 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ── Risk Gauge Card ─────────────────────────────────── -->
+        <!-- ══ Risk gauge card + gradient meter ══════════════════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="12dp"
+            android:layout_marginBottom="14dp"
             app:cardBackgroundColor="@color/surface"
-            app:cardCornerRadius="20dp"
+            app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
             app:strokeColor="@color/border"
             app:strokeWidth="1dp">
@@ -271,10 +284,11 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="@string/risk_title"
+                    android:fontFamily="@font/cairo_semibold"
                     android:textColor="@color/text_muted"
                     android:textSize="11sp"
                     android:textStyle="bold"
-                    android:letterSpacing="0.05"
+                    android:letterSpacing="0.06"
                     android:layout_marginBottom="10dp" />
 
                 <!-- Score + label row -->
@@ -289,7 +303,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:orientation="horizontal"
-                        android:gravity="center_vertical">
+                        android:gravity="bottom">
 
                         <TextView
                             android:id="@+id/risk_score"
@@ -297,19 +311,19 @@
                             android:layout_height="wrap_content"
                             android:text="0"
                             android:textColor="@color/accent_red"
-                            android:textSize="52sp"
-                            android:textStyle="bold"
-                            android:fontFamily="sans-serif-condensed"
-                            android:letterSpacing="-0.03" />
+                            android:textSize="56sp"
+                            android:fontFamily="@font/cairo_extrabold"
+                            android:includeFontPadding="false"
+                            android:letterSpacing="-0.02" />
 
                         <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            android:layout_marginStart="4dp"
+                            android:layout_marginStart="5dp"
+                            android:layout_marginBottom="6dp"
                             android:text="/ 100"
                             android:textColor="@color/text_hint"
-                            android:textSize="14sp"
-                            android:layout_marginBottom="8dp" />
+                            android:textSize="13sp" />
                     </LinearLayout>
 
                     <!-- Spacer -->
@@ -324,21 +338,40 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:background="@drawable/bg_risk_label"
-                        android:paddingStart="12dp"
-                        android:paddingEnd="12dp"
-                        android:paddingTop="6dp"
-                        android:paddingBottom="6dp"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="14dp"
+                        android:paddingTop="7dp"
+                        android:paddingBottom="7dp"
                         android:textColor="@color/accent_red_on_container"
                         android:textSize="12sp"
-                        android:textStyle="bold" />
+                        android:textStyle="bold"
+                        android:fontFamily="@font/cairo_semibold" />
                 </LinearLayout>
+
+                <!-- v2.20.0 Neo risk meter: 5-level gradient track with a
+                     white marker that rides to the score position (wired in
+                     ObservatoryFragment). -->
+                <FrameLayout
+                    android:id="@+id/risk_bar"
+                    android:layout_width="match_parent"
+                    android:layout_height="14dp"
+                    android:layout_marginTop="12dp"
+                    android:background="@drawable/bg_risk_track">
+
+                    <View
+                        android:id="@+id/risk_bar_marker"
+                        android:layout_width="18dp"
+                        android:layout_height="18dp"
+                        android:layout_gravity="start|center_vertical"
+                        android:background="@drawable/bg_risk_marker" />
+                </FrameLayout>
 
                 <!-- Risk detail counts -->
                 <TextView
                     android:id="@+id/risk_detail"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="12dp"
                     android:textColor="@color/text_muted"
                     android:textSize="11sp"
                     android:lineSpacingMultiplier="1.4" />
@@ -348,7 +381,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="1dp"
                     android:layout_marginTop="12dp"
-                    android:background="@color/border_subtle" />
+                    android:background="@color/divider" />
 
                 <!-- Safety hint row -->
                 <LinearLayout
@@ -382,13 +415,13 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- ── HUD Radar Card ──────────────────────────────────── -->
+        <!-- ══ HUD radar card — neon dish inset ══════════════════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="6dp"
             app:cardBackgroundColor="@color/surface"
-            app:cardCornerRadius="20dp"
+            app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
             app:strokeColor="@color/border"
             app:strokeWidth="1dp">
@@ -410,9 +443,10 @@
                     android:paddingBottom="10dp">
 
                     <ImageView
-                        android:layout_width="14dp"
-                        android:layout_height="14dp"
+                        android:layout_width="15dp"
+                        android:layout_height="15dp"
                         android:src="@drawable/ic_hdr_radar"
+                        app:tint="@color/accent_green"
                         android:layout_marginEnd="8dp"
                         android:contentDescription="@null" />
 
@@ -422,39 +456,53 @@
                         android:layout_weight="1"
                         android:text="رادار الميدان"
                         android:textColor="@color/text_primary"
-                        android:textSize="13sp"
-                        android:textStyle="bold" />
+                        android:fontFamily="@font/cairo_semibold"
+                        android:textSize="13sp" />
 
                     <TextView
                         android:id="@+id/radar_mode_label"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="@string/radar_mode_north_up"
-                        android:textColor="@color/text_hint"
-                        android:textSize="10sp" />
+                        android:textColor="@color/accent_green"
+                        android:textSize="10sp"
+                        android:background="@drawable/bg_glass_soft"
+                        android:paddingStart="10dp"
+                        android:paddingEnd="10dp"
+                        android:paddingTop="4dp"
+                        android:paddingBottom="4dp" />
                 </LinearLayout>
 
-                <!-- Radar canvas -->
-                <com.observatory.wildfire.RadarView
-                    android:id="@+id/radar_view"
+                <!-- Neon radar canvas inside the darker dish inset -->
+                <FrameLayout
                     android:layout_width="match_parent"
-                    android:layout_height="320dp" />
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_marginEnd="10dp"
+                    android:background="@drawable/bg_radar_inset">
 
-                <!-- v2.19.0: position awareness — your wilaya + nearest threat
-                     (distance + Arabic compass direction). Filled by code. -->
+                    <com.observatory.wildfire.RadarView
+                        android:id="@+id/radar_view"
+                        android:layout_width="match_parent"
+                        android:layout_height="320dp" />
+                </FrameLayout>
+
+                <!-- v2.19.0: position awareness — your wilaya + nearest
+                     threat (distance + Arabic compass direction). -->
                 <TextView
                     android:id="@+id/radar_awareness"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:paddingStart="16dp"
                     android:paddingEnd="16dp"
-                    android:paddingTop="8dp"
+                    android:paddingTop="10dp"
                     android:text="@string/radar_awareness_waiting"
                     android:textColor="@color/text_secondary"
                     android:textSize="12sp"
-                    android:textStyle="bold" />
+                    android:textStyle="bold"
+                    android:fontFamily="@font/cairo_semibold" />
 
-                <!-- Radar legend (colored dots — no emoji) -->
+                <!-- Radar legend (glow dots — no emoji) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -463,11 +511,11 @@
                     android:paddingStart="16dp"
                     android:paddingEnd="16dp"
                     android:paddingTop="8dp"
-                    android:paddingBottom="14dp">
+                    android:paddingBottom="16dp">
 
                     <View
-                        android:layout_width="8dp"
-                        android:layout_height="8dp"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
                         android:background="@drawable/bg_status_dot_red" />
 
                     <TextView
@@ -479,8 +527,8 @@
                         android:textSize="9sp" />
 
                     <View
-                        android:layout_width="8dp"
-                        android:layout_height="8dp"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
                         android:background="@drawable/bg_status_dot_amber" />
 
                     <TextView
@@ -492,8 +540,8 @@
                         android:textSize="9sp" />
 
                     <View
-                        android:layout_width="8dp"
-                        android:layout_height="8dp"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
                         android:background="@drawable/bg_status_dot_orange" />
 
                     <TextView
@@ -505,8 +553,8 @@
                         android:textSize="9sp" />
 
                     <View
-                        android:layout_width="8dp"
-                        android:layout_height="8dp"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
                         android:background="@drawable/bg_status_dot_green" />
 
                     <TextView
@@ -518,8 +566,8 @@
                         android:textSize="9sp" />
 
                     <View
-                        android:layout_width="8dp"
-                        android:layout_height="8dp"
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
                         android:background="@drawable/bg_status_dot_cyan" />
 
                     <TextView
@@ -542,12 +590,12 @@
             android:textColor="@color/text_hint"
             android:textSize="10sp" />
 
-        <!-- ── Weather Card ────────────────────────────────────── -->
+        <!-- ══ Weather card ══════════════════════════════════════ -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             app:cardBackgroundColor="@color/surface"
-            app:cardCornerRadius="16dp"
+            app:cardCornerRadius="24dp"
             app:cardElevation="0dp"
             app:strokeColor="@color/border"
             app:strokeWidth="1dp">
@@ -556,7 +604,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="16dp">
 
                 <!-- Weather header -->
                 <LinearLayout
@@ -567,9 +615,10 @@
                     android:layout_marginBottom="8dp">
 
                     <ImageView
-                        android:layout_width="14dp"
-                        android:layout_height="14dp"
+                        android:layout_width="15dp"
+                        android:layout_height="15dp"
                         android:src="@drawable/ic_hdr_thermo"
+                        app:tint="@color/accent_cyan"
                         android:layout_marginEnd="8dp"
                         android:contentDescription="@null" />
 
@@ -577,6 +626,7 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="الطقس الحالي"
+                        android:fontFamily="@font/cairo_semibold"
                         android:textColor="@color/text_muted"
                         android:textSize="11sp"
                         android:textStyle="bold"

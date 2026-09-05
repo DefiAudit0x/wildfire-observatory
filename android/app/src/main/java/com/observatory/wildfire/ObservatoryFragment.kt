@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
+import android.widget.FrameLayout
 import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
@@ -42,6 +44,13 @@ class ObservatoryFragment : Fragment() {
     private var radarModeLabel: TextView? = null
     private var awarenessText: TextView? = null
 
+    // v2.20.0 — the Neo risk meter: a 5-level gradient track with a white
+    // marker that rides to the current score (absolute translationX). Never
+    // drawn = the track still communicates the scale by itself.
+    private var riskBar: FrameLayout? = null
+    private var riskBarMarker: View? = null
+    private var lastMarkerX = -1f
+
     private val headingListener: (HeadingEngine.State) -> Unit = { state ->
         activity?.runOnUiThread {
             currentHeadingDeg = state.headingDeg
@@ -78,6 +87,8 @@ class ObservatoryFragment : Fragment() {
         riskScoreText = view.findViewById(R.id.risk_score)
         riskLabelText = view.findViewById(R.id.risk_label)
         riskDetailText = view.findViewById(R.id.risk_detail)
+        riskBar = view.findViewById(R.id.risk_bar)
+        riskBarMarker = view.findViewById(R.id.risk_bar_marker)
         weatherText = view.findViewById(R.id.weather_line)
         banner = view.findViewById(R.id.proximity_banner)
         bannerText = view.findViewById(R.id.proximity_text)
@@ -95,6 +106,56 @@ class ObservatoryFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 app.repository.state.collect { snap -> render(snap) }
             }
+        }
+
+        playEntranceCascade(view)
+    }
+
+    /**
+     * v2.20.0 Neo motion — the dashboard sections rise into place with a
+     * light stagger once per view creation (280 ms each, 60 ms apart).
+     * Pure view-layer polish: no state, no listeners, nothing to clean up
+     * (animator fields die with the view; values land at identity).
+     */
+    private fun playEntranceCascade(view: View) {
+        val content = view.findViewById<ViewGroup>(R.id.observatory_content) ?: return
+        for (i in 0 until content.childCount) {
+            val child = content.getChildAt(i)
+            child.alpha = 0f
+            child.translationY = 36f
+            child.animate()
+                .alpha(1f)
+                .translationY(0f)
+                .setStartDelay(60L * i)
+                .setDuration(280L)
+                .setInterpolator(DecelerateInterpolator(1.6f))
+                .start()
+        }
+    }
+
+    /**
+     * Ride the white marker to the score position along the gradient track.
+     * The gradient drawable is ALWAYS left→right (low score on the left) —
+     * drawables do not mirror in RTL — so the target is an absolute X inside
+     * the track: targetX = frac·(trackW − markerW), and translationX is the
+     * delta from wherever layout actually placed the marker (start-aligned
+     * means marker.left is 0 in LTR but trackW − markerW in RTL).
+     */
+    private fun positionRiskMarker(score: Int) {
+        val track = riskBar ?: return
+        val marker = riskBarMarker ?: return
+        track.post {
+            if (track.width == 0 || marker.width == 0) return@post
+            val range = (track.width - marker.width).toFloat()
+            if (range <= 0f) return@post
+            val targetX = (score / 100.0) * range - marker.left
+            if (kotlin.math.abs(targetX - lastMarkerX) < 0.5f) return@post
+            lastMarkerX = targetX
+            marker.animate()
+                .translationX(targetX)
+                .setDuration(450L)
+                .setInterpolator(DecelerateInterpolator(1.4f))
+                .start()
         }
     }
 
@@ -165,6 +226,7 @@ class ObservatoryFragment : Fragment() {
             snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
         )
         riskScoreText?.text = score.toString()
+        positionRiskMarker(score)
         // v2.1.0: band the number's color — a calm 6/100 must never scream red.
         // v2.16.0: bands follow the brand book's 5-level fire danger scale
         // (Low / Moderate / High / Very High / Extreme).
@@ -294,6 +356,8 @@ class ObservatoryFragment : Fragment() {
         riskScoreText = null
         riskLabelText = null
         riskDetailText = null
+        riskBar = null
+        riskBarMarker = null
         weatherText = null
         banner = null
         bannerText = null

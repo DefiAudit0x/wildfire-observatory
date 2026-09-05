@@ -192,6 +192,9 @@ class NativeMainActivity : AppCompatActivity() {
 
     private fun switchTo(fragment: Fragment) {
         supportFragmentManager.beginTransaction()
+            // v2.20.0 Neo motion: soft fade+rise in, quick fade out — the
+            // app finally MOVES between tabs (direction-safe under RTL).
+            .setCustomAnimations(R.anim.neo_enter, R.anim.neo_exit, R.anim.neo_enter, R.anim.neo_exit)
             .replace(R.id.fragment_container, fragment)
             .commit()
     }

@@ -5,6 +5,7 @@ import android.preference.PreferenceManager
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -95,7 +96,8 @@ class MapFragment : Fragment() {
     private var aiCard: View? = null
     private var aiCardBody: TextView? = null
     private var styleToggle: TextView? = null
-    private var followButton: TextView? = null
+    // v2.20.0: the follow control is an ICON button now (no more typed glyphs)
+    private var followButton: ImageView? = null
 
     private var userMarker: Marker? = null
     private var missionMarker: Marker? = null
@@ -367,13 +369,10 @@ class MapFragment : Fragment() {
 
     private fun renderFollowButton() {
         val btn = followButton ?: return
-        btn.setText(if (followMode) R.string.map_follow_on else R.string.map_follow_toggle)
-        btn.setTextColor(
-            ContextCompat.getColor(
-                requireContext(),
-                if (followMode) R.color.accent_green else R.color.accent_cyan
-            )
-        )
+        // v2.20.0: state lives in the GLYPH itself — cyan arrow when free,
+        // emerald arrow when the camera rides you. Each vector carries its
+        // own 2025 palette; no re-tinting needed.
+        btn.setImageResource(if (followMode) R.drawable.ic_follow_active else R.drawable.ic_follow)
     }
 
     // ---------- S4 radar layers ----------
