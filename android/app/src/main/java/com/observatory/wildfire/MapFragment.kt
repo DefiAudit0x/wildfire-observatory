@@ -255,13 +255,12 @@ class MapFragment : Fragment() {
             // episode are never resurrected offline. The "-rt-" slot bumps the
             // namespace again for v2.1.2 (rastertiles/voyager path fix — the
             // v2.1.1 base URL lacked the style segment and 404'd every tile).
-            mv2.setTileSource(
-                XYTileSource(
-                    "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
-                    arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
-                )
+            val cartoSource = XYTileSource(
+                "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
+                arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
             )
-            streetSource = mv2.tileSource as? XYTileSource ?: streetSource
+            mv2.setTileSource(cartoSource)
+            streetSource = cartoSource
             mv2.invalidate()
         }
 
