@@ -3,7 +3,7 @@
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item android:gravity="center">
         <shape android:shape="oval">
-            <solid android:color="#29F00E676" />
+            <solid android:color="#2900E676" />
         </shape>
     </item>
     <item android:gravity="center" android:top="3dp" android:bottom="3dp" android:start="3dp" android:end="3dp">
