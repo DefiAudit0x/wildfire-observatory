@@ -15,9 +15,11 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
 import org.osmdroid.tileprovider.tilesource.XYTileSource
 import org.osmdroid.util.BoundingBox
 import org.osmdroid.util.GeoPoint
+import org.osmdroid.util.MapTileIndex
 import org.osmdroid.views.CustomZoomButtonsController
 import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
@@ -51,7 +53,19 @@ import kotlin.math.roundToInt
  *    target + phase chip from the same service state TeamFragment reads.
  *
  * Everything from v2.1.1 stands: OSM/CARTO tiles, FIRMS hotspots, verified
- * fires, safezones, mesh intel, user marker, recenter discipline (F11).
+ * fires, safezones, mesh intel, recenter discipline (F11 — now upgraded: the
+ * recenter button engages FOLLOW mode, and any manual pan releases it).
+ *
+ * v2.19.0 — the map stopped being a static picture (owner verdict: "كأنها
+ * صورة ثابتة"):
+ *  - SATELLITE LAYER: one chip cycles street ⇄ Esri World Imagery (z/y/x
+ *    tile order — the osmdroid default is z/x/y, so a custom source);
+ *  - FOLLOW MODE: the camera animates to every fresh fix; a manual scroll
+ *    releases it (our own programmatic moves are time-suppressed so the
+ *    animation never cancels itself);
+ *  - the user dot is now a HEADING ARROW: GPS course while moving, compass
+ *    (HeadingEngine) while standing — it turns as you turn;
+ *  - the status line names your WILAYA (nearest-centroid, offline-safe).
  */
 class MapFragment : Fragment() {
 
@@ -61,6 +75,8 @@ class MapFragment : Fragment() {
         private const val WIND_REFRESH_MS = 10L * 60L * 1000L
         /** Chips drawn for the top-ranked routes (OSRM caps alternatives ~3). */
         private const val MAX_ROUTE_CHIPS = 3
+        /** Window that hides our own animateTo from the scroll listener. */
+        private const val ANIMATE_SUPPRESS_MS = 900L
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -78,6 +94,8 @@ class MapFragment : Fragment() {
     private var missionChip: TextView? = null
     private var aiCard: View? = null
     private var aiCardBody: TextView? = null
+    private var styleToggle: TextView? = null
+    private var followButton: TextView? = null
 
     private var userMarker: Marker? = null
     private var missionMarker: Marker? = null
@@ -100,6 +118,37 @@ class MapFragment : Fragment() {
     private var selectedRouteIndex = -1
     private var lastSafezoneNameAr: String? = null
     private var routeFetchInFlight = false
+
+    // v2.19.0 — satellite layer + follow mode + compass.
+    private var satelliteActive = false
+    private var followMode = false
+    /** Suppression window that hides our own animateTo from the scroll
+     *  listener (otherwise follow mode would cancel its own animation). */
+    private var programmaticMoveUntilMs = 0L
+    private var streetSource: XYTileSource? = null
+    private var headingEngine: HeadingEngine? = null
+    private var currentHeadingDeg: Double? = null
+
+    private val headingListener: (HeadingEngine.State) -> Unit = { state ->
+        activity?.runOnUiThread {
+            currentHeadingDeg = state.headingDeg
+            updateUserMarkerRotation()
+        }
+    }
+
+    private val scrollListener = object : org.osmdroid.events.MapListener {
+        override fun onScroll(event: org.osmdroid.events.ScrollEvent?): Boolean {
+            // A scroll we did not program = the user grabbed the map → release
+            // follow (F11's descendant: never fight the operator's hands).
+            if (followMode && System.currentTimeMillis() > programmaticMoveUntilMs) {
+                followMode = false
+                renderFollowButton()
+            }
+            return true
+        }
+
+        override fun onZoom(event: org.osmdroid.events.ZoomEvent?): Boolean = true
+    }
 
     // F2: named listeners so onDestroyView can deregister from the
     // application-scoped engines (inline lambdas leaked this view forever).
@@ -135,6 +184,8 @@ class MapFragment : Fragment() {
         missionChip = view.findViewById(R.id.mission_chip)
         aiCard = view.findViewById(R.id.ai_card)
         aiCardBody = view.findViewById(R.id.ai_card_body)
+        styleToggle = view.findViewById(R.id.map_style_toggle)
+        followButton = view.findViewById(R.id.follow_button)
         // osmdroid session config: a descriptive UA (tile servers require one)
         // and app-private cache paths (no storage permission needed on 26+).
         val ctx = requireContext()
@@ -147,22 +198,39 @@ class MapFragment : Fragment() {
 
         val mv = view.findViewById<MapView>(R.id.map_view)
         map = mv
-        mv.setTileSource(
-            XYTileSource(
-                "OpenStreetMap", 1, 19, 256, ".png",
-                arrayOf("https://tile.openstreetmap.org/")
-            )
+        streetSource = XYTileSource(
+            "OpenStreetMap", 1, 19, 256, ".png",
+            arrayOf("https://tile.openstreetmap.org/")
         )
+        mv.setTileSource(streetSource!!)
+        // v2.19.0: street ⇄ satellite cycle + manual-scroll releases follow.
+        mv.addMapListener(scrollListener)
+        styleToggle?.setOnClickListener { toggleMapStyle() }
+        followButton?.setOnClickListener {
+            followMode = !followMode
+            renderFollowButton()
+            val ll = lastUserLatLng
+            if (followMode && ll != null) {
+                programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
+                mv.controller.animateTo(GeoPoint(ll.first, ll.second))
+            }
+        }
+        // F11 evolved: recenter ENGAGES follow mode (map rides every fix)
+        // instead of a single jump — field users walk, a one-shot jump dies
+        // two steps later. Manual pan releases it (scrollListener above).
+        view.findViewById<View>(R.id.recenter_button).setOnClickListener {
+            val ll = lastUserLatLng ?: return@setOnClickListener
+            followMode = true
+            renderFollowButton()
+            programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
+            mv.controller.animateTo(GeoPoint(ll.first, ll.second))
+        }
         // Stock white +/- squares belong to the stone age — styled controls
         // live in fragment_map.xml and call controller.zoomIn/zoomOut below.
         mv.zoomController.setVisibility(CustomZoomButtonsController.Visibility.NEVER)
         view.findViewById<View>(R.id.zoom_in).setOnClickListener { mv.controller.zoomIn() }
         view.findViewById<View>(R.id.zoom_out).setOnClickListener { mv.controller.zoomOut() }
-        // F11: pull the user dot back into view on demand.
-        view.findViewById<View>(R.id.recenter_button).setOnClickListener {
-            val ll = lastUserLatLng ?: return@setOnClickListener
-            mv.controller.animateTo(GeoPoint(ll.first, ll.second))
-        }
+        renderFollowButton()
         mv.controller.setZoom(DEFAULT_ZOOM)
         // Cold start over Algiers until the first fix arrives.
         mv.controller.setCenter(GeoPoint(36.7538, 3.0588))
@@ -187,12 +255,12 @@ class MapFragment : Fragment() {
             // episode are never resurrected offline. The "-rt-" slot bumps the
             // namespace again for v2.1.2 (rastertiles/voyager path fix — the
             // v2.1.1 base URL lacked the style segment and 404'd every tile).
-            mv2.setTileSource(
-                XYTileSource(
-                    "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
-                    arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
-                )
+            val cartoSource = XYTileSource(
+                "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
+                arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
             )
+            mv2.setTileSource(cartoSource)
+            streetSource = cartoSource
             mv2.invalidate()
         }
 
@@ -205,6 +273,10 @@ class MapFragment : Fragment() {
 
         app.locationEngine.addListener(locationListener)
         TeamLocationService.addStateListener(serviceListener)
+        headingEngine = HeadingEngine(requireContext()).also {
+            it.addListener(headingListener)
+            it.start()
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -224,25 +296,84 @@ class MapFragment : Fragment() {
                 position = point
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
                 title = getString(R.string.map_you_marker)
-                icon = ContextCompat.getDrawable(requireContext(), R.drawable.ic_user_dot) ?: return@apply
+                icon = ContextCompat.getDrawable(requireContext(), R.drawable.ic_user_arrow)
+                    ?: ContextCompat.getDrawable(requireContext(), R.drawable.ic_user_dot)
                 mv.overlays.add(this)
             }
         }
         userMarker?.position = point
-        // F11: auto-recenter ONLY when it helps — first fix, or the user's
-        // dot has walked out of the visible window. During free panning the
-        // camera stays where the user put it.
-        val box = mv.boundingBox
-        val outsideView = box == null || !box.contains(point)
-        if (!firstFixSeen || outsideView) {
-            firstFixSeen = true
+        updateUserMarkerRotation(fix)
+        // v2.19.0 follow mode: the map RIDES the person (every fresh fix),
+        // not just a one-shot jump — that was the "static picture" verdict.
+        if (followMode) {
+            programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
             mv.controller.animateTo(point)
         }
-        statusText?.text = getString(R.string.map_status_fix_fmt, fix.accuracyM.toInt(), fix.provider)
+        // F11 residual: no fix was ever seen (cold start) → first jump still
+        // applies even without follow; leaving follow ON afterwards.
+        if (!firstFixSeen) {
+            firstFixSeen = true
+            if (!followMode) mv.controller.animateTo(point)
+        }
+        val box = mv.boundingBox
+        val outsideView = box == null || !box.contains(point)
+        if (!followMode && outsideView) {
+            programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
+            mv.controller.animateTo(point)
+        }
+        // Status line now names the wilaya — offline-safe nearest-centroid.
+        val wilayaAr = Wilayas.nearest(fix.lat, fix.lng).nameAr
+        statusText?.text = getString(R.string.map_status_wilaya_fmt, fix.accuracyM.toInt(), wilayaAr)
         // S4: rings ride the user's position; wind refreshes on web parity's
         // 10-minute cadence (the cone itself redraws via the snapshot flow).
         if (moved || ringLines.isEmpty()) drawRings(mv)
         maybeFetchWind(fix)
+    }
+
+    /** Arrow rotation: GPS course while moving, compass when standing. */
+    private fun updateUserMarkerRotation(fix: LocationLogic.FixSnapshot? = app.locationEngine.currentFix()) {
+        val marker = userMarker ?: return
+        val heading = fix?.bearingDeg ?: currentHeadingDeg ?: return
+        marker.rotation = heading.toFloat()
+    }
+
+    /** Street ⇄ Esri World Imagery. Esri tiles are z/y/x ordered — the
+     *  osmdroid default path builder is z/x/y, hence the custom source. */
+    private fun toggleMapStyle() {
+        val mv = map ?: return
+        satelliteActive = !satelliteActive
+        if (satelliteActive) {
+            mv.setTileSource(satelliteSource())
+            styleToggle?.setText(R.string.map_style_map)
+            styleToggle?.setTextColor(ContextCompat.getColor(requireContext(), R.color.accent_cyan))
+        } else {
+            streetSource?.let { mv.setTileSource(it) }
+            styleToggle?.setText(R.string.map_style_sat)
+            styleToggle?.setTextColor(ContextCompat.getColor(requireContext(), R.color.text_secondary))
+        }
+        mv.invalidate()
+    }
+
+    private fun satelliteSource(): OnlineTileSourceBase =
+        object : OnlineTileSourceBase(
+            "EsriWorldImagery", 1, 19, 256, ".jpg",
+            arrayOf("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/")
+        ) {
+            override fun getTileURLString(pMapTileIndex: Long): String =
+                baseUrl + MapTileIndex.getZoom(pMapTileIndex) + "/" +
+                    MapTileIndex.getY(pMapTileIndex) + "/" +
+                    MapTileIndex.getX(pMapTileIndex) + mImageFilenameEnding
+        }
+
+    private fun renderFollowButton() {
+        val btn = followButton ?: return
+        btn.setText(if (followMode) R.string.map_follow_on else R.string.map_follow_toggle)
+        btn.setTextColor(
+            ContextCompat.getColor(
+                requireContext(),
+                if (followMode) R.color.accent_green else R.color.accent_cyan
+            )
+        )
     }
 
     // ---------- S4 radar layers ----------
@@ -666,6 +797,8 @@ class MapFragment : Fragment() {
     override fun onDestroyView() {
         app.locationEngine.removeListener(locationListener)
         TeamLocationService.removeStateListener(serviceListener)
+        headingEngine?.let { it.removeListener(headingListener); it.stop() }
+        headingEngine = null
         map?.onDetach()
         map = null
         userMarker = null

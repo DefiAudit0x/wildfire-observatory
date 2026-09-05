@@ -228,7 +228,8 @@ class LocationEngine(private val context: Context) : LocationListener {
         accuracyM = if (loc.hasAccuracy()) loc.accuracy else 0f,
         timeMs = loc.time,
         provider = loc.provider ?: "unknown",
-        approximate = tier == LocationLogic.Tier.COARSE
+        approximate = tier == LocationLogic.Tier.COARSE,
+        bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null
     )
 
     private fun publish(state: LocationLogic.Status) {

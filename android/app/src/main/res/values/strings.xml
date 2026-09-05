@@ -192,4 +192,27 @@
     <string name="mission_chip_fmt">مهمة نشطة — المرحلة: %1$s</string>
     <string name="mission_target_title">هدف المهمة (SOS)</string>
     <string name="mission_target_snippet">النقطة التي تُحوّل الفريق إليها من القيادة</string>
+
+    <!-- v2.19.0 — field-instrument wave: compass radar, live map, honest autofill -->
+    <string name="version_badge_fmt">v%1$s</string>
+    <string name="radar_mode_north_up">شمال-أعلى</string>
+    <string name="radar_mode_heading_up">بحسّاس الدوران — ثبّت شمالك أعلى الشاشة بالالتفاف</string>
+    <string name="radar_awareness_waiting">بانتظار تحديد موقعك…</string>
+    <string name="radar_awareness_nofix">لا موقع بعد — الرادار ينتظر أول إحداثية (افتح الموقع أو اسمح بالوصول)</string>
+    <string name="radar_awareness_calm_fmt">أنت في ولاية %1$s · لا خطر قريب داخل نطاق 30 كم</string>
+    <string name="radar_awareness_fmt">أنت في ولاية %1$s · أقرب خطر %2$.1f كم %3$s</string>
+    <string name="legend_verified">موثق</string>
+    <string name="legend_pending">معلق</string>
+    <string name="legend_hotspot">بقعة حرارية</string>
+    <string name="legend_safezone">ملاذ</string>
+    <string name="legend_mesh">شبكة</string>
+    <string name="map_style_map">خريطة</string>
+    <string name="map_style_sat">أقمار صناعية</string>
+    <string name="map_follow_toggle">تتبّع موقعي</string>
+    <string name="map_follow_on">التتبع مفعّل</string>
+    <string name="map_status_wilaya_fmt">دقة %1$d م · ولاية %2$s</string>
+    <string name="geo_status_resolving">جارٍ تحديد اسم الموقع تلقائياً…</string>
+    <string name="geo_status_failed">تعذر تحديد اسم الموقع — اضغط لإعادة المحاولة</string>
+    <string name="geo_status_offline_fmt">خارج تغطية التسمية — الولاية (تقريبي): %1$s</string>
+    <string name="report_tap_settings">افتح إعدادات الموقع لتفعيل GPS</string>
 </resources>

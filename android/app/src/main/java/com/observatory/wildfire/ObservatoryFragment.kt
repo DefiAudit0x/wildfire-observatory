@@ -34,6 +34,25 @@ class ObservatoryFragment : Fragment() {
     private var bannerText: TextView? = null
     private var weatherRequested = false
 
+    // v2.19.0 — the compass: the radar went heading-up and the awareness line
+    // carries "your wilaya + nearest threat". Created per-view (nothing else
+    // needs it) and stopped with the view.
+    private var headingEngine: HeadingEngine? = null
+    private var currentHeadingDeg: Double? = null
+    private var radarModeLabel: TextView? = null
+    private var awarenessText: TextView? = null
+
+    private val headingListener: (HeadingEngine.State) -> Unit = { state ->
+        activity?.runOnUiThread {
+            currentHeadingDeg = state.headingDeg
+            radarModeLabel?.setText(
+                if (state.headingDeg != null) R.string.radar_mode_heading_up
+                else R.string.radar_mode_north_up
+            )
+            updateRadar()
+        }
+    }
+
     // F2: named listener so onDestroyView can deregister from the
     // application-scoped engine (an inline lambda leaked this view forever).
     private val locationListener: (LocationEngine.State) -> Unit = { state ->
@@ -49,6 +68,10 @@ class ObservatoryFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         radarView = view.findViewById(R.id.radar_view)
+        radarModeLabel = view.findViewById(R.id.radar_mode_label)
+        awarenessText = view.findViewById(R.id.radar_awareness)
+        view.findViewById<TextView>(R.id.version_badge)?.text =
+            getString(R.string.version_badge_fmt, BuildConfig.VERSION_NAME)
         gpsChip = view.findViewById(R.id.chip_gps)
         netChip = view.findViewById(R.id.chip_net)
         meshChip = view.findViewById(R.id.chip_mesh)
@@ -63,6 +86,10 @@ class ObservatoryFragment : Fragment() {
         }
 
         app.locationEngine.addListener(locationListener)
+        headingEngine = HeadingEngine(requireContext()).also {
+            it.addListener(headingListener)
+            it.start()
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -206,7 +233,8 @@ class ObservatoryFragment : Fragment() {
         val now = System.currentTimeMillis()
 
         if (fix == null) {
-            radar.setData(emptyList(), userHasFix = false, windFromDeg = null)
+            radar.setData(emptyList(), userHasFix = false, windFromDeg = null, headingDeg = currentHeadingDeg)
+            awarenessText?.setText(R.string.radar_awareness_nofix)
             return
         }
         val blips = ArrayList<RadarModel.Blip>()
@@ -229,7 +257,19 @@ class ObservatoryFragment : Fragment() {
             val lng = m.lng ?: continue
             blips.add(RadarModel.blipFrom(fix.lat, fix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
         }
-        radar.setData(blips, userHasFix = true, windFromDeg = snap.weather?.windFromDeg)
+        radar.setData(blips, userHasFix = true, windFromDeg = snap.weather?.windFromDeg, headingDeg = currentHeadingDeg)
+
+        // v2.19.0 awareness line: your wilaya + the nearest threat inside the
+        // 30 km card (distance + Arabic compass direction) — "أين أنا وماذا
+        // يفعل هذا الرادار" answered in one honest sentence.
+        val wilaya = Wilayas.nearest(fix.lat, fix.lng)
+        val nearest = blips.filter { it.kind != RadarModel.Kind.SAFEZONE }.minByOrNull { it.distKm }
+        awarenessText?.text = if (nearest == null || nearest.distKm > RadarModel.RANGE_KM) {
+            getString(R.string.radar_awareness_calm_fmt, wilaya.nameAr)
+        } else {
+            val dirAr = TelemetryCamera.bearingDirectionAr(nearest.angleDeg)
+            getString(R.string.radar_awareness_fmt, wilaya.nameAr, nearest.distKm, dirAr)
+        }
     }
 
     private fun meshLabel(state: String): String = when (state) {
@@ -242,8 +282,12 @@ class ObservatoryFragment : Fragment() {
 
     override fun onDestroyView() {
         app.locationEngine.removeListener(locationListener)
+        headingEngine?.let { it.removeListener(headingListener); it.stop() }
+        headingEngine = null
         super.onDestroyView()
         radarView = null
+        radarModeLabel = null
+        awarenessText = null
         gpsChip = null
         netChip = null
         meshChip = null

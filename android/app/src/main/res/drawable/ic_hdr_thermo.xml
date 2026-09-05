@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v2.19.0: section icon (replaces the emoji header) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="18dp"
+    android:height="18dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#F97316"
+        android:pathData="M15,13V5A3,3 0 0,0 9,5V13A5,5 0 0,0 12,21A5,5 0 0,0 15,13M11,7H13V13.2A3,3 0 0,1 12,17A3,3 0 0,1 11,13.2V7Z" /></vector>

@@ -22,13 +22,21 @@ android {
         applicationId 'com.observatory.wildfire'
         minSdk 26
         targetSdk 36
-        versionCode 26
-        versionName '2.18.0'
+        versionCode 27
+        versionName '2.19.0'
 
         vectorDrawables.useSupportLibrary = true
         // v2.16.0 (audit wave 3): instrumented tests land (androidTest layer
         // + the CI emulator job) — the JVM suite cannot execute android.jar.
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    // v2.19.0: buildConfig ON — the version badge and the API User-Agent
+    // now read BuildConfig.VERSION_NAME directly. The manual pin had drifted
+    // twice (badge said v2.7 on a 2.18.0 build; UA said 2.17.0) — killing
+    // the class of drift bugs beats the empty-class build-time cost.
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {

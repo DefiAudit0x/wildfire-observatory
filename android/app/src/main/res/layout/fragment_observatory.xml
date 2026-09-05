@@ -32,12 +32,12 @@
             android:layout_marginBottom="14dp">
 
             <!-- Fire icon accent -->
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="🔥"
-                android:textSize="22sp"
-                android:layout_marginEnd="10dp" />
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_hdr_flame"
+                android:layout_marginEnd="10dp"
+                android:contentDescription="@null" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -61,11 +61,12 @@
                     android:textSize="11sp" />
             </LinearLayout>
 
-            <!-- Version badge -->
+            <!-- Version badge (real version — set from BuildConfig in code) -->
             <TextView
+                android:id="@+id/version_badge"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="v2.7"
+                android:text=""
                 android:textColor="@color/text_hint"
                 android:textSize="10sp"
                 android:background="@drawable/bg_chip"
@@ -217,13 +218,12 @@
                         android:gravity="center_vertical"
                         android:layout_marginBottom="4dp">
 
-                        <TextView
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="⚠"
-                            android:textSize="14sp"
-                            android:textColor="@color/accent_red"
-                            android:layout_marginEnd="6dp" />
+                        <ImageView
+                            android:layout_width="14dp"
+                            android:layout_height="14dp"
+                            android:src="@drawable/ic_hdr_warning"
+                            android:layout_marginEnd="6dp"
+                            android:contentDescription="@null" />
 
                         <TextView
                             android:id="@+id/proximity_text"
@@ -409,12 +409,12 @@
                     android:paddingTop="14dp"
                     android:paddingBottom="10dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="📡"
-                        android:textSize="14sp"
-                        android:layout_marginEnd="8dp" />
+                    <ImageView
+                        android:layout_width="14dp"
+                        android:layout_height="14dp"
+                        android:src="@drawable/ic_hdr_radar"
+                        android:layout_marginEnd="8dp"
+                        android:contentDescription="@null" />
 
                     <TextView
                         android:layout_width="0dp"
@@ -426,9 +426,10 @@
                         android:textStyle="bold" />
 
                     <TextView
+                        android:id="@+id/radar_mode_label"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="شمال-أعلى"
+                        android:text="@string/radar_mode_north_up"
                         android:textColor="@color/text_hint"
                         android:textSize="10sp" />
                 </LinearLayout>
@@ -439,7 +440,21 @@
                     android:layout_width="match_parent"
                     android:layout_height="320dp" />
 
-                <!-- Radar legend -->
+                <!-- v2.19.0: position awareness — your wilaya + nearest threat
+                     (distance + Arabic compass direction). Filled by code. -->
+                <TextView
+                    android:id="@+id/radar_awareness"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:paddingTop="8dp"
+                    android:text="@string/radar_awareness_waiting"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <!-- Radar legend (colored dots — no emoji) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -450,13 +465,69 @@
                     android:paddingTop="8dp"
                     android:paddingBottom="14dp">
 
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot_red" />
+
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="🔴 موثق  🟡 معلق  🟠 بقعة حرارية  🟢 ملاذ  🔵 شبكة"
+                        android:layout_marginEnd="10dp"
+                        android:text="@string/legend_verified"
                         android:textColor="@color/text_hint"
                         android:textSize="9sp" />
 
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot_amber" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="10dp"
+                        android:text="@string/legend_pending"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp" />
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot_orange" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="10dp"
+                        android:text="@string/legend_hotspot"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp" />
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot_green" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginEnd="10dp"
+                        android:text="@string/legend_safezone"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp" />
+
+                    <View
+                        android:layout_width="8dp"
+                        android:layout_height="8dp"
+                        android:background="@drawable/bg_status_dot_cyan" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@string/legend_mesh"
+                        android:textColor="@color/text_hint"
+                        android:textSize="9sp" />
                 </LinearLayout>
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
@@ -495,12 +566,12 @@
                     android:gravity="center_vertical"
                     android:layout_marginBottom="8dp">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="🌡"
-                        android:textSize="14sp"
-                        android:layout_marginEnd="8dp" />
+                    <ImageView
+                        android:layout_width="14dp"
+                        android:layout_height="14dp"
+                        android:src="@drawable/ic_hdr_thermo"
+                        android:layout_marginEnd="8dp"
+                        android:contentDescription="@null" />
 
                     <TextView
                         android:layout_width="wrap_content"

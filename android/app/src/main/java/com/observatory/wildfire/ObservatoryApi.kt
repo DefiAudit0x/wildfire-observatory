@@ -32,12 +32,11 @@ class ObservatoryApi(private val baseUrl: String) {
 
     companion object {
         // F18: the UA used to hardcode "Android/2.0" while versionName moved
-        // on — log triage compared mismatched versions. BuildConfig is OFF
-        // (AGP 8 default), so the version is pinned here in step with the
-        // release train (bump together with android/app/build.gradle).
-        // (v2.11.0: the pin had drifted to 2.7.0 across the S2–S4 trains —
-        // restored in step and the trains now bump it together.)
-        const val USER_AGENT = "WildfireObservatory-Android/2.17.0"
+        // on — log triage compared mismatched versions.
+        // v2.19.0: buildConfig is ON again — the UA reads BuildConfig
+        // directly, so it can NEVER drift from the release train again (the
+        // 2.17.0 pin survived one train too long because of that manual step).
+        val USER_AGENT = "WildfireObservatory-Android/${BuildConfig.VERSION_NAME}"
         private const val MAX_RESPONSE_BYTES = 32 * 1024
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000
