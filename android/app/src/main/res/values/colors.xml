@@ -68,8 +68,9 @@
     <!-- Brand Algerian green (rims, ticks) -->
     <color name="brand_green">#006233</color>
     <color name="brand_green_bright">#2E9E5B</color>
-    <!-- Glass fills/strokes for floating map + header panels -->
-    <color name="glass_fill">#150F1712</color>
+    <!-- Glass fills/strokes for floating map + header panels.
+         NOTE: `glass_fill` itself stays the LEGACY dense value (line below,
+         bg_glass_header contract) — these are the Neo fills. -->
     <color name="glass_fill_strong">#2E0F1712</color>
     <color name="glass_stroke">#26FFFFFF</color>
     <!-- Window gradient stops -->
