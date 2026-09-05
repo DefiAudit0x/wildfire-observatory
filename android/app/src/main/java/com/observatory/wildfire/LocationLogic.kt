@@ -55,7 +55,11 @@ object LocationLogic {
         val provider: String,
         /** v2.16.0: true when the grant tier is COARSE — the fix is a
          *  network-class approximation and the UI may say so. */
-        val approximate: Boolean = false
+        val approximate: Boolean = false,
+        /** v2.19.0: GPS course-over-ground (0..360) while moving — the map's
+         *  user arrow prefers this over the compass (motion truth beats
+         *  magnetometer). Null when stationary/no bearing. */
+        val bearingDeg: Double? = null
     )
 
     /**

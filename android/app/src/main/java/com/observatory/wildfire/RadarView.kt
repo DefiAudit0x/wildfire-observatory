@@ -15,7 +15,11 @@ import android.view.animation.LinearInterpolator
  * v2.0.0 — the native HUD radar, replacing the "stone age" decorative one.
  * A dumb painter over RadarModel (all math is unit-tested there):
  *  - 30 km range, rings at 5/10/20/30 km with Arabic km labels;
- *  - north-up compass ticks + ش/ق/ج/غ letters;
+ *  - compass ticks + ش/ق/ج/غ letters; v2.19.0: HEADING-UP — with a device
+ *    heading the whole rose (ticks, letters, sweep) AND every blip rotate by
+ *    −heading so the card matches what you see when you turn in place; the
+ *    user triangle stays screen-up (it IS you). No heading → the legacy
+ *    north-up card, pixel-for-pixel (no sensor must never mean a fake one);
  *  - a 9s rotating sweep sector (leading edge + 70° fading trail);
  *  - FIRMS satellite hotspots (orange diamonds — these were NEVER shown in
  *    any previous app version), pending community reports (amber hollow),
@@ -33,6 +37,8 @@ class RadarView @JvmOverloads constructor(
     private var blips: List<RadarModel.Blip> = emptyList()
     private var userHasFix: Boolean = false
     private var windFromDeg: Double? = null
+    /** v2.19.0: smoothed device bearing (0..360), null = no compass → north-up. */
+    private var headingDeg: Double? = null
     private var sweepDeg = 0f
 
     private val sweepAnimator = ValueAnimator.ofFloat(0f, 360f).apply {
@@ -45,10 +51,16 @@ class RadarView @JvmOverloads constructor(
         }
     }
 
-    fun setData(blips: List<RadarModel.Blip>, userHasFix: Boolean, windFromDeg: Double?) {
+    fun setData(
+        blips: List<RadarModel.Blip>,
+        userHasFix: Boolean,
+        windFromDeg: Double?,
+        headingDeg: Double? = null
+    ) {
         this.blips = blips
         this.userHasFix = userHasFix
         this.windFromDeg = windFromDeg
+        this.headingDeg = headingDeg
         invalidate()
     }
 
@@ -186,19 +198,27 @@ class RadarView @JvmOverloads constructor(
         }
         bgPaint.shader = null
 
-        // Sweep trail (under the rings): 70° wide, leading edge at sweepDeg.
+        // v2.19.0 heading-up: the ROSE (sweep, rings, ticks, letters) rotates
+        // by −heading so "ش" sits toward TRUE north on screen; blips project
+        // with the same adjusted angle below. heading == null → rotation 0 →
+        // the legacy north-up card, byte-for-byte.
+        val heading = headingDeg
+        val roseRotation = (heading?.let { -it } ?: 0.0).toFloat()
+
         canvas.save()
+        canvas.rotate(roseRotation, cx, cy)
+
+        // Sweep trail (under the rings): 70° wide, leading edge at sweepDeg.
         canvas.rotate(sweepDeg, cx, cy)
         sweepPaint.shader = sweepShader
         rectF.set(cx - radius, cy - radius, cx + radius, cy + radius)
         canvas.drawArc(rectF, -RadarModel.SWEEP_HALF_DEG.toFloat(), 70f, true, sweepPaint)
         sweepPaint.shader = null
-        canvas.restore()
+        canvas.rotate(-sweepDeg, cx, cy)
 
-        // Rings + labels (RTL: numbers are fine as-is).
-        for ((px, label) in cachedRings) {
+        // Rings (circles are rotation-invariant — drawn inside for one save).
+        for ((px, _) in cachedRings) {
             canvas.drawCircle(cx, cy, px, ringPaint)
-            canvas.drawText(label, cx + px - 2f, cy - 10f, ringLabelPaint)
         }
         // Cross hairs.
         canvas.drawLine(cx - radius, cy, cx + radius, cy, ringPaint)
@@ -220,10 +240,20 @@ class RadarView @JvmOverloads constructor(
         canvas.drawText("غ", cx - radius + 4f, cy + 10f, compassPaint)
         canvas.drawCircle(cx, cy, radius, rimPaint)
 
-        // Blips.
+        canvas.restore()
+
+        // Ring distance labels stay screen-fixed (they label SIZES, not
+        // directions — rotating text reads badly at any card angle).
+        for ((px, label) in cachedRings) {
+            canvas.drawText(label, cx + px - 2f, cy - 10f, ringLabelPaint)
+        }
+
+        // Blips — projected with the heading-adjusted angle (pure math, the
+        // same projectInto contract; null heading leaves angles untouched).
         val pulse = 1f + 0.35f * Math.sin(System.currentTimeMillis() / 300.0).toFloat()
+        val screenAngleBase = heading ?: 0.0
         for (blip in blips) {
-            val p = RadarModel.projectInto(blip.angleDeg, blip.distKm, cx, cy, radius, blipScratch)
+            val p = RadarModel.projectInto(blip.angleDeg - screenAngleBase, blip.distKm, cx, cy, radius, blipScratch)
             when (blip.kind) {
                 RadarModel.Kind.HOTSPOT -> drawDiamond(canvas, p.x, p.y, 9f, hotspotPaint)
                 RadarModel.Kind.PENDING_REPORT -> canvas.drawCircle(p.x, p.y, 8f, pendingPaint)
@@ -239,16 +269,18 @@ class RadarView @JvmOverloads constructor(
             }
         }
 
-        // Wind arrow: direction the wind COMES FROM, at a fixed offset ring.
+        // Wind arrow: direction the wind COMES FROM, at a fixed offset ring
+        // (same heading adjustment as the blips — the whole card agrees).
         windFromDeg?.let { fromDeg ->
             val s = windScratch
-            val p = RadarModel.projectInto(fromDeg, 27.0, cx, cy, radius, s[0])
-            val tail = RadarModel.projectInto(fromDeg, 21.0, cx, cy, radius, s[1])
+            val from = fromDeg - screenAngleBase
+            val p = RadarModel.projectInto(from, 27.0, cx, cy, radius, s[0])
+            val tail = RadarModel.projectInto(from, 21.0, cx, cy, radius, s[1])
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windPaint)
             // Arrowhead pointing INWARD (from where the wind arrives).
-            val inP = RadarModel.projectInto(fromDeg + 180.0, 27.6, cx, cy, radius, s[2])
-            val left = RadarModel.projectInto(fromDeg + 20.0, 26.0, cx, cy, radius, s[3])
-            val right = RadarModel.projectInto(fromDeg - 20.0, 26.0, cx, cy, radius, s[4])
+            val inP = RadarModel.projectInto(from + 180.0, 27.6, cx, cy, radius, s[2])
+            val left = RadarModel.projectInto(from + 20.0, 26.0, cx, cy, radius, s[3])
+            val right = RadarModel.projectInto(from - 20.0, 26.0, cx, cy, radius, s[4])
             canvas.drawLine(p.x, p.y, left.x, left.y, headPaint)
             canvas.drawLine(p.x, p.y, right.x, right.y, headPaint)
             canvas.drawLine(p.x, p.y, inP.x, inP.y, headPaint)

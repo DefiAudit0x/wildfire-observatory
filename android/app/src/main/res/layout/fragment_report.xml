@@ -30,12 +30,12 @@
             android:gravity="center_vertical"
             android:layout_marginBottom="12dp">
 
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="📋"
-                android:textSize="22sp"
-                android:layout_marginEnd="8dp" />
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:src="@drawable/ic_hdr_note"
+                android:layout_marginEnd="8dp"
+                android:contentDescription="@null" />
 
             <LinearLayout
                 android:layout_width="0dp"
@@ -83,12 +83,12 @@
                     android:orientation="horizontal"
                     android:gravity="center_vertical">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="📍"
-                        android:textSize="15sp"
-                        android:layout_marginEnd="8dp" />
+                    <ImageView
+                        android:layout_width="14dp"
+                        android:layout_height="14dp"
+                        android:src="@drawable/ic_hdr_pin"
+                        android:layout_marginEnd="8dp"
+                        android:contentDescription="@null" />
 
                     <TextView
                         android:id="@+id/report_location_line"
@@ -100,6 +100,19 @@
                         android:textSize="12sp"
                         android:textStyle="bold" />
                 </LinearLayout>
+
+                <!-- v2.19.0: autofill status — resolving / failed-tap-retry /
+                     offline-wilaya-fallback. The old autofill failed silently
+                     (freshness gate + silent 403s) and the owner saw "لا
+                     تُملأ تلقائياً" — this line makes every state visible. -->
+                <TextView
+                    android:id="@+id/report_geo_status"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:textColor="@color/accent_amber"
+                    android:textSize="11sp"
+                    android:visibility="gone" />
 
                 <TextView
                     android:id="@+id/report_queue_line"
