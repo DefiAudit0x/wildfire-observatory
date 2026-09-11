@@ -71,7 +71,7 @@
     "@types/swagger-ui-express": "^4.1.7",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
-    "autoprefixer": "^10.4.21",
+    "autoprefixer": "^10.5.5",
     "esbuild": "^0.28.2",
     "firebase-tools": "^15.28.2",
     "husky": "^9.1.0",
