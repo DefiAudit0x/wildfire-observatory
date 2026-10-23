@@ -11,6 +11,7 @@ import { str } from "../params.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
 import logger from "../logger.js";
 import config from "../config.js";
+import { secretFingerprint } from "../crypto.js";
 
 const router = Router();
 const PHONE_DZ = /^(?:\+213|0)(5|6|7)\d{8}$/;
@@ -155,7 +156,7 @@ router.post("/:id/approve", requireAdmin, async (req: Request, res: Response) =>
 
   reg.status = finalStatus;
   if (assignedCode) reg.assignedCode = assignedCode;
-  logAdminAction("volunteer.approve", { id, status: finalStatus, assignedCode }, actorFromRequest(req)).catch(() => {});
+  logAdminAction("volunteer.approve", { id, status: finalStatus, ...(assignedCode ? { assignedCodeFingerprint: secretFingerprint(assignedCode) } : {}) }, actorFromRequest(req)).catch(() => {});
   res.json({ success: true });
 });
 

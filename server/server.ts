@@ -190,6 +190,16 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
+    // The server bundle and its source map share dist/ with Vite's public
+    // assets. Never let express.static publish these backend implementation
+    // files to anonymous clients.
+    app.use((req, res, next) => {
+      if (/^\/server\.cjs(?:\.map)?$/i.test(req.path)) {
+        res.status(404).json({ error: "Not found" });
+        return;
+      }
+      next();
+    });
     app.use(express.static(distPath));
     app.get("/assets/*splat", (req, res) => {
       const assetPath = req.path.slice("/assets/".length);

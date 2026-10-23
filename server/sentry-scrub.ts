@@ -46,7 +46,19 @@ function scrubValue(value: unknown, depth: number): unknown {
 
 export function scrubSentryEvent(event: ErrorEvent): ErrorEvent {
   try {
-    const req = (event as { request?: { data?: unknown } }).request;
+    const req = (event as { request?: { data?: unknown; url?: string; query_string?: unknown; headers?: Record<string, unknown> } }).request;
+    if (req) {
+      // Verification and unsubscribe URLs carry bearer tokens in the query.
+      // Sentry request metadata is separate from `request.data`, so redact it
+      // explicitly before the event leaves this process.
+      if (typeof req.url === "string") req.url = req.url.split("?", 1)[0];
+      if (req.query_string !== undefined) req.query_string = "[redacted]";
+      if (req.headers && typeof req.headers === "object") {
+        for (const key of Object.keys(req.headers)) {
+          if (/^(authorization|cookie|set-cookie)$/i.test(key)) req.headers[key] = "[redacted]";
+        }
+      }
+    }
     if (req?.data) {
       try {
         const parsed = typeof req.data === "string" ? JSON.parse(req.data) : req.data;

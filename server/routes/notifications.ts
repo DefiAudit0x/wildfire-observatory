@@ -5,9 +5,10 @@ import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
 import { str } from "../params.js";
-import { collectionGet, docSet, docUpdate, docGet } from "../fs.js";
+import { docSet, docUpdate, docGet } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 import { boundDeviceId, issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
+import { secretFingerprint } from "../crypto.js";
 
 const router = Router();
 const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
@@ -26,9 +27,27 @@ function subscriberId(email: string): string {
 const memoryNotifications: any[] = [];
 
 async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
-  const fromDb = await collectionGet("notifications", "timestamp", 100);
-  if (fromDb !== null) {
-    return fromDb.filter((n: any) => n.deviceId === deviceId);
+  const { getDb, isAdminDb } = await import("../firebase.js");
+  const db = getDb();
+  if (db) {
+    try {
+      let fromDb: any[];
+      if (isAdminDb(db)) {
+        const snapshot = await db.collection("notifications")
+          .where("deviceId", "==", deviceId).orderBy("timestamp", "desc").limit(100).get();
+        fromDb = snapshot.docs.map((entry: any) => ({ id: entry.id, ...entry.data() }));
+      } else {
+        const { collection, getDocs, query, where, orderBy, limit } = await import("firebase/firestore");
+        const snapshot = await getDocs(query(
+          collection(db, "notifications"), where("deviceId", "==", deviceId),
+          orderBy("timestamp", "desc"), limit(100),
+        ));
+        fromDb = snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+      }
+      return fromDb;
+    } catch (err) {
+      logger.error({ err }, "Failed to load device notifications");
+    }
   }
   return memoryNotifications.filter((n) => n.deviceId === deviceId);
 }
@@ -312,6 +331,10 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const ref = db.collection("subscribers").doc(subscriberId(email));
       const existingDoc = await ref.get();
       if (existingDoc.exists) {
+        if (existingDoc.data()?.verified === true) {
+          res.json({ success: true, message: "Subscription already verified." });
+          return;
+        }
         await ref.update({
           email,
           wilayas: wilayas || [],
@@ -335,6 +358,10 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const ref = doc(db, "subscribers", subscriberId(email));
       const existingDoc = await getDoc(ref);
       if (existingDoc.exists()) {
+        if (existingDoc.data()?.verified === true) {
+          res.json({ success: true, message: "Subscription already verified." });
+          return;
+        }
         await updateDoc(ref, {
           email,
           wilayas: wilayas || [], minSeverity: minSeverity || "medium",
@@ -352,7 +379,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
     }
 
     await sendVerificationEmail(email, verificationToken);
-    logger.info({ email }, "New subscriber registered");
+    logger.info({ emailFingerprint: secretFingerprint(email) }, "New subscriber registered");
     res.json({ success: true, message: "Subscription created. Check email to verify." });
   } catch (err) {
     logger.error({ err }, "Failed to subscribe");
@@ -389,7 +416,7 @@ router.post("/unsubscribe", unsubscribeLimiter, async (req: Request, res: Respon
       return;
     }
 
-    logger.info({ email }, "Subscriber unsubscribed");
+    logger.info({ emailFingerprint: secretFingerprint(email) }, "Subscriber unsubscribed");
     res.json({ success: true, message: "Unsubscribed successfully" });
   } catch (err) {
     logger.error({ err }, "Failed to unsubscribe");

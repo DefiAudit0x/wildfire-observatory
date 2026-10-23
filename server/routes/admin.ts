@@ -17,6 +17,7 @@ import { logAdminAction, actorFromRequest } from "./audit.js";
 import { liveHub } from "../live.js";
 import logger from "../logger.js";
 import config from "../config.js";
+import { secretFingerprint } from "../crypto.js";
 
 const router = Router();
 
@@ -165,7 +166,7 @@ async function buildStatusNotification(report: any, status?: string): Promise<vo
       type,
     });
   } catch (err) {
-    logger.error({ err, deviceId: report.deviceId }, "Failed to persist status notification");
+    logger.error({ err, deviceFingerprint: report.deviceId ? secretFingerprint(report.deviceId) : undefined }, "Failed to persist status notification");
   }
 }
 

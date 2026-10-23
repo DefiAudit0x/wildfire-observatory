@@ -1,5 +1,6 @@
 import config from "./config.js";
 import logger from "./logger.js";
+import { secretFingerprint } from "./crypto.js";
 
 type EmailPayload = { to: string; subject: string; html: string };
 
@@ -61,9 +62,9 @@ async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
       if (!res.ok) throw new Error(`SendGrid API ${res.status}: ${await res.text()}`);
     }
 
-    logger.info({ to, provider }, "Verification email sent");
+    logger.info({ recipientFingerprint: secretFingerprint(to), provider }, "Verification email sent");
   } catch (err) {
-    logger.error({ err, to, provider }, "Failed to send email");
+    logger.error({ err, recipientFingerprint: secretFingerprint(to), provider }, "Failed to send email");
     throw err;
   }
 }
@@ -200,7 +201,7 @@ export async function sendFireAlert(report: {
           ? `${config.appUrl}/api/notifications/unsubscribe?email=${encodeURIComponent(email)}&token=${encodeURIComponent(unsubscribeToken)}`
           : `${config.appUrl}/#unsubscribe`;
         return sendEmail({ to: email, subject, html: buildAlertHtml(report, unsubscribeUrl) }).catch((err) => {
-          logger.error({ err, email }, "Failed to send alert email");
+          logger.error({ err, recipientFingerprint: secretFingerprint(email) }, "Failed to send alert email");
         });
       })
     );
