@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import logger from "./logger.js";
 
 /**
@@ -16,6 +16,11 @@ export function encryptAead(plaintext: string | Buffer, key: Buffer): string {
   const data = Buffer.isBuffer(plaintext) ? plaintext : Buffer.from(plaintext, "utf8");
   const encrypted = Buffer.concat([cipher.update(data), cipher.final()]);
   return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), encrypted.toString("base64")].join(".");
+}
+
+/** Stable, non-reversible identifier for security credentials in audit logs. */
+export function secretFingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }
 
 /** Returns null on ANY failure (bad format, wrong key, tampered tag) — never throws. */

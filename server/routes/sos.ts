@@ -463,7 +463,9 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   if (memorySos.length > MEMORY_SOS_MAX_ITEMS) {
     memorySos.length = MEMORY_SOS_MAX_ITEMS;
   }
-  logger.info({ sosId: newSos.id, lat: hasLocation ? lat : null, lng: hasLocation ? lng : null, priority, nearbyFireCorroborated }, "New SOS created");
+  // Emergency coordinates belong in the private SOS record, not operational
+  // logs that may be copied to a broader log aggregation system.
+  logger.info({ sosId: newSos.id, hasLocation, priority, nearbyFireCorroborated }, "New SOS created");
   res.json(stripAudio(newSos));
 });
 

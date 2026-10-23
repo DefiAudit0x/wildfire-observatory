@@ -101,7 +101,7 @@ export function wilayaContainsCoords(wilaya: string, lat: number, lng: number): 
 
   // Country-level coverage is not a wilaya geofence. Reject until precise
   // bounds or polygon data exists for the declared wilaya.
-  logger.warn({ wilaya, lat, lng }, "Geofence rejected — wilaya bounds unavailable");
+  logger.warn({ wilaya }, "Geofence rejected — wilaya bounds unavailable");
   return false;
 }
 

@@ -1,6 +1,7 @@
 import { getDb, isAdminDb } from "./firebase.js";
 import logger from "./logger.js";
 import { stripUndefinedDeep } from "./clean.js";
+import { secretFingerprint } from "./crypto.js";
 
 export type AtomicCreateResult = "created" | "exists" | "unavailable";
 
@@ -305,7 +306,7 @@ export async function approveVolunteerAtomically(registrationId: string, registr
       return "updated";
     });
   } catch (err) {
-    logger.error({ err, registrationId, badgeCode }, "Atomic volunteer approval failed");
+    logger.error({ err, registrationId, badgeFingerprint: secretFingerprint(badgeCode) }, "Atomic volunteer approval failed");
     return "unavailable";
   }
 }

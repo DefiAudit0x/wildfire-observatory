@@ -8,6 +8,7 @@ import { ownsDevice, issueDeviceCookie } from "../deviceBinding.js";
 import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
+import { secretFingerprint } from "../crypto.js";
 
 const router = Router();
 
@@ -148,7 +149,7 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
         if (boundDevice && boundDevice !== deviceId) {
           // Badge already belongs to another device — knowledge of the code
           // is not enough to steal it. Audit so dispatchers can spot probing.
-          logger.warn({ badge: badgeCode, claimedDevice: deviceId, boundDevice }, "Heartbeat badge claim rejected: bound to another device");
+          logger.warn({ badgeFingerprint: secretFingerprint(badgeCode), claimedDeviceFingerprint: secretFingerprint(deviceId), boundDeviceFingerprint: secretFingerprint(boundDevice) }, "Heartbeat badge claim rejected: bound to another device");
           badgeBoundToDevice = true;
         } else if (deviceProven) {
           if (!boundDevice) {
@@ -168,9 +169,9 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
               finalName = match.ownerName;
               finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
               identityVerified = true;
-              logAdminAction("badge.device_bind", { badge: badgeCode, deviceId }, actorFromRequest(req)).catch(() => {});
+              logAdminAction("badge.device_bind", { badgeFingerprint: secretFingerprint(badgeCode), deviceFingerprint: secretFingerprint(deviceId) }, actorFromRequest(req)).catch(() => {});
             } else {
-              logger.warn({ badge: badgeCode }, "Badge device-bind persistence failed — identity NOT adopted (fail closed)");
+              logger.warn({ badgeFingerprint: secretFingerprint(badgeCode) }, "Badge device-bind persistence failed — identity NOT adopted (fail closed)");
             }
           } else {
             // Binding already durable — normal verified beat.

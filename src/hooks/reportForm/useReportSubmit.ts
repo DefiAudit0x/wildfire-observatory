@@ -69,6 +69,7 @@ export function useReportSubmit({ onSubmit, isArabic, fields, image, camera, dra
   // likewise owned by the orchestrator and injected here as a setter.
   const [successReport, setSuccessReport] = useState<SubmissionResultView | any | null>(null);
   const submittingRef = useRef(false);
+  const retryKeyRef = useRef<{ fingerprint: string; key: string } | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,11 +115,7 @@ export function useReportSubmit({ onSubmit, isArabic, fields, image, camera, dra
     // Idempotency key: retries of the same submission (offline sync, double
     // taps, tab reopen after a crash) resolve to the already-stored report
     // instead of creating duplicates.
-    const clientGeneratedId = typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `cg-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
-
-    const payload: any = {
+    const submission: any = {
       lat: parsedLat,
       lng: parsedLng,
       locationName: normalizedLocationName,
@@ -130,8 +127,18 @@ export function useReportSubmit({ onSubmit, isArabic, fields, image, camera, dra
       reporterType,
       reporterBadgeCode: normalizedBadge || undefined,
       image: image.image,
-      clientGeneratedId,
     };
+    // Reuse the idempotency key after an ambiguous network failure, but issue
+    // a new one when the user changes the submitted content.
+    const fingerprint = JSON.stringify(submission);
+    if (!retryKeyRef.current || retryKeyRef.current.fingerprint !== fingerprint) {
+      const key = typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `cg-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+      retryKeyRef.current = { fingerprint, key };
+    }
+    const clientGeneratedId = retryKeyRef.current.key;
+    const payload: any = { ...submission, clientGeneratedId };
 
     // --- INTERCEPT FOR OFFLINE DRAFT MODE ---
     const offlineMode = drafts.isOffline || drafts.isOfflineSimulation;
@@ -161,6 +168,7 @@ export function useReportSubmit({ onSubmit, isArabic, fields, image, camera, dra
         setSubmitting(false);
         return;
       }
+      retryKeyRef.current = null;
 
       setSuccessReport({
         ...draftReport,
@@ -184,6 +192,7 @@ export function useReportSubmit({ onSubmit, isArabic, fields, image, camera, dra
     }
     try {
       const result = normalizeSubmissionResult(await onSubmit(payload));
+      if (result?.responseValid) retryKeyRef.current = null;
       setSuccessReport(result);
       // Only a server-issued verified result may activate the local operator
       // tone gate. A user-supplied code, pending response, or malformed
