@@ -80,6 +80,37 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   const reportsRef = useRef<Report[]>([]);
   const sosRef = useRef<TrappedSOS[]>([]);
   const lastOutcomeRef = useRef<FetchOutcome>(EMPTY_OUTCOME);
+  // Fix 3c: a single in-flight enrollment shared by every cycle of this hook
+  // instance. Two cycles racing to enroll would mint two different server
+  // ids (one POST each), and the id the client adopts could end up different
+  // from the cookie the browser kept — the last Set-Cookie wins by header
+  // arrival order while the adopted id is set by body-read order. Sharing one
+  // pending promise makes the adopted id and the cookie come from the same
+  // response by construction. The ref is cleared when the promise settles so
+  // a later enrollment can proceed.
+  const enrollPromiseRef = useRef<Promise<string | null> | null>(null);
+
+  // Enrollment is NOT tied to any cycle signal (see Fix 3b): a newer cycle
+  // aborting it is exactly how the response gets lost in the first place.
+  const enrollDevice = useCallback(async (): Promise<string | null> => {
+    if (!enrollPromiseRef.current) {
+      enrollPromiseRef.current = (async () => {
+        try {
+          const enrollment = await fetchWithTimeout("/api/notifications/enroll", undefined, {
+            method: "POST",
+          });
+          if (!enrollment.ok) return null;
+          const assigned = (await enrollment.json().catch(() => null)) as { deviceId?: unknown } | null;
+          return typeof assigned?.deviceId === "string" ? assigned.deviceId : null;
+        } catch {
+          return null;
+        } finally {
+          enrollPromiseRef.current = null;
+        }
+      })();
+    }
+    return enrollPromiseRef.current;
+  }, []);
 
   // Parallel data fetching from Express backend, tracked per dataset. A single
   // endpoint outage never marks the whole backend dead, and a single success
@@ -161,6 +192,9 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     // stuck at 403 until cookies are cleared. The enrollment POST is NOT tied
     // to the cycle signal: a newer cycle aborting it is exactly how the
     // response gets lost in the first place.
+    // Fix 3c: enrollment is deduplicated per hook instance (enrollDevice) —
+    // overlapping cycles share one pending POST instead of minting a second
+    // server id that could disagree with the cookie.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
       commit("reports", fetchWithTimeout("/api/reports", cycleController.signal)),
       commit("satellites", fetchWithTimeout("/api/satellite-data", cycleController.signal)),
@@ -172,16 +206,9 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
           const url = `/api/notifications/${deviceId}`;
           let res = await fetchWithTimeout(url, cycleController.signal);
           if (res.status === 401 || (await isDeviceMismatch(res))) {
-            // Untied from the cycle signal (see the comment above): aborting
-            // this request is how the enrollment response gets lost.
-            const enrollment = await fetchWithTimeout("/api/notifications/enroll", undefined, {
-              method: "POST",
-            });
-            if (enrollment.ok) {
-              const assigned = await enrollment.json().catch(() => null) as { deviceId?: unknown } | null;
-              if (typeof assigned?.deviceId === "string" && adoptServerDeviceId(assigned.deviceId)) {
-                res = await fetchWithTimeout(`/api/notifications/${assigned.deviceId}`, cycleController.signal);
-              }
+            const assignedId = await enrollDevice();
+            if (assignedId && adoptServerDeviceId(assignedId)) {
+              res = await fetchWithTimeout(`/api/notifications/${assignedId}`, cycleController.signal);
             }
           }
           return res;
@@ -250,7 +277,7 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     if (cycleAbortRef.current === cycleController) cycleAbortRef.current = null;
     if (mountedRef.current) setLoading(false);
     return outcome;
-  }, [deviceId]);
+  }, [deviceId, enrollDevice]);
 
   useEffect(() => () => {
     mountedRef.current = false;
