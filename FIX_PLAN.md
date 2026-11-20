@@ -427,3 +427,48 @@ The report line distinguishes the two minor findings with ID NTESTGEO-1.
 - Fix (by the parent, not Sol): `isTrustedOrigin` moved from `server/server.ts` into shared `server/middleware.ts` (single canonical copy; `csrfProtection` behaviour unchanged) and `POST /api/sos/profile` in `server/routes/sos.ts` now requires a trusted origin even with no cookie present (403 `Forbidden: cross-origin state change rejected`). `PUT /profile/:deviceId` needs no change — it requires the victim's token, which a cross-site caller does not have.
 - Tests: 2 new regression tests in `tests/sos.test.ts` (cross-origin enrollment → 403, no `Set-Cookie`, `docSet` never called; no-origin-signal enrollment → 403) — both confirmed FAILING on unfixed code (200) before the fix, passing after. The 5 existing profile tests now send `Sec-Fetch-Site: same-origin`, simulating a real same-origin browser.
 - Verified by the parent: lint 0 diagnostics, `tests/sos.test.ts` 40/40, full server suite 67 files / 658 passed, production build passes.
+
+## Fix 4 validation — SAUTH-1 / MWARE-1 / USR-1 / SEED-2
+
+- Branch: `fix/wildfire-4-staff-sessions`, created from fetched main `e74fe6e27ff3ee3fb8d0afa867dc138323c33a53` (PR #131). No Fix 3 code or ledger changes were carried into this branch. Local commit only; no push, PR, or merge.
+- `server/middleware.ts`: staff tokens get independent random `jti` values and carry an account `sessionVersion`; authentication checks the shared durable revocation register plus the current account version. Known revocations are checked before storage reads and before the no-database fallback. A verified revocation request is remembered locally even if persistence fails. Unknown password-admin sessions retain the intended availability-first fail-open behavior. Staff accounts fail closed if the database disappears; pre-fix staff tokens without a `jti` require a fresh login.
+- `server/routes/auth.ts`: login reads current account state and carries its version; logout persists the staff session revocation before reporting success. Failed persistence returns 503 and retains the local denial (it cannot promise durable cross-process revocation).
+- `server/routes/users.ts`: password reset rotates a random account session version in the same account update as the password hash. Commanders may PUT only existing agents in their own unit; superadmin behavior is preserved.
+- `server/fs.ts`: optional fresh document reads bypass the process cache; the client SDK path uses `getDocFromServer`. Login and authentication use fresh account/revocation reads so another process's reset or logout is not delayed by cached state. Other callers retain their existing cache behavior.
+- `scripts/seed-staff.ts`: both units and users use the existing real `createDocIfAbsent` helper. Its transactional existence read either returns an existing record, creates conditionally, or fails unavailable; failed reads are never interpreted as absence. Unavailable creation aborts the script, so success is not falsely reported (an unavoidable overlapping improvement to SEED-1; no separate SEED-1 work).
+- New tests: `tests/staff-sessions.test.ts` (9), `tests/seed-staff.test.ts` (4), `tests/session-storage.test.ts` (2). Existing fixtures in `tests/{auth,admin-revocation,users-security,roster,team-auth}.test.ts` now supply active staff records rather than relying on the removed no-database bypass, distinguish account reads from revocation reads, and assert fresh read arguments. Existing assertions were retained.
+
+### Fail-without-fix proof (all 15 new cases)
+
+The exact three new test files were run with the five modified production files temporarily restored byte-for-byte from `git show e74fe6e:<path>` in this same clone, using the already-installed dependencies. A `finally` block restored the patched source files. Command: `npm run test:server -- tests/staff-sessions.test.ts tests/seed-staff.test.ts tests/session-storage.test.ts`. Baseline result: **3 failed files, 15 failed tests, exit 1**, no collection/import errors. Full local output: `/tmp/fix4-baseline.log` (ephemeral).
+
+| Finding / new regression | Unfixed main evidence |
+| --- | --- |
+| SAUTH-1: copied cookie after logout; fresh login control | Copied cookie returned 200 instead of 401. |
+| SAUTH-1: both outstanding logins invalid after password reset; fresh-password login control | First old cookie returned 200 instead of 401. |
+| SAUTH-1: failed durable logout retains local denial | Logout returned 200 instead of the required 503. |
+| SAUTH-1: database disappears after staff login | Cookie returned 200 instead of 401. |
+| SAUTH-1: explicit incident-response staff bearer revocation | Revocation helper returned false (staff issuer had no jti) instead of true. |
+| MWARE-1: observed revoked admin token, then docGet resolves null | Second request returned 200 instead of 401. |
+| MWARE-1: observed revoked admin token, then getDb returns null | Second request returned 200 instead of 401. |
+| USR-1: commander resets peer commander's password | PUT returned 200 instead of 403. |
+| USR-1: commander deactivates peer commander | PUT returned 200 instead of 403. Both parameter cases also check legitimate agent management and superadmin management after the denial. |
+| SEED-2: user existence read failure | Existing disabled account was replaced, including passwordHash/isActive/creation metadata. |
+| SEED-2: unit existence read failure | Existing unit record was replaced. |
+| SEED-2: competing user creator before conditional creation | Competing creator's existing record was replaced. |
+| SEED-2: competing unit creator before conditional creation | Competing creator's existing record was replaced. |
+| SAUTH-1: fresh account read bypasses stale process cache | Returned old cached version instead of the new stored version. |
+| MWARE-1: fresh revocation read bypasses stale process cache | Returned old cached state instead of the new stored revocation. |
+
+The MWARE-1 outage tests simulate docGet's documented null outcome and getDb's unavailable outcome after a successful durable revocation read; they do not induce a real Firestore outage or wait out a real SDK cache. The separate storage tests use the real fs document-cache implementation with a mocked admin SDK. The SEED-2 tests use the real create-if-absent helper with a mocked transactional store: failed transaction reads throw before mutation; competing creators appear immediately before the transaction's existence read. They prove conditional create behavior and unchanged existing records, not live Firestore contention/retry behavior. No real database was mutated.
+
+### Validation results
+
+- Affected seven-file run before adding the two storage cases: **84/84 passed** (including the then-present positive control later folded into the USR-1 cases so every newly added case fails on main).
+- `npm run lint`: passed (0 diagnostics).
+- `npm run build`: passed (Vite/PWA client and esbuild production server).
+- Full `npm run test:server`: **70 files passed, 674/674 tests passed**, including all 15 final new regressions. Log: `/tmp/fix4-server.log`.
+- Full `npm run test:react`: **76 files passed, 784/784 tests passed**, including the server compatibility tests. Log: `/tmp/fix4-react.log`.
+- `npm run test:e2e`: attempted after a TCP check confirmed port 3000 was free; blocked before Playwright because Firebase could not spawn `java -version` (Java is not installed). Firebase also reported an update-config permission warning. No dependency installation or environment repair was attempted. Log: `/tmp/fix4-e2e.log`.
+- `git diff --check`: passed. No source from Fix 3, owner copy, frozen evidence mirror, or `/tmp/wf-*` worktree was modified. Dependencies were not reinstalled.
+- Fix 5 next: **SRV-1** (`server/server.ts`, backend bundle/source-map asset disclosure) and **SENTRY-1** (`server/sentry-scrub.ts`, telemetry scrubbing), per the triage table.
