@@ -194,6 +194,21 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
   }
 }
 
+/**
+ * CSRF origin check, shared with server.ts csrfProtection: true when the
+ * request comes from a trusted origin — an explicit Origin matching the
+ * configured CORS origins or this host, or a Sec-Fetch-Site of same-origin /
+ * same-site. A request with neither header is untrusted: browsers always send
+ * Origin on POST and Sec-Fetch-Site on fetches/navigations, so a header-less
+ * mutating request is not a same-origin browser call.
+ */
+export function isTrustedOrigin(req: Request): boolean {
+  const origin = req.headers.origin;
+  if (origin) return config.corsOrigins.includes(origin) || origin === `${req.protocol}://${req.get("host")}`;
+  const fetchSite = req.headers["sec-fetch-site"];
+  return fetchSite === "same-origin" || fetchSite === "same-site";
+}
+
 /** Backward-compatible: same behaviour as before, but also accepts staff tokens who hold an officer role. */
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   void requireAuth(req, res, () => {

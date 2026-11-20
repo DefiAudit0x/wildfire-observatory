@@ -4,13 +4,12 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
 import { encryptAead, decryptAead } from "../crypto.js";
 import { collectionGet, createSosWithAdmission, docSet, docGet, appendSosDispatch, resolveSosAtomically } from "../fs.js";
-import { requireAdmin } from "../middleware.js";
+import { isTrustedOrigin, requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
 import config from "../config.js";
 import logger from "../logger.js";
-import { issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 
 const router = Router();
 
@@ -55,26 +54,9 @@ const dispatchSchema = z.object({
 });
 
 const profileSchema = z.object({
-  deviceId: z.string().min(1).max(128),
   name: z.string().max(120).optional(),
   phone: z.string().max(30).optional(),
 });
-
-// M2 fix: ownership is cryptographic — a server-signed cookie — not
-// first-come. A valid signed cookie for the claimed device grants access;
-// an existing signed cookie for a DIFFERENT device is a 403; no cookie
-// issues one for the claimed device. (Legacy plain "sos_device_id" cookies
-// are simply ignored — affected clients rebind once.)
-function bindProfileDevice(req: Request, res: Response, deviceId: string): boolean {
-  if (ownsDevice(req, deviceId)) return true;
-  const bound = (req as any).cookies?.["device_sig"];
-  if (bound) {
-    res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a different device." });
-    return false;
-  }
-  issueDeviceCookie(res, deviceId, PROFILE_TTL_MS);
-  return true;
-}
 
 const memorySos: any[] = [];
 
@@ -174,6 +156,32 @@ const DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
 
 // ── Encrypted profile store (AES-256-GCM, key derived from SOS_ENCRYPTION_KEY) ─
 const PROFILE_TTL_MS = 90 * 24 * 60 * 60 * 1000;
+const PROFILE_COOKIE = "sos_profile";
+
+function profileIdForToken(token: string): string {
+  return "profile-" + createHash("sha256").update(token).digest("hex");
+}
+
+function profileToken(req: Request): string | null {
+  const token: unknown = req.cookies?.[PROFILE_COOKIE];
+  return typeof token === "string" && /^[a-f0-9]{64}$/.test(token) ? token : null;
+}
+
+function requireProfileDevice(req: Request, res: Response): string | null {
+  const requested = str(req.params.deviceId);
+  if (!requested || requested.length > 128) {
+    res.status(400).json({ error: "Invalid deviceId" });
+    return null;
+  }
+  const token = profileToken(req);
+  const deviceId = token && profileIdForToken(token);
+  if (!deviceId || (requested !== "current" && requested !== deviceId)) {
+    res.status(403).json({ error: "Device identity mismatch" });
+    return null;
+  }
+  return deviceId;
+}
+
 const memoryProfiles = new Map<string, { encrypted: string; expiresAt: number }>();
 
 // Prefer a dedicated SOS_ENCRYPTION_KEY so profiles are not encrypted with the
@@ -218,7 +226,7 @@ function stripAudio(sos: any) {
 
 function anonymizeSos(sos: any) {
   if (!sos) return sos;
-  const { name, phone, audioUrl, dispatchedTeams, deviceId, ...rest } = sos;
+  const { name, phone, audioUrl, dispatchedTeams, deviceId, textMessage, clientGeneratedId, ...rest } = sos;
   return {
     ...rest,
     lat: Math.round(sos.lat * 100) / 100,
@@ -272,12 +280,9 @@ router.get("/:id", requireAdmin, async (req: Request, res: Response) => {
 
 // ── Developer-friendly profile endpoints (server-side encrypted identity) ────
 router.get("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = str(req.params.deviceId) || "";
-  if (!deviceId || deviceId.length > 128) {
-    res.status(400).json({ error: "Invalid deviceId" });
-    return;
-  }
-  if (!bindProfileDevice(req, res, deviceId)) return;
+  const deviceId = requireProfileDevice(req, res);
+  if (!deviceId) return;
+  res.setHeader("Cache-Control", "no-store");
   const mem = memoryProfiles.get(deviceId);
   let profile: { name?: string; phone?: string } | null = null;
   if (mem && Date.now() < mem.expiresAt) {
@@ -291,14 +296,8 @@ router.get("/profile/:deviceId", async (req: Request, res: Response) => {
   res.json({ name: profile?.name || "", phone: profile?.phone || "" });
 });
 
-router.put("/profile/:deviceId", async (req: Request, res: Response) => {
-  const deviceId = str(req.params.deviceId) || "";
-  if (!deviceId || deviceId.length > 128) {
-    res.status(400).json({ error: "Invalid deviceId" });
-    return;
-  }
-  if (!bindProfileDevice(req, res, deviceId)) return;
-  const parsed = profileSchema.safeParse({ deviceId, ...req.body });
+async function saveProfile(req: Request, res: Response, deviceId: string, token?: string) {
+  const parsed = profileSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid profile data" });
     return;
@@ -322,7 +321,34 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
   if (memoryProfiles.size > 20000) {
     for (const [k, v] of memoryProfiles) if (Date.now() > v.expiresAt) memoryProfiles.delete(k);
   }
+  if (token) {
+    res.cookie(PROFILE_COOKIE, token, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.cookieSecure,
+      path: "/api/sos/profile",
+      maxAge: PROFILE_TTL_MS,
+    });
+  }
   res.json({ success: true });
+}
+
+router.put("/profile/:deviceId", async (req: Request, res: Response) => {
+  const deviceId = requireProfileDevice(req, res);
+  if (deviceId) await saveProfile(req, res, deviceId, profileToken(req) ?? undefined);
+});
+
+// A fresh browser can only create a new profile under a server-generated
+// credential. Guessing a profile ID never gives access to its credential.
+// Fix 2b (CodeRabbit, CWE-352): enrollment ISSUES the sos_profile credential
+// cookie, so it must pass the origin check even with no cookie present — the
+// global csrfProtection skips cookieless requests, and SameSite=lax does not
+// stop a cross-site top-level form POST response from replacing the victim's
+// cookie with the attacker's rescue contact.
+router.post("/profile", async (req: Request, res: Response) => {
+  if (!isTrustedOrigin(req)) return void res.status(403).json({ error: "Forbidden: cross-origin state change rejected" });
+  const token = profileToken(req) ?? randomBytes(32).toString("hex");
+  await saveProfile(req, res, profileIdForToken(token), token);
 });
 
 router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Response) => {
@@ -397,8 +423,12 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
     try {
       const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId);
       if (replay) {
+        if (replay.deviceId !== data.deviceId) {
+          res.status(409).json({ error: "SOS retry key belongs to a different device" });
+          return;
+        }
         logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
-        res.json(stripAudio(replay));
+        res.json({ id: replay.id, status: replay.status });
         return;
       }
     } catch (err) {

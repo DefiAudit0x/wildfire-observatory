@@ -89,9 +89,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     let cancelled = false;
     (async () => {
       try {
-        const storedId = getDeviceId();
-        if (!storedId) return;
-        const res = await fetch(`/api/sos/profile/${encodeURIComponent(storedId)}`);
+        const res = await fetch("/api/sos/profile/current");
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
@@ -462,8 +460,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
       // 1) Persist identity on the server (encrypted, TTL) for future sessions.
       try {
-        await fetch(`/api/sos/profile/${encodeURIComponent(storedId)}`, {
-          method: "PUT",
+        await fetch("/api/sos/profile", {
+          method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: finalName, phone: phone.trim() }),
           // Best-effort step: never let it hold the SOS hostage.
