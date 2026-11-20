@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
+import { randomBytes } from "node:crypto";
 import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
@@ -74,11 +75,11 @@ router.put("/:agentId", requireRole(...MANAGE_USERS_ROLES), async (req: Request,
   const admin = (req as any).admin; const { unitId: allowedUnit, isSuperadmin } = callerUnit(admin); if (requireScopedCommander(res, admin) === null && !isSuperadmin) return;
   try {
     const existing = await docGet("users", agentId); if (!existing) { res.status(404).json({ error: "User not found" }); return; }
-    if (!isSuperadmin) { if (existing.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only manage their own unit's staff" }); return; } if (parsed.data.role && parsed.data.role !== "agent") { res.status(403).json({ error: "Commanders cannot change roles outside of agent" }); return; } if (parsed.data.unitId && parsed.data.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders cannot move staff between units" }); return; }
+    if (!isSuperadmin) { if (existing.role !== "agent") { res.status(403).json({ error: "Commanders can only manage agent accounts" }); return; } if (existing.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only manage their own unit's staff" }); return; } if (parsed.data.role && parsed.data.role !== "agent") { res.status(403).json({ error: "Commanders cannot change roles outside of agent" }); return; } if (parsed.data.unitId && parsed.data.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders cannot move staff between units" }); return; }
     }
     if ((parsed.data.role === "superadmin" || existing.role === "superadmin") && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can modify superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
     if (parsed.data.unitId) { const unit = await docGet("units", toUnitId(parsed.data.unitId)); if (!unit) { res.status(404).json({ error: "Unit not found" }); return; } }
-    const update: Record<string, any> = {}; if (parsed.data.name) update.name = parsed.data.name; if (parsed.data.role) update.role = parsed.data.role; if (parsed.data.unitId) update.unitId = parsed.data.unitId; if (parsed.data.isActive !== undefined) update.isActive = parsed.data.isActive; if (parsed.data.password) update.passwordHash = await bcrypt.hash(parsed.data.password, 10); update.updatedAt = new Date().toISOString(); update.updatedBy = admin?.agentId || "admin";
+    const update: Record<string, any> = {}; if (parsed.data.name) update.name = parsed.data.name; if (parsed.data.role) update.role = parsed.data.role; if (parsed.data.unitId) update.unitId = parsed.data.unitId; if (parsed.data.isActive !== undefined) update.isActive = parsed.data.isActive; if (parsed.data.password) { update.passwordHash = await bcrypt.hash(parsed.data.password, 10); update.sessionVersion = randomBytes(16).toString("hex"); } update.updatedAt = new Date().toISOString(); update.updatedBy = admin?.agentId || "admin";
     const ok = await docUpdate("users", agentId, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
     // S-M8: role/unit/deactivation/password changes are privilege shifts —
     // audit what changed (never the password itself).
