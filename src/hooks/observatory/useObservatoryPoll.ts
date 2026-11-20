@@ -4,6 +4,7 @@ import { fetchWithRetry } from "../../utils/api";
 import { useLiveEvents } from "../../utils/live";
 import { DATASET_KEYS, DatasetHealth, DatasetKey } from "../../utils/datasetHealth";
 import { validateDataset } from "../../utils/datasetValidators";
+import { adoptServerDeviceId } from "../../utils/device";
 import {
   DatasetAttempt,
   EMPTY_DATASET_HEALTH,
@@ -38,6 +39,23 @@ export interface UseObservatoryPollResult {
   handleMarkNotificationRead: (id: string) => Promise<void>;
 }
 
+/**
+ * A 403 on the notifications read means the signed cookie is bound to a
+ * different device id than the one this browser uses (see
+ * server/routes/notifications.ts). The body carries code DEVICE_MISMATCH; a
+ * body that cannot be parsed is treated the same — this endpoint refuses
+ * with no other 403.
+ */
+async function isDeviceMismatch(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  try {
+    const body = (await res.clone().json()) as { code?: unknown };
+    return body?.code === "DEVICE_MISMATCH";
+  } catch {
+    return true;
+  }
+}
+
 export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   const [reports, setReports] = useState<Report[]>([]);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
@@ -62,6 +80,37 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   const reportsRef = useRef<Report[]>([]);
   const sosRef = useRef<TrappedSOS[]>([]);
   const lastOutcomeRef = useRef<FetchOutcome>(EMPTY_OUTCOME);
+  // Fix 3c: a single in-flight enrollment shared by every cycle of this hook
+  // instance. Two cycles racing to enroll would mint two different server
+  // ids (one POST each), and the id the client adopts could end up different
+  // from the cookie the browser kept — the last Set-Cookie wins by header
+  // arrival order while the adopted id is set by body-read order. Sharing one
+  // pending promise makes the adopted id and the cookie come from the same
+  // response by construction. The ref is cleared when the promise settles so
+  // a later enrollment can proceed.
+  const enrollPromiseRef = useRef<Promise<string | null> | null>(null);
+
+  // Enrollment is NOT tied to any cycle signal (see Fix 3b): a newer cycle
+  // aborting it is exactly how the response gets lost in the first place.
+  const enrollDevice = useCallback(async (): Promise<string | null> => {
+    if (!enrollPromiseRef.current) {
+      enrollPromiseRef.current = (async () => {
+        try {
+          const enrollment = await fetchWithTimeout("/api/notifications/enroll", undefined, {
+            method: "POST",
+          });
+          if (!enrollment.ok) return null;
+          const assigned = (await enrollment.json().catch(() => null)) as { deviceId?: unknown } | null;
+          return typeof assigned?.deviceId === "string" ? assigned.deviceId : null;
+        } catch {
+          return null;
+        } finally {
+          enrollPromiseRef.current = null;
+        }
+      })();
+    }
+    return enrollPromiseRef.current;
+  }, []);
 
   // Parallel data fetching from Express backend, tracked per dataset. A single
   // endpoint outage never marks the whole backend dead, and a single success
@@ -136,6 +185,16 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     // v2.15.0: notifications require an explicit device enrollment — a 401
     // (DEVICE_ENROLLMENT_REQUIRED) enrolls this browser once, then the read
     // retries. Identity is never bound implicitly from a GET URL anymore.
+    // Fix 3b: a lost enrollment response also desyncs the client — the server
+    // has already bound the cookie to a new id while this browser still uses
+    // its old one, so the next read answers 403 DEVICE_MISMATCH. That must
+    // re-enroll too (the server returns the bound id), or notifications stay
+    // stuck at 403 until cookies are cleared. The enrollment POST is NOT tied
+    // to the cycle signal: a newer cycle aborting it is exactly how the
+    // response gets lost in the first place.
+    // Fix 3c: enrollment is deduplicated per hook instance (enrollDevice) —
+    // overlapping cycles share one pending POST instead of minting a second
+    // server id that could disagree with the cookie.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
       commit("reports", fetchWithTimeout("/api/reports", cycleController.signal)),
       commit("satellites", fetchWithTimeout("/api/satellite-data", cycleController.signal)),
@@ -146,13 +205,11 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
         (async () => {
           const url = `/api/notifications/${deviceId}`;
           let res = await fetchWithTimeout(url, cycleController.signal);
-          if (res.status === 401) {
-            await fetchWithTimeout("/api/notifications/enroll", cycleController.signal, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ deviceId }),
-            });
-            res = await fetchWithTimeout(url, cycleController.signal);
+          if (res.status === 401 || (await isDeviceMismatch(res))) {
+            const assignedId = await enrollDevice();
+            if (assignedId && adoptServerDeviceId(assignedId)) {
+              res = await fetchWithTimeout(`/api/notifications/${assignedId}`, cycleController.signal);
+            }
           }
           return res;
         })(),
@@ -220,7 +277,7 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     if (cycleAbortRef.current === cycleController) cycleAbortRef.current = null;
     if (mountedRef.current) setLoading(false);
     return outcome;
-  }, [deviceId]);
+  }, [deviceId, enrollDevice]);
 
   useEffect(() => () => {
     mountedRef.current = false;

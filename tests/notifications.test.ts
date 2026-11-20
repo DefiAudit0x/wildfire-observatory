@@ -70,26 +70,27 @@ describe("v2.15.0 — device enrollment contract (no implicit first-claim bindin
   it("explicit POST /enroll binds the browser (signed cookie) and the bound GET reads", async () => {
     const app = createApp();
     const enroll = await supertest(app)
-      .post("/api/notifications/enroll")
+      .post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin")
       .send({ deviceId: DEVICE });
     expect(enroll.status).toBe(200);
+    expect(enroll.body.deviceId).not.toBe(DEVICE);
     const cookie = enroll.headers["set-cookie"];
     expect(cookie).toBeDefined();
 
-    const read = await supertest(app).get(`/api/notifications/${DEVICE}`).set("Cookie", cookie);
+    const read = await supertest(app).get(`/api/notifications/${enroll.body.deviceId}`).set("Cookie", cookie);
     expect(read.status).toBe(200);
     expect(read.body).toEqual([]);
   });
 
   it("enroll validates the deviceId shape and rejects a mismatched existing binding", async () => {
     const app = createApp();
-    const bad = await supertest(app).post("/api/notifications/enroll").send({ deviceId: "not-a-device-id" });
+    const bad = await supertest(app).post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin").send({ deviceId: "not-a-device-id" });
     expect(bad.status).toBe(400);
 
-    const other = await supertest(app).post("/api/notifications/enroll").send({ deviceId: "web_ffffffffffffffff" });
+    const other = await supertest(app).post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin").send({ deviceId: "web_ffffffffffffffff" });
     const cookie = other.headers["set-cookie"];
     const mismatch = await supertest(app)
-      .post("/api/notifications/enroll")
+      .post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin")
       .set("Cookie", cookie)
       .send({ deviceId: DEVICE });
     expect(mismatch.status).toBe(403);
@@ -98,11 +99,34 @@ describe("v2.15.0 — device enrollment contract (no implicit first-claim bindin
 
   it("GET with a cookie bound to a DIFFERENT device stays a 403 IDOR refusal", async () => {
     const app = createApp();
-    const other = await supertest(app).post("/api/notifications/enroll").send({ deviceId: "web_ffffffffffffffff" });
+    const other = await supertest(app).post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin").send({ deviceId: "web_ffffffffffffffff" });
     const res = await supertest(app)
       .get(`/api/notifications/${DEVICE}`)
       .set("Cookie", other.headers["set-cookie"]);
     expect(res.status).toBe(403);
     expect(res.body.code).toBe("DEVICE_MISMATCH");
   });
+
+  it("does not enroll a fresh browser for a caller-chosen victim device id", async () => {
+    const app = createApp();
+    const enroll = await supertest(app)
+      .post("/api/notifications/enroll").set("Sec-Fetch-Site", "same-origin")
+      .send({ deviceId: DEVICE });
+
+    expect(enroll.status).toBe(200);
+    expect(enroll.body.deviceId).not.toBe(DEVICE);
+    const victimRead = await supertest(app)
+      .get(`/api/notifications/${DEVICE}`)
+      .set("Cookie", enroll.headers["set-cookie"]);
+    expect(victimRead.status).toBe(403);
+  });
+  it("does not issue an enrollment cookie for a cross-site request", async () => {
+    const response = await supertest(createApp())
+      .post("/api/notifications/enroll")
+      .set("Sec-Fetch-Site", "cross-site")
+      .send({ deviceId: DEVICE });
+    expect(response.status).toBe(403);
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
 });

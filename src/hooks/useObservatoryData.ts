@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { getDeviceId } from "../utils/device";
 import { DATASET_KEYS } from "../utils/datasetHealth";
 import type { DatasetHealth, DatasetKey } from "../utils/datasetHealth";
@@ -30,7 +31,16 @@ import { useReportConfirmation } from "./observatory/useReportConfirmation";
  * client connects, then the write-path callbacks are built.
  */
 export function useObservatoryData() {
-  const deviceId = getDeviceId();
+  const [deviceId, setDeviceId] = useState(() => getDeviceId());
+
+  useEffect(() => {
+    const onServerDeviceId = (event: Event) => {
+      const assigned = (event as CustomEvent<unknown>).detail;
+      if (typeof assigned === "string") setDeviceId(assigned);
+    };
+    window.addEventListener("server-device-id", onServerDeviceId);
+    return () => window.removeEventListener("server-device-id", onServerDeviceId);
+  }, []);
 
   const poll = useObservatoryPoll(deviceId);
   const mesh = useMeshSync(poll.admitMeshReport, poll.applyReportConsensus);

@@ -132,7 +132,7 @@ const {
   createVolunteerRegistrationAtomically,
   joinTeamAtomically,
 } = await import("../server/atomic.js");
-const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields } = await import("../server/fs.js");
+const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic } = await import("../server/fs.js");
 const { clearTeamMissionAtomically, setPrincipalBlocked } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
@@ -140,6 +140,25 @@ const registration = (id: string) => ({ id, status: "pending", wilaya: "Bordj Bo
 const uniquenessKeys = { phoneHash: "phone-hash", emailHash: "email-hash", fullNameHash: "name-hash" };
 
 describe("atomic persistence helpers", () => {
+  it("allows only one concurrent device to bind a badge", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("badgeCodes/VOL-BIND", {
+      code: "VOL-BIND",
+      isActive: true,
+      ownerName: "Responder",
+      type: "volunteer",
+    });
+
+    const results = await Promise.all([
+      bindBadgeDeviceAtomic("VOL-BIND", "device-a", "2026-11-20T00:00:00.000Z"),
+      bindBadgeDeviceAtomic("VOL-BIND", "device-b", "2026-11-20T00:00:00.000Z"),
+    ]);
+
+    expect(results.sort()).toEqual(["bound", "conflict"]);
+    expect(["device-a", "device-b"]).toContain(state.docs.get("badgeCodes/VOL-BIND")?.boundDeviceId);
+  });
+
   it("allows only one concurrent create for a unique document", async () => {
     state.docs.clear();
     state.queue = Promise.resolve();

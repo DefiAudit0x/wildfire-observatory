@@ -3,8 +3,8 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import config from "../config.js";
 import logger from "../logger.js";
-import { collectionGet, docUpdate } from "../fs.js";
-import { ownsDevice, issueDeviceCookie } from "../deviceBinding.js";
+import { collectionGet, bindBadgeDeviceAtomic } from "../fs.js";
+import { ownsDevice } from "../deviceBinding.js";
 import { verifySuperAdminPassword } from "./admin.js";
 import { generateAdminToken, requireAdmin } from "../middleware.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
@@ -88,6 +88,14 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
   }
   const { deviceId, lat, lng, name, badgeCode } = parsed.data;
 
+  const trackedResponder = activeUserLocations.get(deviceId);
+  if (trackedResponder && Date.now() - trackedResponder.lastSeen > LOCATION_TTL_MS) {
+    activeUserLocations.delete(deviceId);
+  } else if (trackedResponder?.identityVerified && !ownsDevice(req, deviceId)) {
+    res.status(403).json({ error: "Device ownership required to update this responder location." });
+    return;
+  }
+
   const now = Date.now();
   const lastSeen = heartbeatDeviceTimes.get(deviceId);
   if (lastSeen && now - lastSeen < HEARTBEAT_DEVICE_MIN_MS) {
@@ -152,43 +160,35 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
           logger.warn({ badgeFingerprint: secretFingerprint(badgeCode), claimedDeviceFingerprint: secretFingerprint(deviceId), boundDeviceFingerprint: secretFingerprint(boundDevice) }, "Heartbeat badge claim rejected: bound to another device");
           badgeBoundToDevice = true;
         } else if (deviceProven) {
-          if (!boundDevice) {
-            // First verified claim binds the badge to THIS device durably.
-            // v2.15.0 audit fix (fail-open): the bind write now happens BEFORE
-            // the identity is adopted — if persistence fails, this beat stays
-            // an unproven citizen (fail CLOSED) and the next beat retries the
-            // binding. Adopting a verified identity while the lock write is
-            // down left a window where any second device knowing the code
-            // could race the adopt and impersonate the staff identity.
-            const persisted = await docUpdate("badgeCodes", badgeCode, {
-              boundDeviceId: deviceId,
-              boundAt: new Date().toISOString(),
-            });
-            if (persisted) {
-              match.boundDeviceId = deviceId;
-              finalName = match.ownerName;
-              finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
-              identityVerified = true;
-              logAdminAction("badge.device_bind", { badgeFingerprint: secretFingerprint(badgeCode), deviceFingerprint: secretFingerprint(deviceId) }, actorFromRequest(req)).catch(() => {});
-            } else {
-              logger.warn({ badgeFingerprint: secretFingerprint(badgeCode) }, "Badge device-bind persistence failed — identity NOT adopted (fail closed)");
-            }
-          } else {
-            // Binding already durable — normal verified beat.
+          // The collection snapshot can be stale, so both first binding and
+          // repeat ownership are confirmed against the same transactionally
+          // read badge document before identity is adopted.
+          const binding = await bindBadgeDeviceAtomic(badgeCode, deviceId, new Date().toISOString());
+          if (binding === "bound" || binding === "already_bound") {
+            match.boundDeviceId = deviceId;
             finalName = match.ownerName;
             finalRole = match.type === "official" || match.type === "volunteer" ? match.type : "citizen";
             identityVerified = true;
+            if (binding === "bound") {
+              logAdminAction("badge.device_bind", { badgeFingerprint: secretFingerprint(badgeCode), deviceFingerprint: secretFingerprint(deviceId) }, actorFromRequest(req)).catch(() => {});
+            }
+          } else if (binding === "conflict") {
+            badgeBoundToDevice = true;
+            logger.warn({ badgeFingerprint: secretFingerprint(badgeCode), claimedDeviceFingerprint: secretFingerprint(deviceId) }, "Heartbeat badge claim rejected: another device won the binding");
+          } else {
+            logger.warn({ badgeFingerprint: secretFingerprint(badgeCode) }, "Badge device-bind persistence failed — identity NOT adopted (fail closed)");
           }
-        } else {
-          // Possession not proven YET: issue the signed cookie so the next
-          // beat (30 s later) can verify. Same-origin web clients store it
-          // automatically; this is the one-beat bootstrap delay.
-          issueDeviceCookie(res, deviceId);
         }
       }
     } catch (err) {
       // ignore badge matching errors, fall back to provided name/role
     }
+  }
+
+  // Badge lookup may have yielded while a verified heartbeat took ownership.
+  if (activeUserLocations.get(deviceId)?.identityVerified && !ownsDevice(req, deviceId)) {
+    res.status(403).json({ error: "Device ownership required to update this responder location." });
+    return;
   }
 
   activeUserLocations.set(deviceId, {
