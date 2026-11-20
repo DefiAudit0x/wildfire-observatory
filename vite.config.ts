@@ -28,17 +28,7 @@ export default defineConfig(() => {
           skipWaiting: false,
           clientsClaim: false,
           maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
-          runtimeCaching: [
-            {
-              urlPattern: /\/api\//,
-              handler: 'NetworkFirst',
-              options: {
-                cacheName: 'observatory-api-v6',
-                networkTimeoutSeconds: 0,
-                expiration: {maxEntries: 60, maxAgeSeconds: 120},
-              },
-            },
-          ],
+          // API requests go to the network so responses cannot be reused across sessions.
         },
       }),
     ],

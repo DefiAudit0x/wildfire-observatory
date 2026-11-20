@@ -128,13 +128,16 @@ class MeshHub {
       authTimer.unref();
 
       ws.on("message", (raw) => {
-        let message: MeshMessage;
+        let parsed: unknown;
         try {
-          message = JSON.parse(raw.toString());
+          parsed = JSON.parse(raw.toString());
         } catch {
           this.send(ws, { type: "error", message: "Invalid JSON" });
           return;
         }
+
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return;
+        const message = parsed as MeshMessage;
 
         if (message.type === "hello") {
           const token = String(message.authKey || message.token || "");
