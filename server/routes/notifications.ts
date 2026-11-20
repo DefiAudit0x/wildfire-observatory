@@ -4,6 +4,7 @@ import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
 import config from "../config.js";
+import { isTrustedOrigin } from "../middleware.js";
 import { str } from "../params.js";
 import { docSet, docUpdate, docGet } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
@@ -229,18 +230,27 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
 // that echoes a client-claimed id. Rate-limited like the other identity
 // surfaces so it cannot be used as a binding-refresh oracle at scale.
 router.post("/enroll", enrollLimiter, async (req: Request, res: Response) => {
-  const parsed = z.object({ deviceId: z.string().min(8).max(128).regex(/^web_[A-Za-z0-9_-]+$/) }).safeParse(req.body);
+  if (!isTrustedOrigin(req)) return void res.status(403).json({ error: "Forbidden: cross-origin state change rejected" });
+  const parsed = z.object({ deviceId: z.string().min(8).max(128).regex(/^web_[A-Za-z0-9_-]+$/).optional() }).safeParse(req.body ?? {});
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid deviceId" });
     return;
   }
   const bound = boundDeviceId(req);
-  if (bound && bound !== parsed.data.deviceId) {
+  if (bound && parsed.data.deviceId && bound !== parsed.data.deviceId) {
     res.status(403).json({ error: "Device identity mismatch. Clear site data (cookies) to bind a new device.", code: "DEVICE_MISMATCH" });
     return;
   }
-  issueDeviceCookie(res, parsed.data.deviceId);
-  res.json({ ok: true, deviceId: parsed.data.deviceId });
+  if (bound) {
+    res.json({ ok: true, deviceId: bound });
+    return;
+  }
+
+  // A fresh browser cannot choose the identity its signed cookie authorizes.
+  // Mint it here, then let the client persist this server-issued value.
+  const deviceId = `web_${crypto.randomBytes(18).toString("hex")}`;
+  issueDeviceCookie(res, deviceId);
+  res.json({ ok: true, deviceId });
 });
 
 router.post("/:id/read", async (req: Request, res: Response) => {
