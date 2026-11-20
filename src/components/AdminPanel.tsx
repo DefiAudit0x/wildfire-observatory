@@ -224,18 +224,26 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   const resolvedReports = reports.filter(r => r.status === "resolved");
 
   const exportToCSV = () => {
+    const csvCell = (value: string, quoted = false) => {
+      // CSV quoting alone does not stop spreadsheet formulas. Check both the
+      // raw and whitespace-prefixed content, including tab/CR prefixes.
+      const text = /^\s*[=+\-@\t\r]/.test(value)
+        ? "'" + value
+        : value;
+      return quoted || /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
     const rows = [
       ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
       ...reports.map((r) =>
         [
-          r.id,
-          `"${(r.locationName || "").replace(/"/g, '""')}"`,
-          `"${(r.wilaya || "").replace(/"/g, '""')}"`,
-          r.status,
-          r.severity,
-          `"${(r.description || "").replace(/"/g, '""')}"`,
-          `"${(r.reporterName || "").replace(/"/g, '""')}"`,
-          r.timestamp,
+          csvCell(r.id),
+          csvCell(r.locationName || "", true),
+          csvCell(r.wilaya || "", true),
+          csvCell(r.status),
+          csvCell(r.severity),
+          csvCell(r.description || "", true),
+          csvCell(r.reporterName || "", true),
+          csvCell(r.timestamp),
         ].join(",")
       ),
     ].join("\n");
