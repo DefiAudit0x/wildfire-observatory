@@ -20,6 +20,8 @@ const state = vi.hoisted(() => ({
   logAdminAction: vi.fn(async () => undefined),
 }));
 
+vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
+
 vi.mock("../server/fs.js", () => ({
   collectionGet: state.collectionGet,
   docGet: state.docGet,
@@ -52,7 +54,11 @@ const UNIT_USER = { agentId: "agent-1", name: "Agent One", role: "agent", unitId
 
 beforeEach(() => {
   state.collectionGet.mockReset().mockResolvedValue([UNIT_USER]);
-  state.docGet.mockReset().mockResolvedValue(UNIT_USER);
+  state.docGet.mockReset().mockImplementation(async (collection: string, id: string) => {
+    if (collection !== "users") return null;
+    if (id === "commander-without-unit") return { agentId: id, role: "commander", isActive: true };
+    return UNIT_USER;
+  });
   state.docUpdate.mockClear();
   state.docDelete.mockClear();
   state.createUserIfUnitExists.mockClear();
@@ -187,7 +193,7 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
   it("password-admin JWT CANNOT upgrade an existing account to superadmin, nor mutate/delete a superadmin doc", async () => {
     const token = generateAdminToken("admin");
 
-    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "agent" });
+    state.docGet.mockImplementation(async (collection: string) => collection === "users" ? { ...UNIT_USER, role: "agent" } : null);
     const upgrade = await supertest(createApp())
       .put("/api/users/agent-1")
       .set("Authorization", `Bearer ${token}`)
@@ -195,7 +201,7 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
     expect(upgrade.status).toBe(403);
     expect(upgrade.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
 
-    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "superadmin" });
+    state.docGet.mockImplementation(async (collection: string) => collection === "users" ? { ...UNIT_USER, role: "superadmin" } : null);
     const mutate = await supertest(createApp())
       .put("/api/users/agent-1")
       .set("Authorization", `Bearer ${token}`)
