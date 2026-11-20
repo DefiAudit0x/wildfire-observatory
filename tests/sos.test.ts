@@ -354,60 +354,62 @@ describe("SOS durable lifecycle mutations", () => {
 });
 
 describe("Profile endpoints (server-side encrypted identity)", () => {
-  it("returns empty profile for an unknown device", async () => {
-    const app = createApp();
-    const res = await supertest(app).get(`/api/sos/profile/${uniqueDevice()}`);
-    expect(res.status).toBe(200);
-    expect(res.body.name).toBe("");
-    expect(res.body.phone).toBe("");
+  const contact = { name: "علي", phone: "0550123456" };
+
+  it("returns an empty profile for an enrolled browser without contact details", async () => {
+    const agent = supertest.agent(createApp());
+    await agent.post("/api/sos/profile").send({}).expect(200);
+    await agent.get("/api/sos/profile/current").expect(200, { name: "", phone: "" });
   });
 
   it("stores a profile and returns it back (encrypted-at-rest on server)", async () => {
-    const app = createApp();
-    const deviceId = uniqueDevice();
-    const put = await supertest(app)
-      .put(`/api/sos/profile/${deviceId}`)
-      .send({ name: "علي", phone: "0550123456" });
-    expect(put.status).toBe(200);
-    const got = await supertest(app).get(`/api/sos/profile/${deviceId}`);
-    expect(got.status).toBe(200);
-    expect(got.body.name).toBe("علي");
-    expect(got.body.phone).toBe("0550123456");
+    const agent = supertest.agent(createApp());
+    const enrollment = await agent.post("/api/sos/profile").send(contact).expect(200);
+    expect(enrollment.headers["set-cookie"]?.[0]).toContain("HttpOnly");
+    const stored = fsMock.docSet.mock.calls[0][2];
+    expect(stored.encrypted).toEqual(expect.any(String));
+    expect(JSON.stringify(stored)).not.toContain(contact.phone);
+    await agent.get("/api/sos/profile/current").expect(200, contact);
+
+    const updated = { ...contact, name: "Updated" };
+    await agent.put("/api/sos/profile/current").send(updated).expect(200);
+    await agent.get("/api/sos/profile/current").expect(200, updated);
   });
 
   it("does not report successful profile storage when the durable write fails", async () => {
-    const app = createApp();
-    const deviceId = uniqueDevice();
+    const agent = supertest.agent(createApp());
+    await agent.post("/api/sos/profile").send({}).expect(200);
     fsMock.docSet.mockResolvedValueOnce(false);
-    const put = await supertest(app)
-      .put(`/api/sos/profile/${deviceId}`)
-      .send({ name: "علي", phone: "0550123456" });
-    expect(put.status).toBe(503);
-
-    const got = await supertest(app).get(`/api/sos/profile/${deviceId}`);
-    expect(got.body).toEqual({ name: "", phone: "" });
+    await agent.put("/api/sos/profile/current").send(contact).expect(503);
+    await agent.get("/api/sos/profile/current").expect(200, { name: "", phone: "" });
   });
 
   it("validates profile inputs", async () => {
-    const app = createApp();
-    const res = await supertest(app)
-      .put(`/api/sos/profile/${uniqueDevice()}`)
-      .send({ name: "x".repeat(500) });
-    expect(res.status).toBe(400);
+    const agent = supertest.agent(createApp());
+    await agent.post("/api/sos/profile").send({}).expect(200);
+    await agent.put("/api/sos/profile/current").send({ name: "x".repeat(500) }).expect(400);
   });
 
   it("rejects a profile request for another device after the browser is bound", async () => {
     const agent = supertest.agent(createApp());
-    const firstDevice = uniqueDevice();
-    const secondDevice = uniqueDevice();
-
-    const first = await agent.get(`/api/sos/profile/${firstDevice}`);
-    expect(first.status).toBe(200);
-
-    const mismatch = await agent.get(`/api/sos/profile/${secondDevice}`);
+    await agent.post("/api/sos/profile").send(contact).expect(200);
+    const mismatch = await agent.get(`/api/sos/profile/${uniqueDevice()}`);
     expect(mismatch.status).toBe(403);
     expect(mismatch.body.error).toContain("mismatch");
   });
+});
+
+it("SOS-1 keeps submitted text in the staff SOS response only", async () => {
+  const app = createApp();
+  const body = { ...validBody(), lat: 36.7543, lng: 7.6021, textMessage: "Training message" };
+  const created = await postSos(app).send(body).expect(200);
+  const publicList = await supertest(app).get("/api/sos").expect(200);
+  const entry = publicList.body.find((item: { id: string }) => item.id === created.body.id);
+  expect(entry).toMatchObject({ lat: 36.75, lng: 7.6 });
+  expect(entry).not.toHaveProperty("textMessage");
+  const staff = await supertest(app).get(`/api/sos/${created.body.id}`)
+    .set("Cookie", `admin_token=${generateAdminToken()}`).expect(200);
+  expect(staff.body).toMatchObject(body);
 });
 
 describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
@@ -425,15 +427,31 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     const app = createApp();
     const cgid = "cg-sos-retry-0001";
 
-    const first = await postSos(app).send(sosBody(cgid));
+    const body = sosBody(cgid);
+    const first = await postSos(app).send(body);
     expect(first.status).toBe(200);
     const firstId = first.body.id;
 
-    const retry = await postSos(app).send(sosBody(cgid));
+    const retry = await postSos(app).send(body);
     expect(retry.status).toBe(200);
-    expect(retry.body.id).toBe(firstId);
+    expect(retry.body).toEqual({ id: firstId, status: "active" });
 
     // exactly ONE durable admission happened for the pair of requests
+    expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a retry key replayed from a DIFFERENT device with 409", async () => {
+    const app = createApp();
+    const cgid = "cg-sos-retry-0004";
+
+    const first = await postSos(app).send({ ...sosBody(cgid), deviceId: "dev-first" });
+    expect(first.status).toBe(200);
+
+    const retry = await postSos(app).send({ ...sosBody(cgid), deviceId: "dev-second" });
+    expect(retry.status).toBe(409);
+    expect(retry.body.error).toMatch(/different device/i);
+
+    // the rejected replay must not admit a second SOS
     expect(fsMock.createSosWithAdmission).toHaveBeenCalledTimes(1);
   });
 
@@ -450,9 +468,9 @@ describe("POST /api/sos — F4 clientGeneratedId idempotency", () => {
     });
 
     const app = createApp();
-    const res = await postSos(app).send(sosBody(cgid));
+    const res = await postSos(app).send({ ...sosBody(cgid), deviceId: "dev-x" });
     expect(res.status).toBe(200);
-    expect(res.body.id).toBe("sos-durable-42");
+    expect(res.body).toEqual({ id: "sos-durable-42", status: "pending" });
     // no new admission for a replay
     expect(fsMock.createSosWithAdmission).not.toHaveBeenCalled();
   });
