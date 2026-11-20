@@ -405,6 +405,68 @@ export async function docUpdate(
   }
 }
 
+export type BadgeDeviceBindingResult = "bound" | "already_bound" | "conflict" | "unavailable";
+
+/**
+ * Atomically binds a badge to its first verified device. Firestore retries a
+ * transaction when another writer changes the badge after this transaction's
+ * read, so concurrent first binders cannot both adopt the identity.
+ */
+export async function bindBadgeDeviceAtomic(
+  badgeCode: string,
+  deviceId: string,
+  boundAt: string
+): Promise<BadgeDeviceBindingResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+
+  try {
+    const outcome = isAdminDb(db)
+      ? await db.runTransaction(async (tx: any): Promise<BadgeDeviceBindingResult> => {
+          const ref = db.collection("badgeCodes").doc(badgeCode);
+          const snap = await tx.get(ref);
+          if (!snap.exists) return "unavailable";
+          const current = snap.data() || {};
+          if (current.isActive !== true) return "unavailable";
+          if (current.expiresAt) {
+            const expiry = typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(current.expiresAt);
+            if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
+          }
+          const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
+          if (owner) return owner === deviceId ? "already_bound" : "conflict";
+          tx.update(ref, { boundDeviceId: deviceId, boundAt });
+          return "bound";
+        })
+      : await (async () => {
+          const { doc, runTransaction } = await loadClientSdk();
+          return runTransaction(db, async (tx: any): Promise<BadgeDeviceBindingResult> => {
+            const ref = doc(db, "badgeCodes", badgeCode);
+            const snap = await tx.get(ref);
+            if (!snap.exists()) return "unavailable";
+            const current = snap.data() || {};
+            if (current.isActive !== true) return "unavailable";
+            if (current.expiresAt) {
+              const expiry = typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(current.expiresAt);
+              if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
+            }
+            const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
+            if (owner) return owner === deviceId ? "already_bound" : "conflict";
+            tx.update(ref, { boundDeviceId: deviceId, boundAt });
+            return "bound";
+          });
+        })();
+
+    if (outcome === "bound") {
+      invalidateCollectionCache("badgeCodes");
+      invalidateDocCache("badgeCodes", badgeCode);
+    }
+    return outcome;
+  } catch (err) {
+    logger.error({ err }, "Atomic badge device binding failed");
+    return "unavailable";
+  }
+}
+
 /** Atomic counter bump — avoids the read-then-write race on hot docs. */
 export async function incrementDocField(
   collectionName: string,
