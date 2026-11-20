@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import http from "http";
 import WebSocket from "ws";
 import { meshHub, MESH_PATH } from "../server/mesh.js";
@@ -54,11 +54,13 @@ describe("mesh hub", () => {
     });
   });
 
-  it("registers nodes and broadcasts node:joined to peers", async () => {
+  beforeAll(async () => {
     server = http.createServer();
     meshHub.attach(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  });
 
+  it("registers nodes and broadcasts node:joined to peers", async () => {
     const nodeA = await connectClient(server, "node-A");
     clients.push(nodeA);
 
@@ -181,5 +183,27 @@ describe("mesh hub", () => {
     expect(welcomeMessage.deviceId).toBe("node-A");
     expect(welcomeMessage.nodeCount).toBe(3); // node-A (replaced) + node-B + subject-from-token
     expect(meshHub.getNodeCount()).toBe(3);
+  });
+  it("ignores non-object frames before mesh hello and accepts the following hello", async () => {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Server not listening");
+    const ws = new WebSocket(`ws://127.0.0.1:${address.port}${MESH_PATH}`);
+    clients.push(ws);
+    const firstMessage = new Promise<Record<string, unknown>>((resolve, reject) => {
+      ws.once("message", (raw) => {
+        try { resolve(JSON.parse(raw.toString())); } catch (error) { reject(error); }
+      });
+      ws.once("error", reject);
+      ws.once("close", () => reject(new Error("Socket closed before hello response")));
+    });
+    try {
+      ws.once("open", () => {
+        for (const value of [null, 42, []]) ws.send(JSON.stringify(value));
+        ws.send(JSON.stringify({ type: "hello", token: createMeshToken("node-guard-test") }));
+      });
+      expect(await firstMessage).toMatchObject({ type: "welcome" });
+    } finally {
+      ws.terminate();
+    }
   });
 });
