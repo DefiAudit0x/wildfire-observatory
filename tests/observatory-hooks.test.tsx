@@ -195,6 +195,124 @@ describe("observatory poll — dataset commits and failure isolation", () => {
     await act(async () => { releaseCycleOne(json([validReport("rep-old")])); });
     expect(result.current.reports.map((r) => r.id)).toEqual(["rep-new"]);
   });
+
+  it("recovers from a lost enrollment response: a 403 DEVICE_MISMATCH re-enrolls and retries with the bound id", async () => {
+    // Fix 3b: the enroll POST can succeed server-side (Set-Cookie bound to a
+    // new web_ id) while its response never reaches this browser — the next
+    // read then answers 403 DEVICE_MISMATCH, and the client used to stay
+    // stuck there forever because enrollment only triggered on 401.
+    const BOUND_ID = "web_0123456789abcdef0123456789abcdef0123";
+    let notificationsGets = 0;
+    const fetchMock = installFetch((url: string, init?: RequestInit) => {
+      if (url.includes("/api/notifications/enroll")) {
+        expect(init?.method).toBe("POST");
+        return json({ ok: true, deviceId: BOUND_ID });
+      }
+      if (url.includes("/api/notifications/")) {
+        notificationsGets += 1;
+        if (notificationsGets === 1) {
+          return json(
+            { error: "Device identity mismatch. Clear site data (cookies) to bind a new device.", code: "DEVICE_MISMATCH" },
+            403
+          );
+        }
+        return json([validNotification()]);
+      }
+      return fullRouter()(url);
+    });
+    const { result } = await mount();
+
+    await waitFor(() => expect(result.current.notifications).toHaveLength(1));
+    const calls = fetchMock.mock.calls.map((c: any) => String(c[0]));
+    expect(calls.some((u) => u.includes("/api/notifications/enroll"))).toBe(true);
+    expect(calls.some((u) => u.includes(`/api/notifications/${BOUND_ID}`))).toBe(true);
+    expect(result.current.datasetHealth.notifications.lastAttemptOk).toBe(true);
+  });
+
+  it("the recovery enrollment is not aborted by a superseding poll cycle", async () => {
+    // Fix 3b: the enrollment POST used to ride the cycle signal, so a newer
+    // cycle starting mid-enrollment aborted it — the exact way the response
+    // gets lost. The recovery enrollment must survive a cycle superseding it.
+    const BOUND_ID = "web_0123456789abcdef0123456789abcdef0123";
+    const pendingEnrolls: Array<(r: Response) => void> = [];
+    let enrollSignal: AbortSignal | null = null;
+    let notificationsGets = 0;
+    installFetch((url: string, init?: RequestInit) => {
+      if (url.includes("/api/notifications/enroll")) {
+        if (!enrollSignal) enrollSignal = (init?.signal ?? null) as AbortSignal | null;
+        return new Promise<Response>((resolve) => { pendingEnrolls.push(resolve); });
+      }
+      if (url.includes("/api/notifications/")) {
+        notificationsGets += 1;
+        if (notificationsGets <= 2) {
+          return json({ error: "Device identity mismatch.", code: "DEVICE_MISMATCH" }, 403);
+        }
+        return json([validNotification()]);
+      }
+      return fullRouter()(url);
+    });
+    const { result } = await mount();
+    await waitFor(() => expect(enrollSignal).not.toBeNull());
+
+    // Cycle 2 starts while cycle 1's enrollment is still held: cycle 1's
+    // controller is aborted, but the untied enrollment must not be.
+    let cycle2: Promise<unknown> | undefined;
+    await act(async () => { cycle2 = result.current.fetchData(); });
+    expect(enrollSignal!.aborted).toBe(false);
+
+    await act(async () => {
+      pendingEnrolls.splice(0).forEach((resolve) => resolve(json({ ok: true, deviceId: BOUND_ID })));
+      await cycle2;
+    });
+    await waitFor(() => expect(result.current.notifications).toHaveLength(1));
+  });
+
+  it("two overlapping enrollment cycles share a single enroll POST", async () => {
+    // Fix 3c: untying enrollment from the cycle signal (Fix 3b) left a new
+    // race — each cycle fired its own POST /enroll, minting a second server
+    // id that could disagree with the cookie the browser kept. Overlapping
+    // cycles must share one pending enrollment.
+    const BOUND_ID = "web_0123456789abcdef0123456789abcdef0123";
+    let releaseEnroll!: (r: Response) => void;
+    const heldEnroll = new Promise<Response>((resolve) => { releaseEnroll = resolve; });
+    let notificationsGets = 0;
+    const fetchMock = installFetch((url: string) => {
+      if (url.includes("/api/notifications/enroll")) return heldEnroll;
+      if (url.includes("/api/notifications/")) {
+        notificationsGets += 1;
+        if (notificationsGets <= 2) {
+          return json({ error: "Device enrollment required", code: "DEVICE_ENROLLMENT_REQUIRED" }, 401);
+        }
+        return json([validNotification()]);
+      }
+      return fullRouter()(url);
+    });
+    const enrollCalls = () =>
+      fetchMock.mock.calls.filter((c: any) => String(c[0]).includes("/api/notifications/enroll"));
+    const { result } = await mount();
+    await waitFor(() => expect(enrollCalls()).toHaveLength(1));
+
+    // Cycle 2 starts while cycle 1's enrollment is still in flight: it must
+    // reuse the pending enrollment, not fire a second POST /enroll.
+    let cycle2: Promise<unknown> | undefined;
+    await act(async () => { cycle2 = result.current.fetchData(); });
+    await waitFor(() => expect(notificationsGets).toBe(2));
+    expect(enrollCalls()).toHaveLength(1);
+
+    await act(async () => {
+      releaseEnroll(json({ ok: true, deviceId: BOUND_ID }));
+      await cycle2;
+    });
+    await waitFor(() => expect(result.current.notifications).toHaveLength(1));
+    // Both cycles retried the read with the same adopted id — and the
+    // server-device-id event refreshes the poll with it once more, so the
+    // count is 2 plus that refresh.
+    const boundGets = fetchMock.mock.calls.filter((c: any) =>
+      String(c[0]).includes(`/api/notifications/${BOUND_ID}`)
+    );
+    expect(boundGets.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(boundGets.map((c: any) => String(c[0]))).size).toBe(1);
+  });
 });
 
 describe("mesh sync — gossip admission and consensus protocol", () => {
