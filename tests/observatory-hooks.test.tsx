@@ -266,6 +266,53 @@ describe("observatory poll — dataset commits and failure isolation", () => {
     });
     await waitFor(() => expect(result.current.notifications).toHaveLength(1));
   });
+
+  it("two overlapping enrollment cycles share a single enroll POST", async () => {
+    // Fix 3c: untying enrollment from the cycle signal (Fix 3b) left a new
+    // race — each cycle fired its own POST /enroll, minting a second server
+    // id that could disagree with the cookie the browser kept. Overlapping
+    // cycles must share one pending enrollment.
+    const BOUND_ID = "web_0123456789abcdef0123456789abcdef0123";
+    let releaseEnroll!: (r: Response) => void;
+    const heldEnroll = new Promise<Response>((resolve) => { releaseEnroll = resolve; });
+    let notificationsGets = 0;
+    const fetchMock = installFetch((url: string) => {
+      if (url.includes("/api/notifications/enroll")) return heldEnroll;
+      if (url.includes("/api/notifications/")) {
+        notificationsGets += 1;
+        if (notificationsGets <= 2) {
+          return json({ error: "Device enrollment required", code: "DEVICE_ENROLLMENT_REQUIRED" }, 401);
+        }
+        return json([validNotification()]);
+      }
+      return fullRouter()(url);
+    });
+    const enrollCalls = () =>
+      fetchMock.mock.calls.filter((c: any) => String(c[0]).includes("/api/notifications/enroll"));
+    const { result } = await mount();
+    await waitFor(() => expect(enrollCalls()).toHaveLength(1));
+
+    // Cycle 2 starts while cycle 1's enrollment is still in flight: it must
+    // reuse the pending enrollment, not fire a second POST /enroll.
+    let cycle2: Promise<unknown> | undefined;
+    await act(async () => { cycle2 = result.current.fetchData(); });
+    await waitFor(() => expect(notificationsGets).toBe(2));
+    expect(enrollCalls()).toHaveLength(1);
+
+    await act(async () => {
+      releaseEnroll(json({ ok: true, deviceId: BOUND_ID }));
+      await cycle2;
+    });
+    await waitFor(() => expect(result.current.notifications).toHaveLength(1));
+    // Both cycles retried the read with the same adopted id — and the
+    // server-device-id event refreshes the poll with it once more, so the
+    // count is 2 plus that refresh.
+    const boundGets = fetchMock.mock.calls.filter((c: any) =>
+      String(c[0]).includes(`/api/notifications/${BOUND_ID}`)
+    );
+    expect(boundGets.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(boundGets.map((c: any) => String(c[0]))).size).toBe(1);
+  });
 });
 
 describe("mesh sync — gossip admission and consensus protocol", () => {
