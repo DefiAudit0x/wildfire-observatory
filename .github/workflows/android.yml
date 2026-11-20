@@ -51,9 +51,10 @@ jobs:
           # sys.boot_completed within the default window. Hardened boot:
           # explicit headless options (software GPU, no snapshots/audio/
           # cameras/boot animation — the netsim wifi backend is the
-          # known-hang path on CI images), animations off, and a 15-min
+          # known-hang path on CI images. These tests are hermetic, so disable
+          # emulator Wi-Fi too; animations off, and a 15-min
           # boot budget instead of the default 5.
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none -camera-front none -feature -Wifi
           emulator-boot-timeout: 900
           disable-animations: true
           script: gradle -p android connectedDebugAndroidTest --stacktrace

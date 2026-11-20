@@ -16,17 +16,48 @@ jobs:
   analyze:
     name: Analyze
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript, java-kotlin]
+        include:
+          # JavaScript/TypeScript does not support the manual build mode;
+          # a single global build-mode: manual breaks its init step.
+          - language: javascript-typescript
+            build-mode: none
+          - language: java-kotlin
+            build-mode: manual
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # Android toolchain is only needed for the java-kotlin entry.
+      - uses: actions/setup-java@v6
+        if: matrix.language == 'java-kotlin'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v4
+        if: matrix.language == 'java-kotlin'
+      - name: Install Android SDK packages
+        if: matrix.language == 'java-kotlin'
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - uses: gradle/actions/setup-gradle@v6
+        if: matrix.language == 'java-kotlin'
+        with:
+          gradle-version: "8.11.1"
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           # ARC-L26: java-kotlin added — the mesh service (~3.3k lines incl. the
           # crypto layer) previously had zero SAST coverage.
-          languages: javascript-typescript,java-kotlin
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           config-file: ./.github/codeql/codeql-config.yml
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v4
+      # The Android Gradle project is nested under android/ and has no wrapper;
+      # autobuild does not discover/build it. Supply its JDK, SDK, and Gradle
+      # toolchain above so CodeQL observes Kotlin compilation here.
+      - name: Build Android project for CodeQL
+        if: matrix.language == 'java-kotlin'
+        run: gradle -p android assembleDebug --stacktrace
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
