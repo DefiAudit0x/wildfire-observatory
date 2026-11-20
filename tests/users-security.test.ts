@@ -217,3 +217,40 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
     expect(state.docDelete).not.toHaveBeenCalled();
   });
 });
+
+describe("Fix 4c: commander PUT re-checks the target fresh before the write", () => {
+  const COMMANDER = { agentId: "commander-1", name: "Commander One", role: "commander", unitId: "unit-dz16", isActive: true };
+  const AGENT = { agentId: "agent-1", name: "Agent One", role: "agent", unitId: "unit-dz16", isActive: true };
+
+  it("rejects a password reset when the target was promoted after the first read", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string, fresh?: boolean) => {
+      if (collection !== "users") return null;
+      if (id === "commander-1") return COMMANDER;
+      if (id === "agent-1") return fresh ? { ...AGENT, role: "commander" } : AGENT;
+      return null;
+    });
+    const token = generateStaffToken({ role: "commander", agentId: "commander-1", unitId: "unit-dz16" });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ password: "NewPassword123" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Commanders can only manage agent accounts");
+    expect(state.docUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rejects an admin edit when the target was promoted to superadmin after the first read", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string, fresh?: boolean) => {
+      if (collection !== "users") return null;
+      if (id === "agent-1") return fresh ? { ...AGENT, role: "superadmin" } : AGENT;
+      return null;
+    });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${generateAdminToken("admin")}`)
+      .send({ name: "Renamed Agent" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only the superadmin credential can modify superadmin accounts");
+    expect(state.docUpdate).not.toHaveBeenCalled();
+  });
+});

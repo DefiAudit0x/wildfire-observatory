@@ -86,7 +86,17 @@ describe("S-M1: admin token jti + revocation register", () => {
       .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
     expect(res.status).toBe(401);
     expect(res.body.error).toContain("revoked");
-    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true);
+    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true, { strict: true });
+  });
+
+  it("still admits an admin session when the register read fails (Fix 4c — documented fail-open)", async () => {
+    state.dbPresent = true;
+    state.docGet.mockRejectedValueOnce(new Error("register down"));
+    const res = await supertest(appWith())
+      .get("/protected")
+      .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("admin");
   });
 
   it("ignores EXPIRED revocation entries (the token is dead anyway)", async () => {
@@ -172,7 +182,7 @@ describe("S-M3: distinct superadmin role", () => {
       .set("Authorization", `Bearer ${generateStaffToken({ role: "commander", agentId: "c1", unitId: "u1" })}`);
     expect(res.status).toBe(200);
     expect(res.body.role).toBe("commander");
-    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true);
+    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true, { strict: true });
     expect(state.docGet).toHaveBeenCalledWith("users", "c1", true);
   });
 });

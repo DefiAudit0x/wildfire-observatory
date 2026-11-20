@@ -9,12 +9,19 @@ const state = vi.hoisted(() => ({
   revocations: new Map<string, Record<string, unknown>>(),
   dbPresent: true,
   readNull: false,
+  revocationReadFails: false,
   writeOk: true,
   docUpdate: vi.fn(),
 }));
 vi.mock("../server/firebase.js", () => ({ getDb: () => state.dbPresent ? {} : null }));
 vi.mock("../server/fs.js", () => ({
-  docGet: async (collection: string, id: string) => collection === "users" ? state.users.get(id) : state.readNull ? null : state.revocations.get(id),
+  // Fix 4c: the mock mirrors the real docGet strict option — a strict
+  // revocation read throws when revocationReadFails is set, so the
+  // fail-closed path can be exercised without touching the users read.
+  docGet: async (collection: string, id: string, _fresh?: boolean, opts?: { strict?: boolean }) => {
+    if (collection === "adminRevocations" && opts?.strict && state.revocationReadFails) throw new Error("revocation register read failed");
+    return collection === "users" ? state.users.get(id) : state.readNull ? null : state.revocations.get(id);
+  },
   docSet: async (_collection: string, id: string, data: Record<string, unknown>) => {
     if (!state.writeOk) return false;
     state.revocations.set(id, data); return true;
@@ -34,7 +41,7 @@ function app() {
 }
 const password = "OriginalPass123";
 beforeEach(async () => {
-  state.users.clear(); state.revocations.clear(); state.dbPresent = true; state.readNull = false; state.writeOk = true;
+  state.users.clear(); state.revocations.clear(); state.dbPresent = true; state.readNull = false; state.revocationReadFails = false; state.writeOk = true;
   state.users.set("agent-1", { agentId: "agent-1", role: "agent", unitId: "DZ16", name: "Agent One", isActive: true, passwordHash: await bcrypt.hash(password, 4) });
   state.docUpdate.mockReset().mockImplementation(async (_collection: string, id: string, update: Record<string, unknown>) => {
     state.users.set(id, { ...state.users.get(id), ...update }); return true;
@@ -73,6 +80,15 @@ describe("SAUTH-1 staff session lifecycle", () => {
   it("fails closed for staff when the database disappears", async () => {
     const application = app(); const copied = await login(application); state.dbPresent = false;
     expect((await session(application, copied)).status).toBe(401);
+  });
+  it("fails closed for staff when the revocation register read fails (Fix 4c)", async () => {
+    const application = app(); const copied = await login(application);
+    state.revocationReadFails = true;
+    const denied = await session(application, copied);
+    expect(denied.status).toBe(401);
+    expect(denied.body.error).toContain("could not be verified");
+    state.revocationReadFails = false;
+    expect((await session(application, copied)).status).toBe(200);
   });
   it("honors an administrator's explicit revocation of a staff bearer", async () => {
     const application = app(); const token = generateStaffToken({ agentId: "agent-1", role: "agent", unitId: "DZ16" });
