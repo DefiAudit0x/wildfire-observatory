@@ -4,6 +4,7 @@ import { fetchWithRetry } from "../../utils/api";
 import { useLiveEvents } from "../../utils/live";
 import { DATASET_KEYS, DatasetHealth, DatasetKey } from "../../utils/datasetHealth";
 import { validateDataset } from "../../utils/datasetValidators";
+import { adoptServerDeviceId } from "../../utils/device";
 import {
   DatasetAttempt,
   EMPTY_DATASET_HEALTH,
@@ -147,12 +148,15 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
           const url = `/api/notifications/${deviceId}`;
           let res = await fetchWithTimeout(url, cycleController.signal);
           if (res.status === 401) {
-            await fetchWithTimeout("/api/notifications/enroll", cycleController.signal, {
+            const enrollment = await fetchWithTimeout("/api/notifications/enroll", cycleController.signal, {
               method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ deviceId }),
             });
-            res = await fetchWithTimeout(url, cycleController.signal);
+            if (enrollment.ok) {
+              const assigned = await enrollment.json().catch(() => null) as { deviceId?: unknown } | null;
+              if (typeof assigned?.deviceId === "string" && adoptServerDeviceId(assigned.deviceId)) {
+                res = await fetchWithTimeout(`/api/notifications/${assigned.deviceId}`, cycleController.signal);
+              }
+            }
           }
           return res;
         })(),
