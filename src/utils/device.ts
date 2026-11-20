@@ -172,3 +172,19 @@ export function getDeviceId(): string {
 
   return id;
 }
+
+/** Adopt the device identity returned by the server's first enrollment. */
+export function adoptServerDeviceId(id: string): boolean {
+  if (!ID_PATTERN.test(id)) return false;
+  memoryDeviceId = id;
+  try {
+    globalThis.sessionStorage?.setItem(DEVICE_ID_KEY, id);
+    globalThis.localStorage?.setItem(DEVICE_ID_KEY, id);
+  } catch {
+    // The in-memory identity still keeps this page consistent.
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("server-device-id", { detail: id }));
+  }
+  return true;
+}
