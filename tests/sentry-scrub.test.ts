@@ -51,6 +51,54 @@ describe("scrubSentryEvent", () => {
     expect((out as any).extra.imageData).toBe("[redacted]");
   });
 
+  it("redacts credential and identity field variants in nested request bodies", () => {
+    const event = makeEvent({
+      user: {
+        password: "secret-password",
+        PasswordHash: "secret-hash",
+        reporterBadgeCode: "DZ16-1",
+        reporter_badge_code: "DZ16-2",
+        fullName: "Amina Benali",
+        reporterName: "Amina",
+        idNumber: "123456789",
+      },
+      incidentType: "wildfire",
+    });
+    const out = scrubSentryEvent(event) as any;
+
+    expect(out.request.data.user).toEqual({
+      password: "[redacted]",
+      PasswordHash: "[redacted]",
+      reporterBadgeCode: "[redacted]",
+      reporter_badge_code: "[redacted]",
+      fullName: "[redacted]",
+      reporterName: "[redacted]",
+      idNumber: "[redacted]",
+    });
+    expect(out.request.data.incidentType).toBe("wildfire");
+  });
+
+  it("redacts credential and identity field variants in Sentry extras", () => {
+    const event = makeEvent(undefined, {
+      password: "secret-password",
+      reporterBadgeCode: "DZ16-1",
+      fullName: "Amina Benali",
+      reporterName: "Amina",
+      idNumber: "123456789",
+      eventCategory: "report-created",
+    });
+    const out = scrubSentryEvent(event) as any;
+
+    expect(out.extra).toEqual({
+      password: "[redacted]",
+      reporterBadgeCode: "[redacted]",
+      fullName: "[redacted]",
+      reporterName: "[redacted]",
+      idNumber: "[redacted]",
+      eventCategory: "report-created",
+    });
+  });
+
   it("returns the same event object for events without request/extra", () => {
     const event = { event_id: "x" } as any;
     const out = scrubSentryEvent(event);
