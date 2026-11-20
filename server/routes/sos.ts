@@ -4,7 +4,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { createHash, randomBytes } from "crypto";
 import { encryptAead, decryptAead } from "../crypto.js";
 import { collectionGet, createSosWithAdmission, docSet, docGet, appendSosDispatch, resolveSosAtomically } from "../fs.js";
-import { requireAdmin } from "../middleware.js";
+import { isTrustedOrigin, requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
@@ -340,7 +340,13 @@ router.put("/profile/:deviceId", async (req: Request, res: Response) => {
 
 // A fresh browser can only create a new profile under a server-generated
 // credential. Guessing a profile ID never gives access to its credential.
+// Fix 2b (CodeRabbit, CWE-352): enrollment ISSUES the sos_profile credential
+// cookie, so it must pass the origin check even with no cookie present — the
+// global csrfProtection skips cookieless requests, and SameSite=lax does not
+// stop a cross-site top-level form POST response from replacing the victim's
+// cookie with the attacker's rescue contact.
 router.post("/profile", async (req: Request, res: Response) => {
+  if (!isTrustedOrigin(req)) return void res.status(403).json({ error: "Forbidden: cross-origin state change rejected" });
   const token = profileToken(req) ?? randomBytes(32).toString("hex");
   await saveProfile(req, res, profileIdForToken(token), token);
 });

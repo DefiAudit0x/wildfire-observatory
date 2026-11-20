@@ -358,13 +358,13 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
 
   it("returns an empty profile for an enrolled browser without contact details", async () => {
     const agent = supertest.agent(createApp());
-    await agent.post("/api/sos/profile").send({}).expect(200);
+    await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send({}).expect(200);
     await agent.get("/api/sos/profile/current").expect(200, { name: "", phone: "" });
   });
 
   it("stores a profile and returns it back (encrypted-at-rest on server)", async () => {
     const agent = supertest.agent(createApp());
-    const enrollment = await agent.post("/api/sos/profile").send(contact).expect(200);
+    const enrollment = await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send(contact).expect(200);
     expect(enrollment.headers["set-cookie"]?.[0]).toContain("HttpOnly");
     const stored = fsMock.docSet.mock.calls[0][2];
     expect(stored.encrypted).toEqual(expect.any(String));
@@ -378,7 +378,7 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
 
   it("does not report successful profile storage when the durable write fails", async () => {
     const agent = supertest.agent(createApp());
-    await agent.post("/api/sos/profile").send({}).expect(200);
+    await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send({}).expect(200);
     fsMock.docSet.mockResolvedValueOnce(false);
     await agent.put("/api/sos/profile/current").send(contact).expect(503);
     await agent.get("/api/sos/profile/current").expect(200, { name: "", phone: "" });
@@ -386,16 +386,36 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
 
   it("validates profile inputs", async () => {
     const agent = supertest.agent(createApp());
-    await agent.post("/api/sos/profile").send({}).expect(200);
+    await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send({}).expect(200);
     await agent.put("/api/sos/profile/current").send({ name: "x".repeat(500) }).expect(400);
   });
 
   it("rejects a profile request for another device after the browser is bound", async () => {
     const agent = supertest.agent(createApp());
-    await agent.post("/api/sos/profile").send(contact).expect(200);
+    await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send(contact).expect(200);
     const mismatch = await agent.get(`/api/sos/profile/${uniqueDevice()}`);
     expect(mismatch.status).toBe(403);
     expect(mismatch.body.error).toContain("mismatch");
+  });
+
+  it("rejects cross-origin enrollment with 403 and stores nothing (Fix 2b, CWE-352)", async () => {
+    const agent = supertest.agent(createApp());
+    const res = await agent
+      .post("/api/sos/profile")
+      .set("Origin", "https://evil.example")
+      .set("Sec-Fetch-Site", "cross-site")
+      .send(contact);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("cross-origin");
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(fsMock.docSet).not.toHaveBeenCalled();
+  });
+
+  it("rejects enrollment with no origin signal (Fix 2b)", async () => {
+    const agent = supertest.agent(createApp());
+    const res = await agent.post("/api/sos/profile").send(contact);
+    expect(res.status).toBe(403);
+    expect(fsMock.docSet).not.toHaveBeenCalled();
   });
 });
 

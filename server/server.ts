@@ -11,7 +11,7 @@ import jwt from "jsonwebtoken";
 import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
-import { errorHandler, notFoundHandler } from "./middleware.js";
+import { errorHandler, isTrustedOrigin, notFoundHandler } from "./middleware.js";
 import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
 import { liveHub, LIVE_PATH } from "./live.js";
@@ -107,12 +107,6 @@ function hasSessionCookie(req: express.Request): boolean {
     const name = cookie.trim().split("=", 1)[0];
     return name === "admin_token" || name === "staff_token" || name === "public_principal";
   });
-}
-function isTrustedOrigin(req: express.Request): boolean {
-  const origin = req.headers.origin;
-  if (origin) return config.corsOrigins.includes(origin) || origin === `${req.protocol}://${req.get("host")}`;
-  const fetchSite = req.headers["sec-fetch-site"];
-  return fetchSite === "same-origin" || fetchSite === "same-site";
 }
 function csrfProtection(req: express.Request, res: express.Response, next: express.NextFunction): void {
   if (!MUTATING_METHODS.has(req.method) || req.headers.authorization || !hasSessionCookie(req)) return next();
