@@ -77,10 +77,11 @@ export async function collectionGet(
   }
 }
 
-export async function docGet(collectionName: string, id: string): Promise<any | null> {
+// Security gates bypass cached account/revocation state across server processes.
+export async function docGet(collectionName: string, id: string, fresh = false): Promise<any | null> {
   const cacheKey = `${collectionName}/${id}`;
   const cached = docCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.data;
+  if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
   if (!db) return null;
   try {
@@ -89,8 +90,9 @@ export async function docGet(collectionName: string, id: string): Promise<any | 
       const snap = await db.collection(collectionName).doc(id).get();
       data = snap.exists ? { id: snap.id, ...snap.data() } : null;
     } else {
-      const { doc, getDoc } = await loadClientSdk();
-      const snap = await getDoc(doc(db, collectionName, id));
+      const { doc, getDoc, getDocFromServer } = await loadClientSdk();
+      const ref = doc(db, collectionName, id);
+      const snap = await (fresh ? getDocFromServer(ref) : getDoc(ref));
       data = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     }
     sweepExpired(docCache);
