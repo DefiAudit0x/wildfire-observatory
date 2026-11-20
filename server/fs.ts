@@ -2,6 +2,8 @@ import { getDb, isAdminDb } from "./firebase.js";
 import logger from "./logger.js";
 import { stripUndefinedDeep } from "./clean.js";
 import { saneCoord } from "./geo.js";
+import type { Transaction as AdminTransaction } from "firebase-admin/firestore";
+import type { Transaction as ClientTransaction } from "firebase/firestore";
 
 async function loadClientSdk() {
   return import("firebase/firestore");
@@ -408,6 +410,26 @@ export async function docUpdate(
 export type BadgeDeviceBindingResult = "bound" | "already_bound" | "conflict" | "unavailable";
 
 /**
+ * Pure badge-binding decision shared by both Firestore SDK branches: given a
+ * badge document's data, decide the outcome without touching the
+ * transaction. "bound" means the caller should write the binding.
+ */
+function decideBadgeBinding(
+  current: Record<string, unknown>,
+  deviceId: string
+): BadgeDeviceBindingResult {
+  if (current.isActive !== true) return "unavailable";
+  if (current.expiresAt) {
+    const expiry =
+      typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(String(current.expiresAt));
+    if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
+  }
+  const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
+  if (owner) return owner === deviceId ? "already_bound" : "conflict";
+  return "bound";
+}
+
+/**
  * Atomically binds a badge to its first verified device. Firestore retries a
  * transaction when another writer changes the badge after this transaction's
  * read, so concurrent first binders cannot both adopt the identity.
@@ -422,37 +444,23 @@ export async function bindBadgeDeviceAtomic(
 
   try {
     const outcome = isAdminDb(db)
-      ? await db.runTransaction(async (tx: any): Promise<BadgeDeviceBindingResult> => {
+      ? await db.runTransaction(async (tx: AdminTransaction): Promise<BadgeDeviceBindingResult> => {
           const ref = db.collection("badgeCodes").doc(badgeCode);
           const snap = await tx.get(ref);
           if (!snap.exists) return "unavailable";
-          const current = snap.data() || {};
-          if (current.isActive !== true) return "unavailable";
-          if (current.expiresAt) {
-            const expiry = typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(current.expiresAt);
-            if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
-          }
-          const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
-          if (owner) return owner === deviceId ? "already_bound" : "conflict";
-          tx.update(ref, { boundDeviceId: deviceId, boundAt });
-          return "bound";
+          const decision = decideBadgeBinding(snap.data() || {}, deviceId);
+          if (decision === "bound") tx.update(ref, { boundDeviceId: deviceId, boundAt });
+          return decision;
         })
       : await (async () => {
           const { doc, runTransaction } = await loadClientSdk();
-          return runTransaction(db, async (tx: any): Promise<BadgeDeviceBindingResult> => {
+          return runTransaction(db, async (tx: ClientTransaction): Promise<BadgeDeviceBindingResult> => {
             const ref = doc(db, "badgeCodes", badgeCode);
             const snap = await tx.get(ref);
             if (!snap.exists()) return "unavailable";
-            const current = snap.data() || {};
-            if (current.isActive !== true) return "unavailable";
-            if (current.expiresAt) {
-              const expiry = typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(current.expiresAt);
-              if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
-            }
-            const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
-            if (owner) return owner === deviceId ? "already_bound" : "conflict";
-            tx.update(ref, { boundDeviceId: deviceId, boundAt });
-            return "bound";
+            const decision = decideBadgeBinding(snap.data() || {}, deviceId);
+            if (decision === "bound") tx.update(ref, { boundDeviceId: deviceId, boundAt });
+            return decision;
           });
         })();
 
