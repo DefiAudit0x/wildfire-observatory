@@ -72,7 +72,7 @@ export function useGeolocation(isArabic: boolean) {
       return false;
     }
   });
-  const [deviceId] = useState(() => getDeviceId());
+  const [deviceId, setDeviceId] = useState(() => getDeviceId());
   // Monotonic sequence for one-shot refetches: only the LATEST refetch may
   // write location/error state — a slow earlier response can never overwrite
   // a newer one (rapid GPS button presses).
@@ -92,6 +92,15 @@ export function useGeolocation(isArabic: boolean) {
   // a language toggle never tears down the live position watch.
   const isArabicRef = useRef(isArabic);
   isArabicRef.current = isArabic;
+
+  useEffect(() => {
+    const onServerDeviceId = (event: Event) => {
+      const assigned = (event as CustomEvent<unknown>).detail;
+      if (typeof assigned === "string") setDeviceId(assigned);
+    };
+    window.addEventListener("server-device-id", onServerDeviceId);
+    return () => window.removeEventListener("server-device-id", onServerDeviceId);
+  }, []);
 
   const acceptFix = useCallback((pos: GeolocationPosition) => {
     // A broken provider may emit NaN coordinates (audit): non-finite fixes
