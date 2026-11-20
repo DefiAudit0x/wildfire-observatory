@@ -75,27 +75,40 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
 /**
  * S-M1: true when this jti sits in the revocation register. Expired register
  * entries are ignored (the token is dead anyway). A register outage is
- * fail-open ON PURPOSE: the admin password remains the real credential, and
- * locking the control room out during a Firestore outage would trade a
- * revocation edge case for an availability emergency.
+ * fail-open ON PURPOSE for password-admin sessions: the admin password
+ * remains the real credential, and locking the control room out during a
+ * Firestore outage would trade a revocation edge case for an availability
+ * emergency.
  *
  * v2.15.0 audit hardening: the fail-open is no longer absolute. Successful
  * checks are cached in process memory, and a token ALREADY SEEN REVOKED stays
  * denied even when the register later goes down — an outage can no longer
  * resurrect a stolen, logged-out session. Tokens never seen revoked keep the
  * availability-first fail-open during an outage (the documented trade-off).
+ *
+ * Fix 4c: that trade-off does NOT extend to staff sessions. Logout does not
+ * rotate sessionVersion, so the revocation register is the SOLE enforcement
+ * of staff logout — a transient read failure used to be indistinguishable
+ * from "not revoked" (docGet resolved null on SDK failure) and the token was
+ * admitted. With failClosed, an unreadable register THROWS and the caller
+ * rejects the staff session; admin sessions keep the fail-open above.
  */
 const revocationSeen = new Map<string, number>(); // jti → expMs of a token seen revoked
-async function isAdminSessionRevoked(jti: string): Promise<boolean> {
-  // docGet resolves null on SDK failure; consult known revocations first.
+async function isAdminSessionRevoked(jti: string, failClosed = false): Promise<boolean> {
+  // The register read is strict: a failed read throws instead of resolving
+  // null, so "absent" and "unreadable" stay distinguishable. Consult known
+  // revocations first.
   const cachedExp = revocationSeen.get(jti);
   if (cachedExp !== undefined) {
     if (!Number.isFinite(cachedExp) || cachedExp >= Date.now()) return true;
     revocationSeen.delete(jti);
   }
-  if (!getDb()) return false;
+  if (!getDb()) {
+    if (failClosed) throw new Error("Revocation register unavailable");
+    return false;
+  }
   try {
-    const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti, true);
+    const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti, true, { strict: true });
     if (!entry) return false;
     const exp = typeof entry.exp === "number" ? entry.exp : Date.parse(entry.exp);
     if (Number.isFinite(exp) && exp < Date.now()) return false;
@@ -109,6 +122,10 @@ async function isAdminSessionRevoked(jti: string): Promise<boolean> {
       if (Number.isFinite(cachedExp) && cachedExp < Date.now()) return false;
       logger.warn({ jti }, "Admin revocation register down — using last-known revoked state");
       return true;
+    }
+    if (failClosed) {
+      logger.warn({ err }, "Staff revocation check failed — failing closed");
+      throw err;
     }
     logger.warn({ err }, "Admin revocation check failed — failing open");
     return false;
@@ -173,8 +190,19 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     // against the durable revocation register — logout (or incident response)
     // kills a stolen cookie everywhere, without waiting for JWT expiry.
     // Staff logout uses the same durable jti register; account revalidation follows.
+    // Fix 4c: staff sessions fail CLOSED when the register cannot be read —
+    // the register is the sole enforcement of staff logout. Password-admin
+    // sessions keep the documented fail-open.
     if ((isAdminSessionPayload(decoded) || decoded.agentId) && typeof decoded.jti === "string") {
-      if (await isAdminSessionRevoked(decoded.jti)) {
+      const failClosed = Boolean(decoded.agentId);
+      let revoked: boolean;
+      try {
+        revoked = await isAdminSessionRevoked(decoded.jti, failClosed);
+      } catch {
+        res.status(401).json({ error: "Unauthorized: session revocation could not be verified" });
+        return;
+      }
+      if (revoked) {
         res.status(401).json({ error: "Unauthorized: session has been revoked" });
         return;
       }

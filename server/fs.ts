@@ -78,12 +78,18 @@ export async function collectionGet(
 }
 
 // Security gates bypass cached account/revocation state across server processes.
-export async function docGet(collectionName: string, id: string, fresh = false): Promise<any | null> {
+// Fix 4c: opts.strict makes a failed read THROW instead of resolving null, so a
+// caller that must tell "absent" from "unreadable" (the revocation gate) can
+// fail closed. The default stays null-on-failure for all existing callers.
+export async function docGet(collectionName: string, id: string, fresh = false, opts: { strict?: boolean } = {}): Promise<any | null> {
   const cacheKey = `${collectionName}/${id}`;
   const cached = docCache.get(cacheKey);
   if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
-  if (!db) return null;
+  if (!db) {
+    if (opts.strict) throw new Error(`Firestore unavailable for ${collectionName}/${id}`);
+    return null;
+  }
   try {
     let data: any | null = null;
     if (isAdminDb(db)) {
@@ -100,6 +106,7 @@ export async function docGet(collectionName: string, id: string, fresh = false):
     return data;
   } catch (err) {
     logger.error({ err, collectionName, id }, "Firestore doc read failed");
+    if (opts.strict) throw err;
     return null;
   }
 }
