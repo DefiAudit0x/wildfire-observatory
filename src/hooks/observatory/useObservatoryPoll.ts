@@ -39,6 +39,23 @@ export interface UseObservatoryPollResult {
   handleMarkNotificationRead: (id: string) => Promise<void>;
 }
 
+/**
+ * A 403 on the notifications read means the signed cookie is bound to a
+ * different device id than the one this browser uses (see
+ * server/routes/notifications.ts). The body carries code DEVICE_MISMATCH; a
+ * body that cannot be parsed is treated the same — this endpoint refuses
+ * with no other 403.
+ */
+async function isDeviceMismatch(res: Response): Promise<boolean> {
+  if (res.status !== 403) return false;
+  try {
+    const body = (await res.clone().json()) as { code?: unknown };
+    return body?.code === "DEVICE_MISMATCH";
+  } catch {
+    return true;
+  }
+}
+
 export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   const [reports, setReports] = useState<Report[]>([]);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
@@ -137,6 +154,13 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     // v2.15.0: notifications require an explicit device enrollment — a 401
     // (DEVICE_ENROLLMENT_REQUIRED) enrolls this browser once, then the read
     // retries. Identity is never bound implicitly from a GET URL anymore.
+    // Fix 3b: a lost enrollment response also desyncs the client — the server
+    // has already bound the cookie to a new id while this browser still uses
+    // its old one, so the next read answers 403 DEVICE_MISMATCH. That must
+    // re-enroll too (the server returns the bound id), or notifications stay
+    // stuck at 403 until cookies are cleared. The enrollment POST is NOT tied
+    // to the cycle signal: a newer cycle aborting it is exactly how the
+    // response gets lost in the first place.
     const [reportsOut, satellitesOut, wilayasOut, sosOut, notificationsOut] = await Promise.all([
       commit("reports", fetchWithTimeout("/api/reports", cycleController.signal)),
       commit("satellites", fetchWithTimeout("/api/satellite-data", cycleController.signal)),
@@ -147,8 +171,10 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
         (async () => {
           const url = `/api/notifications/${deviceId}`;
           let res = await fetchWithTimeout(url, cycleController.signal);
-          if (res.status === 401) {
-            const enrollment = await fetchWithTimeout("/api/notifications/enroll", cycleController.signal, {
+          if (res.status === 401 || (await isDeviceMismatch(res))) {
+            // Untied from the cycle signal (see the comment above): aborting
+            // this request is how the enrollment response gets lost.
+            const enrollment = await fetchWithTimeout("/api/notifications/enroll", undefined, {
               method: "POST",
             });
             if (enrollment.ok) {
