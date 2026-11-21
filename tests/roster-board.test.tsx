@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import RosterBoard from "../src/components/RosterBoard.js";
 
 // Fix 15b: a failed roster load used to install an editable empty roster,
@@ -77,5 +77,83 @@ describe("RosterBoard failed load (Fix 15b)", () => {
     const saveButton = screen.getByText("حفظ جدول اليوم").closest("button");
     expect(saveButton).not.toBeNull();
     expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  // Fix 15c: the failed-load protection must also cover a roster that was
+  // already loaded. A refetch that fails must clear it — otherwise the stale
+  // day stays editable and Save re-enables once loading clears.
+  it("clears a previously loaded roster when the next load returns 503", async () => {
+    let rosterCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/api/roster/")) {
+          rosterCalls += 1;
+          if (rosterCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                unitId: "unit-dz16",
+                date: todayISO(),
+                posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [] }],
+                saved: true,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          return new Response(JSON.stringify({ error: "Database not available" }), {
+            status: 503,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    fireEvent.click(screen.getByTitle("اليوم التالي"));
+    await waitFor(() => expect(screen.getByText("تعذر تحميل الجدول.")).toBeTruthy());
+    expect(screen.queryByText("منصب")).toBeNull();
+    const saveButton = screen.getByText("حفظ جدول اليوم").closest("button");
+    expect(saveButton).not.toBeNull();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("clears a previously loaded roster when the next load throws", async () => {
+    let rosterCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/api/roster/")) {
+          rosterCalls += 1;
+          if (rosterCalls === 1) {
+            return new Response(
+              JSON.stringify({
+                unitId: "unit-dz16",
+                date: todayISO(),
+                posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [] }],
+                saved: true,
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          throw new Error("network down");
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    fireEvent.click(screen.getByTitle("اليوم التالي"));
+    await waitFor(() => expect(screen.getByText("تعذر تحميل الجدول.")).toBeTruthy());
+    expect(screen.queryByText("منصب")).toBeNull();
+    const saveButton = screen.getByText("حفظ جدول اليوم").closest("button");
+    expect(saveButton).not.toBeNull();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
   });
 });
