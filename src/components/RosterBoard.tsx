@@ -106,6 +106,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       }
     } catch {
       if (!isCurrent()) return; // superseded by a newer fetch
+      // Fix 15c (CodeRabbit Major, review 6007713491): like the HTTP-error
+      // branch above, a thrown load must also clear the roster — a previously
+      // loaded day left in state stays editable, and Save re-enables once
+      // loading clears. The isCurrent() check above keeps an older request
+      // from clearing newer data.
+      setRoster(null);
       setMsg(isArabic ? "تعذر تحميل الجدول." : "Erreur de chargement.");
     } finally {
       if (isCurrent()) setLoading(false);
