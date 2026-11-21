@@ -46,6 +46,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   const risk = useMemo(() => computeFireRisk(reports, satellites, wilayas), [reports, satellites, wilayas]);
 
   const [history, setHistory] = useState<HistoryBucket[] | null>(null);
+  const [hotspotsPartial, setHotspotsPartial] = useState(false);
   const [hotspotsUnavailable, setHotspotsUnavailable] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -54,6 +55,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
       .then((data) => {
         if (!cancelled && data?.buckets) {
           setHistory(data.buckets);
+          setHotspotsPartial(data?.hotspotsPartial === true && data?.hotspotsUnavailable !== true);
           setHotspotsUnavailable(data?.hotspotsUnavailable === true);
         }
       })
@@ -241,7 +243,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
               return (
                 <div
                   key={bucket.date}
-                  title={`${bucket.date} — بلاغات: ${bucket.reports} · نداءات: ${bucket.sos} · أقمار: ${hotspotsUnavailable ? (isArabic ? "غير متاحة" : "indisponibles") : bucket.hotspots}`}
+                  title={`${bucket.date} — بلاغات: ${bucket.reports} · نداءات: ${bucket.sos} · أقمار: ${hotspotsUnavailable ? (isArabic ? "غير متاحة" : "indisponibles") : `${bucket.hotspots}${hotspotsPartial ? (isArabic ? " (جزئي)" : " (partiel)") : ""}`}`}
                   className="flex-1 rounded-t bg-red-500/50 hover:bg-red-500 transition-colors"
                   style={{ height: `${height}%` }}
                 />
@@ -252,6 +254,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
             {isArabic
               ? "حسب تواريخ البلاغات والنداءات والبقع الحرارية المستقبلة من المزودين."
               : "Selon les dates des signalements, SOS et détections reçues."}
+            {hotspotsPartial && (isArabic ? " بيانات الأقمار جزئية حالياً." : " Données satellites actuellement partielles.")}
             {hotspotsUnavailable &&
               (isArabic
                 ? " بيانات الأقمار غير متاحة حالياً — الأعمدة تعرض البلاغات والنداءات فقط."
