@@ -11,10 +11,18 @@ const CACHE_TTL_MS = 10 * 60 * 1000;
 let cachedHotspots: SatelliteHotspot[] | null = null;
 let cacheTimestamp = 0;
 
-async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
+type SourceStatus = "ok" | "unavailable";
+export class SatelliteUnavailableError extends Error {
+  constructor(readonly sources: Record<string, SourceStatus>) {
+    super("Satellite data is currently unavailable");
+  }
+}
+type FirmsResult = { status: "ok"; data: SatelliteHotspot[] } | { status: "unavailable" };
+
+async function fetchFirmsData(source: string): Promise<FirmsResult> {
   const apiKey = config.nasaFirmsKey;
   const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
-  if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return [];
+  if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return { status: "unavailable" };
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
   const days = 3;
@@ -40,12 +48,12 @@ async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
         { status: response.status, source, snippet: body.slice(0, 200) },
         "NASA FIRMS HTTP error — check MAP_KEY validity, area format, and IP authorization"
       );
-      return [];
+      return { status: "unavailable" };
     }
 
     const text = await response.text();
     const lines = text.trim().split("\n");
-    if (lines.length <= 1) return [];
+    if (lines.length <= 1) return { status: "ok", data: [] };
 
     const hotspots: SatelliteHotspot[] = [];
     for (let i = 1; i < lines.length; i++) {
@@ -74,14 +82,14 @@ async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
         // skip malformed CSV line
       }
     }
-    return hotspots;
+    return { status: "ok", data: hotspots };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(
       { source, msg },
       "NASA FIRMS fetch failed — if 'ETIMEDOUT', the server IP is likely not authorized on the FIRMS account; whitelist it or set FIRMS_BASE_URL to a Cloudflare Worker proxy"
     );
-    return [];
+    return { status: "unavailable" };
   } finally {
     clearTimeout(timeout);
   }
@@ -96,9 +104,16 @@ export async function getLiveSatelliteData() {
   const sources = ["VIIRS_SNPP_NRT", "MODIS_NRT"];
   let hotspots: SatelliteHotspot[] = [];
 
+  const sourceStatuses: Record<string, SourceStatus> = {};
   for (const source of sources) {
-    const data = await fetchFirmsData(source);
-    hotspots = hotspots.concat(data);
+    const result = await fetchFirmsData(source);
+    sourceStatuses[source] = result.status;
+    if (result.status === "ok") hotspots = hotspots.concat(result.data);
+  }
+  // An incomplete observation must not replace a previously healthy dataset.
+  // Keep the successful array contract; failures carry per-source status in 503.
+  if (Object.values(sourceStatuses).some((status) => status !== "ok")) {
+    throw new SatelliteUnavailableError(sourceStatuses);
   }
 
   if (hotspots.length > 0) {
@@ -121,16 +136,18 @@ export async function getLiveSatelliteData() {
     return unique;
   }
 
-  // v2.3.0 (simulation purge): the fabricated-hotspot fallback is gone. When
-  // FIRMS is unreachable or returns nothing, we serve zero hotspots — an
-  // honest empty sky — instead of six invented fires. The frontend already
-  // renders the empty state and fireRisk treats zero hotspots correctly.
+  // Both sources succeeded: an empty sky is a valid observation.
   return [];
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const data = await getLiveSatelliteData();
-  res.json(data);
+  try {
+    const data = await getLiveSatelliteData();
+    res.json(data);
+  } catch (err) {
+    if (!(err instanceof SatelliteUnavailableError)) throw err;
+    res.status(503).json({ error: err.message, sources: err.sources });
+  }
 });
 
 export default router;

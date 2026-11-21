@@ -7,6 +7,10 @@ const { fakeClient, setGenerateContent } = vi.hoisted(() => {
   return { fakeClient, setGenerateContent: (impl: any) => fakeClient.models.generateContent.mockImplementation(impl) };
 });
 
+vi.mock("../server/db.js", () => ({
+  getReportsDbResult: async () => ({ status: "empty" }),
+}));
+
 vi.mock("../server/ai.js", () => ({
   getAiClient: () => fakeClient,
   getAiModel: () => "gemini-3-flash-preview",

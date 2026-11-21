@@ -3,6 +3,8 @@ import { z } from "zod";
 import rateLimit from "express-rate-limit";
 import { getAiClient, getAiModel } from "../ai.js";
 import logger from "../logger.js";
+import { isFreshThreatTimestamp } from "./wilayas.js";
+import type { Report } from "../../src/types.js";
 
 const router = Router();
 
@@ -126,27 +128,38 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
   const isArabic = lang === "ar";
   const wilaya = sanitizeForPrompt(parsed.data.wilaya, 60);
 
-  let currentReports: any[] = [];
+  let currentReports: Report[] = [];
+  let contextTimeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const { getReportsFromFirestore } = await import("../db.js");
-    // Audit round 12: the Firestore fetch (best-effort context data only)
-    // had NO timeout — a slow/hung DB held the guidance response hostage
-    // past even the AI provider's own 15s abort, degrading every guidance
-    // request in a degraded-network moment. Context is optional by design
-    // (see the catch below), so cap it hard and move on.
-    const reports = await Promise.race([
-      getReportsFromFirestore(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    const { getReportsDbResult } = await import("../db.js");
+    const result = await Promise.race([
+      getReportsDbResult(),
+      new Promise<never>((_, reject) => {
+        contextTimeout = setTimeout(() => reject(new Error("Report context timed out")), 3000);
+      }),
     ]);
-    if (reports) currentReports = reports;
-  } catch { /* ignore */ }
+    // A confirmed empty collection is valid context; an outage is not an all-clear.
+    if (result.status === "error" || result.status === "no-db") {
+      throw new Error("Report context unavailable");
+    }
+    if (result.status === "ok") currentReports = result.reports;
+  } catch (err) {
+    logger.warn({ err }, "AI guidance report context unavailable");
+    res.status(503).json({ error: "Report context is currently unavailable" });
+    return;
+  } finally {
+    clearTimeout(contextTimeout);
+  }
 
   const NEARBY_KM = 25;
+  const now = Date.now();
   const nearbyReports = currentReports.filter((r) => {
     if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) return false;
     // Only unresolved operational reports describe current conditions. Resolved
     // and rejected reports remain in history and must not inflate live guidance.
     if (r.status === "resolved" || r.status === "rejected") return false;
+    // Reuse the live-threat doctrine: 30 minutes old, at most 2 minutes ahead.
+    if (!isFreshThreatTimestamp(r.timestamp, now)) return false;
     return distanceKm(r.lat, r.lng, lat ?? 36.8, lng ?? 7.5) <= NEARBY_KM;
   });
 
