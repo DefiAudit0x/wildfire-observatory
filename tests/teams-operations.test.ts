@@ -24,6 +24,7 @@ const fsMock = vi.hoisted(() => ({
   docGet: vi.fn(async (..._a: any[]) => null as any),
   docSet: vi.fn(async (..._a: any[]) => true as any),
   docMergeSet: vi.fn(async (..._a: any[]) => true as any),
+  docMergeTeamPositionIfActive: vi.fn(async (..._a: any[]) => true as any),
   docUpdate: vi.fn(async (..._a: any[]) => true as any),
   docDelete: vi.fn(async (..._a: any[]) => true as any),
   docDeleteFields: vi.fn(async (..._a: any[]) => true as any),
@@ -38,6 +39,7 @@ const atomicMock = vi.hoisted(() => ({
   setMissionPhaseAtomically: vi.fn(async (..._a: any[]) => ({ status: "updated", mission: { sosId: "sos-1", phase: "on_scene" } }) as any),
   clearTeamMissionAtomically: vi.fn(async (..._a: any[]) => ({ status: "cleared", mission: {} }) as any),
   setPrincipalBlocked: vi.fn(async (..._a: any[]) => "blocked" as any),
+  rotateTeamJoinCodeAtomically: vi.fn(async (..._a: any[]) => "rotated" as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -78,12 +80,14 @@ beforeEach(() => {
   fsMock.docGet.mockReset().mockResolvedValue(null);
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docMergeSet.mockReset().mockResolvedValue(true);
+  fsMock.docMergeTeamPositionIfActive.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
   fsMock.docDelete.mockReset().mockResolvedValue(true);
   fsMock.docDeleteFields.mockReset().mockResolvedValue(true);
   fsMock.incrementDocField.mockReset().mockResolvedValue(true);
   fsMock.removeTeamMemberAtomically.mockReset().mockResolvedValue({ status: "removed", tokenGen: 1 } as any);
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
+  atomicMock.rotateTeamJoinCodeAtomically.mockReset().mockResolvedValue("rotated");
   atomicMock.clearTeamMissionAtomically.mockReset().mockResolvedValue({ status: "cleared", mission: {} });
   atomicMock.setPrincipalBlocked.mockReset().mockResolvedValue("blocked");
 });
@@ -202,9 +206,9 @@ describe("POST /api/teams/heartbeat", () => {
     const app = createApp();
     const res = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-snap")).set(nextIp()).send({ lat: 36.71, lng: 5.01 });
     expect(res.status).toBe(200);
-    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
-    expect(fsMock.docMergeSet).toHaveBeenCalledWith("teamMembers", "tm-snap", expect.objectContaining({ lastKnownLat: 36.71, teamId: "team-a1" }));
-    const payload = fsMock.docMergeSet.mock.calls[0][2] as Record<string, unknown>;
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(1);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledWith("tm-snap", "team-a1", 0, expect.objectContaining({ lastKnownLat: 36.71, teamId: "team-a1" }));
+    const payload = fsMock.docMergeTeamPositionIfActive.mock.calls[0][3] as Record<string, unknown>;
     expect(Object.keys(payload).sort()).toEqual(["lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
     // the old docSet path must be gone from the snapshot entirely
     expect(fsMock.docSet).not.toHaveBeenCalledWith("teamMembers", expect.anything(), expect.anything());
@@ -213,7 +217,7 @@ describe("POST /api/teams/heartbeat", () => {
     await new Promise((r) => setTimeout(r, 3100)); // clear the 3s per-member floor
     const again = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-snap")).set(nextIp()).send({ lat: 36.72, lng: 5.02 });
     expect(again.status).toBe(200);
-    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(1);
   });
 
   it("B1: rejects a token minted BEFORE the member's current tokenGen (MEMBER_REVOKED)", async () => {
@@ -276,6 +280,7 @@ describe("POST /api/teams/mission/phase", () => {
     const [calledTeamId, calledPhase] = atomicMock.setMissionPhaseAtomically.mock.calls[0];
     expect(calledTeamId).toBe("team-a1");
     expect(calledPhase).toBe("on_scene");
+    expect(atomicMock.setMissionPhaseAtomically.mock.calls[0][2]).toEqual({ sosId: "sos-77", since: 1000 });
     expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teamMissions", "team-a1");
 
     atomicMock.setMissionPhaseAtomically.mockResolvedValueOnce({ status: "no-active-mission" });
@@ -691,7 +696,7 @@ describe("POST /api/teams/mission/phase — Phase 3 arrival evidence", () => {
     const res = await supertest(app).post("/api/teams/mission/phase").set(memberAuth("tm-arr1")).set(nextIp())
       .send({ phase: "on_scene", lat: 36.7503, lng: 5.0703, accuracy: 8 });
     expect(res.status).toBe(200);
-    expect(atomicMock.setMissionPhaseAtomically).toHaveBeenCalledWith("team-a1", "on_scene");
+    expect(atomicMock.setMissionPhaseAtomically).toHaveBeenCalledWith("team-a1", "on_scene", { sosId: "sos-77", since: 1000 });
   });
 
   it("rejects evidence farther than the arrival radius with ARRIVAL_TOO_FAR and never reaches the tx", async () => {
@@ -757,7 +762,7 @@ describe("POST /api/teams/:id/join-code — Phase 3 dead-code sweep", () => {
     });
   }
 
-  it("deletes codes dead for more than 7 days, keeps fresh ones, revokes live same-team codes", async () => {
+  it("passes a fresh collection snapshot to the atomic rotation helper", async () => {
     mintMocks();
     const now = Date.now();
     const DAY = 24 * 60 * 60 * 1000;
@@ -774,14 +779,12 @@ describe("POST /api/teams/:id/join-code — Phase 3 dead-code sweep", () => {
       .set(nextIp())
       .send({});
     expect(res.status).toBe(201);
-    // Dead > 7 days → swept
-    expect(fsMock.docDelete).toHaveBeenCalledWith("teamJoinCodes", "OLDREV01");
-    expect(fsMock.docDelete).toHaveBeenCalledWith("teamJoinCodes", "OLDEXP001");
-    expect(fsMock.docDelete).not.toHaveBeenCalledWith("teamJoinCodes", "FRESHDEAD");
-    // Live codes on OTHER teams survive untouched
-    expect(fsMock.docUpdate).not.toHaveBeenCalledWith("teamJoinCodes", "LIVEOTHR1", expect.anything());
-    // Live code on THIS team is rotated (revoked) by the mint
-    expect(fsMock.docUpdate).toHaveBeenCalledWith("teamJoinCodes", "LIVESAMA1", { revoked: true, revokedAt: expect.any(Number) });
+    expect(fsMock.collectionGet).toHaveBeenCalledWith("teamJoinCodes", undefined, undefined, true);
+    const [teamId, newCode, payload, observed] = atomicMock.rotateTeamJoinCodeAtomically.mock.calls[0];
+    expect(teamId).toBe("team-a1");
+    expect(payload).toMatchObject({ teamId: "team-a1", revoked: false });
+    expect(observed.map((row: { id: string }) => row.id)).toEqual(["OLDREV01", "OLDEXP001", "FRESHDEAD", "LIVEOTHR1", "LIVESAMA1"]);
+    expect(newCode).toBe(payload.code);
     // Freshly minted code still comes back with its budget
     expect(res.body.code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
     expect(res.body.maxUses).toBe(12);
