@@ -200,6 +200,24 @@ for (const admin of [true, false]) describe(`Fix 14 real routes and registry —
     expect((await request("post", "mission/phase").send(payload)).status).toBe(200);
     expect(state.docs.get(path)?.phase).toBe("on_scene");
   });
+  it("invalidates a cached mission conflict so an immediate retry uses the replacement", async () => {
+    const path = `teamMissions/${team}`;
+    state.docs.set(path, { sosId: "sos-A", phase: "en_route", since: 100, sosLat: 36.75, sosLng: 5.07 });
+    expect(await fs.docGet("teamMissions", team)).toMatchObject({ sosId: "sos-A", since: 100 });
+    // Another instance replaces the mission without invalidating this instance's cache.
+    state.docs.set(path, { sosId: "sos-B", phase: "en_route", since: 200, sosLat: 36.75, sosLng: 5.07 });
+    expect(await fs.docGet("teamMissions", team)).toMatchObject({ sosId: "sos-A", since: 100 });
+    const payload = { phase: "on_scene", lat: 36.75, lng: 5.07, accuracy: 8 };
+    const conflict = await request("post", "mission/phase").send(payload);
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.code).toBe("MISSION_CHANGED");
+    expect(state.docs.get(path)).toMatchObject({ sosId: "sos-B", phase: "en_route", since: 200 });
+    // No manual invalidation, TTL wait, or further mission change before retry.
+    const retry = await request("post", "mission/phase").send(payload);
+    expect(retry.status).toBe(200);
+    expect(retry.body.mission).toMatchObject({ sosId: "sos-B", phase: "on_scene", since: 200 });
+    expect(state.docs.get(path)).toMatchObject({ sosId: "sos-B", phase: "on_scene", since: 200 });
+  });
   it("an in-flight registry snapshot cannot restore GPS after gpsPurged acknowledgment", async () => {
     ping();
     const staged = deferred(); const resume = deferred(); const done = deferred();
