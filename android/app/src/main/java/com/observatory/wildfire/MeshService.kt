@@ -324,6 +324,11 @@ class MeshService : Service() {
                 connectionsClient.rejectConnection(endpointId)
                 return
             }
+            if (!reputation.sightAndCheckAdmission(initiatorKey, System.currentTimeMillis())) {
+                Log.w(TAG, "Admission denied: initiator reputation is below the threshold")
+                connectionsClient.rejectConnection(endpointId)
+                return
+            }
             // Upsert (audit round 12): the old code only updated the peer's
             // key when an entry already existed — a peer re-announcing after
             // its own rotation with a NEW key (putIfAbsent semantics in
@@ -336,12 +341,21 @@ class MeshService : Service() {
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
+                // A peer may be quarantined while its handshake is in flight.
+                // Recheck the already-sighted identity before marking it connected.
+                val known = registry.peers[endpointId]
+                if (known != null && !reputation.isInboundAdmitted(known.publicKey)) {
+                    Log.w(TAG, "Admission denied: peer reputation changed during handshake")
+                    registry.connectingPeers.remove(endpointId)
+                    connectionsClient.disconnectFromEndpoint(endpointId)
+                    peerCleanup(endpointId)
+                    return
+                }
                 Log.d(TAG, "Connected: $endpointId")
                 registry.connectingPeers.remove(endpointId)
                 registry.connectedPeers.add(endpointId)
                 // Preserve any key already learned from discovery/initiation
                 // instead of wiping it (audit round 11).
-                val known = registry.peers[endpointId]
                 if (known != null && known.publicKey.isNotBlank()) {
                     registerPeer(endpointId, known.publicKey)
                 }
@@ -569,6 +583,7 @@ class MeshService : Service() {
      * sequence is identical.
      */
     private fun handleIncomingMessage(endpointId: String, bytes: ByteArray): Boolean {
+        if (!reputation.isInboundAdmitted(registry.peers[endpointId]?.publicKey)) return false
         try {
             val verdict = meshInbound.evaluate(
                 bytes,
