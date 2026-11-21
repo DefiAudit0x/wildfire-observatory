@@ -86,7 +86,17 @@ describe("S-M1: admin token jti + revocation register", () => {
       .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
     expect(res.status).toBe(401);
     expect(res.body.error).toContain("revoked");
-    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String));
+    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true, { strict: true });
+  });
+
+  it("still admits an admin session when the register read fails (Fix 4c — documented fail-open)", async () => {
+    state.dbPresent = true;
+    state.docGet.mockRejectedValueOnce(new Error("register down"));
+    const res = await supertest(appWith())
+      .get("/protected")
+      .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("admin");
   });
 
   it("ignores EXPIRED revocation entries (the token is dead anyway)", async () => {
@@ -164,15 +174,15 @@ describe("S-M3: distinct superadmin role", () => {
     expect(session.body.role).toBe("superadmin");
   });
 
-  it("staff tokens are untouched by the admin-revocation path", async () => {
+  it("staff tokens check revocations and their current account", async () => {
     state.dbPresent = true;
-    state.docGet.mockResolvedValue({ agentId: "c1", role: "commander", unitId: "u1", isActive: true });
+    state.docGet.mockImplementation(async (collection: string) => collection === "users" ? { agentId: "c1", role: "commander", unitId: "u1", isActive: true } : null);
     const res = await supertest(appWith())
       .get("/protected")
       .set("Authorization", `Bearer ${generateStaffToken({ role: "commander", agentId: "c1", unitId: "u1" })}`);
     expect(res.status).toBe(200);
     expect(res.body.role).toBe("commander");
-    // The register is never consulted for staff sessions.
-    expect(state.docGet).toHaveBeenCalledWith("users", "c1");
+    expect(state.docGet).toHaveBeenCalledWith("adminRevocations", expect.any(String), true, { strict: true });
+    expect(state.docGet).toHaveBeenCalledWith("users", "c1", true);
   });
 });

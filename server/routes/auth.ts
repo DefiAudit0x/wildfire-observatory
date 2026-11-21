@@ -3,7 +3,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import rateLimit from "express-rate-limit";
 import logger from "../logger.js";
-import { generateStaffToken, requireAuth } from "../middleware.js";
+import { generateStaffToken, requireAuth, revokeAdminSession } from "../middleware.js";
 import { docGet } from "../fs.js";
 import { logAdminAction } from "./audit.js";
 import config from "../config.js";
@@ -32,7 +32,7 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
   }
   const { agentId, password } = parsed.data;
   try {
-    const user = await docGet("users", agentId);
+    const user = await docGet("users", agentId, true);
     if (!user || user.isActive === false) {
       res.status(401).json({ error: "Invalid credentials" });
       return;
@@ -51,6 +51,7 @@ router.post("/login", staffLoginLimiter, async (req: Request, res: Response) => 
       unitId: user.unitId,
       name: user.name,
       agentId: user.agentId,
+      sessionVersion: user.sessionVersion || "",
     });
     res.cookie("staff_token", token, {
       httpOnly: true,
@@ -91,8 +92,15 @@ router.get("/session", requireAuth, (req: Request, res: Response) => {
   });
 });
 
-router.post("/logout", (_req: Request, res: Response) => {
+router.post("/logout", async (req: Request, res: Response) => {
+  const bearer = req.headers.authorization;
+  const token = bearer?.startsWith("Bearer ") ? bearer.slice(7) : (req as Request & { cookies?: { staff_token?: string } }).cookies?.staff_token;
+  const revoked = token ? await revokeAdminSession(token, "staff.logout") : true;
   res.clearCookie("staff_token");
+  if (!revoked) {
+    res.status(503).json({ error: "Session revocation could not be persisted" });
+    return;
+  }
   res.json({ success: true });
 });
 
