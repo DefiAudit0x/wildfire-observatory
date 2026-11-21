@@ -796,6 +796,8 @@ export type SosResolveResult =
  * so Firestore's optimistic concurrency orders them: a dispatch racing this
  * tx either commits first (then this tx's in-tx mission query sees and
  * clears it) or retries and reads status=resolved (409 to the operator).
+ * This query/transaction guarantee applies to the Admin SDK; the client SDK
+ * uses the non-atomic mission pre-read documented below.
  * The cleared count is RETURNED so the route can surface it and log when a
  * resolve freed zero missions (previously silent).
  */
@@ -804,14 +806,14 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
-      const outcome = await db.runTransaction(async (tx: any): Promise<SosResolveResult> => {
+      const outcome = await db.runTransaction(async (tx: AdminTransaction): Promise<SosResolveResult> => {
         const sosRef = db.collection("trappedSos").doc(sosId);
         const sosSnap = await tx.get(sosRef);
         if (!sosSnap.exists) return { status: "missing" };
-        tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
         const missionsSnap = await tx.get(db.collection("teamMissions").where("sosId", "==", sosId));
+        tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
         let missionsCleared = 0;
-        missionsSnap.forEach((docSnap: any) => {
+        missionsSnap.forEach((docSnap) => {
           tx.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
           missionsCleared += 1;
         });
@@ -825,15 +827,18 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
       return outcome;
     }
 
-    const { collection, doc, query, runTransaction, where } = await loadClientSdk();
-    const outcome = await runTransaction(db, async (tx: any): Promise<SosResolveResult> => {
+    const { collection, doc, getDocs, query, runTransaction, where } = await loadClientSdk();
+    // Client Transaction.get accepts only DocumentReference values. Like the
+    // linked-staff query in deleteUnitIfUnlinked, this pre-read is not atomic
+    // with the transaction writes: a concurrently added mission can be missed.
+    const missionsSnap = await getDocs(query(collection(db, "teamMissions"), where("sosId", "==", sosId)));
+    const outcome = await runTransaction(db, async (tx: ClientTransaction): Promise<SosResolveResult> => {
       const sosRef = doc(db, "trappedSos", sosId);
       const sosSnap = await tx.get(sosRef);
       if (!sosSnap.exists()) return { status: "missing" };
       tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
-      const missionsSnap = await tx.get(query(collection(db, "teamMissions"), where("sosId", "==", sosId)));
       let missionsCleared = 0;
-      missionsSnap.forEach((docSnap: any) => {
+      missionsSnap.forEach((docSnap) => {
         tx.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
         missionsCleared += 1;
       });
