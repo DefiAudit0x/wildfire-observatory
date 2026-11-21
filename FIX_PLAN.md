@@ -1076,3 +1076,35 @@ All **three new tests fail** against the original route. The no-key control insi
 Deviations: resumed the already-existing clean requested branch at the exact fetched base; the sandbox required scoped approval for work-clone fetch/writes because it lies outside the default writable roots. E2E remains environment-blocked by missing Java. No implementation scope expansion.
 
 Remaining for **PR #143**: reviewer verification, **push, PR creation, CI watch, and merge**. This round commits locally only.
+
+## Fix 13d — fresh duplicate-path SOS idempotency lookup
+
+Continued on `fix/wildfire-13c-sos-duplicate-replay` at the fetched authoritative head **d61d2741c806bf3af4da66c26b0c271621231356**. The branch was fetched and checked out at that exact commit before editing. No dependencies were installed, and no changes were made to the owner's clone or frozen dissection evidence.
+
+### Targeted changes
+
+- `server/routes/sos.ts`: thread `fresh = false` through `lookupSosByIdempotencyKey` and pass it to both `docGet` calls (idempotency key and stored SOS). The early replay path keeps the default cached read and the memory-first check. Only the post-admission duplicate branch passes `true`, bypassing cached negative results for both documents.
+- `tests/sos-resolution-availability.test.ts`: extend the Firestore fake to record Admin document reads. The tests invoke the actual `docGet` and route functions, so `docGet`'s production 60-second negative cache is exercised rather than reimplemented in a fake. Add two regressions: a missing key is cached before a separate admission commit writes the first SOS and key; and an existing key's missing SOS document is cached before another instance makes the SOS and admission visible. Both then hit real duplicate admission and assert the original `{id, status}` replay. Read counts and repeated default `docGet` calls prove cached misses are served without a Firestore read, while duplicate-path reads reach Firestore again. Existing Fix 13c race, ownership, and failure cases remain unchanged.
+- `FIX_PLAN.md`: record the fix, cache behavior, regression proof, and verification.
+
+### Fail-without-fix evidence
+
+With the new tests unchanged, temporarily replaced **only** `server/routes/sos.ts` with `git show HEAD:server/routes/sos.ts`, ran each regression separately, then restored and byte-verified the fixed source in a Python `finally` block. Both test commands exited **1** at `d61d274`; each expected a 200 replay and received the generic 409:
+
+| Regression | Result on unfixed `d61d274` | Result with Fix 13d |
+| --- | --- | --- |
+| Missing key cached before another admission commits the original SOS and ledger record | `expected 409 to be 200`; `/tmp/fix13d-unfixed-key.log` | 200 with the exact original `{id, status}`; passes |
+| Existing key resolves, but its missing SOS document is cached before another instance commits it | `expected 409 to be 200`; `/tmp/fix13d-unfixed-sos.log` | 200 with the exact original `{id, status}`; passes |
+
+The fixed route's targeted suite passed **13/13**, including both regressions and all existing 13c cases. The affected suites (`sos-resolution-availability`, `atomicity`, and `sos`) passed **87/87**. The fake only substitutes Firestore/network behavior; the Express route, admission helper, idempotency lookup, and `docGet` cache remain real. No real Firestore database was used.
+
+### Verification
+
+- `npm run lint`: passed, no TypeScript diagnostics.
+- `npm run build`: passed; Vite production assets and bundled server generated.
+- Full `npm run test:server`: **855/855 passed**, 81 files (`/tmp/fix13d-test-server.log`).
+- Full `npm run test:react`: an initial parallel run timed out one unrelated safe-zones stale-cache test (**1,017 passed, 1 failed**). The case passed alone (**1/1**), and a full retry with `--maxWorkers=2` passed **1,018/1,018**, 90 files.
+- `npm run test:e2e`: port 3000 was clear; Firebase emulator startup exited **2** before Playwright because Java is unavailable (`Could not spawn java -version`).
+- `git diff --check`: passed before commit.
+
+No scope deviations. All work remains local; no push, PR creation, or merge performed. Remaining for **PR #143**: push this commit, re-watch CI/review, and merge.
