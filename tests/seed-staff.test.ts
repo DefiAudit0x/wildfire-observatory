@@ -18,12 +18,13 @@ vi.mock("../server/firebase.js", () => ({
         state.reads(reference.key);
         if (reference.collection === state.target) {
           if (state.mode === "read-failure") throw new Error("read failed");
-          state.store.set(reference.key, { ...state.original });
+          if (state.mode === "concurrent") state.store.set(reference.key, { ...state.original });
         }
         const data = state.store.get(reference.key);
         return { exists: !!data, data: () => data };
       },
       create: (reference: ReturnType<typeof ref>, data: Record<string, unknown>) => {
+        if (reference.collection === state.target && state.mode === "write-failure") throw new Error("write failed");
         if (state.store.has(reference.key)) throw new Error("already exists");
         state.writes(reference.key); state.store.set(reference.key, data);
       },
@@ -72,5 +73,27 @@ describe("SEED-2 never replaces existing records", () => {
     expect(state.store.get(key)).toEqual(state.original);
     expect(state.writes).not.toHaveBeenCalledWith(key);
     if (mode === "read-failure") expect(process.exit).toHaveBeenCalledWith(1);
+  });
+});
+
+describe("SEED-1 persistence failures", () => {
+  it.each([["units", "read-failure"], ["users", "read-failure"], ["units", "write-failure"], ["users", "write-failure"]])("exits unsuccessfully when %s persistence has %s", async (collection, mode) => {
+    state.target = collection; state.mode = mode;
+    await import("../scripts/seed-staff.js");
+    await vi.waitFor(() => expect(process.exit).toHaveBeenCalledWith(1));
+    expect(console.error).toHaveBeenCalled();
+    const output = vi.mocked(console.log).mock.calls.flat().join("\n");
+    expect(output).not.toContain(collection === "units" ? "Unit created:" : "User created:");
+    expect(output).not.toContain("Seed finished.");
+    expect(output).not.toContain("Login via");
+  });
+  it("succeeds when both records already exist", async () => {
+    state.target = "none"; state.mode = "concurrent";
+    state.store.set("units/unit-dz16", { code: "DZ16" });
+    state.store.set("users/cmd-dz16", { ...state.original });
+    await import("../scripts/seed-staff.js");
+    await vi.waitFor(() => expect(console.log).toHaveBeenCalledWith(expect.stringContaining("Seed finished.")));
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(state.writes).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,8 @@ import logger from "./logger.js";
 import { stripUndefinedDeep } from "./clean.js";
 import { secretFingerprint } from "./crypto.js";
 import { invalidateCollectionCache, invalidateDocCache } from "./fs.js";
+import type { Transaction as AdminTransaction } from "firebase-admin/firestore";
+import type { Transaction as ClientTransaction } from "firebase/firestore";
 
 export type AtomicCreateResult = "created" | "exists" | "unavailable";
 
@@ -51,36 +53,44 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      const result = await db.runTransaction(async (tx: any): Promise<UnitUserCreateResult> => {
+      const result = await db.runTransaction(async (tx: AdminTransaction): Promise<UnitUserCreateResult> => {
         const unitRef = db.collection("units").doc(unitId);
         const userRef = db.collection("users").doc(userId);
         const unit = await tx.get(unitRef);
         if (!unit.exists) return "unit-missing";
         const existing = await tx.get(userRef);
         if (existing.exists) return "exists";
-        tx.create(userRef, stripUndefinedDeep(data));
+        tx.create(userRef, stripUndefinedDeep({ ...data, linkedStaffCounted: true }));
+        const { FieldValue } = await import("firebase-admin/firestore");
+        tx.update(unitRef, { linkedStaffCount: FieldValue.increment(1) });
         return "created";
       });
       if (result === "created") {
         invalidateDocCache("users", userId);
         invalidateCollectionCache("users");
+        invalidateDocCache("units", unitId);
+        invalidateCollectionCache("units");
       }
       return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    const result = await runTransaction(db, async (tx: any): Promise<UnitUserCreateResult> => {
+    const result = await runTransaction(db, async (tx: ClientTransaction): Promise<UnitUserCreateResult> => {
       const unitRef = doc(db, "units", unitId);
       const userRef = doc(db, "users", userId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "unit-missing";
       const existing = await tx.get(userRef);
       if (existing.exists()) return "exists";
-      tx.set(userRef, stripUndefinedDeep(data));
+      tx.set(userRef, stripUndefinedDeep({ ...data, linkedStaffCounted: true }));
+      const { increment } = await import("firebase/firestore");
+      tx.update(unitRef, { linkedStaffCount: increment(1) });
       return "created";
     });
     if (result === "created") {
       invalidateDocCache("users", userId);
       invalidateCollectionCache("users");
+      invalidateDocCache("units", unitId);
+      invalidateCollectionCache("units");
     }
     return result;
   } catch (err) {
@@ -91,17 +101,26 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
 
 export type UnitDeleteResult = "deleted" | "missing" | "has-users" | "unavailable";
 
+function unitDocumentId(unitId: string): string {
+  const code = unitId.replace(/^unit-/i, "").toLowerCase();
+  return `unit-${code}`;
+}
+
 export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteResult> {
   const db = getDb();
   if (!db) return "unavailable";
   try {
+    const identities = [unitId, unitId.replace(/^unit-/, "").toUpperCase()];
     if (isAdminDb(db)) {
       const result = await db.runTransaction(async (tx: any): Promise<UnitDeleteResult> => {
         const unitRef = db.collection("units").doc(unitId);
         const unit = await tx.get(unitRef);
         if (!unit.exists) return "missing";
-        const users = await tx.get(db.collection("users").where("unitId", "==", unitId).limit(1));
-        if (!users.empty) return "has-users";
+        if (((unit.data() || {}).linkedStaffCount ?? 0) > 0) return "has-users";
+        for (const identity of identities) {
+          const users = await tx.get(db.collection("users").where("unitId", "==", identity).limit(1));
+          if (!users.empty) return "has-users";
+        }
         tx.delete(unitRef);
         return "deleted";
       });
@@ -111,13 +130,21 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
       }
       return result;
     }
-    const { collection, doc, limit, query, runTransaction, where } = await import("firebase/firestore");
+    const { collection, doc, getDocs, limit, query, runTransaction, where } = await import("firebase/firestore");
+    // The client SDK's Transaction.get accepts only DocumentReference values
+    // (firebase ^12.18.0; a Query throws INVALID_ARGUMENT), so the linked-staff
+    // query runs outside the transaction. The in-transaction marker read below
+    // closes the create-after-query race; the query still protects legacy staff
+    // whose unit has no marker yet.
+    for (const identity of identities) {
+      const users = await getDocs(query(collection(db, "users"), where("unitId", "==", identity), limit(1)));
+      if (!users.empty) return "has-users";
+    }
     const result = await runTransaction(db, async (tx: any): Promise<UnitDeleteResult> => {
       const unitRef = doc(db, "units", unitId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "missing";
-      const users = await tx.get(query(collection(db, "users"), where("unitId", "==", unitId), limit(1)));
-      if (!users.empty) return "has-users";
+      if (((unit.data() || {}).linkedStaffCount ?? 0) > 0) return "has-users";
       tx.delete(unitRef);
       return "deleted";
     });
@@ -131,6 +158,69 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
     return "unavailable";
   }
 }
+
+export type UserDeleteAtomicResult = "deleted" | "not-found" | "unavailable";
+
+/** Delete a staff doc and release its counted unit link in the same transaction. */
+export async function deleteUserAtomically(userId: string): Promise<UserDeleteAtomicResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  try {
+    let linkedUnitId: string | null = null;
+    const result = isAdminDb(db)
+      ? await (async () => {
+          const { FieldValue } = await import("firebase-admin/firestore");
+          return db.runTransaction(async (tx: AdminTransaction): Promise<UserDeleteAtomicResult> => {
+            const userRef = db.collection("users").doc(userId);
+            const user = await tx.get(userRef);
+            if (!user.exists) return "not-found";
+            const data = user.data() || {};
+            const unitRef = typeof data.unitId === "string" && data.linkedStaffCounted === true
+              ? db.collection("units").doc(unitDocumentId(data.unitId))
+              : null;
+            if (unitRef) {
+              linkedUnitId = unitDocumentId(data.unitId);
+            }
+            const unit = unitRef ? await tx.get(unitRef) : null;
+            tx.delete(userRef);
+            if (unitRef && unit?.exists) tx.update(unitRef, { linkedStaffCount: FieldValue.increment(-1) });
+            return "deleted";
+          });
+        })()
+      : await (async () => {
+          const { doc, increment, runTransaction } = await import("firebase/firestore");
+          return runTransaction(db, async (tx: ClientTransaction): Promise<UserDeleteAtomicResult> => {
+            const userRef = doc(db, "users", userId);
+            const user = await tx.get(userRef);
+            if (!user.exists()) return "not-found";
+            const data = user.data() || {};
+            const unitRef = typeof data.unitId === "string" && data.linkedStaffCounted === true
+              ? doc(db, "units", unitDocumentId(data.unitId))
+              : null;
+            if (unitRef) {
+              linkedUnitId = unitDocumentId(data.unitId);
+            }
+            const unit = unitRef ? await tx.get(unitRef) : null;
+            tx.delete(userRef);
+            if (unitRef && unit?.exists()) tx.update(unitRef, { linkedStaffCount: increment(-1) });
+            return "deleted";
+          });
+        })();
+    if (result === "deleted") {
+      invalidateDocCache("users", userId);
+      invalidateCollectionCache("users");
+      if (linkedUnitId) {
+        invalidateDocCache("units", linkedUnitId);
+        invalidateCollectionCache("units");
+      }
+    }
+    return result;
+  } catch (err) {
+    logger.error({ err, userId }, "Atomic user deletion failed");
+    return "unavailable";
+  }
+}
+
 
 export async function getFreshDoc(collectionName: string, id: string): Promise<any | null> {
   const db = getDb();
