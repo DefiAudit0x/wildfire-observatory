@@ -23,6 +23,7 @@ import {
 export interface UseObservatoryPollResult {
   reports: Report[];
   satellites: SatelliteHotspot[];
+  satellitesPartial: boolean;
   wilayas: WilayaStatus[];
   sosCalls: TrappedSOS[];
   notifications: Notification[];
@@ -58,6 +59,7 @@ async function isDeviceMismatch(res: Response): Promise<boolean> {
 
 export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   const [reports, setReports] = useState<Report[]>([]);
+  const [satellitesPartial, setSatellitesPartial] = useState(false);
   const [satellites, setSatellites] = useState<SatelliteHotspot[]>([]);
   const [wilayas, setWilayas] = useState<WilayaStatus[]>([]);
   const [sosCalls, setSosCalls] = useState<TrappedSOS[]>([]);
@@ -132,7 +134,23 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
       } catch {
         return { ok: false, reason: "transport" };
       }
-      if (!res.ok) return { ok: false, reason: "http" };
+      if (!res.ok) {
+        if (key === "satellites" && res.status === 503) {
+          try {
+            const body: unknown = await res.json();
+            if (body && typeof body === "object" && "hotspots" in body) {
+              const validated = validateDataset("satellites", body.hotspots);
+              if (cycle === cycleRef.current && mountedRef.current) {
+                applyDataset(key, validated);
+                setSatellitesPartial(true);
+              }
+            }
+          } catch {
+            // Missing, unreadable or invalid partial data preserves the prior dataset.
+          }
+        }
+        return { ok: false, reason: "http" };
+      }
 
       let data: unknown;
       try {
@@ -146,7 +164,10 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
         // invalid payload fails this source only and preserves its prior
         // state — it can never blank reports/SOS from the UI.
         const validated = validateDataset(key, data);
-        if (cycle === cycleRef.current && mountedRef.current) applyDataset(key, validated);
+        if (cycle === cycleRef.current && mountedRef.current) {
+          applyDataset(key, validated);
+          if (key === "satellites") setSatellitesPartial(false);
+        }
         return { ok: true, data: validated };
       } catch {
         return { ok: false, reason: "schema" };
@@ -423,6 +444,7 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
   return {
     reports,
     satellites,
+    satellitesPartial,
     wilayas,
     sosCalls,
     notifications,
