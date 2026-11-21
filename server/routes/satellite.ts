@@ -8,13 +8,15 @@ const router = Router();
 
 const NORTH_AFRICA_BBOX = { minLat: 18, maxLat: 38, minLng: -17, maxLng: 25 };
 const CACHE_TTL_MS = 10 * 60 * 1000;
-let cachedHotspots: SatelliteHotspot[] | null = null;
+let cachedHotspots: SatelliteData | null = null;
 let cacheTimestamp = 0;
 
 type SourceStatus = "ok" | "unavailable";
+type SatelliteData = { hotspots: SatelliteHotspot[]; sources: Record<string, SourceStatus> };
+const SATELLITE_UNAVAILABLE_MESSAGE = "Satellite data is currently unavailable";
 export class SatelliteUnavailableError extends Error {
   constructor(readonly sources: Record<string, SourceStatus>) {
-    super("Satellite data is currently unavailable");
+    super(SATELLITE_UNAVAILABLE_MESSAGE);
   }
 }
 type FirmsResult = { status: "ok"; data: SatelliteHotspot[] } | { status: "unavailable" };
@@ -95,7 +97,7 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
   }
 }
 
-export async function getLiveSatelliteData() {
+export async function getLiveSatelliteData(): Promise<SatelliteData> {
   const now = Date.now();
   if (cachedHotspots && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedHotspots;
@@ -110,9 +112,7 @@ export async function getLiveSatelliteData() {
     sourceStatuses[source] = result.status;
     if (result.status === "ok") hotspots = hotspots.concat(result.data);
   }
-  // An incomplete observation must not replace a previously healthy dataset.
-  // Keep the successful array contract; failures carry per-source status in 503.
-  if (Object.values(sourceStatuses).some((status) => status !== "ok")) {
+  if (Object.values(sourceStatuses).every((status) => status === "unavailable")) {
     throw new SatelliteUnavailableError(sourceStatuses);
   }
 
@@ -131,19 +131,25 @@ export async function getLiveSatelliteData() {
         existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
       }
     }
-    cachedHotspots = unique;
-    cacheTimestamp = now;
-    return unique;
+    const data = { hotspots: unique, sources: sourceStatuses };
+    // An incomplete observation must not replace a previously healthy dataset.
+    if (Object.values(sourceStatuses).every((status) => status === "ok")) {
+      cachedHotspots = data;
+      cacheTimestamp = now;
+    }
+    return data;
   }
 
-  // Both sources succeeded: an empty sky is a valid observation.
-  return [];
+  return { hotspots: [], sources: sourceStatuses };
 }
 
 router.get("/", async (_req: Request, res: Response) => {
   try {
-    const data = await getLiveSatelliteData();
-    res.json(data);
+    const { hotspots, sources } = await getLiveSatelliteData();
+    if (Object.values(sources).some((status) => status !== "ok")) {
+      return res.status(503).json({ error: SATELLITE_UNAVAILABLE_MESSAGE, sources });
+    }
+    res.json(hotspots);
   } catch (err) {
     if (!(err instanceof SatelliteUnavailableError)) throw err;
     res.status(503).json({ error: err.message, sources: err.sources });
