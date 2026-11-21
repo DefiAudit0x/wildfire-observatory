@@ -95,13 +95,16 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
   const db = getDb();
   if (!db) return "unavailable";
   try {
+    const identities = [unitId, unitId.replace(/^unit-/, "").toUpperCase()];
     if (isAdminDb(db)) {
       const result = await db.runTransaction(async (tx: any): Promise<UnitDeleteResult> => {
         const unitRef = db.collection("units").doc(unitId);
         const unit = await tx.get(unitRef);
         if (!unit.exists) return "missing";
-        const users = await tx.get(db.collection("users").where("unitId", "==", unitId).limit(1));
-        if (!users.empty) return "has-users";
+        for (const identity of identities) {
+          const users = await tx.get(db.collection("users").where("unitId", "==", identity).limit(1));
+          if (!users.empty) return "has-users";
+        }
         tx.delete(unitRef);
         return "deleted";
       });
@@ -111,13 +114,21 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
       }
       return result;
     }
-    const { collection, doc, limit, query, runTransaction, where } = await import("firebase/firestore");
+    const { collection, doc, getDocs, limit, query, runTransaction, where } = await import("firebase/firestore");
+    // The client SDK's Transaction.get accepts only DocumentReference values
+    // (firebase ^12.18.0; a Query throws INVALID_ARGUMENT), so the linked-staff
+    // check runs outside the transaction via getDocs. Trade-off: the check is
+    // no longer atomic with the delete on the client path — a user created
+    // between the check and the delete could leave a dangling unit reference.
+    // The Admin path above keeps the atomic in-transaction query check.
+    for (const identity of identities) {
+      const users = await getDocs(query(collection(db, "users"), where("unitId", "==", identity), limit(1)));
+      if (!users.empty) return "has-users";
+    }
     const result = await runTransaction(db, async (tx: any): Promise<UnitDeleteResult> => {
       const unitRef = doc(db, "units", unitId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "missing";
-      const users = await tx.get(query(collection(db, "users"), where("unitId", "==", unitId), limit(1)));
-      if (!users.empty) return "has-users";
       tx.delete(unitRef);
       return "deleted";
     });

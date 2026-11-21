@@ -764,3 +764,39 @@ Watch 1 on PR #139 (head d3535eb) returned DO NOT MERGE with one unresolved acti
 - Tests: the mock backend in `tests/cache-invalidation.test.ts` gains a `readGate` — reads take their snapshot BEFORE awaiting the gate, modelling a read that executed pre-write but whose response arrives post-invalidation (awaiting first would read post-write data and never exercise the race). Two new tests per SDK (collection + doc): start a gated read, write + invalidate while it is pending (asserting `reads === 1` proves the read is genuinely in flight), release, assert the pending call returns its pre-write snapshot and the NEXT read returns the new value. The gate defaults to null, so the 26 existing tests are untouched.
 
 Files changed (3, +90/−7): `server/fs.ts` (+34/−4, generation map + bumps + guarded sets), `tests/cache-invalidation.test.ts` (+46/−3, `readGate` in the mock + 4 tests), `FIX_PLAN.md` (+10, this section). Verification: lint 0 diagnostics; build pass; affected 2 files / 34 passed (30 cache-invalidation + 4 seed-staff); full server suite 720 passed (Fix 10 baseline 716 + 4 new); React suite 835 passed (831 + 4 — the new `.test.ts` files re-run under jsdom). Fail-without-fix proven by stashing `server/fs.ts`: 4 failed / 26 passed — exactly the 4 new 10b tests, both SDKs.
+## Fix 11 — ATM-1 + SEED-1 (2026-11-21)
+
+Base: `02bf5915834999ae39d35a8c69bb6f17c5c323ea`; branch `fix/wildfire-11-unit-identity`. Fetched origin; origin/main has since advanced to b031985, but this fix intentionally retains the requested pinned base. Local main now points to the pinned base too. No Fix 8/9/10 changes imported; no push, PR, or merge.
+
+### Changes
+
+- `server/atomic.ts`: both SDK deletion guards query the normalized document identity and the uppercase raw unit code before scheduling deletion. `DZ16` and `unit-dz16` therefore block deletion of `units/unit-dz16`. Document IDs and stored staff unitIds are unchanged.
+- `tests/unit-identity.test.ts`: real `deleteUnitIfUnlinked`, mocking only Firestore, tests both SDK paths with a unit document and raw-code/normalized-code staff linkage; verifies has-users and no scheduled delete, plus successful unlinked deletion (6 cases).
+- `tests/seed-staff.test.ts`: real seeder and real `createDocIfAbsent` receive backend read/write failures separately for units/users; four cases require exit(1), an error, no failed-record creation confirmation, and no completion/login instructions. Existing-record no-op remains successful (one additional case). Existing SEED-2 coverage retained.
+- `scripts/seed-staff.ts`: no change required. Fix 4 already checks both unavailable outcomes and throws into the terminal exit(1) handler. This is the SEED-1 production fix already present on main, explicitly documented in the Fix 4 section above.
+
+### Verification and regression proof
+
+- Targeted: `npm run test:server -- tests/unit-identity.test.ts tests/seed-staff.test.ts`: **15 passed**.
+- ATM-1 red proof: temporarily replaced only `server/atomic.ts` with HEAD/main's version, ran `tests/unit-identity.test.ts`, restored fixed file. **2 failed / 4 passed**: raw `DZ16` returned deleted instead of has-users in both SDK branches. Normalized guard and unlinked control cases passed, as expected. Log: `/tmp/fix11-atm-red.log`.
+- SEED-1 red proof: main already passes, so temporarily removed only the two existing unavailable-result throws from the seeder, ran `tests/seed-staff.test.ts`, then restored the byte-identical original. **6 failed / 3 passed**: all four new unit/user read/write failure cases failed their exit(1) assertions; two pre-existing SEED-2 read-failure assertions also caught the mutation. Existing-record success is a control case, not expected to fail. Log: `/tmp/fix11-seed-red.log`. This is a mutation proof against removal of Fix 4's existing SEED-1 fix, not a claim that current main has the seeder defect.
+- `npm run lint`: **passed**.
+- `npm run build`: **passed** (production assets and server bundle).
+- `npm run test:server`: **72 files, 701 tests passed**.
+- `npm run test:react`: **79 files, 849 tests passed**.
+- `npm run test:e2e`: attempted; **blocked before tests** because Firebase emulator cannot spawn `java -version` (Java unavailable). No dependency installation or environment repair attempted.
+- `git diff --check`: passed. Test/build logs in `/tmp/fix11-{targeted,lint,build,server,react,e2e}.log`.
+
+### Scope notes / next
+
+SEED-1 was already resolved by Fix 4; this round adds explicit regression coverage rather than reworking bootstrap. Fix 10 cache invalidation does not exist on this pinned main base; none of its calls were removed or changed. Full E2E validation remains outstanding due to Java.
+
+Fix 12: **AIG-1, AIG-2, SZM-2, SAT-1** — distinguish dataset outages from current observations (`server/routes/ai.ts`, `server/routes/safezones.ts`, `server/routes/satellite.ts`).
+
+## Fix 11b follow-up — CodeRabbit Major on PR #140 (verified, parent-implemented)
+
+CodeRabbit review 6004447276, comment 4651838147: the client branch of `deleteUnitIfUnlinked` passed a Query to `Transaction.get`. Verified against the installed SDK (firebase ^12.18.0): `Transaction.get(documentRef: DocumentReference)` takes DocumentReference only, and the runtime calls `validateReference` first, which throws INVALID_ARGUMENT for a Query — so on the client path the transaction threw and the outer catch returned `"unavailable"`: unit deletion via the client path could never succeed nor correctly report `"has-users"`. The pattern predated Fix 11 (main b031985 had the identical line); Fix 11 duplicated it inside the identity loop. The Admin branch is unaffected (Admin SDK `Transaction.get` accepts queries).
+
+Files changed (3, +30/−8): `server/atomic.ts` (+16/−5, the linked-staff check now runs before `runTransaction` via `getDocs(query(...))` for each identity; the transaction itself only reads the unit doc and deletes), `tests/unit-identity.test.ts` (+14/−3, the client-mode `runTransaction` mock now throws on non-DocumentReference `get` arguments like the real SDK, a `getDocs` mock was added, and the unlinked-deletion test seeds unrelated staff `["DZ17", "unit-dz17"]` so it can detect a guard that blocks deletion whenever any staff exist), `FIX_PLAN.md` (this section). Documented trade-off: the check is no longer atomic with the delete on the client path — a user created between the check and the delete could leave a dangling unit reference; the Admin path keeps the atomic in-transaction query check.
+
+Verification: lint 0 diagnostics; build pass; affected 2 files / 15 passed (unit-identity + seed-staff). Fail-without-fix proven by stashing only `server/atomic.ts`: exactly the 3 client-mode tests failed / 3 Admin tests passed — the tightened mock catches the Query-in-transaction bug on the unfixed code. Full suites on this branch tree (b031985 base + Fix 11 files, so Fix 8's tests are included): server 724 passed, React 875 passed, 0 failed.
