@@ -849,3 +849,53 @@ Ran the new test file against untouched production code at `b19a881` before impl
 Lint and the production build passed. The targeted server run passed 26/26, including all 17 unchanged dataset outage tests and all six unchanged history tests (including the total outage test).
 
 The full server suite passed 772/772 (78 files) and the full React suite passed 925/925 (86 files). The E2E command stopped before Playwright because Firebase could not run Java. No other verification deviations. Re-watch PR #141, then merge after #140.
+
+## Fix 12e — PR #141 review 6005067947: three Majors
+
+Continued locally from verified `e7540ed` on `fix/wildfire-12-dataset-outages`. No dependency installation, push, PR creation, merge, or edits to the owner's clone/dissection evidence.
+
+### Changes and contract
+
+- `server/routes/history.ts`: retain source availability from the real satellite helper; emit `hotspotsPartial: true` when one feed fails, including an empty healthy feed. Omit it on healthy responses and on total failure; only total failure emits `hotspotsUnavailable: true`. Healthy detections still count in buckets.
+- `src/components/StatisticsPanel.tsx`: read the partial history flag, keep satellite counts in bar heights/normalization, and annotate tooltips and footnotes in Arabic/French. Unavailable takes precedence if an inconsistent payload carries both flags.
+- `server/routes/satellite.ts`: satellite is CSV column 7 (`T`/`A` → MODIS; `N`/`N20`/`N21` → VIIRS; unknown → discard). Confidence is column 8 (`h`/`high` → 95, `l`/`low` → 45, finite numeric 0–100 preserved, other values → 80). Check the confidence header position to reject the old invented instrument-column layout rather than reinterpret it as valid data.
+- Official-column evidence supplied and independently verified by Muse/parent: NASA Earthdata's [MODIS/VIIRS NRT attributes](https://www.earthdata.nasa.gov/data/tools/firms/active-fire-data-attributes-modis-viirs) lists latitude, longitude, brightness, scan, track, acquisition date/time, satellite, confidence, version; there is no instrument column. This round attempted to retrieve that exact page but NASA returned HTTP 403; no claim of successful fresh retrieval. Repository-wide `rg` for FIRMS/CSV splitting confirms `satellite.ts` is the sole FIRMS parser. `worker/firms-proxy.js:125` forwards `upstream.body` unchanged, so direct and proxy paths share this parser.
+- **Deliberate 503 contract change:** partial outage now returns `503 { error, sources, hotspots }`, including retained deduplicated detections or `[]`; total outage still returns `503 { error, sources }` with no hotspots property. Healthy responses remain HTTP 200 arrays. `tests/dataset-outages.test.ts` corrects the real-format fixture and strengthens the partial assertion to require detections plus all four total-outage assertions to forbid hotspots. All original 17 cases remain; none is removed or changes its HTTP-status expectation.
+- `src/hooks/observatory/useObservatoryPoll.ts`: satellites-only HTTP 503 bodies can supply data exclusively through the existing `validateDataset("satellites", ...)` gate, subject to the existing cycle/mount guards. Missing/invalid bodies preserve data and partial state and remain HTTP failures. Applied partial data also remains an HTTP failure in dataset health, never advances last full refresh/last complete satellite success, and exposes `satellitesPartial`; validated healthy recovery clears it.
+- `src/hooks/useObservatoryData.ts`, `src/App.tsx`, `src/components/layout/MainContent.tsx`: carry that flag to a shared Arabic/French status banner above the content on every tab, covering map/statistics, home, radar, evacuation and command consumers without changing all their prop contracts.
+- Tests: `tests/satellite-partial.test.ts` corrects FIRMS fixtures and adds parser/mapping, history-flag, and partial-empty-route cases; `tests/components/statistics-panel-history.test.tsx` covers both languages and retained bar contributions; `tests/observatory-hooks.test.tsx` covers partial admission, degraded health, invalid-body preservation and recovery; new `tests/components/satellite-partial-banner.test.tsx` covers the shared warning/recovery in both languages. `FIX_PLAN.md` records this contract and evidence.
+
+### Fail-without-fix evidence
+
+Temporarily replaced all changed production files with `git show e7540ed:<path>`, kept the revised tests, ran the real functions under `npm run test:react`, and restored all files in a Python `finally` block. `/tmp/fix12e-unfixed.log`: **28 failed / 45 passed**, five files. No fixture/import failure:
+
+| Changed/new regression | Unfixed result |
+| --- | --- |
+| Ten official-column parser cases: T/0, A/100, N/high, N20/low, N21/nominal, T/h, A/l, T/72.5, T/101, T/-1 | Each expected one mapped hotspot, got `[]` |
+| Reject old instrument-column fixture plus unknown satellite | Expected `[]`, got the old invented MODIS hotspot |
+| Partial history with detections / empty healthy feed (two cases) | Each expected `hotspotsPartial: true`, received undefined |
+| Retained empty hotspots in partial route 503 | Expected `hotspots: []`, property absent |
+| Arabic/French partial history component (two cases) | Expected count plus partial suffix, got unmarked count |
+| Nonempty/empty partial poll admission and recovery (two cases) | Nonempty dataset discarded; partial flag undefined (empty case too) |
+| Preserve partial data on absent/null/malformed-item/non-array 503 bodies (four cases) | Cannot establish preceding partial dataset: flag undefined; fixed run also checks schema-gated preservation after that admission |
+| Arabic/French shared content banner and recovery (two cases) | No status banner rendered |
+| Revised pre-existing partial-detection fixture tests (three cases) | Real CSV detections dropped by helper, wilayas and history |
+| Revised 17-case suite's partial 503 contract case | Retained hotspots property absent |
+
+The two new healthy/total history controls pass at baseline by design: they ensure absence of `hotspotsPartial` and mutual exclusion with `hotspotsUnavailable`. Existing healthy history component control additionally forbids the partial footnote.
+
+To separate the history bug from the parser bug, restored **only** `history.ts` to `e7540ed` with the corrected parser retained and ran `npm run test:server -- tests/satellite-partial.test.ts -t history`: **three failed / two controls passed / 14 skipped**, all three failures specifically undefined `hotspotsPartial`. Evidence: `/tmp/fix12e-history-isolated.log`.
+
+To re-prove the original Fix 12 failures under the revised 503 contract, temporarily replaced only AI/safezones/satellite routes with `b580dfc518e792611419e3c6826a3c6e501d775f` versions and ran all 17 dataset-outage cases, restoring files in `finally`: **14 failed / three healthy controls passed**. Partial and total satellite cases still fail HTTP 503 expectations against the original 200 behavior. Evidence: `/tmp/fix12e-base-routes.log`.
+
+### Verification
+
+- Initial affected run: **77/77 passed**, five files, including **17/17 dataset-outage cases** (`/tmp/fix12e-affected.log`); shared-banner tests separately **2/2 passed** (`/tmp/fix12e-banner.log`).
+- Final `npm run lint`: passed, no diagnostics (`/tmp/fix12e-lint.log`). Final production `npm run build`: passed, Vite assets and bundled server (`/tmp/fix12e-build.log`).
+- Full `npm run test:server`: **788/788 passed**, 78 files (`/tmp/fix12e-server.log`), including **17/17 dataset-outage cases** under the revised contract.
+- Full `npm run test:react`: **951/951 passed**, 87 files (`/tmp/fix12e-react.log`), including the same 17 route cases under jsdom.
+- Removed an unnecessary SafetyGuides mock from the new banner test; real-component rerun **2/2 passed** (`/tmp/fix12e-banner.log`). Repeated the unfixed banner proof with only MainContent reverted: **2/2 failed** because the warning is absent (`/tmp/fix12e-banner-unfixed.log`); restored MainContent in `finally`.
+- `npm run test:e2e`: environment blocked before Playwright starts: Firebase cannot spawn `java -version` because Java is absent (`/tmp/fix12e-e2e.log`). No dependencies installed or unrelated servers stopped. This is the same environment limitation recorded for previous rounds.
+- `git diff --check`: passed. No production-scope deviations. The header-position check is necessary to reject the old wrong-format fixture explicitly; a shared content banner is the smallest UI surface covering every satellite-data view. Existing cache/deduplication policies and HTTP 503-versus-200 distinction are preserved.
+
+Remaining for PR #141: **Muse re-watch, then merge only after FIX_PLAN.md reconciliation against main `0462a23`**. This round commits locally only; no push, new PR, or merge.
