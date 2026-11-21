@@ -380,6 +380,28 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
     return;
   }
 
+  // F4: a retried submission (same clientGeneratedId) replays the FIRST
+  // stored SOS — checked before context and admission, so a retry after the
+  // 5-minute deviceId dedup window still returns the original, never a dupe.
+  if (data.clientGeneratedId) {
+    try {
+      const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId);
+      if (replay) {
+        if (replay.deviceId !== data.deviceId) {
+          res.status(409).json({ error: "SOS retry key belongs to a different device" });
+          return;
+        }
+        logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
+        res.json({ id: replay.id, status: replay.status });
+        return;
+      }
+    } catch (err) {
+      // Ledger lookup failure must NEVER block an emergency call — fall
+      // through to admission (worst case: the old duplicate behavior).
+      logger.error({ err }, "SOS idempotency lookup failed; admitting without replay");
+    }
+  }
+
   // Context: nearest active fire (non-blocking — never prevent an SOS).
   // IMPORTANT: proximity to a fire corroborates the caller's claim; it is NOT
   // verification that the person is actually trapped. The field is named
@@ -423,28 +445,6 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   const audioDuration = data.audioDuration != null
     ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
     : undefined;
-
-  // F4: a retried submission (same clientGeneratedId) replays the FIRST
-  // stored SOS — checked before the admission window, so a retry after the
-  // 5-minute deviceId dedup window still returns the original, never a dupe.
-  if (data.clientGeneratedId) {
-    try {
-      const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId);
-      if (replay) {
-        if (replay.deviceId !== data.deviceId) {
-          res.status(409).json({ error: "SOS retry key belongs to a different device" });
-          return;
-        }
-        logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
-        res.json({ id: replay.id, status: replay.status });
-        return;
-      }
-    } catch (err) {
-      // Ledger lookup failure must NEVER block an emergency call — fall
-      // through to admission (worst case: the old duplicate behavior).
-      logger.error({ err }, "SOS idempotency lookup failed; admitting without replay");
-    }
-  }
 
   const newSos: any = {
     id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
