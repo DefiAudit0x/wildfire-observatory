@@ -257,12 +257,12 @@ export default function MainContent({
                           <div>
                             <div className="flex items-center gap-1.5 flex-wrap">
                               <h4 className="font-bold text-xs text-slate-200">{rep.locationName}</h4>
-                              {rep.reporterType === "official" && (
+                              {rep.status === "verified" && rep.reporterType === "official" && (
                                 <span className="bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] px-1.5 py-0.5 rounded font-black">
                                   🛡️ {isArabic ? "جهة رسمية" : "Officiel"}
                                 </span>
                               )}
-                              {rep.reporterType === "volunteer" && (
+                              {rep.status === "verified" && rep.reporterType === "volunteer" && (
                                 <span className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[9px] px-1.5 py-0.5 rounded font-bold">
                                   💚 {isArabic ? "متطوع" : "Bénévole"}
                                 </span>

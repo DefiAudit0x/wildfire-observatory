@@ -17,6 +17,7 @@ import { meshHub, MESH_PATH } from "./mesh.js";
 import { liveHub, LIVE_PATH } from "./live.js";
 import { createMeshToken } from "./mesh-auth.js";
 import { getPublicPrincipal, issuePublicPrincipal } from "./public-principal.js";
+import { createProductionAssetsRouter } from "./assets.js";
 
 import { healthHandler } from "./routes/health.js";
 import { publicConfigHandler } from "./routes/public-config.js";
@@ -184,25 +185,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), "dist");
-    // The server bundle and its source map share dist/ with Vite's public
-    // assets. Never let express.static publish these backend implementation
-    // files to anonymous clients.
-    app.use((req, res, next) => {
-      if (/^\/server\.cjs(?:\.map)?$/i.test(req.path)) {
-        res.status(404).json({ error: "Not found" });
-        return;
-      }
-      next();
-    });
-    app.use(express.static(distPath));
-    app.get("/assets/*splat", (req, res) => {
-      const assetPath = req.path.slice("/assets/".length);
-      res.sendFile(assetPath, { root: distPath }, (err) => {
-        if (!err || res.headersSent) return;
-        logger.warn({ path: req.path, err: err.message }, "Asset not found");
-        res.status(404).json({ error: "Asset not found" });
-      });
-    });
+    app.use(createProductionAssetsRouter(distPath));
     app.get("/*splat", (req, res) => {
       if (req.path.startsWith("/api/")) return res.status(404).json({ error: "Not found" });
       res.sendFile("index.html", { root: distPath });
