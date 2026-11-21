@@ -4,7 +4,7 @@ import { z } from "zod";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import logger from "../logger.js";
 import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache, removeTeamMemberAtomically } from "../fs.js";
-import { joinTeamAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
+import { joinTeamAtomically, rotateTeamJoinCodeAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { getPublicPrincipal, issuePublicPrincipal, renewPublicPrincipal } from "../public-principal.js";
 import { createTeamMemberToken, isTokenGenerationStale, teamTokenFromRequest } from "../teamAuth.js";
@@ -345,27 +345,12 @@ router.post("/:id/join-code", requireAdmin, async (req: Request, res: Response) 
   const code = generateJoinCode();
   const expiresAt = now + ttlHours * 60 * 60 * 1000;
 
-  const existing = (await collectionGet("teamJoinCodes")) || [];
-  // Phase 3 (Round-C passenger): the codes collection was grow-only — expired
-  // and revoked docs accumulated forever. Minting already scans the whole
-  // collection for rotation; the same pass now sweeps docs that died more
-  // than 7 days ago. Deletion is safe for redemption: the join reads by doc
-  // id and reports 404 for anything absent.
-  const staleCutoff = now - 7 * 24 * 60 * 60 * 1000;
-  for (const old of existing) {
-    const id = typeof (old?.code || old?.id) === "string" ? old.code || old.id : "";
-    if (!id) continue;
-    const dead = old?.revoked === true || Number(old?.expiresAt ?? 0) < now;
-    const deadSince = Number(old?.revokedAt ?? old?.expiresAt ?? 0);
-    if (dead && deadSince > 0 && deadSince < staleCutoff) {
-      await docDelete("teamJoinCodes", id);
-      continue;
-    }
-    if (old?.teamId === teamId && old?.revoked !== true) {
-      await docUpdate("teamJoinCodes", id, { revoked: true, revokedAt: now });
-    }
+  const existing = await collectionGet("teamJoinCodes", undefined, undefined, true);
+  if (!existing) {
+    res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable" });
+    return;
   }
-  const stored = await docSet("teamJoinCodes", code, {
+  const rotation = await rotateTeamJoinCodeAtomically(teamId, code, {
     code,
     teamId,
     createdAt: now,
@@ -374,8 +359,14 @@ router.post("/:id/join-code", requireAdmin, async (req: Request, res: Response) 
     uses: 0,
     revoked: false,
     createdBy: (req as any).admin?.agentId || "admin",
-  });
-  if (!stored) {
+  }, existing.map((row) => ({
+    id: typeof (row?.code || row?.id) === "string" ? row.code || row.id : "",
+  })).filter((row) => row.id));
+  if (rotation === "team-missing") {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  if (rotation !== "rotated") {
     res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable" });
     return;
   }
@@ -561,7 +552,7 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     fixTimeMs: fixTimeMs ?? null,
     now,
   });
-  snapshotIfDue(token.memberId, token.teamId, now);
+  snapshotIfDue(token.memberId, token.teamId, now, Number(member.tokenGen) || 0);
 
   const mission = activeMissionOf(await docGet("teamMissions", token.teamId));
   res.json({ ok: true, serverTime: now, heartbeatIntervalMs: 15_000, mission });
@@ -649,7 +640,11 @@ router.post("/leave", async (req: Request, res: Response) => {
     res.status(403).json({ code: "MEMBER_REVOKED", error: "Membership token has been revoked" });
     return;
   }
-  await docUpdate("teamMembers", token.memberId, { active: false, leftAt: Date.now() });
+  const deactivated = await docUpdate("teamMembers", token.memberId, { active: false, leftAt: Date.now() });
+  if (!deactivated) {
+    res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable" });
+    return;
+  }
   removeMember(token.memberId);
   res.json({ ok: true });
 });
@@ -692,6 +687,7 @@ router.post("/mission/phase", phaseLimiter, async (req: Request, res: Response) 
     res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
     return;
   }
+  const expectedMission = activeMissionOf(await docGet("teamMissions", token.teamId));
   // Phase 3 — evidence-verified arrival. When the request carries a GPS fix,
   // the SERVER checks the geometry before flipping (the member's device is
   // never the sole authority on arrival):
@@ -712,7 +708,7 @@ router.post("/mission/phase", phaseLimiter, async (req: Request, res: Response) 
       res.status(400).json({ code: "ARRIVAL_OUT_OF_COVERAGE", error: "Coordinates are outside the coverage area" });
       return;
     }
-    const target = activeMissionOf(await docGet("teamMissions", token.teamId));
+    const target = expectedMission;
     if (target && target.sosLat !== null && target.sosLng !== null) {
       const distanceM = getHaversineDistance(evidenceLat, evidenceLng, target.sosLat, target.sosLng) * 1000;
       if (distanceM > ARRIVAL_RADIUS_M) {
@@ -744,9 +740,15 @@ router.post("/mission/phase", phaseLimiter, async (req: Request, res: Response) 
     }
   }
 
-  const result = await setMissionPhaseAtomically(token.teamId, parsed.data.phase);
+  const result = await setMissionPhaseAtomically(token.teamId, parsed.data.phase, expectedMission
+    ? { sosId: expectedMission.sosId, since: expectedMission.since }
+    : null);
   if (result.status === "no-active-mission") {
     res.status(409).json({ code: "NO_ACTIVE_MISSION", error: "No active mission for this team" });
+    return;
+  }
+  if (result.status === "stale-mission") {
+    res.status(409).json({ code: "MISSION_CHANGED", error: "Mission changed before arrival was recorded" });
     return;
   }
   if (result.status !== "updated") {
