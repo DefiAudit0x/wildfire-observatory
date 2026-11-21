@@ -76,6 +76,10 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
       get: async (ref: any) => ref.__query
         ? queryRef(ref.__col, ref.__filter).get()
         : { exists: existing[ref.__path] !== undefined, data: () => existing[ref.__path], id: ref.__path.split("/")[1] },
+      set: (ref: { __path: string }, data: DocData) => {
+        written[ref.__path] = data;
+        existing[ref.__path] = data;
+      },
       create: (ref: any, data: DocData) => {
         if (existing[ref.__path] !== undefined) throw new Error("doc already exists");
         written[ref.__path] = data;
