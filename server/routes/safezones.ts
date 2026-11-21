@@ -9,7 +9,12 @@ import logger from "../logger.js";
 const router = Router();
 
 const ZONES_CACHE_TTL_MS = 60 * 1000;
-let cachedZones: { data: any[]; expiresAt: number } | null = null;
+// Five existing 60-second TTLs is the absolute last-success age, not an
+// extension renewed by each failed refresh (centres may have been disabled).
+const ZONES_MAX_STALE_AGE_MS = 5 * ZONES_CACHE_TTL_MS;
+type ZonesData = NonNullable<Awaited<ReturnType<typeof collectionGet>>>;
+type ZonesResult = { data: ZonesData; stale: boolean; loadedAt: number };
+let cachedZones: { data: ZonesData; expiresAt: number; loadedAt: number } | null = null;
 
 const zoneSchema = z.object({
   nameAr: z.string().min(2).max(120),
@@ -21,21 +26,21 @@ const zoneSchema = z.object({
   isActive: z.boolean().default(true),
 });
 
-async function loadZones(): Promise<any[]> {
+async function loadZones(): Promise<ZonesResult> {
   const now = Date.now();
   // ARC-M07 fix: the cache used to live forever until an in-place write — zones
   // added by another instance (or directly in Firestore) never appeared, and a
   // failure snapshot froze the served list at whatever it happened to hold.
-  if (cachedZones && now < cachedZones.expiresAt) return cachedZones.data;
+  if (cachedZones && now < cachedZones.expiresAt) return { data: cachedZones.data, stale: false, loadedAt: cachedZones.loadedAt };
   try {
     const fromDb = await collectionGet("safeZones", "createdAt", 1000);
     if (fromDb === null) throw new Error("safe-zone database read unavailable");
-    cachedZones = { data: fromDb, expiresAt: now + ZONES_CACHE_TTL_MS };
-    return cachedZones.data;
+    cachedZones = { data: fromDb, expiresAt: now + ZONES_CACHE_TTL_MS, loadedAt: now };
+    return { data: cachedZones.data, stale: false, loadedAt: now };
   } catch (err) {
-    if (cachedZones) {
+    if (cachedZones && Date.now() - cachedZones.loadedAt <= ZONES_MAX_STALE_AGE_MS) {
       logger.warn({ err }, "Safe zones read failed — serving the stale cached copy");
-      return cachedZones.data;
+      return { data: cachedZones.data, stale: true, loadedAt: cachedZones.loadedAt };
     }
     logger.error({ err }, "Safe zones read failed");
     throw err;
@@ -45,7 +50,11 @@ async function loadZones(): Promise<any[]> {
 router.get("/", async (_req: Request, res: Response) => {
   try {
     const zones = await loadZones();
-    res.json(zones.filter((z: any) => z.isActive !== false));
+    if (zones.stale) {
+      res.setHeader("X-Data-Stale", "true");
+      res.setHeader("X-Data-Updated-At", new Date(zones.loadedAt).toISOString());
+    }
+    res.json(zones.data.filter((z: any) => z.isActive !== false));
   } catch {
     res.status(503).json({ error: "Safe-zone data is currently unavailable" });
   }
@@ -76,7 +85,7 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
   }
   const id = str(req.params.id);
   try {
-    const existing = (await loadZones()).find((z: any) => z.id === id);
+    const existing = (await loadZones()).data.find((z: any) => z.id === id);
     if (!existing) {
       res.status(404).json({ error: "Safe zone not found" });
       return;
@@ -105,7 +114,7 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
 router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
   const id = str(req.params.id);
   try {
-    const existing = (await loadZones()).find((z: any) => z.id === id);
+    const existing = (await loadZones()).data.find((z: any) => z.id === id);
     if (!existing) {
       res.status(404).json({ error: "Safe zone not found" });
       return;
