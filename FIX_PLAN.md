@@ -966,3 +966,71 @@ All **36 newly introduced/replacement parser/schema cases fail** at `02a5280` an
 - `git diff --check`: passed. Final diff is limited to five files: parser (+25/−13), partial/parser regressions (+71/−20), dataset fixtures (+3/−3), history fixture (+1/−1), and this Fix 12f plan section. No shared types, worker, client, dependencies, or other routes changed.
 
 Remaining for PR #141: **Muse re-watch, then merge**. No further FIX_PLAN reconciliation is needed: main `0462a23` is already an ancestor via merge `35b0539` (verified locally). No push, PR creation, or merge performed in this round.
+
+## Fix 13 — SOS-4 + FS-2: keep emergency intake and resolution available
+
+Work is local on `fix/wildfire-13-sos-resolution` in `/home/hatch/workspace/wildfire-fix`. `git fetch origin main` fetched and verified **251d8ef770997c8ce6da46d0cb820a7bccf2e050**. Resume check found the requested branch already checked out, clean, at exactly that main commit; continued there rather than recreating the branch. No Fix 12 branch was used as a base. No dependencies installed; no push, PR creation, or merge. The frozen evidence and owner's clone were not changed.
+
+### Targeted changes
+
+- `server/routes/sos.ts`: race the proximity report read against a request-local **3000 ms** timeout, matching the Fix 12 AI context pattern. Warn on timeout/failure, retain empty proximity context (`null` distance, false corroboration, unknown priority), then continue the original replay/admission path. Clear the timer in `finally`, including successful reads. No replay/admission logic changed; slow context never itself produces a 503.
+- `server/fs.ts`: Admin resolve reads the SOS and mission query before scheduling any updates. Client resolve uses `getDocs(query(...))` before `runTransaction`, whose only read is the SOS DocumentReference, then writes SOS and matching missions. Type the two affected callbacks with the existing SDK transaction imports. Document the SDK distinction in the helper comment.
+- **Client trade-off:** client `Transaction.get` accepts DocumentReference only, so, as in Fix 11b's `deleteUnitIfUnlinked`, the mission query is a pre-read outside the transaction. It is **not atomic with the writes** and can miss a mission added concurrently after the query. The Admin path retains its transactional query guarantee; this round does not claim that guarantee for the client path.
+- `tests/atomicity.test.ts`: strengthen the existing fake with a read-after-write rejection for every transaction read. No existing test assertions weakened or removed.
+- `tests/sos-resolution-availability.test.ts`: five new cases (three real-route intake/replay cases and one real-helper resolution case per SDK). Only Firestore handles/SDK calls are mocked: the actual Express router, `getReportsDbResult`, durable replay lookup, `createSosWithAdmission`, and `resolveSosAtomically` execute. The fake buffers writes until successful commit, rejects reads after writes, and rejects Query input to client `Transaction.get`. Exact event sequences prove query placement and write order; mission assertions check matching-only clearance.
+- `FIX_PLAN.md`: append this scope, trade-off, regression proof and verification record.
+- **FS-3 remains explicitly out of scope:** no individual `teamMissions/{teamId}` cache invalidation added. That Minor remains assigned to a later fix part.
+
+### Fail-without-fix proof
+
+Saved the exact fixed source bytes in Python memory, replaced **only** `server/routes/sos.ts` and `server/fs.ts` with `git show 251d8ef:<path>`, and ran:
+
+`npm run test:server -- tests/sos-resolution-availability.test.ts tests/atomicity.test.ts --reporter=verbose`
+
+A Python `finally` restored the exact fixed bytes before any later validation. Tests and the strengthened transaction fake remained unchanged. Baseline: **7 failed / 32 passed (39)**, exit **1**, `/tmp/fix13-unfixed.log`. Initial fixed run of the same two files: **39/39 passed**, exit **0**; final affected run also includes `tests/sos.test.ts`, **79/79 passed**, exit **0**, `/tmp/fix13-affected.log`.
+
+| New regression case | At main `251d8ef` | With Fix 13 |
+| --- | --- | --- |
+| Located SOS with never-settling Firestore report read | HTTP request exceeds the explicit 4500 ms test deadline; no admission | 200 after the 3000 ms context deadline, elapsed <4000 ms; actual durable SOS active; null/false/unknown proximity; warning contains timeout error |
+| Context arriving in time, followed by another request with a hanging read | The 100 ms context control applies critical/zero-distance/corroborated values, but the second request exceeds 4500 ms | First response and durable record retain applied context; after report-cache invalidation the next request independently times out its context and admits with unknown priority |
+| Durable idempotent replay with hanging report read | Exceeds 4500 ms before replay lookup can complete | 200 with exactly the original id/status; no transaction/admission and no extra stored documents |
+| Admin SDK resolution | Returns `unavailable` when fake rejects mission read after SOS update | `resolved`, count 1; SOS resolved and only matching mission cleared; event sequence is SOS read, mission read, SOS write, mission write |
+| Client SDK resolution | Returns `unavailable` on read-after-write | `resolved`, count 1; same document assertions; event sequence is mission `getDocs`, transaction start, SOS DocumentReference read, SOS write, mission write |
+
+All **five new cases fail** on the unfixed source and pass with the fix. The in-time context portion alone is a compatibility control that intentionally passes on both versions; its case additionally proves the next request has an independent bounded deadline. The stricter existing atomicity fake also exposes **two previously passing tests** at baseline: matching-mission resolve returns `unavailable`, and the concurrent-dispatch/resolve test leaves the SOS active. Both pass with the corrected order. No live/emulator Firestore execution is claimed by these unit regressions.
+
+### Verification
+
+- Affected suites: **79/79 passed**, three files (`/tmp/fix13-affected.log`).
+- `npm run lint`: passed, exit 0 (`/tmp/fix13-lint.log`). An initial check caught an implicit callback type after removing the old `any`; using the existing SDK transaction types corrected it before the passing check.
+- `npm run build`: passed, exit 0; Vite production assets and bundled server (`/tmp/fix13-build.log`).
+- Full `npm run test:server`: **847/847 passed**, 81 files, exit 0 (`/tmp/fix13-server.log`).
+- Full `npm run test:react`: **1010/1010 passed**, 90 files, exit 0 (`/tmp/fix13-react.log`).
+- `npm run test:e2e`: attempted after verifying no TCP listener on port 3000 in `/proc/net/tcp{,6}`. **Blocked before Playwright**, exit 2: `Could not spawn java -version`; Java is absent (`/tmp/fix13-e2e.log`). No dependencies installed or unrelated processes stopped.
+- `git diff --check`: passed before final documentation review; rechecked before commit.
+
+Deviations: resumed the already-existing clean target branch at the exact requested fetched base; sandbox required scoped approval for writes/fetch in the explicitly requested work clone, which is outside the default writable roots. E2E remains environment blocked by missing Java. No scope expansion.
+
+Remaining for PR #142: reviewer verification, **push, PR creation, CI watch, and merge**. All remain external follow-up; this round commits locally only.
+
+## Fix 13b — transactional client SOS resolution and early replay
+
+Continued on `fix/wildfire-13-sos-resolution` from clean head `ef6e346` in `/home/hatch/workspace/wildfire-fix`.
+
+- `server/fs.ts` addresses CodeRabbit 4653040441 and 4653040447. The client resolves unique team IDs from the transaction's SOS snapshot to mission document references and reads all of them before writing. It updates and counts only missions whose current `sosId` matches. Dispatch writes the SOS and mission together, so a dispatch that commits first is visible on the resolver's first read or on retry. The Admin query already filters current ownership inside its transaction.
+- `server/routes/sos.ts` addresses CodeRabbit 4653040452. Durable replay lookup now runs before the optional context read. Submissions that continue to admission keep the same three-second context timeout.
+- `tests/sos-resolution-availability.test.ts` proves the ordering with the real route and helper, using Firestore doubles. The existing read-after-write guards stay in place. The late-dispatch double commits both writes just before the transactional SOS snapshot, after the old pre-read would have completed. This models a dispatch winning the ordering without simulating SDK retries.
+
+With production sources still at `ef6e346`, ran `npm run test:server -- tests/sos-resolution-availability.test.ts -t 'Fix 13b|without starting' --reporter=verbose`. All four selected cases failed (exit 1, `/tmp/fix13b-baseline.log`). All four passed with the fix.
+
+| Regression | Result at `ef6e346` | Result with Fix 13b |
+| --- | --- | --- |
+| Dispatch commits after the old pre-read | Cleared count 0 | Mission cleared and count 1 |
+| Mission reassigned before resolve | New owner's mission changed from en route to cleared | Mission unchanged and count 0 |
+| Resolve repeated while team takes a new SOS | New owner's mission changed from en route to cleared | Mission unchanged and count 0 |
+| Durable replay with hanging context | Report read started once before the replay returned | Original response returned with zero report reads or admission transactions |
+
+Lint and production build both passed (`/tmp/fix13b-lint.log`, `/tmp/fix13b-build.log`). The affected suites (`sos-resolution-availability`, `atomicity`, and `sos`) passed **82/82** (`/tmp/fix13b-affected.log`).
+The full server suite passed **850/850** across 81 files and the full React suite passed **1013/1013** across 90 files (`/tmp/fix13b-server.log`, `/tmp/fix13b-react.log`). E2E exited 2 before Playwright because Firebase could not spawn `java -version` (`/tmp/fix13b-e2e.log`). Port 3000 was clear before the attempt. No live Firestore verification was possible.
+
+The work stays local. PR #142 needs a fresh CI and review watch before merge. Reconcile FIX_PLAN only if main has advanced past `251d8ef`.

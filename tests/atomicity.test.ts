@@ -99,6 +99,7 @@ function createDb() {
       const writes: Write[] = [];
       const tx = {
         get: async (ref: any) => {
+          if (writes.length > 0) throw new Error("Firestore transactions require all reads before writes");
           if (ref && ref.__query) {
             const q = ref.__query as { name: string; field: string; value: any };
             const prefix = `${q.name}/`;

@@ -784,34 +784,27 @@ export type SosResolveResult =
   | { status: "unavailable" };
 
 /**
- * B4 resolve/dispatch race fix: SOS resolve is now ONE transaction that
- * (a) re-reads the SOS, (b) flips it to resolved, and (c) clears every
- * team mission pointing at it — read inside the SAME transaction.
- *
- * Previously resolve was docUpdate(status) THEN a non-transactional batch
- * clear whose failure was swallowed (`.catch(() => false)`), and a dispatch
- * transaction committing between the resolve write and the clear query left
- * an orphaned active mission on a resolved SOS — the team showed busy
- * forever with no lever. Both operations now contend on the same documents,
- * so Firestore's optimistic concurrency orders them: a dispatch racing this
- * tx either commits first (then this tx's in-tx mission query sees and
- * clears it) or retries and reads status=resolved (409 to the operator).
- * The cleared count is RETURNED so the route can surface it and log when a
- * resolve freed zero missions (previously silent).
+ * B4: resolve the SOS and clear its current missions in one transaction.
+ * Dispatch writes the mission and appends its team ID to the same SOS document.
+ * A dispatch that commits first is visible to resolve, including on retry.
+ * A dispatch that loses the race reads the resolved status and is rejected.
+ * Admin reads missions with an in-transaction ownership query. Client resolves
+ * the dispatched team IDs to document references and checks current ownership
+ * before writing. The returned count includes only the missions updated.
  */
 export async function resolveSosAtomically(sosId: string): Promise<SosResolveResult> {
   const db = getDb();
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
-      const outcome = await db.runTransaction(async (tx: any): Promise<SosResolveResult> => {
+      const outcome = await db.runTransaction(async (tx: AdminTransaction): Promise<SosResolveResult> => {
         const sosRef = db.collection("trappedSos").doc(sosId);
         const sosSnap = await tx.get(sosRef);
         if (!sosSnap.exists) return { status: "missing" };
-        tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
         const missionsSnap = await tx.get(db.collection("teamMissions").where("sosId", "==", sosId));
+        tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
         let missionsCleared = 0;
-        missionsSnap.forEach((docSnap: any) => {
+        missionsSnap.forEach((docSnap) => {
           tx.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
           missionsCleared += 1;
         });
@@ -825,18 +818,28 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
       return outcome;
     }
 
-    const { collection, doc, query, runTransaction, where } = await loadClientSdk();
-    const outcome = await runTransaction(db, async (tx: any): Promise<SosResolveResult> => {
+    const { doc, runTransaction } = await loadClientSdk();
+    const outcome = await runTransaction(db, async (tx: ClientTransaction): Promise<SosResolveResult> => {
       const sosRef = doc(db, "trappedSos", sosId);
       const sosSnap = await tx.get(sosRef);
       if (!sosSnap.exists()) return { status: "missing" };
+
+      // Client Transaction.get accepts only document references.
+      const dispatchedTeams: unknown = sosSnap.data().dispatchedTeams;
+      const teamIds = new Set<string>();
+      if (Array.isArray(dispatchedTeams)) {
+        for (const dispatch of dispatchedTeams as ({ teamId?: unknown } | null)[]) {
+          if (typeof dispatch?.teamId === "string" && dispatch.teamId) teamIds.add(dispatch.teamId);
+        }
+      }
+      const missions = await Promise.all([...teamIds].map((teamId) => tx.get(doc(db, "teamMissions", teamId))));
       tx.update(sosRef, { status: "resolved", resolvedAt: Date.now() });
-      const missionsSnap = await tx.get(query(collection(db, "teamMissions"), where("sosId", "==", sosId)));
       let missionsCleared = 0;
-      missionsSnap.forEach((docSnap: any) => {
-        tx.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
+      for (const mission of missions) {
+        if (mission.data()?.sosId !== sosId) continue;
+        tx.update(mission.ref, { phase: "cleared", clearedAt: Date.now() });
         missionsCleared += 1;
-      });
+      }
       return { status: "resolved", missionsCleared };
     });
     if (outcome.status === "resolved") {

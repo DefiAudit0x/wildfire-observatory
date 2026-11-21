@@ -380,44 +380,8 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
     return;
   }
 
-  // Context: nearest active fire (non-blocking — never prevent an SOS).
-  // IMPORTANT: proximity to a fire corroborates the caller's claim; it is NOT
-  // verification that the person is actually trapped. The field is named
-  // accordingly (`nearbyFireCorroborated`) on purpose.
-  let nearestFireDistanceKm: number | null = null;
-  let nearbyFireCorroborated = false;
-  let priority: string = "unknown";
-  if (hasLocation) {
-    try {
-      const dbResult = await getReportsDbResult();
-      const active = dbResult.status === "ok" ? dbResult.reports.filter(
-        (r: any) => r.status !== "resolved" && r.status !== "rejected"
-      ) : [];
-      if (active.length > 0) {
-        nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
-          const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
-          return Math.min(min, d);
-        }, Infinity);
-        nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
-      }
-    } catch (err) {
-      logger.error({ err }, "SOS proximity check error");
-    }
-    if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
-      priority =
-        nearestFireDistanceKm <= 2 ? "critical"
-        : nearestFireDistanceKm <= 5 ? "high"
-        : nearestFireDistanceKm <= 10 ? "medium"
-        : "low";
-    }
-  }
-
-  const audioDuration = data.audioDuration != null
-    ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
-    : undefined;
-
   // F4: a retried submission (same clientGeneratedId) replays the FIRST
-  // stored SOS — checked before the admission window, so a retry after the
+  // stored SOS — checked before context and admission, so a retry after the
   // 5-minute deviceId dedup window still returns the original, never a dupe.
   if (data.clientGeneratedId) {
     try {
@@ -437,6 +401,50 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
       logger.error({ err }, "SOS idempotency lookup failed; admitting without replay");
     }
   }
+
+  // Context: nearest active fire (non-blocking — never prevent an SOS).
+  // IMPORTANT: proximity to a fire corroborates the caller's claim; it is NOT
+  // verification that the person is actually trapped. The field is named
+  // accordingly (`nearbyFireCorroborated`) on purpose.
+  let nearestFireDistanceKm: number | null = null;
+  let nearbyFireCorroborated = false;
+  let priority: string = "unknown";
+  if (hasLocation) {
+    let contextTimeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const dbResult = await Promise.race([
+        getReportsDbResult(),
+        new Promise<never>((_, reject) => {
+          contextTimeout = setTimeout(() => reject(new Error("SOS proximity context timed out")), 3000);
+        }),
+      ]);
+      const active = dbResult.status === "ok" ? dbResult.reports.filter(
+        (r: any) => r.status !== "resolved" && r.status !== "rejected"
+      ) : [];
+      if (active.length > 0) {
+        nearestFireDistanceKm = active.reduce((min: number, fire: any) => {
+          const d = getHaversineDistance(lat, lng, fire.lat, fire.lng);
+          return Math.min(min, d);
+        }, Infinity);
+        nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
+      }
+    } catch (err) {
+      logger.warn({ err }, "SOS proximity context unavailable; proceeding without context");
+    } finally {
+      clearTimeout(contextTimeout);
+    }
+    if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
+      priority =
+        nearestFireDistanceKm <= 2 ? "critical"
+        : nearestFireDistanceKm <= 5 ? "high"
+        : nearestFireDistanceKm <= 10 ? "medium"
+        : "low";
+    }
+  }
+
+  const audioDuration = data.audioDuration != null
+    ? Math.min(Math.max(Number(data.audioDuration), 1), MAX_AUDIO_DURATION_SEC)
+    : undefined;
 
   const newSos: any = {
     id: `sos-${Date.now()}-${randomBytes(3).toString("hex")}`,
