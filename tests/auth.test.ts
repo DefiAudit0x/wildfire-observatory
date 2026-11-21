@@ -1,9 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import { generateStaffToken, generateAdminToken, requireAuth, requireRole, isCurrentStaffSession } from "../server/middleware.js";
 import { createMeshToken } from "../server/mesh-auth.js";
 import authRouter from "../server/routes/auth.js";
+
+vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
+vi.mock("../server/fs.js", () => ({
+  docGet: async (collection: string, id: string) => collection === "users" && ["a1", "c1"].includes(id)
+    ? { agentId: id, role: id === "c1" ? "commander" : "agent", unitId: "unit-dz16", isActive: true }
+    : null,
+}));
+vi.mock("../server/routes/audit.js", () => ({ logAdminAction: vi.fn() }));
 
 function createAuthTestApp() {
   const app = express();

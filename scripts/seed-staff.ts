@@ -20,7 +20,7 @@
  */
 import bcrypt from "bcryptjs";
 import { getDb } from "../server/firebase.js";
-import { docGet, docSet } from "../server/fs.js";
+import { createDocIfAbsent } from "../server/atomic.js";
 
 function env(key: string, def = ""): string {
   return process.env[key] || def;
@@ -44,8 +44,7 @@ async function main() {
 
   const now = new Date().toISOString();
 
-  const existingUnit = await docGet("units", unitId);
-  if (!existingUnit) {
+  {
     const unit = {
       id: unitId,
       code,
@@ -55,14 +54,12 @@ async function main() {
       createdAt: now,
       updatedAt: now,
     };
-    await docSet("units", unitId, unit);
-    console.log(`✔ Unit created: ${unitId} (${code})`);
-  } else {
-    console.log(`✔ Unit already exists: ${unitId}`);
+    const result = await createDocIfAbsent("units", unitId, unit);
+    if (result === "unavailable") throw new Error(`Cannot safely create unit: ${unitId}`);
+    console.log(result === "created" ? `✔ Unit created: ${unitId} (${code})` : `✔ Unit already exists: ${unitId}`);
   }
 
-  const existingUser = await docGet("users", agentId);
-  if (!existingUser) {
+  {
     const role = env("SEED_AGENT_ROLE", "commander") === "superadmin" ? "superadmin" : "commander";
     const user = {
       agentId,
@@ -74,10 +71,9 @@ async function main() {
       createdAt: now,
       createdBy: "seed-script",
     };
-    await docSet("users", agentId, user);
-    console.log(`✔ User created: ${agentId} (${role}) — name: ${user.name} — unit: ${code}`);
-  } else {
-    console.log(`✔ User already exists: ${agentId} (leave untouched)`);
+    const result = await createDocIfAbsent("users", agentId, user);
+    if (result === "unavailable") throw new Error(`Cannot safely create user: ${agentId}`);
+    console.log(result === "created" ? `✔ User created: ${agentId} (${role}) — name: ${user.name} — unit: ${code}` : `✔ User already exists: ${agentId} (leave untouched)`);
   }
 
   console.log("\nSeed finished. Login via the 'الكادر والوحدات' panel (StaffManager).");
