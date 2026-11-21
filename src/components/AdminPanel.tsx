@@ -31,8 +31,7 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [reporterIdentities, setReporterIdentities] = useState<Record<string, { reporterName?: string; reporterPhone?: string }>>({});
   // Fix 8b: tracks the in-flight identity requests so the CSV export can
   // wait for reporter names instead of writing "" for them.
-  const [
-    , setReporterIdentitiesLoading] = useState(false);
+  const [reporterIdentitiesLoading, setReporterIdentitiesLoading] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
