@@ -13,7 +13,19 @@ const SENSITIVE_FIELDS = new Set([
   "name",
   "lastName",
   "firstName",
+  "reporterBadgeCode",
 ]);
+const NORMALIZED_SENSITIVE_FIELDS = new Set([...SENSITIVE_FIELDS].map(normalizeFieldName));
+
+function normalizeFieldName(key: string): string {
+  return key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function isSensitiveField(key: string): boolean {
+  const normalized = normalizeFieldName(key);
+  return NORMALIZED_SENSITIVE_FIELDS.has(normalized) ||
+    /image|photo|audio|base64|device|phone|email|pass(?:word|wd|code)|reporterbadgecode|(?:full|reporter|first|last)name|idnumber/.test(normalized);
+}
 
 /**
  * Redacts PII (images, audio, device ids, contacts) from Sentry events
@@ -35,7 +47,7 @@ function scrubValue(value: unknown, depth: number): unknown {
   if (value && typeof value === "object") {
     const clean: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      clean[k] = SENSITIVE_FIELDS.has(k) || /image|audio|base64|device|phone|email/i.test(k)
+      clean[k] = isSensitiveField(k)
         ? "[redacted]"
         : scrubValue(v, depth + 1);
     }
@@ -72,7 +84,7 @@ export function scrubSentryEvent(event: ErrorEvent): ErrorEvent {
     }
     if (event.extra) {
       for (const key of Object.keys(event.extra)) {
-        if (SENSITIVE_FIELDS.has(key) || /image|audio|base64|device|phone|email/i.test(key)) {
+        if (isSensitiveField(key)) {
           event.extra[key] = "[redacted]";
         } else {
           event.extra[key] = scrubValue(event.extra[key], 0);
