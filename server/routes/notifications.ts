@@ -10,6 +10,7 @@ import { docSet, docUpdate, docGet } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 import { boundDeviceId, issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 import { secretFingerprint } from "../crypto.js";
+import { WILAYA_NAMES } from "../geo.js";
 
 const router = Router();
 const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
@@ -308,7 +309,19 @@ const subscribeSchema = z.object({
   email: z.string().email(),
   // L3 fix: bound the array and its members — an unbounded wilayas array let
   // a subscriber document balloon toward the 1 MiB Firestore doc limit.
-  wilayas: z.array(z.string().max(100)).max(20).optional(),
+  // Fix 8b: every entry must be a canonical region identifier (the exact
+  // WILAYA_BOUNDS labels report creation accepts). The alert filter compares
+  // by exact equality with report.wilaya, so a saved "Annaba" could never
+  // match "الجزائر - عنابة (Algérie - Annaba)" and the subscriber would
+  // silently receive zero alerts for that region. Unknown values are
+  // rejected with 400 instead of being stored.
+  wilayas: z
+    .array(z.string().max(100))
+    .max(20)
+    .optional()
+    .refine((list) => !list || list.every((w) => WILAYA_NAMES.includes(w)), {
+      message: "Unknown wilaya — use a canonical region identifier",
+    }),
   minSeverity: z.enum(["low", "medium", "high", "critical"]).optional(),
 });
 
