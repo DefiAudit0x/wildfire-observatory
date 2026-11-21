@@ -33,7 +33,25 @@ afterEach(() => {
 describe("ADM-1 operator CSV download", () => {
   it.each(["=1+1+10000", "+SUM(1)", "-SUM(1)", "@SUM(1)", "\tformula", "\rformula", "  =1+1", "  \tformula", "  \rformula"])(
     "neutralizes %j in exported fields and preserves ordinary rows", async (value) => {
-      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
+      // Fix 8e: the export's reporter name comes from the private identity
+      // shard, not the report prop (ADM-2 stripped it from public data) —
+      // so the identity fetch must return the malicious value too. Before
+      // this, the stub returned {} for every URL and the fetch raced the
+      // export click: if it resolved first, the merge wiped reporterName to
+      // "" and the test failed intermittently.
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.includes("/identity")) {
+          // Only the malicious report's identity carries the value; the
+          // ordinary row's identity is empty, as the test expects.
+          const id = decodeURIComponent(url.split("/api/reports/")[1]?.split("/identity")[0] ?? "");
+          if (id === value) {
+            return new Response(JSON.stringify({ reporterName: value, reporterPhone: "+213555010203" }), { status: 200 });
+          }
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }));
       const createObjectURL = vi.fn((_blob: Blob) => "blob:csv");
       vi.stubGlobal("URL", class extends URL {
         static createObjectURL = createObjectURL;
