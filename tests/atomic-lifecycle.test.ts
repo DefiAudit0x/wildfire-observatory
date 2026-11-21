@@ -29,6 +29,7 @@ const db = vi.hoisted(() => ({
       if (ref.collection === "units") state.units.add(ref.id);
     },
     delete: (ref: any) => state.units.delete(ref.id),
+    update: () => undefined,
   }),
 }));
 
