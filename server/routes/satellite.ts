@@ -55,23 +55,35 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
 
     const text = await response.text();
     const lines = text.trim().split("\n");
-    if (lines.length <= 1 || lines[0].split(",")[8]?.trim().toLowerCase() !== "confidence") return { status: "ok", data: [] };
+    const header = lines[0].split(",").map((name) => name.trim().toLowerCase());
+    const columns = {
+      lat: header.indexOf("latitude"), lng: header.indexOf("longitude"),
+      brightness: header.includes("brightness") ? header.indexOf("brightness") : header.indexOf("bright_ti4"),
+      scanDate: header.indexOf("acq_date"), scanTime: header.indexOf("acq_time"),
+      satellite: header.indexOf("satellite"), instrument: header.indexOf("instrument"),
+      confidence: header.indexOf("confidence"),
+    };
+    if (Object.values(columns).some((index) => index < 0)) return { status: "unavailable" };
 
     const hotspots: SatelliteHotspot[] = [];
     for (let i = 1; i < lines.length; i++) {
       try {
-        const cols = lines[i].split(",");
-        if (cols.length < 10) continue;
-        const lat = parseFloat(cols[0]);
-        const lng = parseFloat(cols[1]);
-        const brightness = parseFloat(cols[2]);
-        const scanDate = cols[5];
-        const scanTimeRaw = cols[6].padStart(4, "0");
-        const satType = ["T", "A"].includes(cols[7]) ? "MODIS" : ["N", "N20", "N21"].includes(cols[7]) ? "VIIRS" : null;
-        if (!satType) continue;
-        const confidenceStr = cols[8].trim().toLowerCase();
-        const numericConfidence = confidenceStr === "" ? NaN : Number(confidenceStr);
-        const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : Number.isFinite(numericConfidence) && numericConfidence >= 0 && numericConfidence <= 100 ? numericConfidence : 80);
+        const cols = lines[i].split(",").map((value) => value.trim());
+        if (Object.values(columns).some((index) => !cols[index])) continue;
+        const lat = Number(cols[columns.lat]);
+        const lng = Number(cols[columns.lng]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+        const brightness = parseFloat(cols[columns.brightness]);
+        const scanDate = cols[columns.scanDate];
+        const scanTimeRaw = cols[columns.scanTime].padStart(4, "0");
+        const spacecraft = cols[columns.satellite];
+        const satType = ["Terra", "Aqua", "T", "A"].includes(spacecraft) ? "MODIS" : ["N", "N20", "N21"].includes(spacecraft) ? "VIIRS" : null;
+        if (!satType || cols[columns.instrument] !== satType) continue;
+        const confidenceStr = cols[columns.confidence].toLowerCase();
+        const numericConfidence = Number(confidenceStr);
+        const confidence = satType === "MODIS"
+          ? (Number.isFinite(numericConfidence) && numericConfidence >= 0 && numericConfidence <= 100 ? numericConfidence : 80)
+          : (confidenceStr === "h" || confidenceStr === "high" ? 95 : confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
         if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
             lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
             isInKnownWilaya(lat, lng)) {
