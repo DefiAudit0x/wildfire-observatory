@@ -55,7 +55,7 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
 
     const text = await response.text();
     const lines = text.trim().split("\n");
-    if (lines.length <= 1) return { status: "ok", data: [] };
+    if (lines.length <= 1 || lines[0].split(",")[8]?.trim().toLowerCase() !== "confidence") return { status: "ok", data: [] };
 
     const hotspots: SatelliteHotspot[] = [];
     for (let i = 1; i < lines.length; i++) {
@@ -67,10 +67,11 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
         const brightness = parseFloat(cols[2]);
         const scanDate = cols[5];
         const scanTimeRaw = cols[6].padStart(4, "0");
-        const satType = cols[8] === "MODIS_NRT" ? "MODIS" : cols[8] === "VIIRS_SNPP_NRT" ? "VIIRS" : null;
+        const satType = ["T", "A"].includes(cols[7]) ? "MODIS" : ["N", "N20", "N21"].includes(cols[7]) ? "VIIRS" : null;
         if (!satType) continue;
-        const confidenceStr = cols[9];
-        const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
+        const confidenceStr = cols[8].trim().toLowerCase();
+        const numericConfidence = confidenceStr === "" ? NaN : Number(confidenceStr);
+        const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : Number.isFinite(numericConfidence) && numericConfidence >= 0 && numericConfidence <= 100 ? numericConfidence : 80);
         if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
             lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
             isInKnownWilaya(lat, lng)) {
@@ -147,7 +148,7 @@ router.get("/", async (_req: Request, res: Response) => {
   try {
     const { hotspots, sources } = await getLiveSatelliteData();
     if (Object.values(sources).some((status) => status !== "ok")) {
-      return res.status(503).json({ error: SATELLITE_UNAVAILABLE_MESSAGE, sources });
+      return res.status(503).json({ error: SATELLITE_UNAVAILABLE_MESSAGE, sources, hotspots });
     }
     res.json(hotspots);
   } catch (err) {
