@@ -271,12 +271,22 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     // one reportsToCsv uses) so citizen-supplied text — reporter name,
     // location, wilaya, description — cannot inject spreadsheet formulas.
     // csvCell also handles the quote escaping the builder used to do by hand.
+    // Fix 8e: the four text columns are force-quoted, as Fix 6's local guard
+    // did — the shared guard without quoting changed the CSV shape and broke
+    // Fix 6's operator-export tests on the merged tree.
     const rows = [
       ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
       ...adminReports.map((r) =>
-        [r.id, r.locationName || "", r.wilaya || "", r.status, r.severity, r.description || "", r.reporterName || "", r.timestamp]
-          .map(csvCell)
-          .join(",")
+        [
+          csvCell(r.id),
+          csvCell(r.locationName || "", true),
+          csvCell(r.wilaya || "", true),
+          csvCell(r.status),
+          csvCell(r.severity),
+          csvCell(r.description || "", true),
+          csvCell(r.reporterName || "", true),
+          csvCell(r.timestamp),
+        ].join(",")
       ),
     ].join("\n");
 
