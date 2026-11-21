@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   createUserIfUnitExists: vi.fn(async () => "created"),
   logAdminAction: vi.fn(async () => undefined),
   updateUserAtomic: vi.fn(),
+  deleteUserAtomically: vi.fn(async () => "deleted"),
   appliedUpdates: [] as Array<{ agentId: string; update: any }>,
 }));
 
@@ -36,6 +37,7 @@ vi.mock("../server/fs.js", () => ({
 vi.mock("../server/atomic.js", () => ({
   createUserIfUnitExists: state.createUserIfUnitExists,
   createDocIfAbsent: vi.fn(),
+  deleteUserAtomically: state.deleteUserAtomically,
 }));
 
 vi.mock("../server/routes/audit.js", () => ({
@@ -64,6 +66,7 @@ beforeEach(() => {
   });
   state.docUpdate.mockClear();
   state.docDelete.mockClear();
+  state.deleteUserAtomically.mockReset().mockResolvedValue("deleted");
   state.createUserIfUnitExists.mockClear();
   state.logAdminAction.mockClear();
   state.appliedUpdates.length = 0;
@@ -133,6 +136,8 @@ describe("S-M2: password-admin now has a UNIFORM staff-management surface", () =
       .delete("/api/users/agent-1")
       .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
     expect(res.status).toBe(200);
+    expect(state.deleteUserAtomically).toHaveBeenCalledWith("agent-1");
+    expect(state.docDelete).not.toHaveBeenCalled();
   });
 
   it("superadmin keeps the full surface", async () => {

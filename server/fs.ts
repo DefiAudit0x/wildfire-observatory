@@ -532,6 +532,11 @@ export type UserUpdateAtomicResult =
   | { outcome: "forbidden"; status: number; error: string; code?: string }
   | { outcome: "unavailable" };
 
+function unitDocumentId(unitId: string): string {
+  const code = unitId.replace(/^unit-/i, "").toLowerCase();
+  return `unit-${code}`;
+}
+
 /**
  * Fix 4d: atomically read, authorize and update a user document in one
  * Firestore transaction. The authorization callback runs against the
@@ -561,8 +566,25 @@ export async function updateUserAtomic(
           const before = snap.data() || {};
           const reason = authorize(before);
           if (reason) return { outcome: "forbidden", ...reason };
-          tx.update(ref, clean);
-          return { outcome: "updated", before, user: { ...before, ...clean } };
+          const userUpdate = { ...clean };
+          if (typeof clean.unitId === "string" && clean.unitId !== before.unitId) {
+            const oldUnitId = before.unitId ? unitDocumentId(before.unitId) : null;
+            const newUnitId = unitDocumentId(clean.unitId);
+            if (oldUnitId !== newUnitId) {
+              const oldUnitRef = oldUnitId ? db.collection("units").doc(oldUnitId) : null;
+              const newUnitRef = db.collection("units").doc(newUnitId);
+              const oldUnit = oldUnitRef ? await tx.get(oldUnitRef) : null;
+              const newUnit = await tx.get(newUnitRef);
+              const { FieldValue } = await import("firebase-admin/firestore");
+              if (before.linkedStaffCounted === true && oldUnitRef && oldUnit?.exists) {
+                tx.update(oldUnitRef, { linkedStaffCount: FieldValue.increment(-1) });
+              }
+              tx.update(newUnitRef, { linkedStaffCount: FieldValue.increment(1) });
+              userUpdate.linkedStaffCounted = true;
+            }
+          }
+          tx.update(ref, userUpdate);
+          return { outcome: "updated", before, user: { ...before, ...userUpdate } };
         })
       : await (async () => {
           const { doc, runTransaction } = await loadClientSdk();
@@ -573,14 +595,36 @@ export async function updateUserAtomic(
             const before = snap.data() || {};
             const reason = authorize(before);
             if (reason) return { outcome: "forbidden", ...reason };
-            tx.update(ref, clean);
-            return { outcome: "updated", before, user: { ...before, ...clean } };
+            const userUpdate = { ...clean };
+            if (typeof clean.unitId === "string" && clean.unitId !== before.unitId) {
+              const oldUnitId = before.unitId ? unitDocumentId(before.unitId) : null;
+              const newUnitId = unitDocumentId(clean.unitId);
+              if (oldUnitId !== newUnitId) {
+                const oldUnitRef = oldUnitId ? doc(db, "units", oldUnitId) : null;
+                const newUnitRef = doc(db, "units", newUnitId);
+                const oldUnit = oldUnitRef ? await tx.get(oldUnitRef) : null;
+                const newUnit = await tx.get(newUnitRef);
+                const { increment } = await loadClientSdk();
+                if (before.linkedStaffCounted === true && oldUnitRef && oldUnit?.exists()) {
+                  tx.update(oldUnitRef, { linkedStaffCount: increment(-1) });
+                }
+                tx.update(newUnitRef, { linkedStaffCount: increment(1) });
+                userUpdate.linkedStaffCounted = true;
+              }
+            }
+            tx.update(ref, userUpdate);
+            return { outcome: "updated", before, user: { ...before, ...userUpdate } };
           });
         })();
 
     if (outcome.outcome === "updated") {
       invalidateCollectionCache("users");
       invalidateDocCache("users", agentId);
+      if (typeof clean.unitId === "string" && clean.unitId !== outcome.before.unitId) {
+        const unitIds = new Set([outcome.before.unitId, clean.unitId].filter((unitId): unitId is string => typeof unitId === "string").map(unitDocumentId));
+        for (const unitId of unitIds) invalidateDocCache("units", unitId);
+        invalidateCollectionCache("units");
+      }
     }
     return outcome;
   } catch (err) {
