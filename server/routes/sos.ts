@@ -490,6 +490,23 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
       : undefined
   );
   if (admission === "duplicate") {
+    // A concurrent same-key submission may have committed after the early lookup.
+    if (data.clientGeneratedId) {
+      try {
+        const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId);
+        if (replay) {
+          if (replay.deviceId !== data.deviceId) {
+            res.status(409).json({ error: "SOS retry key belongs to a different device" });
+            return;
+          }
+          logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
+          res.json({ id: replay.id, status: replay.status });
+          return;
+        }
+      } catch (err) {
+        logger.error({ err }, "SOS idempotency lookup failed; returning duplicate");
+      }
+    }
     res.status(409).json({ error: "An SOS from this device was already received recently" });
     return;
   }
