@@ -9,12 +9,13 @@ const state = vi.hoisted(() => ({
   docs: new Map<string, StoredDoc>(),
   client: false,
   events: [] as string[],
+  beforeDocRead: undefined as ((path: string) => void) | undefined,
   readReports: vi.fn<() => Promise<{ docs: { id: string; data: () => StoredDoc }[] }>>(),
 }));
 
 function docSnapshot(ref: Ref) {
   const data = state.docs.get(ref.path);
-  return { id: ref.path.split("/").at(-1), exists: Boolean(data), data: () => data };
+  return { ref, id: ref.path.split("/").at(-1), exists: Boolean(data), data: () => data };
 }
 
 function missionSnapshot(q: MissionQuery) {
@@ -40,6 +41,7 @@ async function transaction<T>(callback: (tx: {
         return missionSnapshot(ref);
       }
       state.events.push(`read ${ref.path}`);
+      state.beforeDocRead?.(ref.path);
       const snap = docSnapshot(ref);
       return state.client ? { ...snap, exists: () => snap.exists } : snap;
     },
@@ -103,6 +105,7 @@ beforeEach(() => {
   state.docs.clear();
   state.events = [];
   state.client = false;
+  state.beforeDocRead = undefined;
   state.readReports.mockReset();
   invalidateReportsCache();
 });
@@ -140,13 +143,14 @@ describe("SOS-4 request-local proximity deadline (real route, DB and admission)"
     expect(next.body.priority).toBe("unknown");
   });
 
-  it("replays a durable idempotency key within the deadline despite a hanging context read", async () => {
+  it("replays a durable idempotency key without starting the hanging context read", async () => {
     hangingReports();
     state.docs.set("sosIdempotency/fix13-replay", { sosId: "fix13-original" });
     state.docs.set("trappedSos/fix13-original", { id: "fix13-original", deviceId: "fix13-replay-device", status: "active" });
     const res = await post({ clientGeneratedId: "fix13-replay", deviceId: "fix13-replay-device" });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: "fix13-original", status: "active" });
+    expect(state.readReports).not.toHaveBeenCalled();
     expect(state.events).not.toContain("transaction");
     expect(state.docs.size).toBe(2);
   });
@@ -155,7 +159,7 @@ describe("SOS-4 request-local proximity deadline (real route, DB and admission)"
 describe.each([false, true])("FS-2 resolve SDK client=%s", (client) => {
   it("resolves and clears matching missions with every supported read before the writes", async () => {
     state.client = client;
-    state.docs.set("trappedSos/fix13-resolve", { status: "active" });
+    state.docs.set("trappedSos/fix13-resolve", { status: "active", dispatchedTeams: [{ teamId: "matching" }] });
     state.docs.set("teamMissions/matching", { sosId: "fix13-resolve", phase: "en_route" });
     state.docs.set("teamMissions/unrelated", { sosId: "other", phase: "on_scene" });
     expect(await resolveSosAtomically("fix13-resolve")).toEqual({ status: "resolved", missionsCleared: 1 });
@@ -163,7 +167,65 @@ describe.each([false, true])("FS-2 resolve SDK client=%s", (client) => {
     expect(state.docs.get("teamMissions/matching")?.phase).toBe("cleared");
     expect(state.docs.get("teamMissions/unrelated")?.phase).toBe("on_scene");
     expect(state.events).toEqual(client
-      ? ["pre-read missions", "transaction", "read trappedSos/fix13-resolve", "write trappedSos/fix13-resolve", "write teamMissions/matching"]
+      ? ["transaction", "read trappedSos/fix13-resolve", "read teamMissions/matching", "write trappedSos/fix13-resolve", "write teamMissions/matching"]
       : ["transaction", "read trappedSos/fix13-resolve", "read missions", "write trappedSos/fix13-resolve", "write teamMissions/matching"]);
+  });
+});
+
+describe("Fix 13b client resolution", () => {
+  const sosPath = "trappedSos/fix13b";
+  const missionPath = "teamMissions/team";
+  const dispatch = [{ teamId: "team" }];
+  const activeMission = { sosId: "fix13b", phase: "en_route" };
+  const reassignedMission = { sosId: "other", phase: "en_route" };
+
+  function beforeSosRead(commit: () => void) {
+    state.beforeDocRead = (path) => {
+      if (path === sosPath) {
+        state.beforeDocRead = undefined;
+        commit();
+      }
+    };
+  }
+
+  beforeEach(() => {
+    state.client = true;
+    state.docs.set(sosPath, { status: "active" });
+  });
+
+  it("clears a dispatch committed just before the transactional SOS snapshot", async () => {
+    // Both dispatch writes land after any out-of-transaction read and before
+    // the transaction takes its SOS snapshot.
+    beforeSosRead(() => {
+      state.docs.set(sosPath, { status: "active", dispatchedTeams: dispatch });
+      state.docs.set(missionPath, activeMission);
+    });
+
+    expect(await resolveSosAtomically("fix13b")).toEqual({ status: "resolved", missionsCleared: 1 });
+    expect(state.docs.get(sosPath)?.status).toBe("resolved");
+    expect(state.docs.get(missionPath)?.phase).toBe("cleared");
+  });
+
+  it("skips and does not count a mission reassigned before resolve reads it", async () => {
+    state.docs.set(sosPath, { status: "active", dispatchedTeams: dispatch });
+    state.docs.set(missionPath, activeMission);
+    beforeSosRead(() => state.docs.set(missionPath, reassignedMission));
+
+    const result = await resolveSosAtomically("fix13b");
+    expect(state.docs.get(missionPath)).toEqual(reassignedMission);
+    expect(result).toEqual({ status: "resolved", missionsCleared: 0 });
+  });
+
+  it("preserves a new live mission when resolving the old SOS again", async () => {
+    state.docs.set(sosPath, { status: "active", dispatchedTeams: dispatch });
+    state.docs.set(missionPath, activeMission);
+    expect(await resolveSosAtomically("fix13b")).toEqual({ status: "resolved", missionsCleared: 1 });
+    expect(state.docs.get(missionPath)?.phase).toBe("cleared");
+    state.docs.set("trappedSos/other", { status: "active" });
+    beforeSosRead(() => state.docs.set(missionPath, reassignedMission));
+
+    const result = await resolveSosAtomically("fix13b");
+    expect(state.docs.get(missionPath)).toEqual(reassignedMission);
+    expect(result).toEqual({ status: "resolved", missionsCleared: 0 });
   });
 });
