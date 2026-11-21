@@ -24,6 +24,7 @@ const fsMock = vi.hoisted(() => ({
 
 const atomicMock = vi.hoisted(() => ({
   joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {}, tokenGen: 0 }) as any),
+  rotateTeamJoinCodeAtomically: vi.fn(async (..._a: any[]) => "rotated" as any),
   setMissionPhaseAtomically: vi.fn(async (..._a: any[]) => ({ status: "updated", mission: {} }) as any),
   clearTeamMissionAtomically: vi.fn(async (..._a: any[]) => ({ status: "cleared", mission: {} }) as any),
   setPrincipalBlocked: vi.fn(async (..._a: any[]) => "blocked" as any),
@@ -58,6 +59,7 @@ beforeEach(() => {
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docUpdate.mockReset().mockResolvedValue(true);
   atomicMock.joinTeamAtomically.mockReset().mockResolvedValue({ status: "joined", member: {}, tokenGen: 0 });
+  atomicMock.rotateTeamJoinCodeAtomically.mockReset().mockResolvedValue("rotated");
   atomicMock.setMissionPhaseAtomically.mockReset().mockResolvedValue({ status: "updated", mission: {} });
 });
 
@@ -297,6 +299,10 @@ describe("POST /api/teams/:id/join-code — admin minting and rotation", () => {
     expect(res.body.code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
     expect(res.body.maxUses).toBe(12);
     expect(res.body.expiresAt).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(fsMock.collectionGet).toHaveBeenCalledWith("teamJoinCodes", undefined, undefined, true);
+    expect(atomicMock.rotateTeamJoinCodeAtomically).toHaveBeenCalledWith("team-a1", res.body.code, expect.objectContaining({
+      teamId: "team-a1", revoked: false, uses: 0, maxUses: 12,
+    }), []);
   });
 
   it("revokes the team's previous active codes (rotation = one live capability)", async () => {
@@ -311,10 +317,10 @@ describe("POST /api/teams/:id/join-code — admin minting and rotation", () => {
       .set(adminAuth())
       .send({});
     expect(res.status).toBe(201);
-    const revoked = fsMock.docUpdate.mock.calls.filter(([c]: any[]) => c === "teamJoinCodes");
-    expect(revoked).toHaveLength(1);
-    expect(revoked[0][1]).toBe("OLDCODE1");
-    expect(revoked[0][2]).toMatchObject({ revoked: true });
+    expect(atomicMock.rotateTeamJoinCodeAtomically).toHaveBeenCalledWith("team-a1", res.body.code, expect.objectContaining({
+      teamId: "team-a1", revoked: false,
+    }), [{ id: "OLDCODE1" }, { id: "OTHERTEAM" }, { id: "DEADC0DE" }]);
+    expect(fsMock.docUpdate).not.toHaveBeenCalledWith("teamJoinCodes", expect.anything(), expect.anything());
   });
 
   it("404 for unknown or deactivated team", async () => {
