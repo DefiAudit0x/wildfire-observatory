@@ -27,6 +27,7 @@ interface AdminPanelProps {
 export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps) {
   const [password, setPassword] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [reporterIdentities, setReporterIdentities] = useState<Record<string, { reporterName?: string; reporterPhone?: string }>>({});
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,6 +59,39 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setReporterIdentities({});
+      return;
+    }
+
+    let cancelled = false;
+    void Promise.all(reports.map(async (report) => {
+      try {
+        const res = await apiFetch(`/api/reports/${encodeURIComponent(report.id)}/identity`, "GET");
+        if (cancelled) return;
+        if (res.status === 401) {
+          setIsAuthenticated(false);
+          return;
+        }
+        if (!res.ok) return;
+        const data: unknown = await res.json();
+        if (!data || typeof data !== "object") return;
+        const identity = {
+          reporterName: "reporterName" in data && typeof data.reporterName === "string" ? data.reporterName : undefined,
+          reporterPhone: "reporterPhone" in data && typeof data.reporterPhone === "string" ? data.reporterPhone : undefined,
+        };
+        if (!cancelled) setReporterIdentities((current) => ({ ...current, [report.id]: identity }));
+      } catch {
+        // A missing identity shard leaves the existing anonymous fallback intact.
+      }
+    }));
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, reports]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,14 +253,15 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   }
 
   // Statistics calculation for the admin summary cards
-  const pendingReports = reports.filter(r => r.status === "pending");
-  const verifiedReports = reports.filter(r => r.status === "verified");
-  const resolvedReports = reports.filter(r => r.status === "resolved");
+  const adminReports = reports.map((report) => ({ ...report, ...reporterIdentities[report.id] }));
+  const pendingReports = adminReports.filter(r => r.status === "pending");
+  const verifiedReports = adminReports.filter(r => r.status === "verified");
+  const resolvedReports = adminReports.filter(r => r.status === "resolved");
 
   const exportToCSV = () => {
     const rows = [
       ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
-      ...reports.map((r) =>
+      ...adminReports.map((r) =>
         [
           r.id,
           `"${(r.locationName || "").replace(/"/g, '""')}"`,
@@ -249,7 +284,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     URL.revokeObjectURL(url);
   };
 
-  const filteredReports = reports.filter((r) => {
+  const filteredReports = adminReports.filter((r) => {
     const matchesSearch =
       !searchQuery.trim() ||
       (r.locationName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
