@@ -105,6 +105,15 @@ export function wilayaContainsCoords(wilaya: string, lat: number, lng: number): 
   return false;
 }
 
+/**
+ * Fix 8b: the canonical region labels — the exact strings report creation
+ * accepts (via `wilayaContainsCoords`) and the exact strings stored in a
+ * report's `wilaya` field. Subscription preferences must use these same
+ * identifiers, otherwise the alert filter's exact-equality match can never
+ * fire and the subscriber silently receives nothing for that region.
+ */
+export const WILAYA_NAMES: readonly string[] = WILAYA_BOUNDS.map((b) => b.name);
+
 export function runClustering(reports: Report[]): Report[] {
   const CLUSTER_THRESHOLD_KM = 3.0;
   const visited = new Set<string>();
