@@ -114,6 +114,36 @@ export function wilayaContainsCoords(wilaya: string, lat: number, lng: number): 
  */
 export const WILAYA_NAMES: readonly string[] = WILAYA_BOUNDS.map((b) => b.name);
 
+/**
+ * Fix 8c: map a stored region identifier back to its canonical label.
+ * Subscriptions saved before Fix 8b stored free-text wilayas ("Annaba",
+ * "عنابة", "Algérie - Annaba") that can never equal a report's canonical
+ * `wilaya` label, so the Fix 8 exact-equality filter silently drops their
+ * alerts. A stored value is canonicalized only when it matches EXACTLY
+ * (case-insensitive, trimmed) one component of exactly one canonical label
+ * — the full label, the Arabic side, the French side, the Arabic region, or
+ * the French region. Anything else (including values that would match two
+ * labels, which cannot happen with the current 22 distinct regions) is
+ * returned unchanged, so unrecognizable aliases keep matching nothing
+ * rather than being guessed into the wrong region.
+ */
+export function canonicalizeWilaya(value: string): string {
+  const trimmed = value.trim();
+  if (WILAYA_NAMES.includes(trimmed)) return trimmed;
+  const folded = trimmed.toLocaleLowerCase();
+  const matches = WILAYA_BOUNDS.filter((b) => {
+    const parenIndex = b.name.indexOf(" (");
+    const arabicSide = parenIndex === -1 ? b.name : b.name.slice(0, parenIndex);
+    const frenchSide = parenIndex === -1 ? "" : b.name.slice(parenIndex + 2, -1);
+    const arabicRegion = arabicSide.split(" - ").slice(1).join(" - ");
+    const frenchRegion = frenchSide.split(" - ").slice(1).join(" - ");
+    return [b.name, arabicSide, frenchSide, arabicRegion, frenchRegion].some(
+      (part) => part.length > 0 && part.toLocaleLowerCase() === folded,
+    );
+  });
+  return matches.length === 1 ? matches[0].name : trimmed;
+}
+
 export function runClustering(reports: Report[]): Report[] {
   const CLUSTER_THRESHOLD_KM = 3.0;
   const visited = new Set<string>();
