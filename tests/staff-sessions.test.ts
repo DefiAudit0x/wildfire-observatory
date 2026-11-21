@@ -27,6 +27,19 @@ vi.mock("../server/fs.js", () => ({
     state.revocations.set(id, data); return true;
   },
   docUpdate: state.docUpdate,
+  // Fix 4d: the mock mirrors the real updateUserAtomic contract — it reads
+  // the target from the in-memory users map and runs the route's authorize
+  // callback against that transaction-time snapshot before applying the
+  // update, so the guard sees a promotion that landed after the first read.
+  updateUserAtomic: async (agentId: string, update: Record<string, unknown>, authorize: (t: any) => any) => {
+    const target = state.users.get(agentId);
+    if (!target) return { outcome: "not-found" };
+    const reason = authorize(target);
+    if (reason) return { outcome: "forbidden", ...reason };
+    const user = { ...target, ...update };
+    state.users.set(agentId, user);
+    return { outcome: "updated", before: target, user };
+  },
   collectionGet: vi.fn(async () => []),
   docDelete: vi.fn(),
 }));
@@ -116,8 +129,9 @@ describe("USR-1 commander management boundary", () => {
     state.users.set("commander-1", { agentId: "commander-1", role: "commander", unitId: "DZ16", isActive: true });
     state.users.set("commander-2", { agentId: "commander-2", role: "commander", unitId: "DZ16", isActive: true });
     const token = generateStaffToken({ agentId: "commander-1", role: "commander", unitId: "DZ16" });
+    const before = { ...state.users.get("commander-2") };
     const response = await supertest(app()).put("/users/commander-2").set("Authorization", `Bearer ${token}`).send(change);
-    expect(response.status).toBe(403); expect(state.docUpdate).not.toHaveBeenCalled();
+    expect(response.status).toBe(403); expect(state.users.get("commander-2")).toEqual(before);
     expect((await supertest(app()).put("/users/agent-1").set("Authorization", `Bearer ${token}`).send(change)).status).toBe(200);
     expect((await supertest(app()).put("/users/commander-2").set("Authorization", `Bearer ${generateAdminToken("superadmin")}`).send(change)).status).toBe(200);
   });
