@@ -4,7 +4,7 @@ type Row = Record<string, unknown>;
 type Ref = { collection: string; id: string };
 const backend = vi.hoisted(() => {
   const rows = new Map<string, Row>();
-  const state = { admin: true, failCommit: false, reads: 0, commits: 0 };
+  const state = { admin: true, failCommit: false, reads: 0, commits: 0, readGate: null as Promise<void> | null };
   const key = (ref: Ref) => `${ref.collection}/${ref.id}`;
   const snapshot = (ref: Ref) => {
     const value = rows.get(key(ref));
@@ -20,10 +20,15 @@ const backend = vi.hoisted(() => {
   const query = (name: string) => ({
     collection: name,
     orderBy: () => query(name), limit: () => query(name), where: () => query(name),
-    doc: (id: string) => ({ collection: name, id, get: async () => { state.reads++; return snapshot({ collection: name, id }); }, set: async (data: Row) => write({ collection: name, id }, data) }),
+    doc: (id: string) => ({ collection: name, id, get: async () => { state.reads++; const snap = snapshot({ collection: name, id }); if (state.readGate) await state.readGate; return snap; }, set: async (data: Row) => write({ collection: name, id }, data) }),
     get: async () => {
       state.reads++;
       const docs = [...rows.keys()].filter((path) => path.startsWith(`${name}/`)).map((path) => snapshot({ collection: name, id: path.slice(name.length + 1) }));
+      // Fix 10b: the snapshot is taken before the gate — this models a read
+      // that executed before a write but whose response arrives after the
+      // invalidation. Awaiting the gate first would read post-write data
+      // and never exercise the race.
+      if (state.readGate) await state.readGate;
       return { empty: !docs.length, docs };
     },
   });
@@ -49,8 +54,8 @@ vi.mock("firebase-admin/firestore", () => ({ FieldValue: { increment: (increment
 vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, collection: string, id: string) => ({ collection, id }),
   collection: (_db: unknown, name: string) => backend.query(name),
-  getDoc: async (ref: Ref) => { backend.state.reads++; return backend.snapshot(ref); },
-  getDocFromServer: async (ref: Ref) => { backend.state.reads++; return backend.snapshot(ref); },
+  getDoc: async (ref: Ref) => { backend.state.reads++; const snap = backend.snapshot(ref); if (backend.state.readGate) await backend.state.readGate; return snap; },
+  getDocFromServer: async (ref: Ref) => { backend.state.reads++; const snap = backend.snapshot(ref); if (backend.state.readGate) await backend.state.readGate; return snap; },
   getDocs: (ref: ReturnType<typeof backend.query>) => ref.get(),
   setDoc: async (ref: Ref, data: Row) => backend.write(ref, data),
   query: (ref: unknown) => ref, orderBy: () => ({}), limit: () => ({}), where: () => ({}),
@@ -64,7 +69,7 @@ for (const admin of [true, false]) describe(`${admin ? "admin" : "client"} SDK r
   beforeEach(async () => {
     vi.resetModules();
     backend.rows.clear();
-    Object.assign(backend.state, { admin, failCommit: false, reads: 0, commits: 0 });
+    Object.assign(backend.state, { admin, failCommit: false, reads: 0, commits: 0, readGate: null });
     fs = await import("../server/fs.js");
     atomic = await import("../server/atomic.js");
   });
@@ -162,6 +167,37 @@ for (const admin of [true, false]) describe(`${admin ? "admin" : "client"} SDK r
       expect(await atomic.setPrincipalBlocked("team", "p", blocked)).toBe(blocked ? "blocked" : "unblocked");
       await fresh("teams", "team");
     }
+  });
+  it("Fix 10b: a pending collection read cannot restore invalidated data", async () => {
+    seed("test", "one", { value: 1 });
+    let release!: () => void;
+    backend.state.readGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = fs.collectionGet("test");
+    // Let the read reach the gated backend call (the client SDK path awaits
+    // a dynamic import first); the gate itself is still held, so the read
+    // cannot have passed it. The reads counter proves it is in flight.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.state.reads).toBe(1);
+    // The read has entered the gated backend call; a writer commits and
+    // invalidates while its response is still in flight.
+    expect(await fs.docSet("test", "one", { value: 2 })).toBe(true);
+    release();
+    // The pending call itself still returns its pre-write snapshot — that
+    // is unavoidable — but it must NOT re-cache it.
+    expect(await pending).toEqual([{ id: "one", value: 1 }]);
+    expect(await fs.collectionGet("test")).toEqual([{ id: "one", value: 2 }]);
+  });
+  it("Fix 10b: a pending doc read cannot restore invalidated data", async () => {
+    seed("test", "one", { value: 1 });
+    let release!: () => void;
+    backend.state.readGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = fs.docGet("test", "one");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(backend.state.reads).toBe(1);
+    expect(await fs.docSet("test", "one", { value: 2 })).toBe(true);
+    release();
+    expect(await pending).toEqual({ id: "one", value: 1 });
+    expect(await fs.docGet("test", "one")).toEqual({ id: "one", value: 2 });
   });
   it("preserves caches on exists, missing, unavailable and idempotent no-write outcomes", async () => {
     seed("units", "unit", {});
