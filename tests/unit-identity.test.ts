@@ -10,7 +10,7 @@ const backend = vi.hoisted(() => ({
   runTransaction: async (callback: (tx: unknown) => Promise<unknown>) => callback({
     get: async (ref: Ref) => ref.identity !== undefined
       ? { empty: !state.staff.includes(ref.identity) }
-      : { exists: state.admin ? state.unit : () => state.unit },
+      : { exists: state.admin ? state.unit : () => state.unit, data: () => ({}) },
     delete: (ref: Ref) => state.deletes(ref.id),
   }),
 }));
@@ -26,7 +26,7 @@ vi.mock("firebase/firestore", () => ({
   runTransaction: (_db: unknown, callback: (tx: unknown) => Promise<unknown>) => callback({
     get: async (ref: Ref) => {
       if (ref.id === undefined) throw new Error("Provided document reference is from a different Firestore instance.");
-      return { exists: () => state.unit };
+      return { exists: () => state.unit, data: () => ({}) };
     },
     delete: (ref: Ref) => state.deletes(ref.id),
   }),
