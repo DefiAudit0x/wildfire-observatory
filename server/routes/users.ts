@@ -6,8 +6,8 @@ import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
-import { collectionGet, docGet, docDelete, docSet, updateUserAtomic } from "../fs.js";
-import { createUserIfUnitExists, createDocIfAbsent } from "../atomic.js";
+import { collectionGet, docGet, docSet, updateUserAtomic } from "../fs.js";
+import { createUserIfUnitExists, createDocIfAbsent, deleteUserAtomically } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -135,8 +135,9 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
     const existing = await docGet("users", agentId);
     if (!existing) { res.status(404).json({ error: "User not found" }); return; }
     if (existing.role === "superadmin" && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can delete superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
-    const ok = await docDelete("users", agentId);
-    if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
+    const deletion = await deleteUserAtomically(agentId);
+    if (deletion === "not-found") { res.status(404).json({ error: "User not found" }); return; }
+    if (deletion === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
     // S-M8: account deletion is the harshest privilege action — audit it
     // BEFORE the (best-effort) roster sweep so the entry survives sweep errors.
     logAdminAction("user.delete", { targetAgentId: agentId, role: existing.role, unitId: existing.unitId }, actorFromRequest(req)).catch(() => {});
