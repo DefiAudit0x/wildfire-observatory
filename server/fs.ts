@@ -15,6 +15,23 @@ const collectionCache = new Map<string, { data: any[] | null; expiresAt: number 
 const docCache = new Map<string, { data: any | null; expiresAt: number }>();
 
 /**
+ * Fix 10b: per-collection generation guard against pending reads re-caching
+ * invalidated data. A `collectionGet`/`docGet` awaits the Firestore read
+ * after a cache miss; a writer committing in that window invalidates the old
+ * entry, but the pending read then unconditionally re-set the pre-write
+ * snapshot (up to 30s/60s TTL) — the invalidation was silently undone
+ * (CodeRabbit on PR #139). Every invalidation bumps its collection's
+ * generation, even when nothing is cached; a read caches only when the
+ * generation is unchanged since it started. The key is the collection name
+ * (bounded key space, no leak): a write to any doc in a collection bumps
+ * that collection, which matches `invalidateCollectionCache` clearing every
+ * cached query of the collection. The generation is NOT reset by pruning —
+ * a stale generation value can only make a read skip caching, never serve
+ * stale data.
+ */
+const cacheGenerations = new Map<string, number>();
+
+/**
  * ARC-M03 fix: evict expired entries instead of leaving them until the exact
  * same key is re-read. Long-running processes read many distinct doc keys
  * (sosProfiles, badgeCodes, users, notifications…); without a sweep the maps
@@ -28,10 +45,18 @@ function sweepExpired<T>(cache: Map<string, { expiresAt: number }>) {
 }
 
 export function invalidateCollectionCache(collectionName: string) {
-  collectionCache.delete(collectionName);
+  // Fix 10b: bump first, even with nothing cached — a read may be pending
+  // in flight, and only the generation tells it its snapshot is stale.
+  cacheGenerations.set(collectionName, (cacheGenerations.get(collectionName) ?? 0) + 1);
+  for (const key of collectionCache.keys()) {
+    if (key.startsWith(`${collectionName}::`)) collectionCache.delete(key);
+  }
 }
 
 export function invalidateDocCache(collectionName: string, id: string) {
+  // Fix 10b: a doc write bumps its collection's generation too, so a
+  // pending collection read of the same collection cannot re-cache either.
+  cacheGenerations.set(collectionName, (cacheGenerations.get(collectionName) ?? 0) + 1);
   const key = `${collectionName}/${id}`;
   docCache.delete(key);
 }
@@ -50,6 +75,9 @@ export async function collectionGet(
   if (cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
   if (!db) return null;
+  // Fix 10b: capture the generation before the read — any invalidation
+  // during the await must prevent this snapshot from being cached.
+  const generation = cacheGenerations.get(collectionName) ?? 0;
   try {
     let data: any[] = [];
     if (isAdminDb(db)) {
@@ -71,7 +99,12 @@ export async function collectionGet(
       }
     }
     sweepExpired(collectionCache);
-    collectionCache.set(cacheKey, { data, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
+    // Fix 10b: cache only if no write invalidated this collection while the
+    // read was pending. The data is still returned to this caller — it is
+    // merely not stored for the next one.
+    if ((cacheGenerations.get(collectionName) ?? 0) === generation) {
+      collectionCache.set(cacheKey, { data, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
+    }
     return data;
   } catch (err) {
     logger.error({ err, collectionName }, "Firestore collection read failed");
@@ -92,6 +125,9 @@ export async function docGet(collectionName: string, id: string, fresh = false, 
     if (opts.strict) throw new Error(`Firestore unavailable for ${collectionName}/${id}`);
     return null;
   }
+  // Fix 10b: same generation guard as collectionGet — a writer committing
+  // while this read is pending must prevent the stale snapshot from caching.
+  const generation = cacheGenerations.get(collectionName) ?? 0;
   try {
     let data: any | null = null;
     if (isAdminDb(db)) {
@@ -104,7 +140,11 @@ export async function docGet(collectionName: string, id: string, fresh = false, 
       data = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     }
     sweepExpired(docCache);
-    docCache.set(cacheKey, { data, expiresAt: Date.now() + DOC_CACHE_TTL_MS });
+    // Fix 10b: cache only if no write invalidated this collection while the
+    // read was pending; the data is still returned to this caller.
+    if ((cacheGenerations.get(collectionName) ?? 0) === generation) {
+      docCache.set(cacheKey, { data, expiresAt: Date.now() + DOC_CACHE_TTL_MS });
+    }
     return data;
   } catch (err) {
     logger.error({ err, collectionName, id }, "Firestore doc read failed");

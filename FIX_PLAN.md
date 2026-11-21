@@ -717,3 +717,50 @@ Unfixed: exit 1, **8 failed / 18 passed** (3 files: 2 failed, 1 passed). Fixed: 
 Deviations: none in functional scope. Tests use an in-memory staged transaction mock, not live Firestore; SDK contention/retry semantics are supplied by Firestore and are not integration-tested here. End-to-end verification is limited by missing Java. Sandbox approval checks delayed writes but all requested local edits and checks completed.
 
 Next: **Fix 10** — `ATM-2` (`server/atomic.ts`) and `FS-1` (`server/fs.ts`): invalidate server document and collection caches (triage rows 139–140).
+## Fix 10 — ATM-2 + FS-1
+
+Branch `fix/wildfire-10-cache-invalidation` starts at main `01b6179`.
+
+- `server/fs.ts` evicts all order/limit variants matching the collection key prefix. The key format, TTLs and document invalidator are unchanged.
+- `server/atomic.ts` invalidates the documents and collections written by all ten atomic writers after the transaction resolves successfully, in both SDK paths. Idempotent block and unblock results retain their public return values and skip eviction.
+- `tests/cache-invalidation.test.ts` exercises the real cache against staged in-memory Firestore transactions for both SDKs. Two additional controls verify that no-write outcomes and a failed commit preserve cached reads.
+
+Each source file was temporarily replaced with its exact main version in isolation and then restored. `npm run test:server -- tests/cache-invalidation.test.ts -t FS-1` exited 1 with 2 failures. The analogous `-t ATM-2` run exited 1 with 22 failures. Each row below failed in both SDK paths and passed with the fix.
+
+| Regression | Unfixed result |
+| --- | --- |
+| FS-1 collection query variants | Read value 1 after committing value 2 |
+| ATM-2 new roster day | Returned cached null |
+| ATM-2 existing roster day | Returned the previous posts |
+| ATM-2 unit creation | Returned cached null after the unit precheck |
+| ATM-2 staff creation | Returned cached null for the new user |
+| ATM-2 unit deletion | Returned the deleted unit |
+| ATM-2 registration and uniqueness reservations | Returned cached null for the new registration |
+| ATM-2 approval and badge | Returned pending instead of approved |
+| ATM-2 team join | Returned the previous code budget |
+| ATM-2 mission phase | Returned en_route instead of on_scene |
+| ATM-2 mission clear | Returned en_route instead of cleared |
+| ATM-2 principal block and unblock | Returned the previous blocklist |
+
+Logs are in `/tmp/fix10-unfixed-fs.log` and `/tmp/fix10-unfixed-atomic.log`.
+
+- Targeted regressions passed, 26/26 (`/tmp/fix10-affected.log`).
+- `npm run lint` passed (`/tmp/fix10-lint.log`).
+- `npm run build` passed (`/tmp/fix10-build.log`).
+- Full server suite passed, 716 tests in 72 files (`/tmp/fix10-server-final.log`).
+- Full React suite passed, 831 tests in 78 files with `--maxWorkers=2` (`/tmp/fix10-react-final.log`).
+- End-to-end execution stopped before Playwright. Port 3000 was free, but the Firestore emulator could not spawn `java -version` (`/tmp/fix10-e2e.log`).
+- `git diff --check` passed.
+
+`tests/seed-staff.test.ts` supplies the two cache invalidator exports in its existing Firestore helper mock. The assertions are unchanged. No other functional changes outside ATM-2 and FS-1.
+
+Next is **Fix 11** (triage rows 141–142). ATM-1 aligns the unit identity used by the linked-staff deletion guard. SEED-1 makes staff bootstrap report persistence failures and exit unsuccessfully.
+
+## Fix 10b follow-up — CodeRabbit thread on PR #139 (verified, parent-implemented)
+
+Watch 1 on PR #139 (head d3535eb) returned DO NOT MERGE with one unresolved actionable CodeRabbit thread (Minor, Data Integrity & Integration): "Prevent pending reads from restoring invalidated data" (`server/fs.ts:31–33`). The coordinator verified it valid against the code, and the parent re-verified it from the source: `collectionGet` awaits the Firestore read after a cache miss (`fs.ts:62` Admin / `:74` client) and then unconditionally re-caches (`:88`); a writer committing and invalidating in that window has its invalidation silently undone for up to the 30s TTL. The same hole exists in `docGet` (`:113`/`:119` read, `:127` unconditional set, 60s TTL), which CodeRabbit did not flag — a complete fix covers both. Everything else in the gate passed (own checks green, Analyze both green, CodeQL neutral 0 annotations with alert #20 held, instrumented the known emulator boot timeout).
+
+- Fix: `server/fs.ts` gains a per-collection generation map (`cacheGenerations`, keyed by collection name — bounded key space, no leak). Both invalidators bump their collection's generation FIRST, even when nothing is cached (a read may be pending in flight); `invalidateDocCache` bumps its collection's generation too, so a pending collection read of the same collection cannot re-cache either. Both getters capture the generation before the read and cache only when it is unchanged afterwards. The data is still returned to the pending caller — it is merely not stored for the next one. A stale generation value can only make a read skip caching, never serve stale data. The design follows CodeRabbit's suggested fix (generation counter, cache only if unchanged) and adds the doc side CodeRabbit left out.
+- Tests: the mock backend in `tests/cache-invalidation.test.ts` gains a `readGate` — reads take their snapshot BEFORE awaiting the gate, modelling a read that executed pre-write but whose response arrives post-invalidation (awaiting first would read post-write data and never exercise the race). Two new tests per SDK (collection + doc): start a gated read, write + invalidate while it is pending (asserting `reads === 1` proves the read is genuinely in flight), release, assert the pending call returns its pre-write snapshot and the NEXT read returns the new value. The gate defaults to null, so the 26 existing tests are untouched.
+
+Files changed (3, +90/−7): `server/fs.ts` (+34/−4, generation map + bumps + guarded sets), `tests/cache-invalidation.test.ts` (+46/−3, `readGate` in the mock + 4 tests), `FIX_PLAN.md` (+10, this section). Verification: lint 0 diagnostics; build pass; affected 2 files / 34 passed (30 cache-invalidation + 4 seed-staff); full server suite 720 passed (Fix 10 baseline 716 + 4 new); React suite 835 passed (831 + 4 — the new `.test.ts` files re-run under jsdom). Fail-without-fix proven by stashing `server/fs.ts`: 4 failed / 26 passed — exactly the 4 new 10b tests, both SDKs.

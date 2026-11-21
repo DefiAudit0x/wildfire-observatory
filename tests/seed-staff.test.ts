@@ -34,6 +34,8 @@ vi.mock("../server/firebase.js", () => ({
 // creator. These are the old seeder's dependencies; the fixed seeder uses the
 // real createDocIfAbsent helper and the transaction mock above instead.
 vi.mock("../server/fs.js", () => ({
+  invalidateCollectionCache: vi.fn(),
+  invalidateDocCache: vi.fn(),
   docGet: async (collection: string, id: string) => {
     const key = `${collection}/${id}`;
     if (collection === state.target) {
