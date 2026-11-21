@@ -610,3 +610,33 @@ describe("multipart form builder — direct unit pin", () => {
     expect((fd.get("image") as File).name).toMatch(/^report-\d+\.jpg$/);
   });
 });
+
+
+describe("Fix 12e partial satellite admission", () => {
+  it.each([false, true])("applies validated partial 503 data (empty=%s), keeps degraded health, and clears partial on recovery", async (empty) => {
+    const data = empty ? [] : [validSatellite()];
+    installFetch((url) => url.includes("/api/satellite-data") ? json({ hotspots: data }, 503) : fullRouter()(url));
+    const { result } = await mount();
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.satellites).toEqual(data);
+    expect(result.current.satellitesPartial).toBe(true);
+    expect(result.current.datasetHealth.satellites).toMatchObject({ lastSuccess: null, lastAttemptOk: false, lastFailureReason: "http" });
+    expect(result.current.lastRefreshed).toBe(0);
+    installFetch(fullRouter());
+    await act(() => result.current.fetchData());
+    expect(result.current.satellitesPartial).toBe(false);
+    expect(result.current.datasetHealth.satellites.lastAttemptOk).toBe(true);
+  });
+
+  it.each([{}, { hotspots: null }, { hotspots: [{ id: "bad" }] }, { hotspots: "bad" }])("preserves prior partial data on an invalid/absent 503 payload %j", async (body) => {
+    installFetch((url) => url.includes("/api/satellite-data") ? json({ hotspots: [validSatellite()] }, 503) : fullRouter()(url));
+    const { result } = await mount();
+    await waitFor(() => expect(result.current.satellitesPartial).toBe(true));
+    const prior = result.current.satellites;
+    installFetch((url) => url.includes("/api/satellite-data") ? json(body, 503) : fullRouter()(url));
+    await act(() => result.current.fetchData());
+    expect(result.current.satellites).toEqual(prior);
+    expect(result.current.satellitesPartial).toBe(true);
+    expect(result.current.datasetHealth.satellites.lastFailureReason).toBe("http");
+  });
+});
