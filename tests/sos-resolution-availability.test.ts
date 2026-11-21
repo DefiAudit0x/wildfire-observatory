@@ -8,6 +8,7 @@ type MissionQuery = { name: string; field: string; value: unknown };
 const state = vi.hoisted(() => ({
   docs: new Map<string, StoredDoc>(),
   client: false,
+  getDbError: undefined as Error | undefined,
   events: [] as string[],
   beforeDocRead: undefined as ((path: string) => void) | undefined,
   readReports: vi.fn<() => Promise<{ docs: { id: string; data: () => StoredDoc }[] }>>(),
@@ -59,17 +60,20 @@ async function transaction<T>(callback: (tx: {
 
 vi.mock("../server/firebase.js", () => ({
   isAdminDb: () => !state.client,
-  getDb: () => ({
-    collection: (name: string) => {
-      const reportsQuery = { limit: () => reportsQuery, get: () => state.readReports() };
-      return {
-        orderBy: () => reportsQuery,
-        doc: (id: string) => ({ path: `${name}/${id}`, get: async () => docSnapshot({ path: `${name}/${id}` }) }),
-        where: (field: string, _op: string, value: unknown) => ({ name, field, value }),
-      };
-    },
-    runTransaction: transaction,
-  }),
+  getDb: () => {
+    if (state.getDbError) throw state.getDbError;
+    return {
+      collection: (name: string) => {
+        const reportsQuery = { limit: () => reportsQuery, get: () => state.readReports() };
+        return {
+          orderBy: () => reportsQuery,
+          doc: (id: string) => ({ path: `${name}/${id}`, get: async () => docSnapshot({ path: `${name}/${id}` }) }),
+          where: (field: string, _op: string, value: unknown) => ({ name, field, value }),
+        };
+      },
+      runTransaction: transaction,
+    };
+  },
 }));
 
 vi.mock("firebase/firestore", () => ({
@@ -86,7 +90,7 @@ vi.mock("firebase/firestore", () => ({
 
 const { default: sosRouter } = await import("../server/routes/sos.js");
 const { invalidateReportsCache } = await import("../server/db.js");
-const { resolveSosAtomically } = await import("../server/fs.js");
+const { createSosWithAdmission, invalidateDocCache, resolveSosAtomically } = await import("../server/fs.js");
 const { default: logger } = await import("../server/logger.js");
 let sequence = 0;
 function post(body: StoredDoc = {}) {
@@ -105,6 +109,7 @@ beforeEach(() => {
   state.docs.clear();
   state.events = [];
   state.client = false;
+  state.getDbError = undefined;
   state.beforeDocRead = undefined;
   state.readReports.mockReset();
   invalidateReportsCache();
@@ -227,5 +232,100 @@ describe("Fix 13b client resolution", () => {
     const result = await resolveSosAtomically("fix13b");
     expect(state.docs.get(missionPath)).toEqual(reassignedMission);
     expect(result).toEqual({ status: "resolved", missionsCleared: 0 });
+  });
+});
+
+describe("Fix 13c duplicate admission replay (real route and helpers)", () => {
+  function gate<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  const duplicateBody = { error: "An SOS from this device was already received recently" };
+
+  it("replays the first committed SOS after both early lookups miss, and retains no-key duplicate rejection", async () => {
+    const firstContext = gate<{ docs: [] }>();
+    const secondContext = gate<{ docs: [] }>();
+    const firstStarted = gate<void>();
+    const secondStarted = gate<void>();
+    state.readReports
+      .mockImplementationOnce(() => { firstStarted.resolve(); return firstContext.promise; })
+      .mockImplementationOnce(() => { secondStarted.resolve(); return secondContext.promise; });
+    const body = { deviceId: "fix13c-racing-device", clientGeneratedId: "fix13c-racing-key" };
+    const first = post(body).then((res) => res);
+    await firstStarted.promise;
+    const second = post(body).then((res) => res);
+    await secondStarted.promise;
+    // Both requests passed their early replay lookup, but neither has admitted.
+    expect(state.events).not.toContain("transaction");
+    expect(state.docs.size).toBe(0);
+    firstContext.resolve({ docs: [] });
+    const original = await first;
+    expect(original.status).toBe(200);
+    expect(state.docs.get(`sosIdempotency/${body.clientGeneratedId}`)?.sosId).toBe(original.body.id);
+    const info = vi.spyOn(logger, "info");
+    secondContext.resolve({ docs: [] });
+    const replay = await second;
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ id: original.body.id, status: original.body.status });
+    expect(info).toHaveBeenCalledWith({ sosId: original.body.id }, "SOS replayed by clientGeneratedId");
+    expect(state.events.filter((event) => event === "transaction")).toHaveLength(2);
+    expect([...state.docs.keys()].filter((path) => path.startsWith("trappedSos/"))).toEqual([`trappedSos/${original.body.id}`]);
+
+    const noKey = { deviceId: "fix13c-no-key-device", lat: null, lng: null };
+    expect((await post(noKey)).status).toBe(200);
+    const duplicate = await post(noKey);
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body).toEqual(duplicateBody);
+  });
+
+  it("rejects a different-device key found after duplicate admission with the replay ownership error", async () => {
+    const deviceId = "fix13c-duplicate-owner";
+    expect((await post({ deviceId, lat: null, lng: null })).status).toBe(200);
+    // The early lookup sees a dangling ledger record; context then allows a
+    // different device's SOS to commit before this request reaches admission.
+    state.docs.set("sosIdempotency/fix13c-foreign-key", { sosId: "fix13c-foreign-sos" });
+    state.readReports.mockImplementationOnce(async () => {
+      expect(await createSosWithAdmission("fix13c-foreign-sos", {
+        id: "fix13c-foreign-sos", deviceId: "fix13c-other-device", status: "active",
+      }, "fix13c-other-admission", Date.now(), 300000)).toBe("created");
+      return { docs: [] };
+    });
+    const res = await post({ deviceId, clientGeneratedId: "fix13c-foreign-key" });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "SOS retry key belongs to a different device" });
+    expect(state.readReports).toHaveBeenCalledTimes(1);
+    expect(state.events.filter((event) => event === "transaction")).toHaveLength(3);
+  });
+
+  it("falls back to 409 when the duplicate-branch lookup throws or cannot resolve a stored SOS", async () => {
+    const deviceId = "fix13c-lookup-failure-device";
+    expect((await post({ deviceId, lat: null, lng: null })).status).toBe(200);
+    // docGet's Firestore handle acquisition can throw, outside its read catch.
+    // Trigger only after the real admission helper has obtained its handle.
+    const failure = new Error("Firestore handle unavailable during replay");
+    state.beforeDocRead = (path) => {
+      if (path.startsWith("sosAdmissions/")) {
+        invalidateDocCache("sosIdempotency", "fix13c-throwing-key");
+        state.getDbError = failure;
+      }
+    };
+    const error = vi.spyOn(logger, "error");
+    const res = await post({ deviceId, clientGeneratedId: "fix13c-throwing-key", lat: null, lng: null });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual(duplicateBody);
+    expect(state.getDbError).toBe(failure);
+    expect(state.events.filter((event) => event === "transaction")).toHaveLength(2);
+    expect(error).toHaveBeenCalledWith({ err: failure }, "SOS idempotency lookup failed; returning duplicate");
+
+    state.getDbError = undefined;
+    state.beforeDocRead = undefined;
+    const unresolvedDevice = "fix13c-unresolved-device";
+    expect((await post({ deviceId: unresolvedDevice, lat: null, lng: null })).status).toBe(200);
+    const unresolved = await post({ deviceId: unresolvedDevice, clientGeneratedId: "fix13c-unresolved-key", lat: null, lng: null });
+    expect(unresolved.status).toBe(409);
+    expect(unresolved.body).toEqual(duplicateBody);
+    expect([...state.docs.keys()].filter((path) => path.startsWith("trappedSos/"))).toHaveLength(2);
   });
 });
