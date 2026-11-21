@@ -54,6 +54,7 @@ export function useObservatoryData() {
     // reportsRef away from the rendered list — nothing ever used it).
     setReports: poll.replaceReports,
     satellites: poll.satellites,
+    satellitesPartial: poll.satellitesPartial,
     wilayas: poll.wilayas,
     sosCalls: poll.sosCalls,
     notifications: poll.notifications,
