@@ -43,14 +43,18 @@ describe("sendFireAlert subscriber preferences", () => {
   beforeEach(() => {
     state.subscribers = [
       // Fix 8b: fixtures use canonical region identifiers (the exact
-      // WILAYA_BOUNDS labels report creation stores). "Annaba"/"Algiers"
-      // could never match a real report's wilaya, so they proved the filter
-      // against values no subscriber can actually save anymore.
+      // WILAYA_BOUNDS labels report creation stores). Fix 8c: a legacy
+      // subscriber who saved the free-text alias "Annaba" before 8b must
+      // still match — getVerifiedSubscribers normalizes stored aliases to
+      // canonical labels at read time. An unrecognizable alias ("Atlantis")
+      // still matches nothing, by design.
       { email: "wrong-region@example.test", wilayas: ["الجزائر - سكيكدة (Algérie - Skikda)"], minSeverity: "medium" },
       { email: "below-minimum@example.test", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "critical" },
       { email: "matching@example.test", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "high", unsubscribeToken: "match-token" },
       { email: "legacy@example.test", unsubscribeToken: "legacy-token" },
       { email: "empty-regions@example.test", wilayas: [], minSeverity: "medium" },
+      { email: "legacy-alias@example.test", wilayas: ["Annaba"], minSeverity: "medium", unsubscribeToken: "alias-token" },
+      { email: "unknown-alias@example.test", wilayas: ["Atlantis"], minSeverity: "medium" },
     ];
     fetchMock.mockClear();
     vi.stubGlobal("fetch", fetchMock);
@@ -80,9 +84,10 @@ describe("sendFireAlert subscriber preferences", () => {
       "matching@example.test",
       "legacy@example.test",
       "empty-regions@example.test",
+      "legacy-alias@example.test",
     ]);
     expect(String(fetchMock.mock.calls[0][1]?.body)).toContain("match-token");
-    expect(state.info).toHaveBeenLastCalledWith({ count: 3, wilaya: "الجزائر - عنابة (Algérie - Annaba)" }, "Fire alerts sent");
+    expect(state.info).toHaveBeenLastCalledWith({ count: 4, wilaya: "الجزائر - عنابة (Algérie - Annaba)" }, "Fire alerts sent");
   });
 
   it.each([true, false])("defaults missing severity to medium, excluding low alerts (admin SDK: %s)", async (adminSdk) => {
