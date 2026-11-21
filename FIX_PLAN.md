@@ -438,6 +438,7 @@ The report line distinguishes the two minor findings with ID NTESTGEO-1.
 - NTF-1 passes in `tests/notifications.test.ts`. The tests check that enrollment cannot mint a cookie for the requested identity and that cross-site enrollment issues no cookie.
 - Fail-without-fix evidence remains unverified for all three findings. Validation ran on the fixed branch only.
 - TypeScript lint and the production client and server builds passed. Server Vitest passed 662 tests across 67 files. React Vitest passed 774 tests across 73 files. End-to-end was not run because Java is unavailable for the Firestore emulator.
+
 - The branch was already based on `b748cae63debfee17012a2e1b4786569863b2557`, which matches `origin/main`. The local `main` ref was still at `caa58fb`.
 
 ## Fix 3b follow-up (CodeRabbit threads on PR #132, by the parent, not Sol)
@@ -456,3 +457,44 @@ The report line distinguishes the two minor findings with ID NTESTGEO-1.
 - Tests: 1 new regression test in `tests/observatory-hooks.test.tsx` (two overlapping enrollment cycles share a single enroll POST) — confirmed FAILING on 3b code (a second POST is fired) before the fix, passing after. The two 3b tests still pass unchanged; one test assertion needed a correction during development (the event-driven refresh adds a third read with the same adopted id — verified against `useObservatoryData`'s server-device-id listener, not a test artifact).
 - Verified by the parent: lint 0 diagnostics, observatory-hooks 25/25, full server suite 67 files / 662 passed, full React suite 73 files / 777 passed (776 at 3b + 1 new), production build passes.
 - Note: the /tmp/wf-fix3b worktree was pruned by a runtime restart; the work was recreated as ~/workspace/wf-fix3c from the surviving local branch fix/wildfire-3b (commit dc1e6f1), and the 3c work continued there. Prefer workspace paths over /tmp for worktrees that must survive restarts.
+
+## Fix 8 validation — MAIL-1 / ADM-2
+
+Base: `4b543b1257b29534dd0b50099a6e2e736d18e47b` (main, PR #132). Created local branch `fix/wildfire-8-alert-scope` directly from this commit; none of the Fix 4–7 branches are ancestors. `git fetch origin` succeeded after granting sandbox access to the work clone. No dependencies were installed. No push, PR, or merge performed.
+
+### Changes
+
+- `server/email.ts`: retain `wilayas` and `minSeverity` in both Admin SDK and client SDK subscriber reads. Apply region AND severity-rank matching before the existing ten-recipient batches. Preserve unsubscribe links, recipient error isolation, and the final log shape, counting the filtered fan-out. Compatibility policy: a missing or empty `wilayas` means all regions; missing `minSeverity` means `medium`, matching the persisted subscription default. Thus legacy subscriptions still receive medium-or-higher alerts until preferences are set, while low alerts require an explicit low minimum.
+- `server/routes/reports.ts`: add `GET /api/reports/:id/identity`, gated by the existing real `requireAdmin`. Read the existing `getReportPrivate(id)` identity-shard helper and return only name/phone, with `Cache-Control: no-store`. Missing identity returns 404. Do not change `GET /api/reports`, its public serializer, the shared wire cache, or persistence shards.
+- `src/components/AdminPanel.tsx`: request identity only after the admin session probe/login succeeds; merge the private result into panel-local reports for name display, phone links, reporter search, and reporter CSV export. Discard late responses after effect cleanup and clear identities on session loss/logout. Missing/failed identity fetches retain the anonymous fallback.
+- `tests/email-alert-preferences.test.ts`: four regression cases exercise both SDK paths with mocked subscriber reads and provider HTTP transport; check wrong-region and below-minimum exclusions, matching and legacy recipients, empty-region defaults, missing-severity exclusion of low alerts, unsubscribe token retention, and filtered log count.
+- `tests/reports-admin-identity.test.ts`: mount the real reports router/auth middleware; assert no-cookie 401, non-admin staff-cookie 403, admin-cookie identity projection/no-store, no unauthorized private-reader calls, and identical stripped public lists with and without admin cookies.
+- `tests/components/admin-panel.test.tsx`: add a component regression checking real reporter display, name filtering, `tel:` link, reporter CSV content, and no identity request after a failed session probe. Existing tests remain unchanged apart from the additional test import.
+
+### Fail-without-fix evidence
+
+Kept the new tests in place and temporarily replaced ONLY `server/email.ts`, `server/routes/reports.ts`, and `src/components/AdminPanel.tsx` with their exact `git show 4b543b1:<path>` contents. A Python `finally` block restored the fixed bytes before subsequent lint/build/full-suite validation. No worktree or other clone was modified.
+
+| New regression | Unfixed main result | Fixed result |
+| --- | --- | --- |
+| MAIL-1 matching recipients, Admin SDK | FAIL: sends 5 recipients, including wrong region and critical-only subscriber, instead of 3 | PASS |
+| MAIL-1 matching recipients, client SDK | FAIL: same extra 2 recipients | PASS |
+| MAIL-1 missing severity defaults to medium, Admin SDK | FAIL: low alert causes 3 sends instead of 1 | PASS |
+| MAIL-1 missing severity defaults to medium, client SDK | FAIL: same 3 sends instead of 1 | PASS |
+| ADM-2 route access/projection | FAIL: old route returns 404 instead of the required 401; admin identity endpoint does not exist | PASS |
+| ADM-2 component identity consumers | FAIL: cannot find `Amina Reporter (citizen)`; the 3 existing component tests still pass | PASS |
+
+Exact reproduction commands: `npx vitest run --config vitest.server.config.ts tests/email-alert-preferences.test.ts tests/reports-admin-identity.test.ts` (unfixed: exit 1, 5/5 failed; fixed: 5/5 passed) and `npx vitest run --config vitest.config.ts tests/components/admin-panel.test.tsx` (unfixed: exit 1, new test failed / 3 existing passed; fixed: 4/4 passed). Local evidence logs: `/tmp/alert-scope-baseline-server.log` and `/tmp/alert-scope-baseline-component.log`.
+
+### Validation results
+
+- `npm run lint`: PASS, zero diagnostics.
+- `npm run build`: PASS, production client/PWA and server bundles generated. Existing Vite `__dirname` / future native-config-loader warning only.
+- `npm run test:server`: PASS, 69 files / 667 tests.
+- `npm run test:react`: initial run 74 passed files / 1 failed file, 782 passed tests / 1 failed test. The unrelated existing `tests/components/team-panel.test.tsx` phase-update assertion at line 155 failed under the full run; its isolated rerun passed all 30 tests. The complete rerun, `npm run test:react -- --maxWorkers=2`, PASSED: 75 files / 783 tests (exit 0). No test assertions were modified for this retry. Log: `/tmp/alert-scope-react-retry.log`.
+- `npm run test:e2e`: attempted with port 3000 verified free; exit 2 before Playwright because Firebase cannot spawn `java -version`. No Java/browser/dependency install attempted.
+- `git diff --check`: PASS.
+
+Deviations: no functional scope changes; provider HTTP transport is mocked instead of exporting the private email sender solely for tests. End-to-end verification is limited by the missing Java runtime. No existing tests were weakened and no unrelated finding was changed.
+
+Next: Fix 9 covers `AUD-2` (`server/routes/audit.ts`) and `DB-1` (`server/db.ts`): keep durable audit and report migrations consistent.
