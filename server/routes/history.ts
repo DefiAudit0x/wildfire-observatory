@@ -2,8 +2,9 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { getReportsDbResult } from "../db.js";
 import { collectionGet } from "../fs.js";
-import { getLiveSatelliteData } from "./satellite.js";
+import { getLiveSatelliteData, SatelliteUnavailableError } from "./satellite.js";
 import { getSosSummarySnapshot } from "./sos.js";
+import logger from "../logger.js";
 
 const router = Router();
 
@@ -60,7 +61,22 @@ router.get("/", async (_req: Request, res: Response) => {
     if (bucket) bucket.sos += 1;
   }
 
-  const hotspots = await getLiveSatelliteData();
+  // Fix 12b: getLiveSatelliteData throws SatelliteUnavailableError on a FIRMS
+  // outage (Fix 12 / SAT-1). History's primary data is the report/SOS buckets;
+  // a satellite outage must not fail the whole endpoint — return the buckets
+  // with hotspots marked unavailable instead (wilayas.ts degrades the same way).
+  let hotspots: Awaited<ReturnType<typeof getLiveSatelliteData>> = [];
+  let hotspotsUnavailable = false;
+  try {
+    hotspots = await getLiveSatelliteData();
+  } catch (err) {
+    if (!(err instanceof SatelliteUnavailableError)) throw err;
+    hotspotsUnavailable = true;
+    logger.warn(
+      { msg: err.message, sources: err.sources },
+      "History route: satellite data unavailable"
+    );
+  }
   for (const hotspot of hotspots) {
     const bucket = buckets.get(dayKey(hotspot.scanTime));
     if (bucket) bucket.hotspots += 1;
@@ -69,6 +85,7 @@ router.get("/", async (_req: Request, res: Response) => {
   res.json({
     days,
     generatedAt: new Date().toISOString(),
+    ...(hotspotsUnavailable ? { hotspotsUnavailable: true } : {}),
     buckets: [...buckets.entries()].map(([date, counts]) => ({ date, ...counts })),
   });
 });
