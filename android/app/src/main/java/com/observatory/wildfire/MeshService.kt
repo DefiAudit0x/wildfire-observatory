@@ -343,8 +343,11 @@ class MeshService : Service() {
             if (result.status.isSuccess) {
                 // A peer may be quarantined while its handshake is in flight.
                 // Recheck the already-sighted identity before marking it connected.
+                // Fix 7b: sight-then-check, like the frame gate — a record
+                // evicted mid-handshake must not falsely reject a live peer,
+                // while a retained quarantined record still fails the check.
                 val known = registry.peers[endpointId]
-                if (known != null && !reputation.isInboundAdmitted(known.publicKey)) {
+                if (known != null && (known.publicKey.isBlank() || !reputation.sightAndCheckAdmission(known.publicKey, System.currentTimeMillis()))) {
                     Log.w(TAG, "Admission denied: peer reputation changed during handshake")
                     registry.connectingPeers.remove(endpointId)
                     connectionsClient.disconnectFromEndpoint(endpointId)
@@ -583,7 +586,16 @@ class MeshService : Service() {
      * sequence is identical.
      */
     private fun handleIncomingMessage(endpointId: String, bytes: ByteArray): Boolean {
-        if (!reputation.isInboundAdmitted(registry.peers[endpointId]?.publicKey)) return false
+        // Fix 7b: sight-then-check instead of a bare admission check. A live
+        // peer whose record was evicted by the bounded cap (a relay-only
+        // peer never earns the +5 award, so its lastSeen goes stale) is
+        // re-sighted here — fresh at REPUTATION_INITIAL — instead of having
+        // every frame dropped forever. sight() is a no-op for a RETAINED
+        // record, so a quarantined key at -51 stays rejected; unknown
+        // (null-key) endpoints keep the pre-existing pass-through, and a
+        // blank key is still rejected as before.
+        val senderKey = registry.peers[endpointId]?.publicKey
+        if (senderKey != null && (senderKey.isBlank() || !reputation.sightAndCheckAdmission(senderKey, System.currentTimeMillis()))) return false
         try {
             val verdict = meshInbound.evaluate(
                 bytes,
@@ -946,6 +958,13 @@ class MeshService : Service() {
         registry.peers[endpointId]?.publicKey?.takeIf { it.isNotBlank() }?.let { key ->
             reputation.quarantine(key, System.currentTimeMillis())
         }
+        // Fix 7b: disconnect BEFORE forgetting the registry entry. Without
+        // this the Nearby transport stays open and payloadCallback keeps
+        // delivering the quarantined peer's frames — but the registry entry
+        // is gone, so the frame gate sees a null key and passes it through
+        // (isInboundAdmitted(null) == true). Same order as the
+        // onConnectionResult denial and the updateReputation auto-disconnect.
+        connectionsClient.disconnectFromEndpoint(endpointId)
         peerCleanup(endpointId)
     }
 
