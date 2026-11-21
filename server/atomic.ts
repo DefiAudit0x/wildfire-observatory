@@ -2,6 +2,7 @@ import { getDb, isAdminDb } from "./firebase.js";
 import logger from "./logger.js";
 import { stripUndefinedDeep } from "./clean.js";
 import { secretFingerprint } from "./crypto.js";
+import { invalidateCollectionCache, invalidateDocCache } from "./fs.js";
 
 export type AtomicCreateResult = "created" | "exists" | "unavailable";
 
@@ -11,22 +12,32 @@ export async function createDocIfAbsent(collectionName: string, id: string, data
   try {
     const clean = stripUndefinedDeep(data);
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<AtomicCreateResult> => {
         const ref = db.collection(collectionName).doc(id);
         const existing = await tx.get(ref);
         if (existing.exists) return "exists";
         tx.create(ref, clean);
         return "created";
       });
+      if (result === "created") {
+        invalidateDocCache(collectionName, id);
+        invalidateCollectionCache(collectionName);
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<AtomicCreateResult> => {
       const ref = doc(db, collectionName, id);
       const existing = await tx.get(ref);
       if (existing.exists()) return "exists";
       tx.set(ref, clean);
       return "created";
     });
+    if (result === "created") {
+      invalidateDocCache(collectionName, id);
+      invalidateCollectionCache(collectionName);
+    }
+    return result;
   } catch (err) {
     logger.error({ err, collectionName, id }, "Atomic create failed");
     return "unavailable";
@@ -40,7 +51,7 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<UnitUserCreateResult> => {
         const unitRef = db.collection("units").doc(unitId);
         const userRef = db.collection("users").doc(userId);
         const unit = await tx.get(unitRef);
@@ -50,9 +61,14 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
         tx.create(userRef, stripUndefinedDeep(data));
         return "created";
       });
+      if (result === "created") {
+        invalidateDocCache("users", userId);
+        invalidateCollectionCache("users");
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<UnitUserCreateResult> => {
       const unitRef = doc(db, "units", unitId);
       const userRef = doc(db, "users", userId);
       const unit = await tx.get(unitRef);
@@ -62,6 +78,11 @@ export async function createUserIfUnitExists(userId: string, unitId: string, dat
       tx.set(userRef, stripUndefinedDeep(data));
       return "created";
     });
+    if (result === "created") {
+      invalidateDocCache("users", userId);
+      invalidateCollectionCache("users");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, userId, unitId }, "Atomic user creation failed");
     return "unavailable";
@@ -75,7 +96,7 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<UnitDeleteResult> => {
         const unitRef = db.collection("units").doc(unitId);
         const unit = await tx.get(unitRef);
         if (!unit.exists) return "missing";
@@ -84,9 +105,14 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
         tx.delete(unitRef);
         return "deleted";
       });
+      if (result === "deleted") {
+        invalidateDocCache("units", unitId);
+        invalidateCollectionCache("units");
+      }
+      return result;
     }
     const { collection, doc, limit, query, runTransaction, where } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<UnitDeleteResult> => {
       const unitRef = doc(db, "units", unitId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "missing";
@@ -95,6 +121,11 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
       tx.delete(unitRef);
       return "deleted";
     });
+    if (result === "deleted") {
+      invalidateDocCache("units", unitId);
+      invalidateCollectionCache("units");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, unitId }, "Atomic unit deletion failed");
     return "unavailable";
@@ -154,7 +185,7 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<RosterAppendResult> => {
         const ref = db.collection(collectionName).doc(date);
         const snap = await tx.get(ref);
         const existing = snap.exists ? snap.data() : null;
@@ -166,9 +197,14 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
         tx.set(ref, stripUndefinedDeep({ unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() }));
         return "created";
       });
+      if (result === "created") {
+        invalidateDocCache(collectionName, date);
+        invalidateCollectionCache(collectionName);
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<RosterAppendResult> => {
       const ref = doc(db, collectionName, date);
       const snap = await tx.get(ref);
       const existing = snap.exists() ? snap.data() : null;
@@ -180,6 +216,11 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
       tx.set(ref, stripUndefinedDeep({ unitId, date, posts: [...posts, post], updatedAt: new Date().toISOString() }));
       return "created";
     });
+    if (result === "created") {
+      invalidateDocCache(collectionName, date);
+      invalidateCollectionCache(collectionName);
+    }
+    return result;
   } catch (err) {
     logger.error({ err, collectionName, date }, "Atomic roster append failed");
     return "unavailable";
@@ -214,7 +255,7 @@ export async function createVolunteerRegistrationAtomically(
 
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<VolunteerRegistrationResult> => {
         const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: db.collection(reservationCollection).doc(`${kind}-${key}`) }));
         const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
         for (let i = 0; i < snapshots.length; i++) {
@@ -240,9 +281,18 @@ export async function createVolunteerRegistrationAtomically(
         tx.create(db.collection("volunteerRegistrations").doc(registration.id), stripUndefinedDeep(registration));
         return "created";
       });
+      if (result === "created") {
+        invalidateDocCache("volunteerRegistrations", registration.id);
+        invalidateCollectionCache("volunteerRegistrations");
+        for (const { kind, key } of reservationIds) {
+          invalidateDocCache(reservationCollection, `${kind}-${key}`);
+        }
+        invalidateCollectionCache(reservationCollection);
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<VolunteerRegistrationResult> => {
       const refs = reservationIds.map(({ kind, key }) => ({ kind, ref: doc(db, reservationCollection, `${kind}-${key}`) }));
       const snapshots = await Promise.all(refs.map(({ ref }) => tx.get(ref)));
       for (let i = 0; i < snapshots.length; i++) {
@@ -268,6 +318,15 @@ export async function createVolunteerRegistrationAtomically(
       tx.set(doc(db, "volunteerRegistrations", registration.id), stripUndefinedDeep(registration));
       return "created";
     });
+    if (result === "created") {
+      invalidateDocCache("volunteerRegistrations", registration.id);
+      invalidateCollectionCache("volunteerRegistrations");
+      for (const { kind, key } of reservationIds) {
+        invalidateDocCache(reservationCollection, `${kind}-${key}`);
+      }
+      invalidateCollectionCache(reservationCollection);
+    }
+    return result;
   } catch (err) {
     logger.error({ err, registrationId: registration.id }, "Atomic volunteer registration failed");
     return "unavailable";
@@ -281,7 +340,7 @@ export async function approveVolunteerAtomically(registrationId: string, registr
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any) => {
+      const result = await db.runTransaction(async (tx: any): Promise<VolunteerApprovalResult> => {
         const registrationRef = db.collection("volunteerRegistrations").doc(registrationId);
         const registration = await tx.get(registrationRef);
         if (!registration.exists) return "missing";
@@ -292,9 +351,16 @@ export async function approveVolunteerAtomically(registrationId: string, registr
         tx.create(badgeRef, stripUndefinedDeep(badgeData));
         return "updated";
       });
+      if (result === "updated") {
+        invalidateDocCache("volunteerRegistrations", registrationId);
+        invalidateCollectionCache("volunteerRegistrations");
+        invalidateDocCache("badgeCodes", badgeCode);
+        invalidateCollectionCache("badgeCodes");
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any) => {
+    const result = await runTransaction(db, async (tx: any): Promise<VolunteerApprovalResult> => {
       const registrationRef = doc(db, "volunteerRegistrations", registrationId);
       const registration = await tx.get(registrationRef);
       if (!registration.exists()) return "missing";
@@ -305,6 +371,13 @@ export async function approveVolunteerAtomically(registrationId: string, registr
       tx.set(badgeRef, stripUndefinedDeep(badgeData));
       return "updated";
     });
+    if (result === "updated") {
+      invalidateDocCache("volunteerRegistrations", registrationId);
+      invalidateCollectionCache("volunteerRegistrations");
+      invalidateDocCache("badgeCodes", badgeCode);
+      invalidateCollectionCache("badgeCodes");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, registrationId, badgeFingerprint: secretFingerprint(badgeCode) }, "Atomic volunteer approval failed");
     return "unavailable";
@@ -345,7 +418,7 @@ export async function joinTeamAtomically(
   try {
     if (isAdminDb(db)) {
       const { FieldValue } = await import("firebase-admin/firestore");
-      return await db.runTransaction(async (tx: any): Promise<TeamJoinResult> => {
+      const result = await db.runTransaction(async (tx: any): Promise<TeamJoinResult> => {
         const codeRef = db.collection("teamJoinCodes").doc(code);
         const codeSnap = await tx.get(codeRef);
         if (!codeSnap.exists) return { status: "code-invalid" };
@@ -400,10 +473,17 @@ export async function joinTeamAtomically(
           : { uses: FieldValue.increment(1), lastUsedAt: now });
         return { status: "joined", member, tokenGen };
       });
+      if (result.status === "joined") {
+        invalidateDocCache("teamMembers", memberId);
+        invalidateCollectionCache("teamMembers");
+        invalidateDocCache("teamJoinCodes", code);
+        invalidateCollectionCache("teamJoinCodes");
+      }
+      return result;
     }
 
     const { doc, runTransaction, increment } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any): Promise<TeamJoinResult> => {
+    const result = await runTransaction(db, async (tx: any): Promise<TeamJoinResult> => {
       const codeRef = doc(db, "teamJoinCodes", code);
       const codeSnap = await tx.get(codeRef);
       if (!codeSnap.exists()) return { status: "code-invalid" };
@@ -447,6 +527,13 @@ export async function joinTeamAtomically(
         : { uses: increment(1), lastUsedAt: now });
       return { status: "joined", member, tokenGen };
     });
+    if (result.status === "joined") {
+      invalidateDocCache("teamMembers", memberId);
+      invalidateCollectionCache("teamMembers");
+      invalidateDocCache("teamJoinCodes", code);
+      invalidateCollectionCache("teamJoinCodes");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, code: "[join-code]", memberId }, "Atomic team join failed");
     return { status: "unavailable" };
@@ -473,7 +560,7 @@ export async function setMissionPhaseAtomically(
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any): Promise<MissionPhaseResult> => {
+      const result = await db.runTransaction(async (tx: any): Promise<MissionPhaseResult> => {
         const missionRef = db.collection("teamMissions").doc(teamId);
         const missionSnap = await tx.get(missionRef);
         if (!missionSnap.exists || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
@@ -483,9 +570,14 @@ export async function setMissionPhaseAtomically(
         tx.update(missionRef, { phase, phaseUpdatedAt: now });
         return { status: "updated", mission };
       });
+      if (result.status === "updated") {
+        invalidateDocCache("teamMissions", teamId);
+        invalidateCollectionCache("teamMissions");
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any): Promise<MissionPhaseResult> => {
+    const result = await runTransaction(db, async (tx: any): Promise<MissionPhaseResult> => {
       const missionRef = doc(db, "teamMissions", teamId);
       const missionSnap = await tx.get(missionRef);
       if (!missionSnap.exists() || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
@@ -495,6 +587,11 @@ export async function setMissionPhaseAtomically(
       tx.update(missionRef, { phase, phaseUpdatedAt: now });
       return { status: "updated", mission };
     });
+    if (result.status === "updated") {
+      invalidateDocCache("teamMissions", teamId);
+      invalidateCollectionCache("teamMissions");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, teamId, phase }, "Atomic mission phase update failed");
     return { status: "unavailable" };
@@ -523,7 +620,7 @@ export async function clearTeamMissionAtomically(
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any): Promise<MissionClearResult> => {
+      const result = await db.runTransaction(async (tx: any): Promise<MissionClearResult> => {
         const missionRef = db.collection("teamMissions").doc(teamId);
         const missionSnap = await tx.get(missionRef);
         if (!missionSnap.exists || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
@@ -532,9 +629,14 @@ export async function clearTeamMissionAtomically(
         tx.update(missionRef, { phase: "cleared", clearedAt: now, clearedBy: "admin" });
         return { status: "cleared", mission: { ...missionSnap.data(), phase: "cleared", clearedAt: now } };
       });
+      if (result.status === "cleared") {
+        invalidateDocCache("teamMissions", teamId);
+        invalidateCollectionCache("teamMissions");
+      }
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any): Promise<MissionClearResult> => {
+    const result = await runTransaction(db, async (tx: any): Promise<MissionClearResult> => {
       const missionRef = doc(db, "teamMissions", teamId);
       const missionSnap = await tx.get(missionRef);
       if (!missionSnap.exists() || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
@@ -543,6 +645,11 @@ export async function clearTeamMissionAtomically(
       tx.update(missionRef, { phase: "cleared", clearedAt: now, clearedBy: "admin" });
       return { status: "cleared", mission: { ...missionSnap.data(), phase: "cleared", clearedAt: now } };
     });
+    if (result.status === "cleared") {
+      invalidateDocCache("teamMissions", teamId);
+      invalidateCollectionCache("teamMissions");
+    }
+    return result;
   } catch (err) {
     logger.error({ err, teamId }, "Atomic mission clear failed");
     return { status: "unavailable" };
@@ -569,7 +676,7 @@ export async function setPrincipalBlocked(
   if (!db) return "unavailable";
   try {
     if (isAdminDb(db)) {
-      return await db.runTransaction(async (tx: any): Promise<PrincipalBlockResult> => {
+      const result = await db.runTransaction(async (tx: any): Promise<PrincipalBlockResult | "already-blocked" | "already-unblocked"> => {
         const teamRef = db.collection("teams").doc(teamId);
         const teamSnap = await tx.get(teamRef);
         if (!teamSnap.exists) return "missing";
@@ -577,15 +684,22 @@ export async function setPrincipalBlocked(
         const current: string[] = Array.isArray(data.blockedPrincipals)
           ? data.blockedPrincipals.filter((p: unknown) => typeof p === "string")
           : [];
-        if (blocked && current.includes(principal)) return "blocked"; // idempotent
-        if (!blocked && !current.includes(principal)) return "unblocked"; // idempotent
+        if (blocked && current.includes(principal)) return "already-blocked"; // idempotent
+        if (!blocked && !current.includes(principal)) return "already-unblocked"; // idempotent
         const next = blocked ? [...current, principal] : current.filter((p) => p !== principal);
         tx.update(teamRef, { blockedPrincipals: next });
         return blocked ? "blocked" : "unblocked";
       });
+      if (result === "blocked" || result === "unblocked") {
+        invalidateDocCache("teams", teamId);
+        invalidateCollectionCache("teams");
+      }
+      if (result === "already-blocked") return "blocked";
+      if (result === "already-unblocked") return "unblocked";
+      return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    return await runTransaction(db, async (tx: any): Promise<PrincipalBlockResult> => {
+    const result = await runTransaction(db, async (tx: any): Promise<PrincipalBlockResult | "already-blocked" | "already-unblocked"> => {
       const teamRef = doc(db, "teams", teamId);
       const teamSnap = await tx.get(teamRef);
       if (!teamSnap.exists()) return "missing";
@@ -593,12 +707,19 @@ export async function setPrincipalBlocked(
       const current: string[] = Array.isArray(data.blockedPrincipals)
         ? data.blockedPrincipals.filter((p: unknown) => typeof p === "string")
         : [];
-      if (blocked && current.includes(principal)) return "blocked";
-      if (!blocked && !current.includes(principal)) return "unblocked";
+      if (blocked && current.includes(principal)) return "already-blocked";
+      if (!blocked && !current.includes(principal)) return "already-unblocked";
       const next = blocked ? [...current, principal] : current.filter((p) => p !== principal);
       tx.update(teamRef, { blockedPrincipals: next });
       return blocked ? "blocked" : "unblocked";
     });
+    if (result === "blocked" || result === "unblocked") {
+      invalidateDocCache("teams", teamId);
+      invalidateCollectionCache("teams");
+    }
+    if (result === "already-blocked") return "blocked";
+    if (result === "already-unblocked") return "unblocked";
+    return result;
   } catch (err) {
     logger.error({ err, teamId, principal: "[principal]" }, "Atomic principal block update failed");
     return "unavailable";
