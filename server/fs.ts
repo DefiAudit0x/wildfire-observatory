@@ -28,7 +28,9 @@ function sweepExpired<T>(cache: Map<string, { expiresAt: number }>) {
 }
 
 export function invalidateCollectionCache(collectionName: string) {
-  collectionCache.delete(collectionName);
+  for (const key of collectionCache.keys()) {
+    if (key.startsWith(`${collectionName}::`)) collectionCache.delete(key);
+  }
 }
 
 export function invalidateDocCache(collectionName: string, id: string) {
