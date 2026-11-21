@@ -1012,3 +1012,25 @@ All **five new cases fail** on the unfixed source and pass with the fix. The in-
 Deviations: resumed the already-existing clean target branch at the exact requested fetched base; sandbox required scoped approval for writes/fetch in the explicitly requested work clone, which is outside the default writable roots. E2E remains environment blocked by missing Java. No scope expansion.
 
 Remaining for PR #142: reviewer verification, **push, PR creation, CI watch, and merge**. All remain external follow-up; this round commits locally only.
+
+## Fix 13b — transactional client SOS resolution and early replay
+
+Continued on `fix/wildfire-13-sos-resolution` from clean head `ef6e346` in `/home/hatch/workspace/wildfire-fix`.
+
+- `server/fs.ts` addresses CodeRabbit 4653040441 and 4653040447. The client resolves unique team IDs from the transaction's SOS snapshot to mission document references and reads all of them before writing. It updates and counts only missions whose current `sosId` matches. Dispatch writes the SOS and mission together, so a dispatch that commits first is visible on the resolver's first read or on retry. The Admin query already filters current ownership inside its transaction.
+- `server/routes/sos.ts` addresses CodeRabbit 4653040452. Durable replay lookup now runs before the optional context read. Submissions that continue to admission keep the same three-second context timeout.
+- `tests/sos-resolution-availability.test.ts` proves the ordering with the real route and helper, using Firestore doubles. The existing read-after-write guards stay in place. The late-dispatch double commits both writes just before the transactional SOS snapshot, after the old pre-read would have completed. This models a dispatch winning the ordering without simulating SDK retries.
+
+With production sources still at `ef6e346`, ran `npm run test:server -- tests/sos-resolution-availability.test.ts -t 'Fix 13b|without starting' --reporter=verbose`. All four selected cases failed (exit 1, `/tmp/fix13b-baseline.log`). All four passed with the fix.
+
+| Regression | Result at `ef6e346` | Result with Fix 13b |
+| --- | --- | --- |
+| Dispatch commits after the old pre-read | Cleared count 0 | Mission cleared and count 1 |
+| Mission reassigned before resolve | New owner's mission changed from en route to cleared | Mission unchanged and count 0 |
+| Resolve repeated while team takes a new SOS | New owner's mission changed from en route to cleared | Mission unchanged and count 0 |
+| Durable replay with hanging context | Report read started once before the replay returned | Original response returned with zero report reads or admission transactions |
+
+Lint and production build both passed (`/tmp/fix13b-lint.log`, `/tmp/fix13b-build.log`). The affected suites (`sos-resolution-availability`, `atomicity`, and `sos`) passed **82/82** (`/tmp/fix13b-affected.log`).
+The full server suite passed **850/850** across 81 files and the full React suite passed **1013/1013** across 90 files (`/tmp/fix13b-server.log`, `/tmp/fix13b-react.log`). E2E exited 2 before Playwright because Firebase could not spawn `java -version` (`/tmp/fix13b-e2e.log`). Port 3000 was clear before the attempt. No live Firestore verification was possible.
+
+The work stays local. PR #142 needs a fresh CI and review watch before merge. Reconcile FIX_PLAN only if main has advanced past `251d8ef`.
