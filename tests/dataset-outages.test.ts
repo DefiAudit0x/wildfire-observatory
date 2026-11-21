@@ -162,14 +162,14 @@ describe("Fix 12 SAT-1 visible satellite source failures", () => {
   }, 35000);
   it("surfaces a single failed source even when the other has detections", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("offline", { status: 503 }))
-      .mockResolvedValueOnce(new Response("latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version\n36.8,7.5,340,1,1,2026-11-21,1200,T,h,6.1NRT")));
+      .mockResolvedValueOnce(new Response("latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_t31,frp,daynight\n36.8,7.5,340,1,1,2026-11-21,1200,Terra,MODIS,83,6.1NRT,292.65,10.58,N")));
     const res = await supertest(await appFor("satellite")).get("/");
     expect(res.status).toBe(503);
     expect(res.body.sources).toEqual({ VIIRS_SNPP_NRT: "unavailable", MODIS_NRT: "ok" });
-    expect(res.body.hotspots).toEqual([expect.objectContaining({ satellite: "MODIS", confidence: 95 })]);
+    expect(res.body.hotspots).toEqual([expect.objectContaining({ satellite: "MODIS", confidence: 83 })]);
   });
   it("preserves the healthy empty array contract", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("lat,lng\n")));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n")));
     const res = await supertest(await appFor("satellite")).get("/");
     expect(res.status).toBe(200);
     expect(res.body).toEqual([]);
