@@ -74,13 +74,16 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
   const db = getDb();
   if (!db) return "unavailable";
   try {
+    const identities = [unitId, unitId.replace(/^unit-/, "").toUpperCase()];
     if (isAdminDb(db)) {
       return await db.runTransaction(async (tx: any) => {
         const unitRef = db.collection("units").doc(unitId);
         const unit = await tx.get(unitRef);
         if (!unit.exists) return "missing";
-        const users = await tx.get(db.collection("users").where("unitId", "==", unitId).limit(1));
-        if (!users.empty) return "has-users";
+        for (const identity of identities) {
+          const users = await tx.get(db.collection("users").where("unitId", "==", identity).limit(1));
+          if (!users.empty) return "has-users";
+        }
         tx.delete(unitRef);
         return "deleted";
       });
@@ -90,8 +93,10 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
       const unitRef = doc(db, "units", unitId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "missing";
-      const users = await tx.get(query(collection(db, "users"), where("unitId", "==", unitId), limit(1)));
-      if (!users.empty) return "has-users";
+      for (const identity of identities) {
+        const users = await tx.get(query(collection(db, "users"), where("unitId", "==", identity), limit(1)));
+        if (!users.empty) return "has-users";
+      }
       tx.delete(unitRef);
       return "deleted";
     });
