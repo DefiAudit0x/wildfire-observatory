@@ -355,7 +355,19 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const existingDoc = await ref.get();
       if (existingDoc.exists) {
         if (existingDoc.data()?.verified === true) {
-          res.json({ success: true, message: "Subscription already verified." });
+          // Fix 8c: a verified subscriber re-submitting preferences must be
+          // able to repair them. The pre-8c early return ("Subscription
+          // already verified.") left legacy stored aliases unfixable
+          // (CodeRabbit review 6001797406). The email is already verified,
+          // so no new token or verification email is issued and `verified`
+          // stays true — only the schema-validated preferences change.
+          await ref.update({
+            email,
+            wilayas: wilayas || [],
+            minSeverity: minSeverity || "medium",
+            updatedAt: new Date().toISOString(),
+          });
+          res.json({ success: true, message: "Subscription preferences updated." });
           return;
         }
         await ref.update({
@@ -382,7 +394,15 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const existingDoc = await getDoc(ref);
       if (existingDoc.exists()) {
         if (existingDoc.data()?.verified === true) {
-          res.json({ success: true, message: "Subscription already verified." });
+          // Fix 8c: same repair path as the Admin SDK branch above — a
+          // verified subscriber may update preferences without re-verifying.
+          await updateDoc(ref, {
+            email,
+            wilayas: wilayas || [],
+            minSeverity: minSeverity || "medium",
+            updatedAt: new Date().toISOString(),
+          });
+          res.json({ success: true, message: "Subscription preferences updated." });
           return;
         }
         await updateDoc(ref, {
