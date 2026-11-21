@@ -541,3 +541,30 @@ The MWARE-1 outage tests simulate docGet's documented null outcome and getDb's u
 - Validation: `npm run lint` passed; `npm run build` passed and emitted `dist/server.cjs` plus `dist/server.cjs.map`; `npm run test:server` passed **68 files / 663 tests**; `npm run test:react` passed **74 files / 773 tests**. `npm run test:e2e` was not run because Java is unavailable (`java: command not found`).
 - Files changed: `server/assets.ts` (new production asset router); `server/server.ts` (mount router); `server/sentry-scrub.ts` (normalized sensitive-key matching); `tests/server-assets.test.ts` (HTTP regression coverage); `tests/sentry-scrub.test.ts` (request and extra regression coverage); `FIX_PLAN.md` (this validation record).
 - Deviation: the server app is not exported for tests, so asset behavior is exercised through the same production router mounted by `server/server.ts` in an Express/Supertest harness.
+
+## Fix 6 — ADM-1 / MAP-1 (operator exports and reporter authority)
+
+- Base: fetched `origin`; `origin/main` and local `main` verified as `4b543b1257b29534dd0b50099a6e2e736d18e47b` (PR #132 merge). Created `fix/wildfire-6-operator-exports` directly from that commit, not Fix 4 or Fix 5. Local work only; no push/PR/merge.
+- `src/components/AdminPanel.tsx`: added an equivalent CSV prefix guard to the actual operator download path. Every exported cell is checked for `=`, `+`, `-`, `@`, tab or CR at the start, including after whitespace, and prefixed with an apostrophe when dangerous. Kept all eight columns, existing header/BOM/download behavior, forced quoting of the existing text columns, and quote doubling. Previously unquoted cells are also quoted when they contain CSV delimiters/newlines/quotes. Source report objects and server storage are unchanged.
+- `src/components/InteractiveMap.tsx`: official/accredited-volunteer popup badges now require `status === "verified"` as well as the declared reporter type; other statuses use the existing citizen badge.
+- `src/components/layout/MainContent.tsx`: applied the same verification gate to the feed's official/volunteer labels. This is the actual MainContent path in the repository (the specification omitted `layout/`). The public `Report` contract has no persisted `isTrusted` field; the existing verified status is the conservative verification signal used here. Pending, rejected and resolved reports do not display authority labels.
+- `tests/components/operator-exports-authority.test.tsx`: 33 new component regression cases exercising the actual CSV download Blob, actual Leaflet popup contents and rendered feed cards. Nine CSV cases cover `=1+1+10000`, `+SUM(1)`, `-SUM(1)`, `@SUM(1)`, tab, CR, and whitespace-prefixed formula/tab/CR strings in ID/location/wilaya/description/reporter/timestamp cells. Each also checks the ordinary row, header, all columns, embedded quotes/comma and unchanged source description. Twelve popup and twelve feed cases cover 2 languages (Arabic/French) × 2 declared authority types (official/volunteer) × 3 unverified statuses (pending/rejected/resolved). Every authority case additionally rerenders with verified status and checks that the legitimate authority label appears.
+
+### Fail-without-fix evidence
+
+- After finalizing the 33 cases, saved the three changed production files in memory, replaced only those files with `git show main:<path>` from the exact base above, ran `npm run test:react -- tests/components/operator-exports-authority.test.tsx`, and restored the fixed bytes in a Python `finally` block. No worktree, stash, dependency changes or server modifications were needed.
+- Unfixed run: exit **1**, **33/33 failed**, start `2026-11-20 23:24:44 UTC`, duration **5.39s**; log `/tmp/fix6-unfixed.log`. There were no passing new cases or harness/import failures in this run.
+- ADM-1: all nine `neutralizes %j in exported fields and preserves ordinary rows` cases failed because the downloaded rows lacked the expected leading apostrophes. Ordinary CSV quoting alone retained the formula/control prefixes.
+- MAP-1: all twelve `popup: $lang $reporterType $status` cases failed because unverified popup HTML still contained the official/accredited-volunteer wording. All twelve `feed: $lang $reporterType $status` cases failed because the unverified card still contained its authority label. The complete matrix is specified above and each parameterized case is listed in the log.
+- Fixed rerun: `npm run test:react -- tests/components/operator-exports-authority.test.tsx tests/components/admin-panel.test.tsx tests/export-utils.test.ts` passed **3 files / 42 tests**, including all **33/33** new cases (start `23:28:31 UTC`, duration **35.82s**; `/tmp/fix6-affected-final.log`). Existing tests were not weakened.
+
+### Verification
+
+- `npm run lint`: passed, exit 0, no type diagnostics (`/tmp/fix6-lint.log`).
+- `npm run build`: passed, exit 0, Vite/PWA output and bundled server generated (`/tmp/fix6-build.log`).
+- `npm run test:server`: passed **67 files / 662 tests**, exit 0 (`/tmp/fix6-server.log`).
+- Full `npm run test:react`: passed **74 files / 810 tests**, exit 0, duration **223.86s** (`/tmp/fix6-react.log`), including all 33 new regressions.
+- `npm run test:e2e`: attempted after confirming no listener on port 3000; exit **2** before Playwright ran because Firebase could not spawn `java -version` (Java unavailable on PATH). Also printed a firebase-tools update-check permission notice. No dependencies installed and no other servers stopped (`/tmp/fix6-e2e.log`).
+- `git diff --check`: passed.
+- Deviations: local equivalent guard used rather than exporting/refactoring the private helper in `src/utils/export.ts`; this preserves the AdminPanel's existing columns/forced quoting and guards all its textual cells. E2E execution requires an environment with Java for the existing Firestore emulator. No changes outside the Fix 6 scope.
+- Next: Fix 7 covers **NSVC-2** in `android/app/src/main/java/com/observatory/wildfire/MeshService.kt`: enforce reputation/admission for inbound connections so a quarantined key cannot reconnect, submit frames and regain reputation by initiating a connection.
