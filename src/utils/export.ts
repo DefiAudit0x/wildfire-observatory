@@ -1,6 +1,8 @@
 import { Report, SatelliteHotspot } from "../types";
 
-function csvCell(value: unknown): string {
+// Fix 8b: exported so AdminPanel's CSV export can reuse the same formula
+// guard as reportsToCsv instead of quoting without neutralization.
+export function csvCell(value: unknown): string {
   let text = String(value ?? "");
   // ARC-M16 fix: the formula-injection guard used to prefix a leading "-" with
   // an apostrophe — corrupting every negative coordinate (Morocco's lng ≈
