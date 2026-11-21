@@ -39,6 +39,7 @@ interface MainContentProps {
   activeTab: TabId;
   reports: Report[];
   satellites: SatelliteHotspot[];
+  satellitesPartial?: boolean;
   wilayas: WilayaStatus[];
   sosCalls: TrappedSOS[];
   userLocation: GeoPoint | null;
@@ -64,6 +65,7 @@ export default function MainContent({
   activeTab,
   reports,
   satellites,
+  satellitesPartial = false,
   wilayas,
   sosCalls,
   userLocation,
@@ -84,6 +86,11 @@ export default function MainContent({
 }: MainContentProps) {
   return (
     <main className="flex-1 px-4 py-5 md:px-8 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {satellitesPartial && (
+        <div role="status" className="col-span-12 rounded-lg border border-amber-500/30 px-3 py-2 text-sm text-amber-300">
+          {isArabic ? "بيانات الأقمار جزئية حالياً — تُعرض رصدات المصدر المتاح فقط." : "Données satellites partielles — seules les détections de la source disponible sont affichées."}
+        </div>
+      )}
       {/* Simple Emergency-First Home Screen */}
       {activeTab === "home" && (
         <div className="col-span-12 animate-fadeIn">
