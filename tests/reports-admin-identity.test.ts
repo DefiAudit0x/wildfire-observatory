@@ -56,9 +56,15 @@ describe("GET /api/reports/:id/identity", () => {
     expect(unauthenticated.body).not.toHaveProperty("reporterPhone");
     expect(state.getReportPrivate).not.toHaveBeenCalled();
 
+    // Fix 4 made staff sessions fail closed when the revocation register
+    // cannot be read: a token carrying agentId needs a live DB to revalidate
+    // (requireAuth 401s under a null DB before the role gate is reached).
+    // This test's 403 leg asserts the identity endpoint's role gate, so it
+    // uses an agentId-less staff token, which reaches requireAdmin under a
+    // null DB; the agentId staff path is covered by the middleware tests.
     const staff = await supertest(app)
       .get("/api/reports/report-1/identity")
-      .set("Cookie", `staff_token=${generateStaffToken({ role: "agent", agentId: "agent-1" })}`);
+      .set("Cookie", `staff_token=${generateStaffToken({ role: "agent" })}`);
     expect(staff.status).toBe(403);
     expect(staff.body).not.toHaveProperty("reporterName");
     expect(state.getReportPrivate).not.toHaveBeenCalled();
