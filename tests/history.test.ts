@@ -11,7 +11,7 @@ vi.mock("../server/config.js", async (importOriginal) => {
 // History's successful bucket contract requires successful satellite observations.
 // Mock the HTTP backend, keeping the real satellite and history handlers.
 beforeEach(() => {
-  vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("lat,lng\n")));
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n")));
 });
 afterEach(() => vi.unstubAllGlobals());
 
