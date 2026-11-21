@@ -5,6 +5,7 @@ import { collectionGet } from "../fs.js";
 import { getLiveSatelliteData, SatelliteUnavailableError } from "./satellite.js";
 import { getSosSummarySnapshot } from "./sos.js";
 import logger from "../logger.js";
+import type { SatelliteHotspot } from "../../src/types.js";
 
 const router = Router();
 
@@ -61,14 +62,12 @@ router.get("/", async (_req: Request, res: Response) => {
     if (bucket) bucket.sos += 1;
   }
 
-  // Fix 12b: getLiveSatelliteData throws SatelliteUnavailableError on a FIRMS
-  // outage (Fix 12 / SAT-1). History's primary data is the report/SOS buckets;
-  // a satellite outage must not fail the whole endpoint — return the buckets
-  // with hotspots marked unavailable instead (wilayas.ts degrades the same way).
-  let hotspots: Awaited<ReturnType<typeof getLiveSatelliteData>> = [];
+  // Keep usable detections in the buckets. A total outage leaves report and
+  // SOS counts intact and marks the satellite counts unavailable.
+  let hotspots: SatelliteHotspot[] = [];
   let hotspotsUnavailable = false;
   try {
-    hotspots = await getLiveSatelliteData();
+    hotspots = (await getLiveSatelliteData()).hotspots;
   } catch (err) {
     if (!(err instanceof SatelliteUnavailableError)) throw err;
     hotspotsUnavailable = true;
