@@ -1,5 +1,5 @@
 import logger from "./logger.js";
-import { docMergeSet } from "./fs.js";
+import { docMergeTeamPositionIfActive } from "./fs.js";
 import { getHaversineDistance } from "./geo.js";
 
 /**
@@ -125,12 +125,12 @@ function toPublic(entry: RegistryEntry): TeamMemberPosition {
  * binding (principal, joinedAt, rejoinCount) every 5 minutes of heartbeating.
  * The payload deliberately carries NO authority fields — only display data.
  */
-export function snapshotIfDue(memberId: string, teamId: string, now = Date.now()): void {
+export function snapshotIfDue(memberId: string, teamId: string, now = Date.now(), tokenGen = 0): void {
   const entry = registry.get(memberId);
   if (!entry) return;
   if (now - entry.lastSnapshotAt < SNAPSHOT_MIN_INTERVAL_MS) return;
   entry.lastSnapshotAt = now;
-  void docMergeSet("teamMembers", memberId, {
+  void docMergeTeamPositionIfActive(memberId, teamId, tokenGen, {
     memberId,
     teamId,
     name: entry.name,

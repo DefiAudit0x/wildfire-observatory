@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
  */
 
 const fsMock = vi.hoisted(() => ({
-  docMergeSet: vi.fn(async (..._a: any[]) => true as any),
+  docMergeTeamPositionIfActive: vi.fn(async (..._a: any[]) => true as any),
 }));
 
 vi.mock("../server/fs.js", () => fsMock);
@@ -24,7 +24,7 @@ import {
 
 beforeEach(() => {
   clearRegistry();
-  fsMock.docMergeSet.mockReset().mockResolvedValue(true);
+  fsMock.docMergeTeamPositionIfActive.mockReset().mockResolvedValue(true);
 });
 
 const ping = (memberId: string, lat: number, lng: number, now: number) =>
@@ -88,19 +88,19 @@ describe("teamRegistry — snapshot throttle (durable layer)", () => {
     const base = Date.now();
     ping("tm-snap", 36.7, 5.0, base);
     snapshotIfDue("tm-snap", "team-t5", base);
-    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(1);
 
     // Two more pings + snapshot attempts inside the window → zero extra writes.
     ping("tm-snap", 36.71, 5.0, base + 60_000);
     snapshotIfDue("tm-snap", "team-t5", base + 60_000);
     snapshotIfDue("tm-snap", "team-t5", base + 299_000);
-    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(1);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(1);
 
     // After the window, the next snapshot lands with the FRESH position.
     ping("tm-snap", 36.72, 5.0, base + 301_000);
     snapshotIfDue("tm-snap", "team-t5", base + 301_000);
-    expect(fsMock.docMergeSet).toHaveBeenCalledTimes(2);
-    const payload = fsMock.docMergeSet.mock.calls[1][2] as Record<string, unknown>;
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(2);
+    const payload = fsMock.docMergeTeamPositionIfActive.mock.calls[1][3] as Record<string, unknown>;
     expect(payload.lastKnownLat).toBeCloseTo(36.72);
     // B1/R1 contract: display fields ONLY — never authority fields.
     expect(Object.keys(payload).sort()).toEqual(["lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
@@ -108,7 +108,7 @@ describe("teamRegistry — snapshot throttle (durable layer)", () => {
 
   it("does not snapshot a member that never heartbeated", () => {
     snapshotIfDue("tm-unknown", "team-t5", 1_000);
-    expect(fsMock.docMergeSet).not.toHaveBeenCalled();
+    expect(fsMock.docMergeTeamPositionIfActive).not.toHaveBeenCalled();
   });
 });
 

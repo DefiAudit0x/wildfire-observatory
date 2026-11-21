@@ -483,6 +483,98 @@ export type TeamJoinResult =
   | { status: "principal-blocked" }
   | { status: "unavailable" };
 
+export type TeamJoinCodeRotationResult = "rotated" | "team-missing" | "team-inactive" | "code-exists" | "unavailable";
+
+/**
+ * Revoke the observed live codes and publish their replacement in one
+ * transaction. `teams/{teamId}.activeJoinCode` is the shared write that
+ * serializes concurrent rotations; reading its current code also catches a
+ * code minted after the caller's collection snapshot. The transaction API
+ * uses document reads only, so the same guard works with Admin and client SDKs.
+ */
+export async function rotateTeamJoinCodeAtomically(
+  teamId: string,
+  code: string,
+  codeData: Record<string, unknown>,
+  observedCodes: Array<{ id: string }>,
+  now = Date.now()
+): Promise<TeamJoinCodeRotationResult> {
+  const db = getDb();
+  if (!db) return "unavailable";
+  const staleCutoff = now - 7 * 24 * 60 * 60 * 1000;
+  try {
+    const result = isAdminDb(db)
+      ? await db.runTransaction(async (tx: AdminTransaction): Promise<TeamJoinCodeRotationResult> => {
+          const teamRef = db.collection("teams").doc(teamId);
+          const teamSnap = await tx.get(teamRef);
+          if (!teamSnap.exists) return "team-missing";
+          const team = teamSnap.data() || {};
+          if (team.active === false) return "team-inactive";
+          const ids = new Set(observedCodes.map((row) => row.id).filter(Boolean));
+          if (typeof team.activeJoinCode === "string") ids.add(team.activeJoinCode);
+          ids.add(code);
+          const refs = new Map([...ids].map((id) => [id, db.collection("teamJoinCodes").doc(id)]));
+          const snaps = await Promise.all([...refs].map(async ([id, ref]) => [id, await tx.get(ref)] as const));
+          if (snaps.find(([id]) => id === code)?.[1].exists) return "code-exists";
+          for (const [id, snap] of snaps) {
+            if (id === code || !snap.exists) continue;
+            const old = snap.data() || {};
+            const dead = old.revoked === true || Number(old.expiresAt ?? 0) < now;
+            const deadSince = Number(old.revokedAt ?? old.expiresAt ?? 0);
+            if (dead && deadSince > 0 && deadSince < staleCutoff) {
+              tx.delete(refs.get(id)!);
+            } else if (old.teamId === teamId && old.revoked !== true) {
+              tx.update(refs.get(id)!, { revoked: true, revokedAt: now });
+            }
+          }
+          tx.update(teamRef, { activeJoinCode: code, joinCodeRotatedAt: now });
+          tx.create(refs.get(code)!, stripUndefinedDeep(codeData));
+          return "rotated";
+        })
+      : await (async () => {
+          const { doc, runTransaction } = await import("firebase/firestore");
+          return runTransaction(db, async (tx: ClientTransaction): Promise<TeamJoinCodeRotationResult> => {
+            const teamRef = doc(db, "teams", teamId);
+            const teamSnap = await tx.get(teamRef);
+            if (!teamSnap.exists()) return "team-missing";
+            const team = teamSnap.data();
+            if (team.active === false) return "team-inactive";
+            const ids = new Set(observedCodes.map((row) => row.id).filter(Boolean));
+            if (typeof team.activeJoinCode === "string") ids.add(team.activeJoinCode);
+            ids.add(code);
+            const refs = new Map([...ids].map((id) => [id, doc(db, "teamJoinCodes", id)]));
+            const snaps = await Promise.all([...refs].map(async ([id, ref]) => [id, await tx.get(ref)] as const));
+            if (snaps.find(([id]) => id === code)?.[1].exists()) return "code-exists";
+            for (const [id, snap] of snaps) {
+              if (id === code || !snap.exists()) continue;
+              const old = snap.data();
+              const dead = old.revoked === true || Number(old.expiresAt ?? 0) < now;
+              const deadSince = Number(old.revokedAt ?? old.expiresAt ?? 0);
+              if (dead && deadSince > 0 && deadSince < staleCutoff) {
+                tx.delete(refs.get(id)!);
+              } else if (old.teamId === teamId && old.revoked !== true) {
+                tx.update(refs.get(id)!, { revoked: true, revokedAt: now });
+              }
+            }
+            tx.update(teamRef, { activeJoinCode: code, joinCodeRotatedAt: now });
+            tx.set(refs.get(code)!, stripUndefinedDeep(codeData));
+            return "rotated";
+          });
+        })();
+    if (result === "rotated") {
+      invalidateDocCache("teams", teamId);
+      invalidateCollectionCache("teams");
+      invalidateCollectionCache("teamJoinCodes");
+      for (const row of observedCodes) invalidateDocCache("teamJoinCodes", row.id);
+      invalidateDocCache("teamJoinCodes", code);
+    }
+    return result;
+  } catch (err) {
+    logger.error({ err, teamId }, "Atomic team join-code rotation failed");
+    return "unavailable";
+  }
+}
+
 /**
  * Team Mode (Phase 1): a join-code redemption that must be atomic because the
  * code carries a use budget. The pre-check in the route only filters obvious
@@ -633,7 +725,13 @@ export async function joinTeamAtomically(
 export type MissionPhaseResult =
   | { status: "updated"; mission: Record<string, any> }
   | { status: "no-active-mission" }
+  | { status: "stale-mission" }
   | { status: "unavailable" };
+
+export interface ExpectedMissionIdentity {
+  sosId: string;
+  since: number;
+}
 
 /**
  * Team Mode (Phase 1): a field team marks its own phase progression on the
@@ -644,19 +742,23 @@ export type MissionPhaseResult =
 export async function setMissionPhaseAtomically(
   teamId: string,
   phase: "on_scene",
+  expectedMission?: ExpectedMissionIdentity | null,
   now = Date.now()
 ): Promise<MissionPhaseResult> {
   const db = getDb();
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
-      const result = await db.runTransaction(async (tx: any): Promise<MissionPhaseResult> => {
+      const result = await db.runTransaction(async (tx: AdminTransaction): Promise<MissionPhaseResult> => {
         const missionRef = db.collection("teamMissions").doc(teamId);
         const missionSnap = await tx.get(missionRef);
-        if (!missionSnap.exists || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
-          return { status: "no-active-mission" };
+        const current = missionSnap.exists ? missionSnap.data() || {} : null;
+        const active = Boolean(current?.sosId) && current?.phase !== "cleared";
+        if (!active) return expectedMission ? { status: "stale-mission" } : { status: "no-active-mission" };
+        if (expectedMission !== undefined && (!expectedMission || current?.sosId !== expectedMission.sosId || (Number(current?.since) || 0) !== expectedMission.since)) {
+          return { status: "stale-mission" };
         }
-        const mission = { ...missionSnap.data(), phase, since: missionSnap.data()?.since, phaseUpdatedAt: now };
+        const mission = { ...current, phase, phaseUpdatedAt: now };
         tx.update(missionRef, { phase, phaseUpdatedAt: now });
         return { status: "updated", mission };
       });
@@ -667,13 +769,16 @@ export async function setMissionPhaseAtomically(
       return result;
     }
     const { doc, runTransaction } = await import("firebase/firestore");
-    const result = await runTransaction(db, async (tx: any): Promise<MissionPhaseResult> => {
+    const result = await runTransaction(db, async (tx: ClientTransaction): Promise<MissionPhaseResult> => {
       const missionRef = doc(db, "teamMissions", teamId);
       const missionSnap = await tx.get(missionRef);
-      if (!missionSnap.exists() || missionSnap.data()?.phase === "cleared" || !missionSnap.data()?.sosId) {
-        return { status: "no-active-mission" };
+      const current = missionSnap.exists() ? missionSnap.data() : null;
+      const active = Boolean(current?.sosId) && current?.phase !== "cleared";
+      if (!active) return expectedMission ? { status: "stale-mission" } : { status: "no-active-mission" };
+      if (expectedMission !== undefined && (!expectedMission || current?.sosId !== expectedMission.sosId || (Number(current?.since) || 0) !== expectedMission.since)) {
+        return { status: "stale-mission" };
       }
-      const mission = { ...missionSnap.data(), phase, phaseUpdatedAt: now };
+      const mission = { ...current, phase, phaseUpdatedAt: now };
       tx.update(missionRef, { phase, phaseUpdatedAt: now });
       return { status: "updated", mission };
     });

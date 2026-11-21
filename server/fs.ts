@@ -68,11 +68,12 @@ function collectionCacheKey(collectionName: string, orderByField?: string, limit
 export async function collectionGet(
   collectionName: string,
   orderByField?: string,
-  limitCount?: number
+  limitCount?: number,
+  fresh = false
 ): Promise<any[] | null> {
   const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount);
   const cached = collectionCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.data;
+  if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
   if (!db) return null;
   // Fix 10b: capture the generation before the read — any invalidation
@@ -109,6 +110,62 @@ export async function collectionGet(
   } catch (err) {
     logger.error({ err, collectionName }, "Firestore collection read failed");
     return null;
+  }
+}
+
+/**
+ * Team GPS snapshots are conditional on the membership still being active
+ * and on the token generation that produced the fix. Reading and writing the
+ * same member document in one transaction serializes the snapshot with leave
+ * and dispatcher-removal transactions: a removal either follows this write
+ * and purges it, or wins first and makes this snapshot skip.
+ */
+export async function docMergeTeamPositionIfActive(
+  memberId: string,
+  teamId: string,
+  tokenGen: number,
+  data: {
+    memberId?: string;
+    teamId?: string;
+    name?: string;
+    lastKnownLat?: number;
+    lastKnownLng?: number;
+    lastSeenAt?: number;
+  }
+): Promise<boolean> {
+  const db = getDb();
+  if (!db) return false;
+  try {
+    const written = isAdminDb(db)
+      ? await db.runTransaction(async (tx: AdminTransaction): Promise<boolean> => {
+          const ref = db.collection("teamMembers").doc(memberId);
+          const snap = await tx.get(ref);
+          if (!snap.exists) return false;
+          const member = snap.data() || {};
+          if (member.active === false || member.teamId !== teamId || (Number(member.tokenGen) || 0) !== tokenGen) return false;
+          tx.update(ref, stripUndefinedDeep(data));
+          return true;
+        })
+      : await (async () => {
+          const { doc, runTransaction } = await loadClientSdk();
+          return runTransaction(db, async (tx: ClientTransaction): Promise<boolean> => {
+            const ref = doc(db, "teamMembers", memberId);
+            const snap = await tx.get(ref);
+            if (!snap.exists()) return false;
+            const member = snap.data();
+            if (member.active === false || member.teamId !== teamId || (Number(member.tokenGen) || 0) !== tokenGen) return false;
+            tx.update(ref, stripUndefinedDeep(data));
+            return true;
+          });
+        })();
+    if (written) {
+      invalidateCollectionCache("teamMembers");
+      invalidateDocCache("teamMembers", memberId);
+    }
+    return written;
+  } catch (err) {
+    logger.warn({ err, memberId }, "Team position snapshot transaction failed");
+    return false;
   }
 }
 

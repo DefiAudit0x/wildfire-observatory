@@ -1108,3 +1108,55 @@ The fixed route's targeted suite passed **13/13**, including both regressions an
 - `git diff --check`: passed before commit.
 
 No scope deviations. All work remains local; no push, PR creation, or merge performed. Remaining for **PR #143**: push this commit, re-watch CI/review, and merge.
+
+## Fix 14 — serialize team membership, mission and tracking updates
+
+Resumed the existing, uncommitted `fix/wildfire-14-team-serialization` branch, whose HEAD is main **a958a2e77040c80fe77f5ea76a52361cccf13cd2**. Ran `git fetch origin main` and verified FETCH_HEAD equals that exact commit before continuing. Did not build on a Fix 13 branch. Work remains in the authorized work clone; no dependency installation, push, PR or merge.
+
+### Mechanisms and changed files
+
+- **TEAM-3 — `server/atomic.ts`, `server/routes/teams.ts`, `server/fs.ts`:** rotation reads a fresh collection snapshot, then atomically revokes observed codes, sweeps codes dead for seven days, creates the new code, and updates the team's `activeJoinCode` pointer. The shared team-document read/write serializes concurrent rotations in both SDKs. A retried transaction also reads/revokes the pointer's code, even when the caller's collection snapshot preceded its creation. Transaction rejection returns unavailable/HTTP 503 without publishing a replacement or partially revoking existing codes. Missing/inactive team and code collisions fail closed. Fix 10's prefix invalidation is already present in main: `docSet` calls `invalidateCollectionCache`, which deletes all `${collectionName}::` query keys; the original sequential mint invalidates the collection correctly. The fresh rotation read additionally avoids cross-process cache staleness; the pointer closes the concurrent snapshot gap.
+- **TEAM-4 — `server/routes/teams.ts`:** check the durable deactivation result; return 503 on failure and retain the live registry. Only successful writes remove the registry entry and return success.
+- **TEAM-5 — `server/routes/teams.ts`, `server/atomic.ts`:** capture the mission before validating GPS evidence (also for manual arrivals), pass expected `sosId` and the existing `since` dispatch generation, and compare both inside the transaction before any phase write. A replacement returns `stale-mission`/HTTP 409 `MISSION_CHANGED`; timely requests still succeed. No new mission version scheme.
+- **TRG-1 — `server/fs.ts`, `server/teamRegistry.ts`, heartbeat call in `server/routes/teams.ts`:** replace unconditional snapshot merge with a transaction on the member document. Require the member to exist, remain active, retain the same team and token generation. A concurrent removal either purges an earlier snapshot or causes the transaction to retry and skip its GPS write. Heartbeat supplies the generation it validated. Preserve the display payload and existing throttle behavior; TRG-2 remains out of scope.
+- **`tests/team-serialization.test.ts`:** sixteen real-function regressions (eight scenarios, each Admin + client SDK), with only the Firestore boundary faked. Real Express router, JWT/admin authorization, cache helpers, transactions and registry run unchanged. The optimistic fake tracks document reads, stages writes, rejects whole commits and retries on changed reads. Deferred gates force both rotation snapshots to precede mint, and force a staged GPS write to resume after the real removal route acknowledges `gpsPurged:true`. Arrival gates replace the mission between validation/read and transaction commit, including manual requests. An SDK import is warmed before concurrent requests to avoid a Vitest lazy-import mock race.
+- **`tests/team-registry.test.ts`, `tests/teams-join.test.ts`, `tests/teams-operations.test.ts`:** adapt existing mock names/call contracts to the new atomic helpers and mission-identity argument. Preserve snapshot throttle/display-field assertions. Old mocked sweep call assertions move to actual stored-document assertions in the real-function regression: old revoked/expired codes disappear, freshly revoked codes remain, another team's live code remains live, and this team's previous code is revoked. No behavioral coverage is intentionally removed.
+- **`FIX_PLAN.md`:** this mechanism, proof and validation record.
+
+### Fail-without-fix proof (each new test)
+
+Temporarily replaced **only the four production source files** with `git show a958a2e:<path>`, leaving the final new test file unchanged. Ran:
+
+`npm run test:server -- tests/team-serialization.test.ts --reporter=verbose`
+
+Final baseline run: **16 failed / 16**, exit **1**, `/tmp/fix14-unfixed.log` (17:29:53 UTC). Python `finally` restored and byte-verified all four saved fixed source files. Earlier interrupted gate-development runs are not the claimed proof. No missing-export/import failures are counted: every final baseline failure is the behavioral assertion below.
+
+Each row below represents **two independently failing tests**, one for each SDK:
+
+| New regression scenario | Unfixed a958a2e result | Fixed expectation / controls |
+| --- | --- | --- |
+| Failed old-code revoke | HTTP 201 instead of 503 | 503; only old code live. Successful retry also checks dead-code sweep and other-team isolation. |
+| Concurrent rotations with the same old snapshot | Two live codes instead of one | Both serialized rotations may return 201; exactly one live code remains. A following sequential rotation also leaves one code. |
+| Failed leave | HTTP 200 instead of 503 | 503; registry retained, stored membership active, old token still passes real heartbeat. Successful retry deactivates and drops registry. |
+| Delayed GPS arrival, different SOS | HTTP 200 instead of 409 | 409; replacement remains en_route; timely retry succeeds. |
+| Delayed manual arrival, different SOS | HTTP 200 instead of 409 | Same conflict/preservation/timely-success assertions without evidence. |
+| Delayed GPS arrival, same SOS/new `since` | HTTP 200 instead of 409 | Existing generation change is sufficient to reject stale evidence. |
+| Delayed manual arrival, same SOS/new `since` | HTTP 200 instead of 409 | Existing generation change also guards manual requests. |
+| In-flight registry GPS snapshot after purge acknowledgment | Stored `lastKnownLat` exists after removal and resumed write | HTTP 200 `gpsPurged:true`, registry dropped, durable active:false/tokenGen:1, no lastKnownLat/lastKnownLng/lastSeenAt after pending work finishes. Separate active member still snapshots normally. |
+
+Success-path and sweep controls live inside those regressions; they are not falsely claimed as independently failing baseline tests.
+
+### Verification
+
+Final verification results are recorded below before local commit.
+
+- `npm run lint`: passed, exit 0 (`/tmp/fix14-lint.log`).
+- `npm run build`: passed, exit 0; Vite/PWA assets and bundled server generated (`/tmp/fix14-build.log`).
+- Final affected suites: **85/85 passed**, four files, exit 0 (`/tmp/fix14-affected-final.log`). This includes all **16/16** final new regressions, against the exact same test file used in the final baseline proof.
+- Full `npm run test:server -- --maxWorkers=2`: **871/871 passed**, 82 files, exit 0 (`/tmp/fix14-server.log`).
+- `npm run test:e2e`: port 3000 confirmed free via `/proc/net/tcp{,6}` immediately before running. Exit **2** before Playwright: Firestore emulator could not spawn `java -version` because Java is unavailable (`/tmp/fix14-e2e.log`). No dependency installation or unrelated process termination.
+- `git diff --check`: passed.
+
+Deviations: resumed the existing requested branch and its uncommitted work, rather than recreating it; fetched main matches the exact requested base. Work-clone writes/fetch/tests require scoped sandbox escalation because the clone is outside default writable roots. E2E remains environment-blocked by missing Java. No scope expansion: TEAM-6, SOS-5/6, TRG-2, SOS replay/context/admission are unchanged. Only local commit is authorized; remaining for **PR #144**: reviewer verification, push, PR creation, CI watch, merge.
+
+- Full `npm run test:react -- --maxWorkers=2`: **1,034/1,034 passed**, 91 files, exit 0 (`/tmp/fix14-react.log`); includes the same sixteen new regressions under jsdom.
