@@ -8,13 +8,23 @@ const router = Router();
 
 const NORTH_AFRICA_BBOX = { minLat: 18, maxLat: 38, minLng: -17, maxLng: 25 };
 const CACHE_TTL_MS = 10 * 60 * 1000;
-let cachedHotspots: SatelliteHotspot[] | null = null;
+let cachedHotspots: SatelliteData | null = null;
 let cacheTimestamp = 0;
 
-async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
+type SourceStatus = "ok" | "unavailable";
+type SatelliteData = { hotspots: SatelliteHotspot[]; sources: Record<string, SourceStatus> };
+const SATELLITE_UNAVAILABLE_MESSAGE = "Satellite data is currently unavailable";
+export class SatelliteUnavailableError extends Error {
+  constructor(readonly sources: Record<string, SourceStatus>) {
+    super(SATELLITE_UNAVAILABLE_MESSAGE);
+  }
+}
+type FirmsResult = { status: "ok"; data: SatelliteHotspot[] } | { status: "unavailable" };
+
+async function fetchFirmsData(source: string): Promise<FirmsResult> {
   const apiKey = config.nasaFirmsKey;
   const isProxy = /workers\.dev|cloudflare/.test(config.firmsBaseUrl);
-  if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return [];
+  if (!isProxy && (!apiKey || apiKey === "MY_NASA_FIRMS_KEY")) return { status: "unavailable" };
 
   const { minLat, maxLat, minLng, maxLng } = NORTH_AFRICA_BBOX;
   const days = 3;
@@ -40,27 +50,40 @@ async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
         { status: response.status, source, snippet: body.slice(0, 200) },
         "NASA FIRMS HTTP error — check MAP_KEY validity, area format, and IP authorization"
       );
-      return [];
+      return { status: "unavailable" };
     }
 
     const text = await response.text();
     const lines = text.trim().split("\n");
-    if (lines.length <= 1) return [];
+    const header = lines[0].split(",").map((name) => name.trim().toLowerCase());
+    const columns = {
+      lat: header.indexOf("latitude"), lng: header.indexOf("longitude"),
+      brightness: header.includes("brightness") ? header.indexOf("brightness") : header.indexOf("bright_ti4"),
+      scanDate: header.indexOf("acq_date"), scanTime: header.indexOf("acq_time"),
+      satellite: header.indexOf("satellite"), instrument: header.indexOf("instrument"),
+      confidence: header.indexOf("confidence"),
+    };
+    if (Object.values(columns).some((index) => index < 0)) return { status: "unavailable" };
 
     const hotspots: SatelliteHotspot[] = [];
     for (let i = 1; i < lines.length; i++) {
       try {
-        const cols = lines[i].split(",");
-        if (cols.length < 10) continue;
-        const lat = parseFloat(cols[0]);
-        const lng = parseFloat(cols[1]);
-        const brightness = parseFloat(cols[2]);
-        const scanDate = cols[5];
-        const scanTimeRaw = cols[6].padStart(4, "0");
-        const satType = cols[8] === "MODIS_NRT" ? "MODIS" : cols[8] === "VIIRS_SNPP_NRT" ? "VIIRS" : null;
-        if (!satType) continue;
-        const confidenceStr = cols[9];
-        const confidence = confidenceStr === "h" || confidenceStr === "high" ? 95 : (confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
+        const cols = lines[i].split(",").map((value) => value.trim());
+        if (Object.values(columns).some((index) => !cols[index])) continue;
+        const lat = Number(cols[columns.lat]);
+        const lng = Number(cols[columns.lng]);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+        const brightness = parseFloat(cols[columns.brightness]);
+        const scanDate = cols[columns.scanDate];
+        const scanTimeRaw = cols[columns.scanTime].padStart(4, "0");
+        const spacecraft = cols[columns.satellite];
+        const satType = ["Terra", "Aqua", "T", "A"].includes(spacecraft) ? "MODIS" : ["N", "N20", "N21"].includes(spacecraft) ? "VIIRS" : null;
+        if (!satType || cols[columns.instrument] !== satType) continue;
+        const confidenceStr = cols[columns.confidence].toLowerCase();
+        const numericConfidence = Number(confidenceStr);
+        const confidence = satType === "MODIS"
+          ? (Number.isFinite(numericConfidence) && numericConfidence >= 0 && numericConfidence <= 100 ? numericConfidence : 80)
+          : (confidenceStr === "h" || confidenceStr === "high" ? 95 : confidenceStr === "l" || confidenceStr === "low" ? 45 : 80);
         if (lat >= NORTH_AFRICA_BBOX.minLat && lat <= NORTH_AFRICA_BBOX.maxLat &&
             lng >= NORTH_AFRICA_BBOX.minLng && lng <= NORTH_AFRICA_BBOX.maxLng &&
             isInKnownWilaya(lat, lng)) {
@@ -74,20 +97,20 @@ async function fetchFirmsData(source: string): Promise<SatelliteHotspot[]> {
         // skip malformed CSV line
       }
     }
-    return hotspots;
+    return { status: "ok", data: hotspots };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     logger.warn(
       { source, msg },
       "NASA FIRMS fetch failed — if 'ETIMEDOUT', the server IP is likely not authorized on the FIRMS account; whitelist it or set FIRMS_BASE_URL to a Cloudflare Worker proxy"
     );
-    return [];
+    return { status: "unavailable" };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-export async function getLiveSatelliteData() {
+export async function getLiveSatelliteData(): Promise<SatelliteData> {
   const now = Date.now();
   if (cachedHotspots && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedHotspots;
@@ -96,9 +119,14 @@ export async function getLiveSatelliteData() {
   const sources = ["VIIRS_SNPP_NRT", "MODIS_NRT"];
   let hotspots: SatelliteHotspot[] = [];
 
+  const sourceStatuses: Record<string, SourceStatus> = {};
   for (const source of sources) {
-    const data = await fetchFirmsData(source);
-    hotspots = hotspots.concat(data);
+    const result = await fetchFirmsData(source);
+    sourceStatuses[source] = result.status;
+    if (result.status === "ok") hotspots = hotspots.concat(result.data);
+  }
+  if (Object.values(sourceStatuses).every((status) => status === "unavailable")) {
+    throw new SatelliteUnavailableError(sourceStatuses);
   }
 
   if (hotspots.length > 0) {
@@ -116,21 +144,29 @@ export async function getLiveSatelliteData() {
         existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
       }
     }
-    cachedHotspots = unique;
-    cacheTimestamp = now;
-    return unique;
+    const data = { hotspots: unique, sources: sourceStatuses };
+    // An incomplete observation must not replace a previously healthy dataset.
+    if (Object.values(sourceStatuses).every((status) => status === "ok")) {
+      cachedHotspots = data;
+      cacheTimestamp = now;
+    }
+    return data;
   }
 
-  // v2.3.0 (simulation purge): the fabricated-hotspot fallback is gone. When
-  // FIRMS is unreachable or returns nothing, we serve zero hotspots — an
-  // honest empty sky — instead of six invented fires. The frontend already
-  // renders the empty state and fireRisk treats zero hotspots correctly.
-  return [];
+  return { hotspots: [], sources: sourceStatuses };
 }
 
 router.get("/", async (_req: Request, res: Response) => {
-  const data = await getLiveSatelliteData();
-  res.json(data);
+  try {
+    const { hotspots, sources } = await getLiveSatelliteData();
+    if (Object.values(sources).some((status) => status !== "ok")) {
+      return res.status(503).json({ error: SATELLITE_UNAVAILABLE_MESSAGE, sources, hotspots });
+    }
+    res.json(hotspots);
+  } catch (err) {
+    if (!(err instanceof SatelliteUnavailableError)) throw err;
+    res.status(503).json({ error: err.message, sources: err.sources });
+  }
 });
 
 export default router;

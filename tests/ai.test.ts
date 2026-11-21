@@ -2,6 +2,10 @@ import { describe, it, expect, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 
+vi.mock("../server/db.js", () => ({
+  getReportsDbResult: async () => ({ status: "empty" }),
+}));
+
 vi.mock("../server/ai.js", () => ({
   getAiClient: () => null,
   getAiModel: () => "gemini-3-flash-preview",

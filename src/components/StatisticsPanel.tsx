@@ -46,12 +46,18 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   const risk = useMemo(() => computeFireRisk(reports, satellites, wilayas), [reports, satellites, wilayas]);
 
   const [history, setHistory] = useState<HistoryBucket[] | null>(null);
+  const [hotspotsPartial, setHotspotsPartial] = useState(false);
+  const [hotspotsUnavailable, setHotspotsUnavailable] = useState(false);
   useEffect(() => {
     let cancelled = false;
     fetch("/api/history?days=30")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled && data?.buckets) setHistory(data.buckets);
+        if (!cancelled && data?.buckets) {
+          setHistory(data.buckets);
+          setHotspotsPartial(data?.hotspotsPartial === true && data?.hotspotsUnavailable !== true);
+          setHotspotsUnavailable(data?.hotspotsUnavailable === true);
+        }
       })
       .catch(() => {});
     return () => {
@@ -59,7 +65,11 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
     };
   }, []);
 
-  const historyMax = Math.max(1, ...(history?.map((b) => b.reports + b.sos + b.hotspots) || [1]));
+  // Fix 12c: when the satellite feed is unavailable the history endpoint
+  // reports hotspots as 0 with hotspotsUnavailable: true. Those zeros are
+  // unknown, not confirmed — exclude them from the bar totals so the chart
+  // never plots an outage as a quiet day.
+  const historyMax = Math.max(1, ...(history?.map((b) => b.reports + b.sos + (hotspotsUnavailable ? 0 : b.hotspots)) || [1]));
 
   // Most threatened wilayas, computed live from the wilaya status API
   const mostThreatenedWilayas = useMemo(() => {
@@ -228,12 +238,12 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
           </div>
           <div className="flex items-end gap-[3px] h-16" dir="ltr">
             {(history || []).map((bucket) => {
-              const total = bucket.reports + bucket.sos + bucket.hotspots;
+              const total = bucket.reports + bucket.sos + (hotspotsUnavailable ? 0 : bucket.hotspots);
               const height = Math.max(2, Math.round((total / historyMax) * 100));
               return (
                 <div
                   key={bucket.date}
-                  title={`${bucket.date} — بلاغات: ${bucket.reports} · نداءات: ${bucket.sos} · أقمار: ${bucket.hotspots}`}
+                  title={`${bucket.date} — بلاغات: ${bucket.reports} · نداءات: ${bucket.sos} · أقمار: ${hotspotsUnavailable ? (isArabic ? "غير متاحة" : "indisponibles") : `${bucket.hotspots}${hotspotsPartial ? (isArabic ? " (جزئي)" : " (partiel)") : ""}`}`}
                   className="flex-1 rounded-t bg-red-500/50 hover:bg-red-500 transition-colors"
                   style={{ height: `${height}%` }}
                 />
@@ -244,6 +254,11 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
             {isArabic
               ? "حسب تواريخ البلاغات والنداءات والبقع الحرارية المستقبلة من المزودين."
               : "Selon les dates des signalements, SOS et détections reçues."}
+            {hotspotsPartial && (isArabic ? " بيانات الأقمار جزئية حالياً." : " Données satellites actuellement partielles.")}
+            {hotspotsUnavailable &&
+              (isArabic
+                ? " بيانات الأقمار غير متاحة حالياً — الأعمدة تعرض البلاغات والنداءات فقط."
+                : " Données satellites actuellement indisponibles — seuls les signalements et SOS sont affichés.")}
           </p>
         </div>
       </div>

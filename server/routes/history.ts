@@ -2,8 +2,10 @@ import { Request, Response, Router } from "express";
 import { z } from "zod";
 import { getReportsDbResult } from "../db.js";
 import { collectionGet } from "../fs.js";
-import { getLiveSatelliteData } from "./satellite.js";
+import { getLiveSatelliteData, SatelliteUnavailableError } from "./satellite.js";
 import { getSosSummarySnapshot } from "./sos.js";
+import logger from "../logger.js";
+import type { SatelliteHotspot } from "../../src/types.js";
 
 const router = Router();
 
@@ -60,7 +62,23 @@ router.get("/", async (_req: Request, res: Response) => {
     if (bucket) bucket.sos += 1;
   }
 
-  const hotspots = await getLiveSatelliteData();
+  // Keep usable detections in the buckets. A total outage leaves report and
+  // SOS counts intact and marks the satellite counts unavailable.
+  let hotspots: SatelliteHotspot[] = [];
+  let hotspotsUnavailable = false;
+  let hotspotsPartial = false;
+  try {
+    const data = await getLiveSatelliteData();
+    hotspots = data.hotspots;
+    hotspotsPartial = Object.values(data.sources).some((status) => status !== "ok");
+  } catch (err) {
+    if (!(err instanceof SatelliteUnavailableError)) throw err;
+    hotspotsUnavailable = true;
+    logger.warn(
+      { msg: err.message, sources: err.sources },
+      "History route: satellite data unavailable"
+    );
+  }
   for (const hotspot of hotspots) {
     const bucket = buckets.get(dayKey(hotspot.scanTime));
     if (bucket) bucket.hotspots += 1;
@@ -69,6 +87,8 @@ router.get("/", async (_req: Request, res: Response) => {
   res.json({
     days,
     generatedAt: new Date().toISOString(),
+    ...(hotspotsPartial ? { hotspotsPartial: true } : {}),
+    ...(hotspotsUnavailable ? { hotspotsUnavailable: true } : {}),
     buckets: [...buckets.entries()].map(([date, counts]) => ({ date, ...counts })),
   });
 });

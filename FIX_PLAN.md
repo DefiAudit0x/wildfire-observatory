@@ -764,55 +764,205 @@ Watch 1 on PR #139 (head d3535eb) returned DO NOT MERGE with one unresolved acti
 - Tests: the mock backend in `tests/cache-invalidation.test.ts` gains a `readGate` — reads take their snapshot BEFORE awaiting the gate, modelling a read that executed pre-write but whose response arrives post-invalidation (awaiting first would read post-write data and never exercise the race). Two new tests per SDK (collection + doc): start a gated read, write + invalidate while it is pending (asserting `reads === 1` proves the read is genuinely in flight), release, assert the pending call returns its pre-write snapshot and the NEXT read returns the new value. The gate defaults to null, so the 26 existing tests are untouched.
 
 Files changed (3, +90/−7): `server/fs.ts` (+34/−4, generation map + bumps + guarded sets), `tests/cache-invalidation.test.ts` (+46/−3, `readGate` in the mock + 4 tests), `FIX_PLAN.md` (+10, this section). Verification: lint 0 diagnostics; build pass; affected 2 files / 34 passed (30 cache-invalidation + 4 seed-staff); full server suite 720 passed (Fix 10 baseline 716 + 4 new); React suite 835 passed (831 + 4 — the new `.test.ts` files re-run under jsdom). Fail-without-fix proven by stashing `server/fs.ts`: 4 failed / 26 passed — exactly the 4 new 10b tests, both SDKs.
-## Fix 11 — ATM-1 + SEED-1 (2026-11-21)
 
-Base: `02bf5915834999ae39d35a8c69bb6f17c5c323ea`; branch `fix/wildfire-11-unit-identity`. Fetched origin; origin/main has since advanced to b031985, but this fix intentionally retains the requested pinned base. Local main now points to the pinned base too. No Fix 8/9/10 changes imported; no push, PR, or merge.
+## Fix 12 — AIG-1 / AIG-2 / SZM-2 / SAT-1: dataset outages versus current observations
 
-### Changes
+Branch: `fix/wildfire-12-dataset-outages`, based directly on main `b580dfc518e792611419e3c6826a3c6e501d775f` after fetching origin. The clone initially contained a clean Fix 11 branch; that branch was left intact and none of its changes were used. Fix 11/11b is outside this change. No dependency installation, client change, push, PR, or merge.
 
-- `server/atomic.ts`: both SDK deletion guards query the normalized document identity and the uppercase raw unit code before scheduling deletion. `DZ16` and `unit-dz16` therefore block deletion of `units/unit-dz16`. Document IDs and stored staff unitIds are unchanged.
-- `tests/unit-identity.test.ts`: real `deleteUnitIfUnlinked`, mocking only Firestore, tests both SDK paths with a unit document and raw-code/normalized-code staff linkage; verifies has-users and no scheduled delete, plus successful unlinked deletion (6 cases).
-- `tests/seed-staff.test.ts`: real seeder and real `createDocIfAbsent` receive backend read/write failures separately for units/users; four cases require exit(1), an error, no failed-record creation confirmation, and no completion/login instructions. Existing-record no-op remains successful (one additional case). Existing SEED-2 coverage retained.
-- `scripts/seed-staff.ts`: no change required. Fix 4 already checks both unavailable outcomes and throws into the terminal exit(1) handler. This is the SEED-1 production fix already present on main, explicitly documented in the Fix 4 section above.
+### Files and contracts
 
-### Verification and regression proof
+- `server/routes/ai.ts` (AIG-1): use the existing discriminated `getReportsDbResult` instead of the lossy nullable wrapper. `error`, `no-db`, rejected reads, and the existing three-second context deadline return **503 `{error: "Report context is currently unavailable"}`**, without `guidance` and before invoking AI. Clear the deadline timer after completion. A confirmed `empty` read remains successful. This follows the existing safe-zone/reports unavailable contract and distinguishes unknown conditions from zero observed nearby reports.
+- `server/routes/ai.ts` (AIG-2): reuse `isFreshThreatTimestamp` from `server/routes/wilayas.ts`, including its existing **30-minute maximum age / two-minute future-skew allowance**. Invalid timestamps also fail that predicate. Apply it before both fallback counts and provider prompt construction. Keep resolved/rejected and distance exclusions unchanged; retain fresh critical guidance and successful provider responses.
+- `server/routes/safezones.ts` (SZM-2): preserve the successful array body and 60-second route TTL. Record the successful load time. A failed refresh may serve cached active centres only through **five minutes from the last successful load** (five existing route TTLs; no existing safe-zone maximum-stale convention was present). Such a response carries **`X-Data-Stale: true` and `X-Data-Updated-At: <ISO last-load time>`**. After that absolute age, return the existing **503 `{error}`** instead of the list. Failed refreshes never renew its age. Internal PUT/DELETE consumers access the same list through the load result's `data` field.
+- `server/routes/satellite.ts` (SAT-1): source reads distinguish `ok` (including empty feeds) from `unavailable` (missing key, non-OK HTTP, transport error, abort). If **either source fails**, GET returns **503 `{error: "Satellite data is currently unavailable", sources: {VIIRS_SNPP_NRT: "ok" | "unavailable", MODIS_NRT: "ok" | "unavailable"}}`**. This conservative partial-outage contract lets the existing client retain its previous dataset rather than commit an incomplete list as healthy. Only complete successful observations use the existing array contract and populate the existing nonempty cache. Deduplication, healthy cache lifetime, and healthy empty responses are unchanged; SAT-2 empty caching/coalescing is not included. The shared `getLiveSatelliteData` helper throws the typed outage error rather than claiming empty success; wilayas already catches it, while history follows its existing Express error path.
+- `tests/dataset-outages.test.ts`: real Express route handlers, with only backend/configuration boundaries mocked, plus a controlled clock for cache-age checks. No live DB or HTTP. 14 regression cases and three healthy-path controls (17 cases total).
+- `tests/ai.test.ts`, `tests/ai-failures.test.ts`: supply a confirmed-empty DB fixture so the existing provider/fallback tests continue exercising their intended healthy-context paths. Existing assertions and timeout checks are unchanged.
+- `tests/history.test.ts`: supply a healthy HTTP feed and test FIRMS key for the existing successful history bucket tests, retaining the real satellite/history handlers and every assertion. Previously these tests implicitly relied on a missing production key being treated as a healthy empty sky.
+- `FIX_PLAN.md`: this implementation, contract, verification, and proof record.
 
-- Targeted: `npm run test:server -- tests/unit-identity.test.ts tests/seed-staff.test.ts`: **15 passed**.
-- ATM-1 red proof: temporarily replaced only `server/atomic.ts` with HEAD/main's version, ran `tests/unit-identity.test.ts`, restored fixed file. **2 failed / 4 passed**: raw `DZ16` returned deleted instead of has-users in both SDK branches. Normalized guard and unlinked control cases passed, as expected. Log: `/tmp/fix11-atm-red.log`.
-- SEED-1 red proof: main already passes, so temporarily removed only the two existing unavailable-result throws from the seeder, ran `tests/seed-staff.test.ts`, then restored the byte-identical original. **6 failed / 3 passed**: all four new unit/user read/write failure cases failed their exit(1) assertions; two pre-existing SEED-2 read-failure assertions also caught the mutation. Existing-record success is a control case, not expected to fail. Log: `/tmp/fix11-seed-red.log`. This is a mutation proof against removal of Fix 4's existing SEED-1 fix, not a claim that current main has the seeder defect.
-- `npm run lint`: **passed**.
-- `npm run build`: **passed** (production assets and server bundle).
-- `npm run test:server`: **72 files, 701 tests passed**.
-- `npm run test:react`: **79 files, 849 tests passed**.
-- `npm run test:e2e`: attempted; **blocked before tests** because Firebase emulator cannot spawn `java -version` (Java unavailable). No dependency installation or environment repair attempted.
-- `git diff --check`: passed. Test/build logs in `/tmp/fix11-{targeted,lint,build,server,react,e2e}.log`.
+### Fail-without-fix evidence
 
-### Scope notes / next
+The new route test file was first executed **before any production-route changes**, on the specified main baseline: `npm run test:server -- tests/dataset-outages.test.ts`. Result: **13 failed / three healthy controls passed**, in `/tmp/fix12-unfixed.log`. Each failure was a behavior assertion against the actual route, not a fixture/import failure. The tests expose both old and new DB boundary names solely so the same fixtures exercise the original and corrected route implementations.
 
-SEED-1 was already resolved by Fix 4; this round adds explicit regression coverage rather than reworking bootstrap. Fix 10 cache invalidation does not exist on this pinned main base; none of its calls were removed or changed. Full E2E validation remains outstanding due to Java.
+| Finding / regression case | Observed on unfixed main |
+| --- | --- |
+| AIG-1: DB result `error` | Expected 503, received 200/all-clear |
+| AIG-1: `no-db` | Expected 503, received 200/all-clear |
+| AIG-1: hanging DB / three-second context timeout | Expected 503, received 200/all-clear |
+| AIG-1: rejected DB read | Expected 503, received 200/all-clear |
+| AIG-2: 90-day-old pending critical report, fallback + prompt | Critical fallback instead of zero-current-report fallback; failed `Aucun foyer` assertion |
+| AIG-2: ten-minute-future pending critical report, fallback + prompt | Same incorrect critical fallback |
+| AIG-2: invalid-timestamp pending critical report, fallback + prompt | Same incorrect critical fallback |
+| SZM-2: within-age refresh failure must be marked stale | Expected `X-Data-Stale: true`, received no header |
+| SAT-1: both HTTP sources fail | Expected 503, received 200 `[]` |
+| SAT-1: both transports reject | Expected 503, received 200 `[]` |
+| SAT-1: both requests abort on the route's actual 15-second source deadlines | Expected 503, received 200 `[]` |
+| SAT-1: missing direct-FIRMS key | Expected 503, received 200 `[]` |
+| SAT-1: one HTTP source fails, the other supplies detections | Expected 503 with per-source statuses, received 200 |
 
-Fix 12: **AIG-1, AIG-2, SZM-2, SAT-1** — distinguish dataset outages from current observations (`server/routes/ai.ts`, `server/routes/safezones.ts`, `server/routes/satellite.ts`).
+A separate SZM-2 expiry regression was then added so the earlier missing-header assertion cannot mask the age-limit defect. Saved the fixed safe-zone route to `/tmp/fix12-route-backup/safezones.ts`, temporarily replaced only that route with `git show HEAD:server/routes/safezones.ts`, ran `npm run test:server -- tests/dataset-outages.test.ts -t 'absolute age bound'`, and restored the fixed file. **One failed / 16 skipped**: after refresh failures at 120 seconds and 300.001 seconds from the successful load, expected 503 but received 200. Evidence: `/tmp/fix12-unfixed-expiry.log`.
 
-## Fix 11b follow-up — CodeRabbit Major on PR #140 (verified, parent-implemented)
+Resumed-session independent re-verification: temporarily replaced all three route files with `git show HEAD:<path>` at the exact `b580dfc518e792611419e3c6826a3c6e501d775f` baseline, ran the complete final `tests/dataset-outages.test.ts`, and restored every fixed file in a Python `finally` block. **14 failed / three healthy controls passed (17 tests)**, all expected behavior failures, including the independent absolute-age regression. Evidence: `/tmp/fix12-unfixed-reverified.log`.
 
-CodeRabbit review 6004447276, comment 4651838147: the client branch of `deleteUnitIfUnlinked` passed a Query to `Transaction.get`. Verified against the installed SDK (firebase ^12.18.0): `Transaction.get(documentRef: DocumentReference)` takes DocumentReference only, and the runtime calls `validateReference` first, which throws INVALID_ARGUMENT for a Query — so on the client path the transaction threw and the outer catch returned `"unavailable"`: unit deletion via the client path could never succeed nor correctly report `"has-users"`. The pattern predated Fix 11 (main b031985 had the identical line); Fix 11 duplicated it inside the identity loop. The Admin branch is unaffected (Admin SDK `Transaction.get` accepts queries).
+The AIG-2 tests also assert the provider prompt contains `Active reports: 0, High/Critical: 0` after each aged/invalid fixture. Healthy controls intentionally pass on both versions: confirmed-empty context succeeds, fresh critical reports still count while resolved/rejected reports do not, and two healthy empty FIRMS feeds return 200 `[]`.
 
-Files changed (3, +30/−8): `server/atomic.ts` (+16/−5, the linked-staff check now runs before `runTransaction` via `getDocs(query(...))` for each identity; the transaction itself only reads the unit doc and deletes), `tests/unit-identity.test.ts` (+14/−3, the client-mode `runTransaction` mock now throws on non-DocumentReference `get` arguments like the real SDK, a `getDocs` mock was added, and the unlinked-deletion test seeds unrelated staff `["DZ17", "unit-dz17"]` so it can detect a guard that blocks deletion whenever any staff exist), `FIX_PLAN.md` (this section). Documented trade-off: the check is no longer atomic with the delete on the client path — a user created between the check and the delete could leave a dangling unit reference; the Admin path keeps the atomic in-transaction query check.
+### Verification
 
-Verification: lint 0 diagnostics; build pass; affected 2 files / 15 passed (unit-identity + seed-staff). Fail-without-fix proven by stashing only `server/atomic.ts`: exactly the 3 client-mode tests failed / 3 Admin tests passed — the tightened mock catches the Query-in-transaction bug on the unfixed code. Full suites on this branch tree (b031985 base + Fix 11 files, so Fix 8's tests are included): server 724 passed, React 875 passed, 0 failed.
+- Affected routes/tests: **34/34 passed**, four files (`/tmp/fix12-affected.log`).
+- `npm run lint`: passed (`/tmp/fix12-lint.log`).
+- `npm run build`: passed, Vite and bundled server (`/tmp/fix12-build.log`).
+- Final `npm run test:server`: **768/768 passed**, 77 files (`/tmp/fix12-server.log`), including all **17/17** new route cases and the existing AI/history cases.
+- Final `npm run test:react`: **919/919 passed**, 84 files (`/tmp/fix12-react.log`), including the same route regressions under jsdom.
+- `npm run test:e2e`: attempted twice; **environment blocked before Playwright starts** (exit 2): Firebase cannot spawn `java -version` because Java is absent (`/tmp/fix12-e2e.log`). No packages were installed and no unrelated processes were stopped.
+- Initial full-server validation exposed five history success tests that depended on absent FIRMS credentials returning `[]`. Updated only their HTTP/config fixtures as described above; no assertions were removed or weakened. The final full suites are green.
+- `git diff --check`: passed. No production-scope deviations; no client changes, dependency changes, push, PR, or merge. Local branch is based directly on the requested main commit; Fix 11/11b is not included.
 
-## Fix 11d follow-up — CodeRabbit Minor on PR #140 (review 6004549113, Sol-implemented, coordinator-completed)
+Next: **Fix 13 — SOS-4 (`server/routes/sos.ts`, report line 620) and FS-2 (`server/fs.ts`, report line 711)** per triage rows 147–148.
 
-CodeRabbit review 6004549113 (on head `fb50d31`): "Block client-path deletion when staff are linked at commit time." The 11b `getDocs` pre-check runs before the deletion transaction, so a staff document committed after the query but before the deletion transaction reads the unit is not seen — the unit is deleted and the new staff doc keeps a `unitId` referencing a missing unit. Real gap, narrow window, genuine consequence.
+## Fix 12b follow-up — history endpoint must survive a satellite outage (parent-implemented)
 
-Fix: a `linkedStaffCount` marker on the unit document, maintained in-transaction at every point that creates, moves, or deletes a staff `unitId`, and read inside the deletion transaction. Firestore transactions retry on contention, so a staff creation that writes the unit doc after the deletion transaction read it forces a retry, which then sees the count and returns `"has-users"`. The marker is a plain number field; `FieldValue.increment` / `increment` on a missing field sets it to 1, so no migration is needed.
+Fix 12's SAT-1 made `getLiveSatelliteData` throw `SatelliteUnavailableError` on any source outage. `wilayas.ts` already catches it (falls back to empty hotspots with a warning log), but `server/routes/history.ts:63` called it uncaught — so in production without a FIRMS key, or during a FIRMS outage, `GET /api/history` would return 500 via the global error handler instead of 200 with hotspots 0. That turns a partial degradation into a total failure of the history endpoint, beyond SAT-1's scope (which was about `GET /api/satellite` itself).
 
-Files changed (7, +~190/−20): `server/atomic.ts` (+95/−~10: `createUserIfUnitExists` increments the unit's count in-transaction in both SDK branches and stamps created users `linkedStaffCounted: true`; `deleteUnitIfUnlinked` checks `linkedStaffCount > 0` inside the transaction in both branches, keeping the Admin in-transaction query and the 11b client `getDocs` pre-check; new `deleteUserAtomically` helper deletes the user doc and decrements the count in one transaction in both SDKs, only when the user existed with `linkedStaffCounted === true` and the unit doc still exists; local `unitDocumentId` helper strips an optional `unit-` prefix case-insensitively, lowercases, re-prefixes `unit-`, so both stored forms `DZ16` and `unit-dz16` map to the same unit doc), `server/fs.ts` (+52: `updateUserAtomic` transfers the count on a `unitId` move in-transaction in both branches — decrement old only if `before.linkedStaffCounted === true` and the old unit exists, increment new, stamp `linkedStaffCounted: true`; same local `unitDocumentId` helper, duplicated per the prompt's instruction to avoid a route→lib import cycle; units cache invalidated for both units), `server/routes/users.ts` (+11/−3: DELETE switches from plain `docDelete` to `deleteUserAtomically`, mapping `"not-found"` → 404 and `"unavailable"` → 503; audit log and roster sweep unchanged), `tests/linked-staff-count.test.ts` (new, 175 lines, 18 cases across both SDKs), `tests/atomic-lifecycle.test.ts` (+1, tx mock gains `update`), `tests/unit-identity.test.ts` (+4/−2, tx mocks return `data: () => ({})` on the unit read), `tests/users-security.test.ts` (+5, route mock gains `deleteUserAtomically`, DELETE asserts it is called and `docDelete` is not), `FIX_PLAN.md` (this section).
+Files changed (3, +32/−3): `server/routes/satellite.ts` (+1/−1, `SatelliteUnavailableError` is now exported), `server/routes/history.ts` (+19/−2, the satellite call is wrapped in try/catch for `SatelliteUnavailableError` only — anything else still throws; on catch it logs a warning and the response carries `hotspotsUnavailable: true` with hotspots 0; the field is omitted on healthy responses), `tests/history.test.ts` (+12, 1 new test: both FIRMS sources returning 500 → history returns 200 with 7 buckets, `hotspotsUnavailable: true`, all hotspots 0).
 
-Legacy reasoning: staff created before this fix carry no `linkedStaffCounted` flag and their units carry no count, so the marker reads 0 for them — they are still protected by the existing queries (Admin in-transaction query; 11b client `getDocs` pre-check), which see every staff doc existing at check time. Only staff created after the check need the marker, and every creation after this fix maintains it (a move also stamps a legacy user counted). Fail-closed drift direction: a missed decrement can only make a unit undeletable, never wrongly deletable.
+Verification: lint 0 diagnostics; build pass; affected 2 files / 23 passed (history 6 + dataset-outages 17). Fail-without-fix proven by stashing only `server/routes/history.ts`: exactly the 1 new test failed / 5 passed. Full suites on this branch tree: server 77 files / 769 passed, React 84 files / 920 passed, 0 failed (both RC=0; the +1 per suite vs Fix 12 alone is the new history test).
 
-Stale CodeRabbit note: comment 4652029963 (review 6004664994, "Evict every cached variant of a collection on invalidation") is INVALID — already fixed by Fix 10: `server/fs.ts:47–54` does the prefix scan plus the 10b generation bump. No action taken.
+## Fix 12c follow-up — render the history outage state in the activity chart (parent-implemented)
 
-Verification: lint 0 diagnostics; build pass; affected 4 files / 45 passed (linked-staff-count 18 + unit-identity 6 + atomic-lifecycle + users-security). Fail-without-fix proven by the coordinator by stashing only the three source files (`server/atomic.ts`, `server/fs.ts`, `server/routes/users.ts`): exactly 19 failed / 26 passed — all 18 new marker tests plus the users-security DELETE assertion. Full suites on this branch tree: server 780 passed (78 files, RC=0), React 930 passed + 1 failed (85 files, RC=1) — the single failure is the known team-panel 50 ms heartbeat timing flake (`tests/components/team-panel.test.tsx`, "flips en_route → on_scene", same flake as PR #138's watch), which passes 30/30 in isolation ×3 and is unrelated to this server-only change. E2E not run (same standing limit: no Java/Firebase emulator in this VM).
+CodeRabbit review 6004834533 on PR #141, comment 4652177627 (Major, Data Integrity): `GET /api/history` returns `hotspotsUnavailable: true` during a satellite outage (12b) with buckets carrying `hotspots: 0`, but `src/components/StatisticsPanel.tsx` fetched `/api/history?days=30` and kept only `data.buckets` — the flag was never read, so during an outage the activity chart plotted confirmed zeros: the outage displayed as a quiet day. The same class of defect Fix 12 itself fixes (outage presented as a confident observation), moved to the client.
 
-Run notes: Sol's first run (248,580 tokens, ~18 min) implemented everything and passed the focused tests plus the full server suite, but the approval-review service disconnected and blocked the FIX_PLAN.md write, the React suite, and the commit. A resume run was killed by a runtime SIGTERM after ~4 min (during which a transient read-only filesystem error also invalidated its fail-without-fix attempt — the revert failed, so its "unfixed" run actually ran fixed code). The coordinator completed the remaining steps directly (FIX_PLAN section, full suites, commit) and re-proved fail-without-fix independently as recorded above.
+Files changed (3, +~45/−5): `src/components/StatisticsPanel.tsx` (+16/−4, new `hotspotsUnavailable` state set from the response; bar heights and `historyMax` exclude hotspots while unavailable so the chart shows reports + SOS only; the bar tooltip shows "أقمار: غير متاحة" / "indisponibles" instead of "أقمار: 0"; the footnote adds "بيانات الأقمار غير متاحة حالياً — الأعمدة تعرض البلاغات والنداءات فقط." / "Données satellites actuellement indisponibles — seuls les signalements et SOS sont affichés."), `tests/components/statistics-panel-history.test.tsx` (new, 2 cases: outage payload → unavailable note shown, no bar title contains "أقمار: 0", at least one contains "غير متاحة"; healthy payload → "أقمار: 3" shown, no unavailable note), `FIX_PLAN.md` (this section).
+
+Verification: lint 0 diagnostics; build pass; affected 1 file / 2 passed. Fail-without-fix proven by stashing only `src/components/StatisticsPanel.tsx`: exactly the unavailable test failed / 1 passed. Full suites on this branch tree: server 77 files / 769 passed (unchanged — client-only change), React 85 files / 922 passed, 0 failed (both RC=0; the +2 vs Fix 12b is the new component tests).
+
+Open follow-up from the same review: the wilayas partial-outage regression (review summary, Medium reliability retained concern) — Fix 12's throw-on-any-failure discards the healthy feed's detections for the wilayas consumer, which substitutes `[]` and returns an unmarked 200 cached 60 s; at base the healthy source's detections were returned. Fix 12d will carry partial satellite data + availability through the wilayas derivation while preserving the satellite route's 503-on-partial contract and the 17 dataset-outage tests.
+
+## Fix 12d follow-up — keep detections from the healthy satellite feed
+
+- `server/routes/satellite.ts` returns `{ hotspots, sources }` so consumers can use deduplicated detections and see feed availability. The helper throws `SatelliteUnavailableError` only when both feeds fail. The existing 10-minute cache still holds only nonempty, complete results. The satellite route checks completeness itself and preserves HTTP 503 with `{ error, sources }` for either outage and HTTP 200 with an array when both feeds succeed.
+- `server/routes/wilayas.ts` uses the healthy feed for severity, logs the failed source, and sends `X-Satellite-Partial: true` on a partial outage. A total outage keeps the empty satellite fallback and sends `X-Satellite-Unavailable: true`. The 60-second response cache retains the applicable header.
+- `server/routes/history.ts` counts the healthy feed in its daily buckets and sets `hotspotsUnavailable: true` only on a total outage. The satellite, wilayas, and history routes are the only production callers. AI does not call the helper.
+- `tests/satellite-partial.test.ts` exercises the real helper and routes with stubbed FIRMS HTTP responses and Firebase disabled.
+
+Ran the new test file against untouched production code at `b19a881` before implementing the fix. All three tests failed (`/tmp/fix12d-baseline.log`). The helper correctly threw on total failure, then incorrectly threw on the partial call. Wilayas reported Annaba as `safe` with zero hotspots instead of `low` with one. History returned zero for the scan day instead of one. With the fix, all three passed, including the helper's recovery and cache assertions, the wilayas header on both requests, and the absence of the history outage flag on partial data.
+
+Lint and the production build passed. The targeted server run passed 26/26, including all 17 unchanged dataset outage tests and all six unchanged history tests (including the total outage test).
+
+The full server suite passed 772/772 (78 files) and the full React suite passed 925/925 (86 files). The E2E command stopped before Playwright because Firebase could not run Java. No other verification deviations. Re-watch PR #141, then merge after #140.
+
+## Fix 12e — PR #141 review 6005067947: three Majors
+
+Continued locally from verified `e7540ed` on `fix/wildfire-12-dataset-outages`. No dependency installation, push, PR creation, merge, or edits to the owner's clone/dissection evidence.
+
+### Changes and contract
+
+- `server/routes/history.ts`: retain source availability from the real satellite helper; emit `hotspotsPartial: true` when one feed fails, including an empty healthy feed. Omit it on healthy responses and on total failure; only total failure emits `hotspotsUnavailable: true`. Healthy detections still count in buckets.
+- `src/components/StatisticsPanel.tsx`: read the partial history flag, keep satellite counts in bar heights/normalization, and annotate tooltips and footnotes in Arabic/French. Unavailable takes precedence if an inconsistent payload carries both flags.
+- `server/routes/satellite.ts`: satellite is CSV column 7 (`T`/`A` → MODIS; `N`/`N20`/`N21` → VIIRS; unknown → discard). Confidence is column 8 (`h`/`high` → 95, `l`/`low` → 45, finite numeric 0–100 preserved, other values → 80). Check the confidence header position to reject the old invented instrument-column layout rather than reinterpret it as valid data.
+- Official-column evidence supplied and independently verified by Muse/parent: NASA Earthdata's [MODIS/VIIRS NRT attributes](https://www.earthdata.nasa.gov/data/tools/firms/active-fire-data-attributes-modis-viirs) lists latitude, longitude, brightness, scan, track, acquisition date/time, satellite, confidence, version; there is no instrument column. This round attempted to retrieve that exact page but NASA returned HTTP 403; no claim of successful fresh retrieval. Repository-wide `rg` for FIRMS/CSV splitting confirms `satellite.ts` is the sole FIRMS parser. `worker/firms-proxy.js:125` forwards `upstream.body` unchanged, so direct and proxy paths share this parser.
+- **Deliberate 503 contract change:** partial outage now returns `503 { error, sources, hotspots }`, including retained deduplicated detections or `[]`; total outage still returns `503 { error, sources }` with no hotspots property. Healthy responses remain HTTP 200 arrays. `tests/dataset-outages.test.ts` corrects the real-format fixture and strengthens the partial assertion to require detections plus all four total-outage assertions to forbid hotspots. All original 17 cases remain; none is removed or changes its HTTP-status expectation.
+- `src/hooks/observatory/useObservatoryPoll.ts`: satellites-only HTTP 503 bodies can supply data exclusively through the existing `validateDataset("satellites", ...)` gate, subject to the existing cycle/mount guards. Missing/invalid bodies preserve data and partial state and remain HTTP failures. Applied partial data also remains an HTTP failure in dataset health, never advances last full refresh/last complete satellite success, and exposes `satellitesPartial`; validated healthy recovery clears it.
+- `src/hooks/useObservatoryData.ts`, `src/App.tsx`, `src/components/layout/MainContent.tsx`: carry that flag to a shared Arabic/French status banner above the content on every tab, covering map/statistics, home, radar, evacuation and command consumers without changing all their prop contracts.
+- Tests: `tests/satellite-partial.test.ts` corrects FIRMS fixtures and adds parser/mapping, history-flag, and partial-empty-route cases; `tests/components/statistics-panel-history.test.tsx` covers both languages and retained bar contributions; `tests/observatory-hooks.test.tsx` covers partial admission, degraded health, invalid-body preservation and recovery; new `tests/components/satellite-partial-banner.test.tsx` covers the shared warning/recovery in both languages. `FIX_PLAN.md` records this contract and evidence.
+
+### Fail-without-fix evidence
+
+Temporarily replaced all changed production files with `git show e7540ed:<path>`, kept the revised tests, ran the real functions under `npm run test:react`, and restored all files in a Python `finally` block. `/tmp/fix12e-unfixed.log`: **28 failed / 45 passed**, five files. No fixture/import failure:
+
+| Changed/new regression | Unfixed result |
+| --- | --- |
+| Ten official-column parser cases: T/0, A/100, N/high, N20/low, N21/nominal, T/h, A/l, T/72.5, T/101, T/-1 | Each expected one mapped hotspot, got `[]` |
+| Reject old instrument-column fixture plus unknown satellite | Expected `[]`, got the old invented MODIS hotspot |
+| Partial history with detections / empty healthy feed (two cases) | Each expected `hotspotsPartial: true`, received undefined |
+| Retained empty hotspots in partial route 503 | Expected `hotspots: []`, property absent |
+| Arabic/French partial history component (two cases) | Expected count plus partial suffix, got unmarked count |
+| Nonempty/empty partial poll admission and recovery (two cases) | Nonempty dataset discarded; partial flag undefined (empty case too) |
+| Preserve partial data on absent/null/malformed-item/non-array 503 bodies (four cases) | Cannot establish preceding partial dataset: flag undefined; fixed run also checks schema-gated preservation after that admission |
+| Arabic/French shared content banner and recovery (two cases) | No status banner rendered |
+| Revised pre-existing partial-detection fixture tests (three cases) | Real CSV detections dropped by helper, wilayas and history |
+| Revised 17-case suite's partial 503 contract case | Retained hotspots property absent |
+
+The two new healthy/total history controls pass at baseline by design: they ensure absence of `hotspotsPartial` and mutual exclusion with `hotspotsUnavailable`. Existing healthy history component control additionally forbids the partial footnote.
+
+To separate the history bug from the parser bug, restored **only** `history.ts` to `e7540ed` with the corrected parser retained and ran `npm run test:server -- tests/satellite-partial.test.ts -t history`: **three failed / two controls passed / 14 skipped**, all three failures specifically undefined `hotspotsPartial`. Evidence: `/tmp/fix12e-history-isolated.log`.
+
+To re-prove the original Fix 12 failures under the revised 503 contract, temporarily replaced only AI/safezones/satellite routes with `b580dfc518e792611419e3c6826a3c6e501d775f` versions and ran all 17 dataset-outage cases, restoring files in `finally`: **14 failed / three healthy controls passed**. Partial and total satellite cases still fail HTTP 503 expectations against the original 200 behavior. Evidence: `/tmp/fix12e-base-routes.log`.
+
+### Verification
+
+- Initial affected run: **77/77 passed**, five files, including **17/17 dataset-outage cases** (`/tmp/fix12e-affected.log`); shared-banner tests separately **2/2 passed** (`/tmp/fix12e-banner.log`).
+- Final `npm run lint`: passed, no diagnostics (`/tmp/fix12e-lint.log`). Final production `npm run build`: passed, Vite assets and bundled server (`/tmp/fix12e-build.log`).
+- Full `npm run test:server`: **788/788 passed**, 78 files (`/tmp/fix12e-server.log`), including **17/17 dataset-outage cases** under the revised contract.
+- Full `npm run test:react`: **951/951 passed**, 87 files (`/tmp/fix12e-react.log`), including the same 17 route cases under jsdom.
+- Removed an unnecessary SafetyGuides mock from the new banner test; real-component rerun **2/2 passed** (`/tmp/fix12e-banner.log`). Repeated the unfixed banner proof with only MainContent reverted: **2/2 failed** because the warning is absent (`/tmp/fix12e-banner-unfixed.log`); restored MainContent in `finally`.
+- `npm run test:e2e`: environment blocked before Playwright starts: Firebase cannot spawn `java -version` because Java is absent (`/tmp/fix12e-e2e.log`). No dependencies installed or unrelated servers stopped. This is the same environment limitation recorded for previous rounds.
+- `git diff --check`: passed. No production-scope deviations. The header-position check is necessary to reject the old wrong-format fixture explicitly; a shared content banner is the smallest UI surface covering every satellite-data view. Existing cache/deduplication policies and HTTP 503-versus-200 distinction are preserved.
+
+Remaining for PR #141: **Muse re-watch, then merge only after FIX_PLAN.md reconciliation against main `0462a23`**. This round commits locally only; no push, new PR, or merge.
+
+
+## Fix 12f — parse the real FIRMS area CSV wire format
+
+Continued from verified clean `02a5280` on `fix/wildfire-12-dataset-outages` in `/home/hatch/workspace/wildfire-fix`. Local changes and commit only; no dependency installation, push, PR creation, or merge.
+
+### Correction and wire evidence
+
+**Correction: Fix 12e's parser fix was built on the Earthdata attribute reference page instead of the API wire format and never ran on real data.** Its column-8 confidence guard rejected every real 14-column response (column 8 is `instrument`), while returning successful empty observations. Its MODIS mapping also missed the actual full spacecraft names.
+
+Independently retrieved NASA's official [How to use FIRMS API in Python tutorial](https://firms.modaps.eosdis.nasa.gov/content/academy/data_api/firms_api_use.html) on November 21, 2026. The `API/area` example calls `/api/area/csv/.../VIIRS_NOAA20_NRT/world/1` and displays this 14-column header and first row (CSV transcription of the tutorial's dataframe):
+
+```csv
+latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight
+-16.28359,29.40531,295.78,0.50,0.66,2025-06-06,1,N20,VIIRS,n,2.0NRT,284.11,1.17,N
+```
+
+The same tutorial's `API/country` example calls `/api/country/csv/.../MODIS_NRT/PER/4` and displays the extra leading `country_id`, full names `Terra`/`Aqua`, and numeric confidence:
+
+```csv
+country_id,latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_t31,frp,daynight
+PER,-6.99466,-76.58813,311.65,1.03,1.02,2025-06-03,236,Terra,MODIS,83,6.1NRT,292.65,10.58,N
+```
+
+The application calls the area endpoint (`server/config.ts`, `worker/firms-proxy.js`); the worker forwards its body unchanged. Test detection coordinates/date are adapted to Algeria/current scan time so the real geography/history filters run; wire columns and spacecraft/instrument/confidence values follow the tutorial.
+
+### Targeted changes
+
+- `server/routes/satellite.ts`: resolve every consumed field by trimmed, case-insensitive header name, accepting `brightness` or `bright_ti4`. Extra/reordered columns, including `country_id`, do not affect parsing. Missing required header names (latitude, longitude, either brightness name, acq_date, acq_time, satellite, instrument, confidence) return `unavailable`, including HTML, error sentences, empty bodies, and the invented no-instrument layout. A valid header-only response remains `ok`/empty; HTTP non-2xx remains unavailable.
+- Map `Terra`/`Aqua` and defensive `T`/`A` to MODIS, and `N`/`N20`/`N21` to VIIRS; discard unknown spacecraft and instrument/type mismatches. Preserve numeric MODIS confidence 0–100, default out-of-range/unknown to 80; VIIRS h/high=95, l/low=45, n/nominal/other=80. Preserve HHMM padding, geography, cache, deduplication, partial-source data, and response contracts. Discard missing required row fields and invalid numeric coordinates.
+- `tests/satellite-partial.test.ts`: replace invented fixtures with real headers/values; replace the old 10-case matrix with 15 real-wire confidence/spacecraft cases, add header-name/country coverage, seven malformed-row/mismatch cases retaining a healthy detection, header-only followed by detections, and 12 invalid-schema cases checking both satellite route and history. Existing recovery, wilaya, history, empty/total, and retained-503 assertions remain.
+- `tests/dataset-outages.test.ts`: replace FIRMS detection and healthy-empty fixtures with real schemas; MODIS uses `Terra,MODIS,83,6.1NRT`. Keep all 17 cases and their status/source/hotspot assertions; only expected confidence changes to match the real numeric fixture.
+- `tests/history.test.ts`: replace only the successful-empty network fixture (`lat,lng` was invalid) with a valid VIIRS header. All six existing test bodies/assertions are unchanged.
+- `FIX_PLAN.md`: record the correction, primary evidence, implementation, regression proof, and verification.
+
+### Fail-without-fix proof
+
+Saved the fixed `satellite.ts` bytes in memory, replaced **only** that production file with `git show 02a5280:server/routes/satellite.ts`, and ran `npm run test:server -- tests/satellite-partial.test.ts tests/dataset-outages.test.ts --reporter=verbose`. Restored the exact fixed bytes in Python `finally` before running the identical command with the fix. No other production function was replaced or mocked; tests invoke the real helper/routes with network/config/Firestore test fixtures and `SKIP_FIREBASE=true`.
+
+Baseline: **41 failed / 20 passed (61)**, exit 1, `/tmp/fix12f-unfixed.log`. Fixed: **61/61 passed**, exit 0, `/tmp/fix12f-affected.log`, including **17/17 dataset-outage cases**. Per-case evidence:
+
+| New/changed regression cases | At `02a5280` | With Fix 12f |
+| --- | --- | --- |
+| Terra/0; Aqua/100; Terra/72.5; Aqua/101→80; Terra/-1→80 | Each expected one mapped hotspot, got `[]` (5 failures) | All pass |
+| N/h; N20/l; N21/n; N/high; N20/low; N21/nominal | Each expected one mapped hotspot, got `[]` (6 failures) | All pass |
+| T/83; A/83; N20/unknown→80; N20/100→80 | Each expected one mapped hotspot, got `[]` (4 failures) | All pass |
+| Reordered, trimmed, mixed-case country header | Expected mapped MODIS brightness/confidence/coordinates/02:36 time, got `[]` | Pass |
+| MODIS instrument mismatch; VIIRS instrument mismatch; unknown satellite; invalid latitude; invalid longitude; missing time value; truncated row | Each expected exactly the healthy second feed's detection/id, got `[]` (7 failures) | All pass; defective first rows excluded |
+| Valid header-only followed by fresh detections | Initial `ok`/empty control passes; subsequent detection count expected 1, got 0 | Pass; empty response is not cached |
+| HTML error; bare error sentence; empty body; invented no-instrument CSV | Each expected route 503 with unavailable sources, got 200 (4 failures) | All pass, including history `hotspotsUnavailable` |
+| Missing latitude; longitude; brightness; acq_date; acq_time; satellite; instrument; confidence | Each expected route 503, got 200 (8 failures) | All pass, including history outage assertions |
+| Existing helper partial/recovery/cache; wilaya fresh/cached severity; history count; partial history with detections | Real detection lost: helper/history got zero, wilaya safe instead of low (4 failures) | All pass |
+| Dataset-outage partial-source detection case | Expected retained MODIS hotspot, got `[]` | Pass |
+
+All **36 newly introduced/replacement parser/schema cases fail** at `02a5280` and pass with the fix. The seven drop-row cases explicitly require a healthy companion detection so a parser that discards the entire real feed cannot pass merely by returning empty. The header-only case also verifies a subsequent real observation. Four pre-existing partial-history/empty/total controls and 16 dataset-outage controls pass on both versions by design; the revised healthy-empty fixture alone is a compatibility control, not a claimed new failing regression. The history fixture-only change preserves all assertions and is not claimed to fail at baseline.
+
+### Verification
+
+- Affected real-helper/route suites: **61/61 passed**, two files, including **17/17 dataset-outage cases** (`/tmp/fix12f-affected.log`).
+- `npm run lint`: passed, no TypeScript diagnostics (`/tmp/fix12f-lint.log`).
+- `npm run build`: passed, Vite assets and bundled production server (`/tmp/fix12f-build.log`).
+- Full `npm run test:server`: **813/813 passed**, 78 files, exit 0 (`/tmp/fix12f-server.log`), including all 17 dataset-outage cases and the unchanged history assertions with a valid empty-response fixture.
+- Full `npm run test:react`: **976/976 passed**, 87 files, exit 0 (`/tmp/fix12f-react.log`), including all 17 dataset-outage cases under jsdom.
+- `npm run test:e2e`: attempted after confirming no TCP listener on port 3000 via `/proc/net/tcp{,6}`. **Environment blocked before Playwright**, exit 2: Firebase cannot spawn `java -version`; Java is absent (`/tmp/fix12f-e2e.log`). No dependencies installed and no unrelated process stopped.
+- `git diff --check`: passed. Final diff is limited to five files: parser (+25/−13), partial/parser regressions (+71/−20), dataset fixtures (+3/−3), history fixture (+1/−1), and this Fix 12f plan section. No shared types, worker, client, dependencies, or other routes changed.
+
+Remaining for PR #141: **Muse re-watch, then merge**. No further FIX_PLAN reconciliation is needed: main `0462a23` is already an ancestor via merge `35b0539` (verified locally). No push, PR creation, or merge performed in this round.

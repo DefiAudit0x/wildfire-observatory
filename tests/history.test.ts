@@ -1,7 +1,19 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import historyRouter from "../server/routes/history";
+
+vi.mock("../server/config.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../server/config.js")>();
+  return { default: { ...actual.default, nasaFirmsKey: "test-key" } };
+});
+
+// History's successful bucket contract requires successful satellite observations.
+// Mock the HTTP backend, keeping the real satellite and history handlers.
+beforeEach(() => {
+  vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n")));
+});
+afterEach(() => vi.unstubAllGlobals());
 
 function createTestApp() {
   const app = express();
@@ -48,6 +60,18 @@ describe("GET /api/history", () => {
       expect(bucket.verified).toBeGreaterThanOrEqual(0);
       expect(bucket.sos).toBeGreaterThanOrEqual(0);
       expect(bucket.hotspots).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("returns the buckets with hotspots marked unavailable when FIRMS fails", async () => {
+    // Fix 12b: both satellite sources failing must not fail the whole endpoint.
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("error", { status: 500 })));
+    const res = await supertest(createTestApp()).get("/api/history?days=7");
+    expect(res.status).toBe(200);
+    expect(res.body.buckets).toHaveLength(7);
+    expect(res.body.hotspotsUnavailable).toBe(true);
+    for (const bucket of res.body.buckets) {
+      expect(bucket.hotspots).toBe(0);
     }
   });
 });

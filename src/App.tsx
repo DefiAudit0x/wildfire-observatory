@@ -51,6 +51,7 @@ export default function App() {
   const {
     reports,
     satellites,
+    satellitesPartial,
     wilayas,
     sosCalls,
     notifications,
@@ -201,6 +202,7 @@ export default function App() {
         activeTab={activeTab}
         reports={reports}
         satellites={satellites}
+        satellitesPartial={satellitesPartial}
         wilayas={wilayas}
         sosCalls={sosCalls}
         userLocation={userLocation}
