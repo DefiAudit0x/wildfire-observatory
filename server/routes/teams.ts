@@ -748,6 +748,10 @@ router.post("/mission/phase", phaseLimiter, async (req: Request, res: Response) 
     return;
   }
   if (result.status === "stale-mission") {
+    // Fix 14b: the mission read at the top of this handler is cached for 60 s,
+    // so without this the immediate retry re-reads the replaced mission's old
+    // identity and reports MISSION_CHANGED again until the TTL expires.
+    invalidateDocCache("teamMissions", token.teamId);
     res.status(409).json({ code: "MISSION_CHANGED", error: "Mission changed before arrival was recorded" });
     return;
   }
