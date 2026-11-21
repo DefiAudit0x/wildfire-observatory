@@ -96,7 +96,13 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         // ARC-M33: refresh the ONE session truth instead of mutating a local copy.
         void refetchSession();
       } else {
-        setRoster({ unitId: "", date, posts: [], saved: false });
+        // Fix 15b (CodeRabbit Major 4654542820, review 6007631774): a failed
+        // load used to install an editable empty roster, and saving it after
+        // the DB recovered replaced the real day. Leave the roster
+        // unavailable and show the load error instead — with roster null the
+        // save/copy buttons stay disabled and no post rows render.
+        setRoster(null);
+        setMsg(isArabic ? "تعذر تحميل الجدول." : "Erreur de chargement.");
       }
     } catch {
       if (!isCurrent()) return; // superseded by a newer fetch
