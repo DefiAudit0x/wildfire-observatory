@@ -1208,3 +1208,24 @@ Out of scope (noted, not fixed): the same null-confusion exists in DELETE (`:294
 - `git diff --check`: passed.
 
 Deviations: the Xingchi gateway's `/v1/responses` endpoint was still returning a sustained 503 (~2 hours by then, 3 attempts with escalating backoffs in this round after 4 in the 14b round), so Sol never started; the parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b) from the finding, the existing discriminated helper, and the existing test mocks. No scope expansion. Only local commit is authorized; remaining for **PR #146**: reviewer verification, push, PR creation, CI watch, merge.
+
+## Fix 15b — a failed roster load must not install an editable empty roster (CodeRabbit Major 4654542820, review 6007631774, from PR #146)
+
+Fixes the follow-up Major from PR #146's CI watch: the server-side 503 from Fix 15 did not close the finding's harm, because `fetchRoster`'s non-OK branch in `src/components/RosterBoard.tsx:97–100` installed `{ unitId: "", date, posts: [], saved: false }` with no error message, the save button stayed enabled (roster non-null, date matching, not loading), and `saveRoster` PUT `{ posts: [] }` — an operator saving that stale board after the DB recovered would replace the stored day with an empty roster.
+
+### The fix
+
+- `src/components/RosterBoard.tsx` (non-OK branch of `fetchRoster` only): on any non-OK load other than 401 it now calls `setRoster(null)` and sets the localized load-error message (`"تعذر تحميل الجدول."` / `"Erreur de chargement."`, the same wording the `catch` branch already used). With `roster === null` the save and copy buttons stay disabled (both gated on `!roster`), no post rows render (`roster?.posts`), and the error shows via the existing `msg` rendering. The 401 branch is unchanged (it refetches the shared session). The "add post" form still renders while writable, but it POSTs a single post via the atomic append endpoint — an explicit operator action, not a wholesale replace of the day — so it is out of scope for this finding.
+- `tests/roster-board.test.tsx` (new): renders the real component with `useStaffSession` mocked to an authenticated commander and global `fetch` stubbed. Regression: a 503 roster load shows the load error, shows no empty-roster hint, and leaves the save button disabled. Control: a successful load shows the saved post and leaves save enabled.
+
+### Verification
+
+- Fail-without-fix (parent, replicated independently): the new regression test run against the unfixed component (via `git stash` of `src/components/RosterBoard.tsx` only) failed — **1 failed / 1 passed** (the control passed); the fix was restored afterwards (`git stash pop`).
+- `npm run lint`: 0 diagnostics.
+- `npm run build`: pass.
+- Affected suites: `tests/roster-board.test.tsx` **2/2 passed**; `tests/roster.test.ts` still **23/23 passed**.
+- Full `npm run test:server`: **875/875 passed**.
+- Full `npm run test:react`: **1040/1040 passed** (1038 + 2 new).
+- `git diff --check`: passed.
+
+Deviations: the Xingchi gateway's `/v1/responses` endpoint was still down (sustained 503 since ~18:10 CET), so the parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b/15) from CodeRabbit's verified finding and the component code. No scope expansion. Only local commit is authorized; remaining for **PR #146**: reviewer verification, push of the additional commit, CI re-watch, merge.
