@@ -1160,3 +1160,28 @@ Final verification results are recorded below before local commit.
 Deviations: resumed the existing requested branch and its uncommitted work, rather than recreating it; fetched main matches the exact requested base. Work-clone writes/fetch/tests require scoped sandbox escalation because the clone is outside default writable roots. E2E remains environment-blocked by missing Java. No scope expansion: TEAM-6, SOS-5/6, TRG-2, SOS replay/context/admission are unchanged. Only local commit is authorized; remaining for **PR #144**: reviewer verification, push, PR creation, CI watch, merge.
 
 - Full `npm run test:react -- --maxWorkers=2`: **1,034/1,034 passed**, 91 files, exit 0 (`/tmp/fix14-react.log`); includes the same sixteen new regressions under jsdom.
+
+## Fix 14b — invalidate the cached mission after an identity conflict (CodeRabbit Minor 4654202479, review 6007169699, from PR #144)
+
+Fixes the follow-up Minor from PR #144's CI watch: after a stale-mission conflict, the cached mission was not invalidated, so an immediate retry returned `MISSION_CHANGED` again until the 60 s `DOC_CACHE_TTL_MS` expired.
+
+### The defect
+
+The mission-phase route reads the mission via cached `docGet("teamMissions", token.teamId)` (`server/routes/teams.ts:690`). When another server instance replaces the mission, this instance's cache still holds the old identity. The transaction correctly detects the mismatch and returns `"stale-mission"` — but the route's stale-mission branch returned 409 with no invalidation, unlike the success path just below it, which does `invalidateDocCache("teamMissions", token.teamId)`.
+
+### The fix
+
+- `server/routes/teams.ts` (+5 lines): the `"stale-mission"` branch now calls `invalidateDocCache("teamMissions", token.teamId)` before returning the 409, with a Fix 14b comment. The `"no-active-mission"` branch was NOT changed: the same staleness shape does not apply there (a dispatch invalidates the teamMissions cache when a new mission is created, so a retry after a new dispatch reads fresh).
+- `tests/team-serialization.test.ts`: new regression `"invalidates a cached mission conflict so an immediate retry uses the replacement"` (both Admin and client SDK variants, written by Sol during run 1 before the gateway outage; the production fix was implemented by the parent after the Xingchi `/v1/responses` endpoint went down with a sustained 503). The test caches mission sos-A, has another instance replace it with sos-B, asserts the first arrival returns 409 `MISSION_CHANGED`, then asserts an immediate retry — no manual invalidation, no TTL wait, no further change — returns 200 with mission sos-B `on_scene`.
+
+### Verification
+
+- Fail-without-fix (parent, replicated independently): the new test run against the unfixed code failed in **both** SDK branches — `expected 409 to be 200` at test line 217 — **2 failed / 16 passed** in the file. (Sol's run 1 log recorded the same result before the outage.)
+- `npm run lint`: 0 diagnostics.
+- `npm run build`: pass.
+- Affected suite `tests/team-serialization.test.ts`: **18/18 passed** with the fix.
+- Full `npm run test:server`: **873/873 passed**, 82 files.
+- Full `npm run test:react`: **1036/1036 passed**, 91 files.
+- `git diff --check`: passed.
+
+Deviations: the Xingchi gateway's `/v1/responses` endpoint returned a sustained 503 from ~18:10 CET through four attempts with escalating backoffs (0, 3, 10 min), so Sol could not complete the production fix; the parent implemented the one-line fix directly (same pattern as Fixes 11b/11c/12b/12c) using Sol's already-written test and its fail-without-fix proof. No scope expansion. Only local commit is authorized; remaining for **PR #145**: reviewer verification, push, PR creation, CI watch, merge.
