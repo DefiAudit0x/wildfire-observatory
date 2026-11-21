@@ -42,9 +42,13 @@ describe("sendFireAlert subscriber preferences", () => {
 
   beforeEach(() => {
     state.subscribers = [
-      { email: "wrong-region@example.test", wilayas: ["Algiers"], minSeverity: "medium" },
-      { email: "below-minimum@example.test", wilayas: ["Annaba"], minSeverity: "critical" },
-      { email: "matching@example.test", wilayas: ["Annaba"], minSeverity: "high", unsubscribeToken: "match-token" },
+      // Fix 8b: fixtures use canonical region identifiers (the exact
+      // WILAYA_BOUNDS labels report creation stores). "Annaba"/"Algiers"
+      // could never match a real report's wilaya, so they proved the filter
+      // against values no subscriber can actually save anymore.
+      { email: "wrong-region@example.test", wilayas: ["الجزائر - سكيكدة (Algérie - Skikda)"], minSeverity: "medium" },
+      { email: "below-minimum@example.test", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "critical" },
+      { email: "matching@example.test", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "high", unsubscribeToken: "match-token" },
       { email: "legacy@example.test", unsubscribeToken: "legacy-token" },
       { email: "empty-regions@example.test", wilayas: [], minSeverity: "medium" },
     ];
@@ -61,7 +65,7 @@ describe("sendFireAlert subscriber preferences", () => {
     await sendFireAlert({
       severity: "high",
       locationName: "Test forest",
-      wilaya: "Annaba",
+      wilaya: "الجزائر - عنابة (Algérie - Annaba)",
       description: "A fire report used to verify alert targeting.",
       lat: 36.9,
       lng: 7.7,
@@ -78,7 +82,7 @@ describe("sendFireAlert subscriber preferences", () => {
       "empty-regions@example.test",
     ]);
     expect(String(fetchMock.mock.calls[0][1]?.body)).toContain("match-token");
-    expect(state.info).toHaveBeenLastCalledWith({ count: 3, wilaya: "Annaba" }, "Fire alerts sent");
+    expect(state.info).toHaveBeenLastCalledWith({ count: 3, wilaya: "الجزائر - عنابة (Algérie - Annaba)" }, "Fire alerts sent");
   });
 
   it.each([true, false])("defaults missing severity to medium, excluding low alerts (admin SDK: %s)", async (adminSdk) => {
@@ -86,10 +90,10 @@ describe("sendFireAlert subscriber preferences", () => {
     state.subscribers = [
       { email: "legacy@example.test" },
       { email: "empty-regions@example.test", wilayas: [] },
-      { email: "low@example.test", wilayas: ["Annaba"], minSeverity: "low" },
+      { email: "low@example.test", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "low" },
     ];
     await sendFireAlert({
-      severity: "low", locationName: "Test forest", wilaya: "Annaba",
+      severity: "low", locationName: "Test forest", wilaya: "الجزائر - عنابة (Algérie - Annaba)",
       description: "Low severity test", lat: 36.9, lng: 7.7,
       timestamp: new Date().toISOString(), reporterType: "citizen",
     });
