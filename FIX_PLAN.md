@@ -1229,3 +1229,24 @@ Fixes the follow-up Major from PR #146's CI watch: the server-side 503 from Fix 
 - `git diff --check`: passed.
 
 Deviations: the Xingchi gateway's `/v1/responses` endpoint was still down (sustained 503 since ~18:10 CET), so the parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b/15) from CodeRabbit's verified finding and the component code. No scope expansion. Only local commit is authorized; remaining for **PR #146**: reviewer verification, push of the additional commit, CI re-watch, merge.
+
+## Fix 15c — a thrown roster load must also clear the roster (CodeRabbit Major, review 6007713491, from PR #146 re-watch)
+
+Fixes the follow-up Major from PR #146's re-watch on f121e80: the old Major 4654542820 was satisfied in code, but the `catch` branch of `fetchRoster` (`src/components/RosterBoard.tsx:107–109`) set only the error message — it did not clear the roster. If a roster was already loaded and a later refetch threw (a rejected `fetch` on a network failure, or `res.json()` throwing on a non-JSON error body), the stale roster stayed in state, editable, and Save re-enabled once `loading` cleared in the `finally` — bypassing the failed-load protection 15b added to the HTTP-error branch, one branch over. The harm is narrower than the original Major (stale real data, not a fabricated empty roster), but it is the same failure family.
+
+### The fix
+
+- `src/components/RosterBoard.tsx` (`catch` of `fetchRoster` only): added `setRoster(null)` before the error message, keeping the existing `isCurrent()` ownership check so an older request cannot clear newer data.
+- `tests/roster-board.test.tsx`: two new regressions, both loading a post first and then refetching via the next-day button: (i) a second load returning 503 clears the previous post and disables Save (the Nitpick's case — it also covers the 15b branch with a previously-loaded roster); (ii) a second load that throws clears the previous post and disables Save (the new Major's scenario). The earlier 2 tests (initial 503 load, success control) are unchanged.
+
+### Verification
+
+- Fail-without-fix (parent, replicated independently): the new tests run against the component without the 15c line (via `git stash` of `src/components/RosterBoard.tsx` only) failed in exactly the throw case — **1 failed / 3 passed** (the 503 case passed, as 15b already covers it); the fix was restored afterwards (`git stash pop`).
+- `npm run lint`: 0 diagnostics.
+- `npm run build`: pass.
+- Affected suite `tests/roster-board.test.tsx`: **4/4 passed** with the fix.
+- Full `npm run test:server`: **875/875 passed**.
+- Full `npm run test:react`: **1042/1042 passed** (1040 + 2 new).
+- `git diff --check`: passed.
+
+Deviations: the Xingchi gateway's `/v1/responses` endpoint was still down (sustained 503 since ~18:10 CET), so the parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b/15/15b) from CodeRabbit's verified finding and the component code. No scope expansion. Only local commit is authorized; remaining for **PR #146**: reviewer verification, push of the additional commit, CI re-watch, merge.
