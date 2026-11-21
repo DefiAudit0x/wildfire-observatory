@@ -49,5 +49,18 @@ describe("StatisticsPanel history chart (Fix 12c)", () => {
     await waitFor(() => expect(barTitles().length).toBe(1));
     expect(barTitles()[0]).toContain("أقمار: 3");
     expect(screen.queryByText(/بيانات الأقمار غير متاحة حالياً/i)).toBeNull();
+    expect(screen.queryByText(/بيانات الأقمار جزئية حالياً/)).toBeNull();
+  });
+  it.each(["ar", "fr"] as const)("labels partial counts and keeps their bar contribution (%s)", async (lang) => {
+    stubHistory({ hotspotsPartial: true, buckets: [
+      { date: "2026-11-20", reports: 2, verified: 0, sos: 0, hotspots: 0 },
+      { date: "2026-11-21", reports: 0, verified: 0, sos: 0, hotspots: 4 },
+    ] });
+    render(<StatisticsPanel reports={[]} satellites={[]} wilayas={[]} lang={lang} />);
+    await waitFor(() => expect(barTitles()).toHaveLength(2));
+    expect(barTitles()[1]).toContain(lang === "ar" ? "أقمار: 4 (جزئي)" : "أقمار: 4 (partiel)");
+    expect(screen.getByText(lang === "ar" ? /بيانات الأقمار جزئية حالياً/ : /Données satellites actuellement partielles/)).toBeInTheDocument();
+    expect((document.querySelectorAll("div[title]")[1] as HTMLElement).style.height).toBe("100%");
+    expect((document.querySelectorAll("div[title]")[0] as HTMLElement).style.height).toBe("50%");
   });
 });
