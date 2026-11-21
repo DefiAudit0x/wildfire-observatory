@@ -541,3 +541,42 @@ The MWARE-1 outage tests simulate docGet's documented null outcome and getDb's u
 - Validation: `npm run lint` passed; `npm run build` passed and emitted `dist/server.cjs` plus `dist/server.cjs.map`; `npm run test:server` passed **68 files / 663 tests**; `npm run test:react` passed **74 files / 773 tests**. `npm run test:e2e` was not run because Java is unavailable (`java: command not found`).
 - Files changed: `server/assets.ts` (new production asset router); `server/server.ts` (mount router); `server/sentry-scrub.ts` (normalized sensitive-key matching); `tests/server-assets.test.ts` (HTTP regression coverage); `tests/sentry-scrub.test.ts` (request and extra regression coverage); `FIX_PLAN.md` (this validation record).
 - Deviation: the server app is not exported for tests, so asset behavior is exercised through the same production router mounted by `server/server.ts` in an Express/Supertest harness.
+
+## Fix 10 — ATM-2 + FS-1
+
+Branch `fix/wildfire-10-cache-invalidation` starts at main `01b6179`.
+
+- `server/fs.ts` evicts all order/limit variants matching the collection key prefix. The key format, TTLs and document invalidator are unchanged.
+- `server/atomic.ts` invalidates the documents and collections written by all ten atomic writers after the transaction resolves successfully, in both SDK paths. Idempotent block and unblock results retain their public return values and skip eviction.
+- `tests/cache-invalidation.test.ts` exercises the real cache against staged in-memory Firestore transactions for both SDKs. Two additional controls verify that no-write outcomes and a failed commit preserve cached reads.
+
+Each source file was temporarily replaced with its exact main version in isolation and then restored. `npm run test:server -- tests/cache-invalidation.test.ts -t FS-1` exited 1 with 2 failures. The analogous `-t ATM-2` run exited 1 with 22 failures. Each row below failed in both SDK paths and passed with the fix.
+
+| Regression | Unfixed result |
+| --- | --- |
+| FS-1 collection query variants | Read value 1 after committing value 2 |
+| ATM-2 new roster day | Returned cached null |
+| ATM-2 existing roster day | Returned the previous posts |
+| ATM-2 unit creation | Returned cached null after the unit precheck |
+| ATM-2 staff creation | Returned cached null for the new user |
+| ATM-2 unit deletion | Returned the deleted unit |
+| ATM-2 registration and uniqueness reservations | Returned cached null for the new registration |
+| ATM-2 approval and badge | Returned pending instead of approved |
+| ATM-2 team join | Returned the previous code budget |
+| ATM-2 mission phase | Returned en_route instead of on_scene |
+| ATM-2 mission clear | Returned en_route instead of cleared |
+| ATM-2 principal block and unblock | Returned the previous blocklist |
+
+Logs are in `/tmp/fix10-unfixed-fs.log` and `/tmp/fix10-unfixed-atomic.log`.
+
+- Targeted regressions passed, 26/26 (`/tmp/fix10-affected.log`).
+- `npm run lint` passed (`/tmp/fix10-lint.log`).
+- `npm run build` passed (`/tmp/fix10-build.log`).
+- Full server suite passed, 716 tests in 72 files (`/tmp/fix10-server-final.log`).
+- Full React suite passed, 831 tests in 78 files with `--maxWorkers=2` (`/tmp/fix10-react-final.log`).
+- End-to-end execution stopped before Playwright. Port 3000 was free, but the Firestore emulator could not spawn `java -version` (`/tmp/fix10-e2e.log`).
+- `git diff --check` passed.
+
+`tests/seed-staff.test.ts` supplies the two cache invalidator exports in its existing Firestore helper mock. The assertions are unchanged. No other functional changes outside ATM-2 and FS-1.
+
+Next is **Fix 11** (triage rows 141–142). ATM-1 aligns the unit identity used by the linked-staff deletion guard. SEED-1 makes staff bootstrap report persistence failures and exit unsuccessfully.
