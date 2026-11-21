@@ -88,15 +88,21 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
         return "deleted";
       });
     }
-    const { collection, doc, limit, query, runTransaction, where } = await import("firebase/firestore");
+    const { collection, doc, getDocs, limit, query, runTransaction, where } = await import("firebase/firestore");
+    // The client SDK's Transaction.get accepts only DocumentReference values
+    // (firebase ^12.18.0; a Query throws INVALID_ARGUMENT), so the linked-staff
+    // check runs outside the transaction via getDocs. Trade-off: the check is
+    // no longer atomic with the delete on the client path — a user created
+    // between the check and the delete could leave a dangling unit reference.
+    // The Admin path above keeps the atomic in-transaction query check.
+    for (const identity of identities) {
+      const users = await getDocs(query(collection(db, "users"), where("unitId", "==", identity), limit(1)));
+      if (!users.empty) return "has-users";
+    }
     return await runTransaction(db, async (tx: any) => {
       const unitRef = doc(db, "units", unitId);
       const unit = await tx.get(unitRef);
       if (!unit.exists()) return "missing";
-      for (const identity of identities) {
-        const users = await tx.get(query(collection(db, "users"), where("unitId", "==", identity), limit(1)));
-        if (!users.empty) return "has-users";
-      }
       tx.delete(unitRef);
       return "deleted";
     });
