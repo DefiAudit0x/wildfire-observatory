@@ -80,6 +80,36 @@ class MeshReputationTest {
     }
 
     @Test
+    fun firstInboundContactIsSightedBeforeAdmissionCheck() {
+        val r = MeshReputation()
+
+        assertTrue(r.sightAndCheckAdmission(K, now = 10L))
+        assertEquals(MeshReputation.REPUTATION_INITIAL, r.score(K))
+        assertTrue(r.known(K))
+    }
+
+    @Test
+    fun quarantinedKeyCannotReenterThroughInboundHandshake() {
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        r.quarantine(K, now = 2L)
+
+        assertFalse(r.sightAndCheckAdmission(K, now = 3L))
+        assertEquals(MeshReputation.REPUTATION_MIN / 2 - 1, r.score(K))
+    }
+
+    @Test
+    fun inboundFramesRequireAdmissionForKnownKeys() {
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        assertTrue(r.isInboundAdmitted(K))
+
+        r.quarantine(K, now = 2L)
+        assertFalse(r.isInboundAdmitted(K))
+        assertTrue(r.isInboundAdmitted(null))
+    }
+
+    @Test
     fun quarantineDropsBelowAdmissionFloorButKeepsRecord() {
         val r = MeshReputation()
         r.sight(K, now = 1L)
@@ -118,5 +148,42 @@ class MeshReputationTest {
         assertEquals(-100, MeshReputation.REPUTATION_MIN)
         assertEquals(100, MeshReputation.REPUTATION_MAX)
         assertEquals(1024, MeshReputation.MAX_DEVICE_RECORDS)
+    }
+
+    @Test
+    fun evictedLiveKeyIsReadmittedBySightThenCheck() {
+        // Fix 7b (CodeRabbit thread B): a live peer whose record was evicted
+        // by the bounded cap must be re-sighted at REPUTATION_INITIAL by
+        // the frame gate's sight-then-check instead of being dropped forever.
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        // Fill the table with newer keys so K (the stalest) is evicted.
+        val total = MeshReputation.MAX_DEVICE_RECORDS + 1
+        for (i in 0 until total) {
+            r.sight("KEY_$i", now = i.toLong() + 2)
+        }
+        assertFalse(r.known(K))
+
+        assertTrue(r.sightAndCheckAdmission(K, now = 5000L))
+        assertTrue(r.known(K))
+        assertEquals(MeshReputation.REPUTATION_INITIAL, r.score(K))
+    }
+
+    @Test
+    fun retainedQuarantinedRecordStaysRejectedUnderEvictionPressure() {
+        // Fix 7b (CodeRabbit thread B): sight() never resets a RETAINED
+        // record, so a quarantined key stays rejected even while the table
+        // is under eviction pressure — the quarantined record is the
+        // freshest here, so the cap evicts older keys instead of it.
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        r.quarantine(K, now = 5000L)
+        val total = MeshReputation.MAX_DEVICE_RECORDS + 1
+        for (i in 0 until total) {
+            r.sight("KEY_$i", now = i.toLong() + 2)
+        }
+        assertTrue(r.known(K))
+        assertFalse(r.sightAndCheckAdmission(K, now = 6000L))
+        assertEquals(MeshReputation.REPUTATION_MIN / 2 - 1, r.score(K))
     }
 }

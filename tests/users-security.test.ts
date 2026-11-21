@@ -18,7 +18,11 @@ const state = vi.hoisted(() => ({
   docDelete: vi.fn(async () => true),
   createUserIfUnitExists: vi.fn(async () => "created"),
   logAdminAction: vi.fn(async () => undefined),
+  updateUserAtomic: vi.fn(),
+  appliedUpdates: [] as Array<{ agentId: string; update: any }>,
 }));
+
+vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
 
 vi.mock("../server/fs.js", () => ({
   collectionGet: state.collectionGet,
@@ -26,6 +30,7 @@ vi.mock("../server/fs.js", () => ({
   docUpdate: state.docUpdate,
   docDelete: state.docDelete,
   docSet: vi.fn(async () => true),
+  updateUserAtomic: state.updateUserAtomic,
 }));
 
 vi.mock("../server/atomic.js", () => ({
@@ -52,11 +57,28 @@ const UNIT_USER = { agentId: "agent-1", name: "Agent One", role: "agent", unitId
 
 beforeEach(() => {
   state.collectionGet.mockReset().mockResolvedValue([UNIT_USER]);
-  state.docGet.mockReset().mockResolvedValue(UNIT_USER);
+  state.docGet.mockReset().mockImplementation(async (collection: string, id: string) => {
+    if (collection !== "users") return null;
+    if (id === "commander-without-unit") return { agentId: id, role: "commander", isActive: true };
+    return UNIT_USER;
+  });
   state.docUpdate.mockClear();
   state.docDelete.mockClear();
   state.createUserIfUnitExists.mockClear();
   state.logAdminAction.mockClear();
+  state.appliedUpdates.length = 0;
+  // Fix 4d: the mock mirrors the real updateUserAtomic contract — it reads
+  // the target fresh (via the mocked docGet) and runs the route's authorize
+  // callback against that transaction-time snapshot, recording applied
+  // updates so tests can prove no write landed on a forbidden outcome.
+  state.updateUserAtomic.mockReset().mockImplementation(async (agentId: string, update: any, authorize: (t: any) => any) => {
+    const target = await state.docGet("users", agentId, true);
+    if (!target) return { outcome: "not-found" };
+    const reason = authorize(target);
+    if (reason) return { outcome: "forbidden", ...reason };
+    state.appliedUpdates.push({ agentId, update });
+    return { outcome: "updated", before: target, user: { ...target, ...update } };
+  });
 });
 
 describe("users commander unit scope (pre-existing behaviour, kept)", () => {
@@ -187,7 +209,7 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
   it("password-admin JWT CANNOT upgrade an existing account to superadmin, nor mutate/delete a superadmin doc", async () => {
     const token = generateAdminToken("admin");
 
-    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "agent" });
+    state.docGet.mockImplementation(async (collection: string) => collection === "users" ? { ...UNIT_USER, role: "agent" } : null);
     const upgrade = await supertest(createApp())
       .put("/api/users/agent-1")
       .set("Authorization", `Bearer ${token}`)
@@ -195,7 +217,7 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
     expect(upgrade.status).toBe(403);
     expect(upgrade.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
 
-    state.docGet.mockResolvedValue({ ...UNIT_USER, role: "superadmin" });
+    state.docGet.mockImplementation(async (collection: string) => collection === "users" ? { ...UNIT_USER, role: "superadmin" } : null);
     const mutate = await supertest(createApp())
       .put("/api/users/agent-1")
       .set("Authorization", `Bearer ${token}`)
@@ -209,5 +231,87 @@ describe("v2.15.0 — superadmin grant separation (no admin→superadmin escalat
     expect(del.status).toBe(403);
     expect(del.body.code).toBe("SUPERADMIN_GRANT_FORBIDDEN");
     expect(state.docDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("Fix 4c: commander PUT re-checks the target fresh before the write", () => {
+  const COMMANDER = { agentId: "commander-1", name: "Commander One", role: "commander", unitId: "unit-dz16", isActive: true };
+  const AGENT = { agentId: "agent-1", name: "Agent One", role: "agent", unitId: "unit-dz16", isActive: true };
+
+  it("rejects a password reset when the target was promoted after the first read", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string, fresh?: boolean) => {
+      if (collection !== "users") return null;
+      if (id === "commander-1") return COMMANDER;
+      if (id === "agent-1") return fresh ? { ...AGENT, role: "commander" } : AGENT;
+      return null;
+    });
+    const token = generateStaffToken({ role: "commander", agentId: "commander-1", unitId: "unit-dz16" });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ password: "NewPassword123" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Commanders can only manage agent accounts");
+    expect(state.updateUserAtomic).toHaveBeenCalled();
+    expect(state.appliedUpdates).toHaveLength(0);
+  });
+
+  it("rejects an admin edit when the target was promoted to superadmin after the first read", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string, fresh?: boolean) => {
+      if (collection !== "users") return null;
+      if (id === "agent-1") return fresh ? { ...AGENT, role: "superadmin" } : AGENT;
+      return null;
+    });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${generateAdminToken("admin")}`)
+      .send({ name: "Renamed Agent" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Only the superadmin credential can modify superadmin accounts");
+    expect(state.updateUserAtomic).toHaveBeenCalled();
+    expect(state.appliedUpdates).toHaveLength(0);
+  });
+});
+
+describe("Fix 4d: commander PUT authorizes inside the update transaction", () => {
+  const COMMANDER = { agentId: "commander-1", name: "Commander One", role: "commander", unitId: "unit-dz16", isActive: true };
+  const AGENT = { agentId: "agent-1", name: "Agent One", role: "agent", unitId: "unit-dz16", isActive: true };
+
+  it("a valid commander password reset still succeeds through the transaction", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string) => {
+      if (collection !== "users") return null;
+      if (id === "commander-1") return COMMANDER;
+      if (id === "agent-1") return AGENT;
+      return null;
+    });
+    const token = generateStaffToken({ role: "commander", agentId: "commander-1", unitId: "unit-dz16" });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ password: "NewPassword123" });
+    expect(res.status).toBe(200);
+    expect(res.body.role).toBe("agent");
+    expect(state.updateUserAtomic).toHaveBeenCalled();
+    expect(state.appliedUpdates).toHaveLength(1);
+    expect(state.appliedUpdates[0].update.passwordHash).toBeDefined();
+    expect(state.appliedUpdates[0].update.sessionVersion).toBeDefined();
+  });
+
+  it("rejects a move when the target changed unit inside the transaction", async () => {
+    state.docGet.mockImplementation(async (collection: string, id: string, fresh?: boolean) => {
+      if (collection !== "users") return null;
+      if (id === "commander-1") return COMMANDER;
+      if (id === "agent-1") return fresh ? { ...AGENT, unitId: "unit-other" } : AGENT;
+      return null;
+    });
+    const token = generateStaffToken({ role: "commander", agentId: "commander-1", unitId: "unit-dz16" });
+    const res = await supertest(createApp())
+      .put("/api/users/agent-1")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ name: "Renamed Agent" });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("Commanders can only manage their own unit's staff");
+    expect(state.updateUserAtomic).toHaveBeenCalled();
+    expect(state.appliedUpdates).toHaveLength(0);
   });
 });

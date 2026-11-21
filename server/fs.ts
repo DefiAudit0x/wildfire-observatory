@@ -79,20 +79,28 @@ export async function collectionGet(
   }
 }
 
-export async function docGet(collectionName: string, id: string): Promise<any | null> {
+// Security gates bypass cached account/revocation state across server processes.
+// Fix 4c: opts.strict makes a failed read THROW instead of resolving null, so a
+// caller that must tell "absent" from "unreadable" (the revocation gate) can
+// fail closed. The default stays null-on-failure for all existing callers.
+export async function docGet(collectionName: string, id: string, fresh = false, opts: { strict?: boolean } = {}): Promise<any | null> {
   const cacheKey = `${collectionName}/${id}`;
   const cached = docCache.get(cacheKey);
-  if (cached && Date.now() < cached.expiresAt) return cached.data;
+  if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
-  if (!db) return null;
+  if (!db) {
+    if (opts.strict) throw new Error(`Firestore unavailable for ${collectionName}/${id}`);
+    return null;
+  }
   try {
     let data: any | null = null;
     if (isAdminDb(db)) {
       const snap = await db.collection(collectionName).doc(id).get();
       data = snap.exists ? { id: snap.id, ...snap.data() } : null;
     } else {
-      const { doc, getDoc } = await loadClientSdk();
-      const snap = await getDoc(doc(db, collectionName, id));
+      const { doc, getDoc, getDocFromServer } = await loadClientSdk();
+      const ref = doc(db, collectionName, id);
+      const snap = await (fresh ? getDocFromServer(ref) : getDoc(ref));
       data = snap.exists() ? { id: snap.id, ...snap.data() } : null;
     }
     sweepExpired(docCache);
@@ -100,6 +108,7 @@ export async function docGet(collectionName: string, id: string): Promise<any | 
     return data;
   } catch (err) {
     logger.error({ err, collectionName, id }, "Firestore doc read failed");
+    if (opts.strict) throw err;
     return null;
   }
 }
@@ -472,6 +481,71 @@ export async function bindBadgeDeviceAtomic(
   } catch (err) {
     logger.error({ err }, "Atomic badge device binding failed");
     return "unavailable";
+  }
+}
+
+export type UserUpdateAuthorization = { status: number; error: string; code?: string } | null;
+
+export type UserUpdateAtomicResult =
+  | { outcome: "updated"; before: any; user: any }
+  | { outcome: "not-found" }
+  | { outcome: "forbidden"; status: number; error: string; code?: string }
+  | { outcome: "unavailable" };
+
+/**
+ * Fix 4d: atomically read, authorize and update a user document in one
+ * Firestore transaction. The authorization callback runs against the
+ * transaction's own read, so it re-runs on every transaction retry — a
+ * promotion landing between the route's first read and the write is seen
+ * by the guard and rejected, instead of slipping through a two-round-trip
+ * read-then-write (the 4c fresh re-read narrowed that window but could
+ * not close it: the read and the write were separate Firestore calls).
+ * Mirrors bindBadgeDeviceAtomic (Fix 3). The caller keeps password
+ * hashing outside the transaction.
+ */
+export async function updateUserAtomic(
+  agentId: string,
+  update: Record<string, any>,
+  authorize: (target: any) => UserUpdateAuthorization
+): Promise<UserUpdateAtomicResult> {
+  const db = getDb();
+  if (!db) return { outcome: "unavailable" };
+
+  try {
+    const clean = stripUndefinedDeep(update);
+    const outcome = isAdminDb(db)
+      ? await db.runTransaction(async (tx: AdminTransaction): Promise<UserUpdateAtomicResult> => {
+          const ref = db.collection("users").doc(agentId);
+          const snap = await tx.get(ref);
+          if (!snap.exists) return { outcome: "not-found" };
+          const before = snap.data() || {};
+          const reason = authorize(before);
+          if (reason) return { outcome: "forbidden", ...reason };
+          tx.update(ref, clean);
+          return { outcome: "updated", before, user: { ...before, ...clean } };
+        })
+      : await (async () => {
+          const { doc, runTransaction } = await loadClientSdk();
+          return runTransaction(db, async (tx: ClientTransaction): Promise<UserUpdateAtomicResult> => {
+            const ref = doc(db, "users", agentId);
+            const snap = await tx.get(ref);
+            if (!snap.exists()) return { outcome: "not-found" };
+            const before = snap.data() || {};
+            const reason = authorize(before);
+            if (reason) return { outcome: "forbidden", ...reason };
+            tx.update(ref, clean);
+            return { outcome: "updated", before, user: { ...before, ...clean } };
+          });
+        })();
+
+    if (outcome.outcome === "updated") {
+      invalidateCollectionCache("users");
+      invalidateDocCache("users", agentId);
+    }
+    return outcome;
+  } catch (err) {
+    logger.error({ err }, "Atomic user update failed");
+    return { outcome: "unavailable" };
   }
 }
 
