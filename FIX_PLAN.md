@@ -764,3 +764,65 @@ Watch 1 on PR #139 (head d3535eb) returned DO NOT MERGE with one unresolved acti
 - Tests: the mock backend in `tests/cache-invalidation.test.ts` gains a `readGate` — reads take their snapshot BEFORE awaiting the gate, modelling a read that executed pre-write but whose response arrives post-invalidation (awaiting first would read post-write data and never exercise the race). Two new tests per SDK (collection + doc): start a gated read, write + invalidate while it is pending (asserting `reads === 1` proves the read is genuinely in flight), release, assert the pending call returns its pre-write snapshot and the NEXT read returns the new value. The gate defaults to null, so the 26 existing tests are untouched.
 
 Files changed (3, +90/−7): `server/fs.ts` (+34/−4, generation map + bumps + guarded sets), `tests/cache-invalidation.test.ts` (+46/−3, `readGate` in the mock + 4 tests), `FIX_PLAN.md` (+10, this section). Verification: lint 0 diagnostics; build pass; affected 2 files / 34 passed (30 cache-invalidation + 4 seed-staff); full server suite 720 passed (Fix 10 baseline 716 + 4 new); React suite 835 passed (831 + 4 — the new `.test.ts` files re-run under jsdom). Fail-without-fix proven by stashing `server/fs.ts`: 4 failed / 26 passed — exactly the 4 new 10b tests, both SDKs.
+
+## Fix 12 — AIG-1 / AIG-2 / SZM-2 / SAT-1: dataset outages versus current observations
+
+Branch: `fix/wildfire-12-dataset-outages`, based directly on main `b580dfc518e792611419e3c6826a3c6e501d775f` after fetching origin. The clone initially contained a clean Fix 11 branch; that branch was left intact and none of its changes were used. Fix 11/11b is outside this change. No dependency installation, client change, push, PR, or merge.
+
+### Files and contracts
+
+- `server/routes/ai.ts` (AIG-1): use the existing discriminated `getReportsDbResult` instead of the lossy nullable wrapper. `error`, `no-db`, rejected reads, and the existing three-second context deadline return **503 `{error: "Report context is currently unavailable"}`**, without `guidance` and before invoking AI. Clear the deadline timer after completion. A confirmed `empty` read remains successful. This follows the existing safe-zone/reports unavailable contract and distinguishes unknown conditions from zero observed nearby reports.
+- `server/routes/ai.ts` (AIG-2): reuse `isFreshThreatTimestamp` from `server/routes/wilayas.ts`, including its existing **30-minute maximum age / two-minute future-skew allowance**. Invalid timestamps also fail that predicate. Apply it before both fallback counts and provider prompt construction. Keep resolved/rejected and distance exclusions unchanged; retain fresh critical guidance and successful provider responses.
+- `server/routes/safezones.ts` (SZM-2): preserve the successful array body and 60-second route TTL. Record the successful load time. A failed refresh may serve cached active centres only through **five minutes from the last successful load** (five existing route TTLs; no existing safe-zone maximum-stale convention was present). Such a response carries **`X-Data-Stale: true` and `X-Data-Updated-At: <ISO last-load time>`**. After that absolute age, return the existing **503 `{error}`** instead of the list. Failed refreshes never renew its age. Internal PUT/DELETE consumers access the same list through the load result's `data` field.
+- `server/routes/satellite.ts` (SAT-1): source reads distinguish `ok` (including empty feeds) from `unavailable` (missing key, non-OK HTTP, transport error, abort). If **either source fails**, GET returns **503 `{error: "Satellite data is currently unavailable", sources: {VIIRS_SNPP_NRT: "ok" | "unavailable", MODIS_NRT: "ok" | "unavailable"}}`**. This conservative partial-outage contract lets the existing client retain its previous dataset rather than commit an incomplete list as healthy. Only complete successful observations use the existing array contract and populate the existing nonempty cache. Deduplication, healthy cache lifetime, and healthy empty responses are unchanged; SAT-2 empty caching/coalescing is not included. The shared `getLiveSatelliteData` helper throws the typed outage error rather than claiming empty success; wilayas already catches it, while history follows its existing Express error path.
+- `tests/dataset-outages.test.ts`: real Express route handlers, with only backend/configuration boundaries mocked, plus a controlled clock for cache-age checks. No live DB or HTTP. 14 regression cases and three healthy-path controls (17 cases total).
+- `tests/ai.test.ts`, `tests/ai-failures.test.ts`: supply a confirmed-empty DB fixture so the existing provider/fallback tests continue exercising their intended healthy-context paths. Existing assertions and timeout checks are unchanged.
+- `tests/history.test.ts`: supply a healthy HTTP feed and test FIRMS key for the existing successful history bucket tests, retaining the real satellite/history handlers and every assertion. Previously these tests implicitly relied on a missing production key being treated as a healthy empty sky.
+- `FIX_PLAN.md`: this implementation, contract, verification, and proof record.
+
+### Fail-without-fix evidence
+
+The new route test file was first executed **before any production-route changes**, on the specified main baseline: `npm run test:server -- tests/dataset-outages.test.ts`. Result: **13 failed / three healthy controls passed**, in `/tmp/fix12-unfixed.log`. Each failure was a behavior assertion against the actual route, not a fixture/import failure. The tests expose both old and new DB boundary names solely so the same fixtures exercise the original and corrected route implementations.
+
+| Finding / regression case | Observed on unfixed main |
+| --- | --- |
+| AIG-1: DB result `error` | Expected 503, received 200/all-clear |
+| AIG-1: `no-db` | Expected 503, received 200/all-clear |
+| AIG-1: hanging DB / three-second context timeout | Expected 503, received 200/all-clear |
+| AIG-1: rejected DB read | Expected 503, received 200/all-clear |
+| AIG-2: 90-day-old pending critical report, fallback + prompt | Critical fallback instead of zero-current-report fallback; failed `Aucun foyer` assertion |
+| AIG-2: ten-minute-future pending critical report, fallback + prompt | Same incorrect critical fallback |
+| AIG-2: invalid-timestamp pending critical report, fallback + prompt | Same incorrect critical fallback |
+| SZM-2: within-age refresh failure must be marked stale | Expected `X-Data-Stale: true`, received no header |
+| SAT-1: both HTTP sources fail | Expected 503, received 200 `[]` |
+| SAT-1: both transports reject | Expected 503, received 200 `[]` |
+| SAT-1: both requests abort on the route's actual 15-second source deadlines | Expected 503, received 200 `[]` |
+| SAT-1: missing direct-FIRMS key | Expected 503, received 200 `[]` |
+| SAT-1: one HTTP source fails, the other supplies detections | Expected 503 with per-source statuses, received 200 |
+
+A separate SZM-2 expiry regression was then added so the earlier missing-header assertion cannot mask the age-limit defect. Saved the fixed safe-zone route to `/tmp/fix12-route-backup/safezones.ts`, temporarily replaced only that route with `git show HEAD:server/routes/safezones.ts`, ran `npm run test:server -- tests/dataset-outages.test.ts -t 'absolute age bound'`, and restored the fixed file. **One failed / 16 skipped**: after refresh failures at 120 seconds and 300.001 seconds from the successful load, expected 503 but received 200. Evidence: `/tmp/fix12-unfixed-expiry.log`.
+
+Resumed-session independent re-verification: temporarily replaced all three route files with `git show HEAD:<path>` at the exact `b580dfc518e792611419e3c6826a3c6e501d775f` baseline, ran the complete final `tests/dataset-outages.test.ts`, and restored every fixed file in a Python `finally` block. **14 failed / three healthy controls passed (17 tests)**, all expected behavior failures, including the independent absolute-age regression. Evidence: `/tmp/fix12-unfixed-reverified.log`.
+
+The AIG-2 tests also assert the provider prompt contains `Active reports: 0, High/Critical: 0` after each aged/invalid fixture. Healthy controls intentionally pass on both versions: confirmed-empty context succeeds, fresh critical reports still count while resolved/rejected reports do not, and two healthy empty FIRMS feeds return 200 `[]`.
+
+### Verification
+
+- Affected routes/tests: **34/34 passed**, four files (`/tmp/fix12-affected.log`).
+- `npm run lint`: passed (`/tmp/fix12-lint.log`).
+- `npm run build`: passed, Vite and bundled server (`/tmp/fix12-build.log`).
+- Final `npm run test:server`: **768/768 passed**, 77 files (`/tmp/fix12-server.log`), including all **17/17** new route cases and the existing AI/history cases.
+- Final `npm run test:react`: **919/919 passed**, 84 files (`/tmp/fix12-react.log`), including the same route regressions under jsdom.
+- `npm run test:e2e`: attempted twice; **environment blocked before Playwright starts** (exit 2): Firebase cannot spawn `java -version` because Java is absent (`/tmp/fix12-e2e.log`). No packages were installed and no unrelated processes were stopped.
+- Initial full-server validation exposed five history success tests that depended on absent FIRMS credentials returning `[]`. Updated only their HTTP/config fixtures as described above; no assertions were removed or weakened. The final full suites are green.
+- `git diff --check`: passed. No production-scope deviations; no client changes, dependency changes, push, PR, or merge. Local branch is based directly on the requested main commit; Fix 11/11b is not included.
+
+Next: **Fix 13 — SOS-4 (`server/routes/sos.ts`, report line 620) and FS-2 (`server/fs.ts`, report line 711)** per triage rows 147–148.
+
+## Fix 12b follow-up — history endpoint must survive a satellite outage (parent-implemented)
+
+Fix 12's SAT-1 made `getLiveSatelliteData` throw `SatelliteUnavailableError` on any source outage. `wilayas.ts` already catches it (falls back to empty hotspots with a warning log), but `server/routes/history.ts:63` called it uncaught — so in production without a FIRMS key, or during a FIRMS outage, `GET /api/history` would return 500 via the global error handler instead of 200 with hotspots 0. That turns a partial degradation into a total failure of the history endpoint, beyond SAT-1's scope (which was about `GET /api/satellite` itself).
+
+Files changed (3, +32/−3): `server/routes/satellite.ts` (+1/−1, `SatelliteUnavailableError` is now exported), `server/routes/history.ts` (+19/−2, the satellite call is wrapped in try/catch for `SatelliteUnavailableError` only — anything else still throws; on catch it logs a warning and the response carries `hotspotsUnavailable: true` with hotspots 0; the field is omitted on healthy responses), `tests/history.test.ts` (+12, 1 new test: both FIRMS sources returning 500 → history returns 200 with 7 buckets, `hotspotsUnavailable: true`, all hotspots 0).
+
+Verification: lint 0 diagnostics; build pass; affected 2 files / 23 passed (history 6 + dataset-outages 17). Fail-without-fix proven by stashing only `server/routes/history.ts`: exactly the 1 new test failed / 5 passed. Full suites on this branch tree: server 77 files / 769 passed, React 84 files / 920 passed, 0 failed (both RC=0; the +1 per suite vs Fix 12 alone is the new history test).
