@@ -1,8 +1,9 @@
 import { Request, Response, Router } from "express";
 import { wilayasStatus } from "../data.js";
 import { getReportsFromFirestore } from "../db.js";
-import { getLiveSatelliteData } from "./satellite.js";
+import { getLiveSatelliteData, SatelliteUnavailableError } from "./satellite.js";
 import logger from "../logger.js";
+import type { SatelliteHotspot } from "../../src/types.js";
 
 const router = Router();
 
@@ -89,7 +90,8 @@ export function deriveWilayaStatuses<
 }
 
 const CACHE_TTL_MS = 60 * 1000;
-let cachedResponse: unknown = null;
+type SatelliteHeader = "X-Satellite-Partial" | "X-Satellite-Unavailable";
+let cachedResponse: { data: unknown; satelliteHeader?: SatelliteHeader } | null = null;
 let cacheTimestamp = 0;
 
 export function normalizeWilayaName(input: string): string {
@@ -131,7 +133,8 @@ export function wilayaMatches(input: string, nameAr: string, nameFr: string): bo
 router.get("/", async (_req: Request, res: Response) => {
   const now = Date.now();
   if (cachedResponse && now - cacheTimestamp < CACHE_TTL_MS) {
-    return res.json(cachedResponse);
+    if (cachedResponse.satelliteHeader) res.setHeader(cachedResponse.satelliteHeader, "true");
+    return res.json(cachedResponse.data);
   }
 
   let currentReports: any[] = [];
@@ -148,19 +151,31 @@ router.get("/", async (_req: Request, res: Response) => {
     );
   }
 
-  let hotspots: any[] = [];
+  let hotspots: SatelliteHotspot[] = [];
+  let satelliteHeader: SatelliteHeader | undefined;
   try {
-    hotspots = await getLiveSatelliteData();
+    const data = await getLiveSatelliteData();
+    hotspots = data.hotspots;
+    const failedSources = Object.keys(data.sources).filter((source) => data.sources[source] === "unavailable");
+    if (failedSources.length > 0) {
+      satelliteHeader = "X-Satellite-Partial";
+      logger.warn({ failedSources }, "Wilayas route: satellite data is partial");
+    }
   } catch (err) {
+    satelliteHeader = "X-Satellite-Unavailable";
     logger.warn(
-      { msg: err instanceof Error ? err.message : String(err) },
+      {
+        msg: err instanceof Error ? err.message : String(err),
+        ...(err instanceof SatelliteUnavailableError ? { sources: err.sources } : {}),
+      },
       "Wilayas route: satellite data unavailable"
     );
   }
 
   const response = deriveWilayaStatuses(wilayasStatus, currentReports, hotspots, now);
-  cachedResponse = response;
+  cachedResponse = { data: response, satelliteHeader };
   cacheTimestamp = now;
+  if (satelliteHeader) res.setHeader(satelliteHeader, "true");
   res.setHeader("X-Last-Updated", new Date(now).toISOString());
   res.json(response);
 });
