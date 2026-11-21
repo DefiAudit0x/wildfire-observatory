@@ -388,8 +388,14 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
   let nearbyFireCorroborated = false;
   let priority: string = "unknown";
   if (hasLocation) {
+    let contextTimeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      const dbResult = await getReportsDbResult();
+      const dbResult = await Promise.race([
+        getReportsDbResult(),
+        new Promise<never>((_, reject) => {
+          contextTimeout = setTimeout(() => reject(new Error("SOS proximity context timed out")), 3000);
+        }),
+      ]);
       const active = dbResult.status === "ok" ? dbResult.reports.filter(
         (r: any) => r.status !== "resolved" && r.status !== "rejected"
       ) : [];
@@ -401,7 +407,9 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
         nearbyFireCorroborated = nearestFireDistanceKm !== Infinity && (nearestFireDistanceKm ?? Infinity) <= 10;
       }
     } catch (err) {
-      logger.error({ err }, "SOS proximity check error");
+      logger.warn({ err }, "SOS proximity context unavailable; proceeding without context");
+    } finally {
+      clearTimeout(contextTimeout);
     }
     if (nearestFireDistanceKm !== null && Number.isFinite(nearestFireDistanceKm)) {
       priority =
