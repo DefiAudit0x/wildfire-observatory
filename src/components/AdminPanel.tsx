@@ -9,6 +9,7 @@ import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
 import { apiFetch } from "../utils/adminApi";
+import { csvCell } from "../utils/export";
 import { useReportModeration } from "../hooks/useReportModeration";
 
 interface ConfirmState {
@@ -27,6 +28,10 @@ interface AdminPanelProps {
 export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps) {
   const [password, setPassword] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [reporterIdentities, setReporterIdentities] = useState<Record<string, { reporterName?: string; reporterPhone?: string }>>({});
+  // Fix 8b: tracks the in-flight identity requests so the CSV export can
+  // wait for reporter names instead of writing "" for them.
+  const [reporterIdentitiesLoading, setReporterIdentitiesLoading] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -58,6 +63,43 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setReporterIdentities({});
+      setReporterIdentitiesLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setReporterIdentitiesLoading(true);
+    void Promise.all(reports.map(async (report) => {
+      try {
+        const res = await apiFetch(`/api/reports/${encodeURIComponent(report.id)}/identity`, "GET");
+        if (cancelled) return;
+        if (res.status === 401) {
+          setIsAuthenticated(false);
+          return;
+        }
+        if (!res.ok) return;
+        const data: unknown = await res.json();
+        if (!data || typeof data !== "object") return;
+        const identity = {
+          reporterName: "reporterName" in data && typeof data.reporterName === "string" ? data.reporterName : undefined,
+          reporterPhone: "reporterPhone" in data && typeof data.reporterPhone === "string" ? data.reporterPhone : undefined,
+        };
+        if (!cancelled) setReporterIdentities((current) => ({ ...current, [report.id]: identity }));
+      } catch {
+        // A missing identity shard leaves the existing anonymous fallback intact.
+      }
+    })).finally(() => {
+      if (!cancelled) setReporterIdentitiesLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, reports]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -219,22 +261,22 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   }
 
   // Statistics calculation for the admin summary cards
-  const pendingReports = reports.filter(r => r.status === "pending");
-  const verifiedReports = reports.filter(r => r.status === "verified");
-  const resolvedReports = reports.filter(r => r.status === "resolved");
+  const adminReports = reports.map((report) => ({ ...report, ...reporterIdentities[report.id] }));
+  const pendingReports = adminReports.filter(r => r.status === "pending");
+  const verifiedReports = adminReports.filter(r => r.status === "verified");
+  const resolvedReports = adminReports.filter(r => r.status === "resolved");
 
   const exportToCSV = () => {
-    const csvCell = (value: string, quoted = false) => {
-      // CSV quoting alone does not stop spreadsheet formulas. Check both the
-      // raw and whitespace-prefixed content, including tab/CR prefixes.
-      const text = /^\s*[=+\-@\t\r]/.test(value)
-        ? "'" + value
-        : value;
-      return quoted || /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-    };
+    // Fix 8b: every column goes through the shared csvCell guard (the same
+    // one reportsToCsv uses) so citizen-supplied text — reporter name,
+    // location, wilaya, description — cannot inject spreadsheet formulas.
+    // csvCell also handles the quote escaping the builder used to do by hand.
+    // Fix 8e: the four text columns are force-quoted, as Fix 6's local guard
+    // did — the shared guard without quoting changed the CSV shape and broke
+    // Fix 6's operator-export tests on the merged tree.
     const rows = [
       ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
-      ...reports.map((r) =>
+      ...adminReports.map((r) =>
         [
           csvCell(r.id),
           csvCell(r.locationName || "", true),
@@ -257,7 +299,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     URL.revokeObjectURL(url);
   };
 
-  const filteredReports = reports.filter((r) => {
+  const filteredReports = adminReports.filter((r) => {
     const matchesSearch =
       !searchQuery.trim() ||
       (r.locationName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -404,7 +446,8 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
         </select>
         <button
           onClick={exportToCSV}
-          className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+          disabled={reporterIdentitiesLoading}
+          className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Download className="h-4 w-4" />
           <span>{isArabic ? "تصدير CSV" : "Exporter CSV"}</span>
