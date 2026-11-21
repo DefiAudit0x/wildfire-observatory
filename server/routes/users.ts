@@ -6,7 +6,7 @@ import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
-import { collectionGet, docGet, docUpdate, docDelete, docSet } from "../fs.js";
+import { collectionGet, docGet, docDelete, docSet, updateUserAtomic } from "../fs.js";
 import { createUserIfUnitExists, createDocIfAbsent } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
@@ -22,19 +22,28 @@ function requireScopedCommander(res: Response, admin: any): string | null { cons
 // Fix 4c: the commander/superadmin guards must run against the FRESHEST
 // snapshot of the target account. PUT used to authorize against a cached
 // read (up to 60s stale, plus the bcrypt.hash await) and then write
-// unconditionally, so a promotion landing in between was ignored. This helper
-// runs the same guards against any snapshot; the handler calls it on the
-// first read AND on a fresh re-read immediately before the write.
+// unconditionally, so a promotion landing in between was ignored.
+// Fix 4d: the pure decision behind manageForbidden. The PUT handler passes
+// it into updateUserAtomic, so the guard runs against the transaction's own
+// read (and re-runs on every transaction retry) instead of a snapshot read
+// in a separate round-trip. Returns null when the change is allowed,
+// otherwise the 403 the handler must answer with.
 // Returns true when the request is forbidden (response already sent).
-function manageForbidden(target: any, parsed: { role?: string; unitId?: string }, admin: any, allowedUnit: string | null, isSuperadmin: boolean, res: Response): boolean {
+function manageForbiddenReason(target: any, parsed: { role?: string; unitId?: string }, admin: any, allowedUnit: string | null, isSuperadmin: boolean): { status: number; error: string; code?: string } | null {
   if (!isSuperadmin) {
-    if (target.role !== "agent") { res.status(403).json({ error: "Commanders can only manage agent accounts" }); return true; }
-    if (target.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders can only manage their own unit's staff" }); return true; }
-    if (parsed.role && parsed.role !== "agent") { res.status(403).json({ error: "Commanders cannot change roles outside of agent" }); return true; }
-    if (parsed.unitId && parsed.unitId !== allowedUnit) { res.status(403).json({ error: "Commanders cannot move staff between units" }); return true; }
+    if (target.role !== "agent") return { status: 403, error: "Commanders can only manage agent accounts" };
+    if (target.unitId !== allowedUnit) return { status: 403, error: "Commanders can only manage their own unit's staff" };
+    if (parsed.role && parsed.role !== "agent") return { status: 403, error: "Commanders cannot change roles outside of agent" };
+    if (parsed.unitId && parsed.unitId !== allowedUnit) return { status: 403, error: "Commanders cannot move staff between units" };
   }
-  if ((parsed.role === "superadmin" || target.role === "superadmin") && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can modify superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return true; }
-  return false;
+  if ((parsed.role === "superadmin" || target.role === "superadmin") && !isTrueSuperadmin(admin)) return { status: 403, error: "Only the superadmin credential can modify superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" };
+  return null;
+}
+function manageForbidden(target: any, parsed: { role?: string; unitId?: string }, admin: any, allowedUnit: string | null, isSuperadmin: boolean, res: Response): boolean {
+  const reason = manageForbiddenReason(target, parsed, admin, allowedUnit, isSuperadmin);
+  if (!reason) return false;
+  res.status(reason.status).json(reason.code ? { error: reason.error, code: reason.code } : { error: reason.error });
+  return true;
 }
 
 // S-M2 (role-matrix unification): the password-admin ("admin") used to hit a
@@ -96,20 +105,27 @@ router.put("/:agentId", requireRole(...MANAGE_USERS_ROLES), async (req: Request,
     if (manageForbidden(existing, parsed.data, admin, allowedUnit, isSuperadmin, res)) return;
     if (parsed.data.unitId) { const unit = await docGet("units", toUnitId(parsed.data.unitId)); if (!unit) { res.status(404).json({ error: "Unit not found" }); return; } }
     const update: Record<string, any> = {}; if (parsed.data.name) update.name = parsed.data.name; if (parsed.data.role) update.role = parsed.data.role; if (parsed.data.unitId) update.unitId = parsed.data.unitId; if (parsed.data.isActive !== undefined) update.isActive = parsed.data.isActive; if (parsed.data.password) { update.passwordHash = await bcrypt.hash(parsed.data.password, 10); update.sessionVersion = randomBytes(16).toString("hex"); } update.updatedAt = new Date().toISOString(); update.updatedBy = admin?.agentId || "admin";
-    // Fix 4c: re-read the target fresh immediately before the write and
-    // re-run the guards. No await sits between this check and docUpdate, so
-    // a promotion landing after the first read cannot slip through.
-    const fresh = await docGet("users", agentId, true); if (!fresh) { res.status(404).json({ error: "User not found" }); return; }
-    if (manageForbidden(fresh, parsed.data, admin, allowedUnit, isSuperadmin, res)) return;
-    const ok = await docUpdate("users", agentId, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; }
+    // Fix 4d: the read, the authorization and the write happen in ONE
+    // Firestore transaction (updateUserAtomic). The 4c fresh re-read
+    // narrowed the window but the read and the write were still two
+    // separate round-trips, so a promotion landing between them was not
+    // detected. Inside the transaction the guard runs against the
+    // transaction's own read and re-runs on every retry. Password hashing
+    // stays outside the transaction (above).
+    const result = await updateUserAtomic(agentId, update, (target) =>
+      manageForbiddenReason(target, parsed.data, admin, allowedUnit, isSuperadmin)
+    );
+    if (result.outcome === "not-found") { res.status(404).json({ error: "User not found" }); return; }
+    if (result.outcome === "forbidden") { res.status(result.status).json(result.code ? { error: result.error, code: result.code } : { error: result.error }); return; }
+    if (result.outcome === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
     // S-M8: role/unit/deactivation/password changes are privilege shifts —
     // audit what changed (never the password itself).
     logAdminAction(
       "user.update",
-      { targetAgentId: agentId, fields: Object.keys(update).filter((f) => f !== "passwordHash"), roleChange: update.role ? { from: fresh.role, to: update.role } : undefined },
+      { targetAgentId: agentId, fields: Object.keys(update).filter((f) => f !== "passwordHash"), roleChange: update.role ? { from: result.before.role, to: update.role } : undefined },
       actorFromRequest(req)
     ).catch(() => {});
-    res.json(sanitizeUser({ ...fresh, ...update }));
+    res.json(sanitizeUser(result.user));
   } catch (err) { logger.error({ err }, "Failed to update user"); res.status(500).json({ error: "Internal server error" }); }
 });
 
