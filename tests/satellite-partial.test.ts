@@ -9,8 +9,8 @@ const scanTime = new Date();
 function detection() {
   const [date, time] = scanTime.toISOString().split("T");
   return new Response(
-    "lat,lng,bright,scan,track,date,time,sat,instrument,confidence\n" +
-      "36.8,7.8,340,1,1," + date + "," + time.slice(0, 5).replace(":", "") + ",T,MODIS_NRT,h"
+    "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version\n" +
+      "36.8,7.8,340,1,1," + date + "," + time.slice(0, 5).replace(":", "") + ",T,h,6.1NRT"
   );
 }
 
@@ -76,6 +76,59 @@ describe("partial satellite outages", () => {
     expect(res.body.buckets).toContainEqual(expect.objectContaining({
       date: scanTime.toISOString().slice(0, 10), hotspots: 1,
     }));
+    expect(res.body.hotspotsPartial).toBe(true);
     expect(res.body).not.toHaveProperty("hotspotsUnavailable");
+  });
+});
+
+
+describe("Fix 12e FIRMS wire columns", () => {
+  it.each([
+    ["T", "0", "MODIS", 0], ["A", "100", "MODIS", 100],
+    ["N", "high", "VIIRS", 95], ["N20", "low", "VIIRS", 45],
+    ["N21", "nominal", "VIIRS", 80], ["T", "h", "MODIS", 95],
+    ["A", "l", "MODIS", 45], ["T", "72.5", "MODIS", 72.5],
+    ["T", "101", "MODIS", 80], ["T", "-1", "MODIS", 80],
+  ])("parses satellite %s with confidence %s from the official columns", async (satellite, confidence, type, expected) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(
+      "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version\n" +
+      `36.8,7.8,340,1,1,2026-11-21,1200,${satellite},${confidence},6.1NRT`
+    )).mockResolvedValueOnce(empty()));
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    expect((await getLiveSatelliteData()).hotspots).toEqual([
+      expect.objectContaining({ satellite: type, confidence: expected, lat: 36.8, lng: 7.8, scanTime: "2026-11-21T12:00:00Z" }),
+    ]);
+  });
+
+  it("rejects the old invented instrument-column fixture and unknown satellites", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response(
+      "lat,lng,bright,scan,track,date,time,sat,instrument,confidence\n36.8,7.8,340,1,1,2026-11-21,1200,T,MODIS_NRT,h"
+    )).mockResolvedValueOnce(new Response(
+      "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,confidence,version\n36.8,7.8,340,1,1,2026-11-21,1200,UNKNOWN,high,1.0NRT"
+    )));
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    expect((await getLiveSatelliteData()).hotspots).toEqual([]);
+  });
+
+  it.each([false, true])("marks partial history even when the healthy feed is empty=%s", async (isEmpty) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(isEmpty ? empty() : detection()));
+    const res = await request((await import("../server/routes/history")).default).get("/?days=7");
+    expect(res.body.hotspotsPartial).toBe(true);
+    expect(res.body).not.toHaveProperty("hotspotsUnavailable");
+    expect(res.body.buckets.reduce((n: number, b: { hotspots: number }) => n + b.hotspots, 0)).toBe(isEmpty ? 0 : 1);
+  });
+
+  it.each([false, true])("omits history partial on total outage=%s", async (total) => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => total ? unavailable() : empty()));
+    const res = await request((await import("../server/routes/history")).default).get("/?days=7");
+    expect(res.body).not.toHaveProperty("hotspotsPartial");
+    expect(res.body.hotspotsUnavailable).toBe(total ? true : undefined);
+  });
+
+  it("returns retained empty detections on a partial 503", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(empty()));
+    const res = await request((await import("../server/routes/satellite")).default).get("/");
+    expect(res.status).toBe(503);
+    expect(res.body).toMatchObject({ hotspots: [], sources: { VIIRS_SNPP_NRT: "unavailable", MODIS_NRT: "ok" } });
   });
 });
