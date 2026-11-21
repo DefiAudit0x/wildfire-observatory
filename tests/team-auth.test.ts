@@ -17,6 +17,12 @@ import { createPublicPrincipalToken } from "../server/public-principal.js";
 import { generateAdminToken, generateStaffToken, requireAdmin, requireAuth } from "../server/middleware.js";
 import config from "../server/config.js";
 
+vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
+vi.mock("../server/fs.js", () => ({
+  docGet: async (collection: string, id: string) => collection === "users" && id === "agent-1"
+    ? { agentId: id, role: "agent", isActive: true } : null,
+}));
+
 function appWithGate(gate: express.RequestHandler) {
   const app = express();
   app.use(cookieParser());
@@ -96,7 +102,7 @@ describe("scope separation at the session gate", () => {
   it("staff tokens still pass (no false positive from the scope hardening)", async () => {
     const staff = generateStaffToken({ role: "agent", agentId: "agent-1" });
     const res = await supertest(appWithGate(requireAuth)).get("/gated").set("Authorization", `Bearer ${staff}`);
-    // No Firestore in tests → agentId revalidation is skipped → 200.
+    // The active account fixture passes staff revalidation.
     expect(res.status).toBe(200);
   });
 });

@@ -132,7 +132,7 @@ const {
   createVolunteerRegistrationAtomically,
   joinTeamAtomically,
 } = await import("../server/atomic.js");
-const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic } = await import("../server/fs.js");
+const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic, updateUserAtomic } = await import("../server/fs.js");
 const { clearTeamMissionAtomically, setPrincipalBlocked } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
@@ -157,6 +157,52 @@ describe("atomic persistence helpers", () => {
 
     expect(results.sort()).toEqual(["bound", "conflict"]);
     expect(["device-a", "device-b"]).toContain(state.docs.get("badgeCodes/VOL-BIND")?.boundDeviceId);
+  });
+
+  it("Fix 4d: updateUserAtomic authorizes against the transaction-time snapshot", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("users/agent-1", { agentId: "agent-1", role: "agent", unitId: "unit-dz16", isActive: true });
+
+    // The commander's guard records every snapshot it is shown. If the
+    // guard ran against a pre-transaction snapshot it would see "agent"
+    // and allow the write; inside the transaction it must see the
+    // promotion committed by the concurrent call.
+    const seenRoles: string[] = [];
+    const commanderGuard = (target: any) => {
+      seenRoles.push(target.role);
+      return target.role !== "agent" ? { status: 403, error: "Commanders can only manage agent accounts" } : null;
+    };
+
+    const [promoted, reset] = await Promise.all([
+      updateUserAtomic("agent-1", { role: "commander" }, () => null),
+      updateUserAtomic("agent-1", { passwordHash: "new-hash" }, commanderGuard),
+    ]);
+
+    expect(promoted.outcome).toBe("updated");
+    expect(reset.outcome).toBe("forbidden");
+    expect(seenRoles).toContain("commander");
+    expect(state.docs.get("users/agent-1")).toEqual({ agentId: "agent-1", role: "commander", unitId: "unit-dz16", isActive: true });
+  });
+
+  it("Fix 4d: updateUserAtomic returns before/user and applies the update", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("users/agent-1", { agentId: "agent-1", name: "Agent One", role: "agent", unitId: "unit-dz16" });
+
+    const result = await updateUserAtomic("agent-1", { name: "Renamed" }, () => null);
+    if (result.outcome !== "updated") throw new Error(`expected updated, got ${result.outcome}`);
+    expect(result.before.name).toBe("Agent One");
+    expect(result.user.name).toBe("Renamed");
+    expect(result.user.role).toBe("agent");
+    expect(state.docs.get("users/agent-1")?.name).toBe("Renamed");
+  });
+
+  it("Fix 4d: updateUserAtomic reports not-found for a missing user", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    const result = await updateUserAtomic("ghost", { name: "Nobody" }, () => null);
+    expect(result.outcome).toBe("not-found");
   });
 
   it("allows only one concurrent create for a unique document", async () => {

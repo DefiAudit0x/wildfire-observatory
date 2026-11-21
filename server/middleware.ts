@@ -15,8 +15,10 @@ export interface AuthPayload {
   unitId?: string;
   name?: string;
   agentId?: string;
-  /** S-M1: per-session revocation id — present on all admin sessions. */
+  /** Per-session revocation id — present on all new admin and staff sessions. */
   jti?: string;
+  /** Account version rotated on password reset. */
+  sessionVersion?: string;
   iat?: number;
 }
 
@@ -46,24 +48,23 @@ function isAdminSessionPayload(decoded: AuthPayload): boolean {
 }
 
 /**
- * S-M1: revoke an admin session server-side. `token` is the raw admin_token
- * (cookie or bearer). Decoding (not verifying) is enough — a forged token
- * cannot produce a jti the register cares about, and an expired token's
- * revocation entry is inert. Returns true when a revocation was durably
+ * Revoke an admin or staff session server-side (cookie or bearer).
+ * Verify before recording a revocation. Returns true when a revocation was durably
  * written, false when there was nothing to revoke or the register is down.
  */
 export async function revokeAdminSession(token: string | undefined | null, reason: string): Promise<boolean> {
   if (!token) return false;
   try {
-    const decoded = jwt.decode(token) as (AuthPayload & { jti?: string; exp?: number }) | null;
+    const decoded = jwt.verify(token, config.jwtSecret) as (AuthPayload & { jti?: string; exp?: number }) | null;
     if (!decoded || typeof decoded.jti !== "string" || !decoded.jti) return false;
     const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now() + 24 * 60 * 60 * 1000;
+    revocationSeen.set(decoded.jti, expMs);
     const ok = await docSet(ADMIN_REVOCATION_COLLECTION, decoded.jti, {
       revokedAt: new Date().toISOString(),
       exp: expMs,
       reason,
     });
-    if (!ok) logger.warn({ jti: decoded.jti }, "Admin revocation register unavailable — token stays valid until expiry");
+    if (!ok) logger.warn({ jti: decoded.jti }, "Session revocation not durable — retained in this process until expiry");
     return ok;
   } catch (err) {
     logger.warn({ err }, "Admin revocation write failed");
@@ -74,20 +75,40 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
 /**
  * S-M1: true when this jti sits in the revocation register. Expired register
  * entries are ignored (the token is dead anyway). A register outage is
- * fail-open ON PURPOSE: the admin password remains the real credential, and
- * locking the control room out during a Firestore outage would trade a
- * revocation edge case for an availability emergency.
+ * fail-open ON PURPOSE for password-admin sessions: the admin password
+ * remains the real credential, and locking the control room out during a
+ * Firestore outage would trade a revocation edge case for an availability
+ * emergency.
  *
  * v2.15.0 audit hardening: the fail-open is no longer absolute. Successful
  * checks are cached in process memory, and a token ALREADY SEEN REVOKED stays
  * denied even when the register later goes down — an outage can no longer
  * resurrect a stolen, logged-out session. Tokens never seen revoked keep the
  * availability-first fail-open during an outage (the documented trade-off).
+ *
+ * Fix 4c: that trade-off does NOT extend to staff sessions. Logout does not
+ * rotate sessionVersion, so the revocation register is the SOLE enforcement
+ * of staff logout — a transient read failure used to be indistinguishable
+ * from "not revoked" (docGet resolved null on SDK failure) and the token was
+ * admitted. With failClosed, an unreadable register THROWS and the caller
+ * rejects the staff session; admin sessions keep the fail-open above.
  */
 const revocationSeen = new Map<string, number>(); // jti → expMs of a token seen revoked
-async function isAdminSessionRevoked(jti: string): Promise<boolean> {
+async function isAdminSessionRevoked(jti: string, failClosed = false): Promise<boolean> {
+  // The register read is strict: a failed read throws instead of resolving
+  // null, so "absent" and "unreadable" stay distinguishable. Consult known
+  // revocations first.
+  const cachedExp = revocationSeen.get(jti);
+  if (cachedExp !== undefined) {
+    if (!Number.isFinite(cachedExp) || cachedExp >= Date.now()) return true;
+    revocationSeen.delete(jti);
+  }
+  if (!getDb()) {
+    if (failClosed) throw new Error("Revocation register unavailable");
+    return false;
+  }
   try {
-    const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti);
+    const entry = await docGet(ADMIN_REVOCATION_COLLECTION, jti, true, { strict: true });
     if (!entry) return false;
     const exp = typeof entry.exp === "number" ? entry.exp : Date.parse(entry.exp);
     if (Number.isFinite(exp) && exp < Date.now()) return false;
@@ -101,6 +122,10 @@ async function isAdminSessionRevoked(jti: string): Promise<boolean> {
       if (Number.isFinite(cachedExp) && cachedExp < Date.now()) return false;
       logger.warn({ jti }, "Admin revocation register down — using last-known revoked state");
       return true;
+    }
+    if (failClosed) {
+      logger.warn({ err }, "Staff revocation check failed — failing closed");
+      throw err;
     }
     logger.warn({ err }, "Admin revocation check failed — failing open");
     return false;
@@ -117,7 +142,7 @@ export function verifyAdminToken(token: string): { valid: boolean; role?: string
 }
 
 export function generateStaffToken(payload: Omit<AuthPayload, "iat">): string {
-  return jwt.sign(payload, config.jwtSecret, { expiresIn: "24h" });
+  return jwt.sign({ ...payload, jti: randomBytes(16).toString("hex") }, config.jwtSecret, { expiresIn: "24h" });
 }
 
 function extractToken(req: Request): string | null {
@@ -130,6 +155,7 @@ function extractToken(req: Request): string | null {
 
 export function isCurrentStaffSession(token: AuthPayload, user: any): boolean {
   if (!token.agentId || !user || user.isActive === false) return false;
+  if ((user.sessionVersion || "") !== (token.sessionVersion || "")) return false;
   if (user.agentId !== token.agentId) return false;
   if (user.role !== token.role) return false;
   if ((user.unitId || undefined) !== (token.unitId || undefined)) return false;
@@ -163,27 +189,39 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     // S-M1: password-based admin sessions now carry a jti and are checked
     // against the durable revocation register — logout (or incident response)
     // kills a stolen cookie everywhere, without waiting for JWT expiry.
-    // Staff sessions keep their own fail-closed revalidation below.
-    if (isAdminSessionPayload(decoded) && typeof (decoded as { jti?: unknown }).jti === "string") {
-      const db = getDb();
-      if (db && (await isAdminSessionRevoked((decoded as { jti: string }).jti))) {
-        res.status(401).json({ error: "Unauthorized: admin session has been revoked" });
+    // Staff logout uses the same durable jti register; account revalidation follows.
+    // Fix 4c: staff sessions fail CLOSED when the register cannot be read —
+    // the register is the sole enforcement of staff logout. Password-admin
+    // sessions keep the documented fail-open.
+    if ((isAdminSessionPayload(decoded) || decoded.agentId) && typeof decoded.jti === "string") {
+      const failClosed = Boolean(decoded.agentId);
+      let revoked: boolean;
+      try {
+        revoked = await isAdminSessionRevoked(decoded.jti, failClosed);
+      } catch {
+        res.status(401).json({ error: "Unauthorized: session revocation could not be verified" });
+        return;
+      }
+      if (revoked) {
+        res.status(401).json({ error: "Unauthorized: session has been revoked" });
         return;
       }
     }
 
     // Legacy password-based admin sessions have no agentId and therefore no
-    // staff user record to revalidate. Staff sessions are fail-closed whenever
-    // a Firestore database is configured: deactivation, role changes, unit
+    // staff user record to revalidate. Staff sessions are always fail-closed:
+    // database loss, deactivation, role changes, unit
     // moves, and account deletion take effect without waiting for JWT expiry.
     if (decoded.agentId) {
       const db = getDb();
-      if (db) {
-        const user = await docGet("users", decoded.agentId);
-        if (!isCurrentStaffSession(decoded, user)) {
-          res.status(401).json({ error: "Unauthorized: staff session is no longer valid" });
-          return;
-        }
+      if (!db || !decoded.jti) {
+        res.status(401).json({ error: "Unauthorized: staff session cannot be revalidated" });
+        return;
+      }
+      const user = await docGet("users", decoded.agentId, true);
+      if (!isCurrentStaffSession(decoded, user)) {
+        res.status(401).json({ error: "Unauthorized: staff session is no longer valid" });
+        return;
       }
     }
 

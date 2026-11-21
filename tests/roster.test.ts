@@ -3,6 +3,15 @@ import express from "express";
 import supertest from "supertest";
 import { generateStaffToken } from "../server/middleware.js";
 
+vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
+vi.mock("../server/fs.js", () => ({
+  docGet: async (collection: string, id: string) => collection === "users" && id.startsWith("t-")
+    ? { agentId: id, role: id.slice(2), unitId: id === "t-superadmin" ? undefined : "DZ16", isActive: true } : null,
+  docSet: async () => false,
+  collectionGet: async () => null,
+  docDelete: async () => false,
+}));
+
 vi.mock("../server/atomic.js", () => ({
   getFreshDoc: async (collection: string, id: string) => {
     if (collection !== "users") return null;
