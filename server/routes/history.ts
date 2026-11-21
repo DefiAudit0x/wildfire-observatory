@@ -66,8 +66,11 @@ router.get("/", async (_req: Request, res: Response) => {
   // SOS counts intact and marks the satellite counts unavailable.
   let hotspots: SatelliteHotspot[] = [];
   let hotspotsUnavailable = false;
+  let hotspotsPartial = false;
   try {
-    hotspots = (await getLiveSatelliteData()).hotspots;
+    const data = await getLiveSatelliteData();
+    hotspots = data.hotspots;
+    hotspotsPartial = Object.values(data.sources).some((status) => status !== "ok");
   } catch (err) {
     if (!(err instanceof SatelliteUnavailableError)) throw err;
     hotspotsUnavailable = true;
@@ -84,6 +87,7 @@ router.get("/", async (_req: Request, res: Response) => {
   res.json({
     days,
     generatedAt: new Date().toISOString(),
+    ...(hotspotsPartial ? { hotspotsPartial: true } : {}),
     ...(hotspotsUnavailable ? { hotspotsUnavailable: true } : {}),
     buckets: [...buckets.entries()].map(([date, counts]) => ({ date, ...counts })),
   });
