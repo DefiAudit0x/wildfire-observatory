@@ -80,6 +80,36 @@ class MeshReputationTest {
     }
 
     @Test
+    fun firstInboundContactIsSightedBeforeAdmissionCheck() {
+        val r = MeshReputation()
+
+        assertTrue(r.sightAndCheckAdmission(K, now = 10L))
+        assertEquals(MeshReputation.REPUTATION_INITIAL, r.score(K))
+        assertTrue(r.known(K))
+    }
+
+    @Test
+    fun quarantinedKeyCannotReenterThroughInboundHandshake() {
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        r.quarantine(K, now = 2L)
+
+        assertFalse(r.sightAndCheckAdmission(K, now = 3L))
+        assertEquals(MeshReputation.REPUTATION_MIN / 2 - 1, r.score(K))
+    }
+
+    @Test
+    fun inboundFramesRequireAdmissionForKnownKeys() {
+        val r = MeshReputation()
+        r.sight(K, now = 1L)
+        assertTrue(r.isInboundAdmitted(K))
+
+        r.quarantine(K, now = 2L)
+        assertFalse(r.isInboundAdmitted(K))
+        assertTrue(r.isInboundAdmitted(null))
+    }
+
+    @Test
     fun quarantineDropsBelowAdmissionFloorButKeepsRecord() {
         val r = MeshReputation()
         r.sight(K, now = 1L)
