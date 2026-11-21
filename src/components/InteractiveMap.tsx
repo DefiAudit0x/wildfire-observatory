@@ -373,14 +373,14 @@ export default function InteractiveMap({
         `;
 
       const getReporterBadgeHtml = (type?: string) => {
-        if (type === 'official') {
+        if (rep.status === 'verified' && type === 'official') {
           return `
             <span class="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 text-[9px] font-black">
               🛡️ ${isArabic ? "الحماية المدنية" : "Protection Civile"}
             </span>
           `;
         }
-        if (type === 'volunteer') {
+        if (rep.status === 'verified' && type === 'volunteer') {
           return `
             <span class="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[9px] font-bold">
               💚 ${isArabic ? "متطوع معتمد" : "Bénévole Météo"}

@@ -34,15 +34,23 @@ async function persistAuditEntry(entry: any): Promise<boolean> {
   }
 }
 
-/** Retry everything queued by earlier failures; stops at the first failure. */
-export async function flushPendingAudit(): Promise<number> {
-  let flushed = 0;
-  while (pendingAudit.length > 0) {
-    if (!(await persistAuditEntry(pendingAudit[0]))) break;
-    pendingAudit.shift();
-    flushed++;
-  }
-  return flushed;
+let pendingAuditFlush: Promise<number> | null = null;
+
+/** Retry everything queued by earlier failures; concurrent callers join one drain. */
+export function flushPendingAudit(): Promise<number> {
+  if (pendingAuditFlush) return pendingAuditFlush;
+  pendingAuditFlush = (async () => {
+    let flushed = 0;
+    while (pendingAudit.length > 0) {
+      const entry = pendingAudit[0];
+      if (!(await persistAuditEntry(entry))) break;
+      // A concurrent failed log may have evicted this entry at the queue cap.
+      if (pendingAudit[0] === entry) pendingAudit.shift();
+      flushed++;
+    }
+    return flushed;
+  })().finally(() => { pendingAuditFlush = null; });
+  return pendingAuditFlush;
 }
 
 const pendingAuditSweeper = setInterval(() => { void flushPendingAudit(); }, 60 * 1000);

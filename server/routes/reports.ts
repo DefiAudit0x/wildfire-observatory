@@ -11,6 +11,7 @@ import { getHaversineDistance, NA_BOUNDS, wilayaContainsCoords } from "../geo.js
 import {
   getPublicReportsWire,
   getReportImageDataUrl,
+  getReportPrivate,
   saveReportWithIdempotency,
   lookupReportIdempotency,
   sanitizePublicReport,
@@ -22,6 +23,7 @@ import { liveHub } from "../live.js";
 import { validateImageDataUrl, validateImageFile } from "../imageValidate.js";
 import { getPublicPrincipal } from "../public-principal.js";
 import { confirmReportWithPrincipal } from "../confirmation-ledger.js";
+import { requireAdmin } from "../middleware.js";
 
 const router = Router();
 
@@ -227,6 +229,26 @@ router.get("/", async (_req: Request, res: Response) => {
     return;
   }
   res.json(result.status === "ok" ? result.reports : []);
+});
+
+// Reporter contact details are kept out of the shared public wire and are
+// exposed only to an authenticated administrator from the private identity shard.
+router.get("/:id/identity", requireAdmin, async (req: Request, res: Response) => {
+  res.set("Cache-Control", "no-store");
+  const reportId = String(req.params.id || "").trim();
+  if (!reportId || reportId.length > 128) {
+    res.status(400).json({ error: "Invalid report id" });
+    return;
+  }
+  const identity = await getReportPrivate(reportId);
+  if (!identity) {
+    res.status(404).json({ error: "Report identity not found" });
+    return;
+  }
+  res.json({
+    reporterName: typeof identity.reporterName === "string" ? identity.reporterName : null,
+    reporterPhone: typeof identity.reporterPhone === "string" ? identity.reporterPhone : null,
+  });
 });
 
 // S-H2 companion route: report photos are fetched one-by-one, only when a

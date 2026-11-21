@@ -1,6 +1,7 @@
 import config from "./config.js";
 import logger from "./logger.js";
 import { secretFingerprint } from "./crypto.js";
+import { canonicalizeWilaya } from "./geo.js";
 
 type EmailPayload = { to: string; subject: string; html: string };
 
@@ -126,22 +127,54 @@ function buildAlertHtml(report: {
 </html>`.trim();
 }
 
-async function getVerifiedSubscribers(): Promise<Array<{ email: string; unsubscribeToken?: string }>> {
+type VerifiedSubscriber = {
+  email: string;
+  unsubscribeToken?: string;
+  wilayas?: string[];
+  minSeverity?: string;
+};
+
+async function getVerifiedSubscribers(): Promise<VerifiedSubscriber[]> {
   try {
     const { getDb, isAdminDb } = await import("./firebase.js");
     const db = getDb();
     if (!db) return [];
 
-    const subscribers: Array<{ email: string; unsubscribeToken?: string }> = [];
+    const subscribers: VerifiedSubscriber[] = [];
 
     if (isAdminDb(db)) {
       const snap = await db.collection("subscribers").where("verified", "==", true).get();
-      snap.forEach((doc: any) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
+      snap.forEach((doc) => {
+        // Fix 8c: subscriptions saved before Fix 8b stored free-text wilayas
+        // ("Annaba") that can never equal a report's canonical label.
+        // Normalize them at read time so legacy subscribers keep receiving
+        // alerts for their region; unrecognizable values pass through
+        // unchanged and keep matching nothing.
+        const storedWilayas = doc.data().wilayas;
+        subscribers.push({
+          email: doc.data().email,
+          unsubscribeToken: doc.data().unsubscribeToken,
+          wilayas: Array.isArray(storedWilayas)
+            ? storedWilayas.map((w: string) => canonicalizeWilaya(String(w)))
+            : storedWilayas,
+          minSeverity: doc.data().minSeverity,
+        });
+      });
     } else {
       const { collection, getDocs, query, where } = await import("firebase/firestore");
       const q = query(collection(db, "subscribers"), where("verified", "==", true));
       const snap = await getDocs(q);
-      snap.forEach((doc) => subscribers.push({ email: doc.data().email, unsubscribeToken: doc.data().unsubscribeToken }));
+      snap.forEach((doc) => {
+        const storedWilayas = doc.data().wilayas;
+        subscribers.push({
+          email: doc.data().email,
+          unsubscribeToken: doc.data().unsubscribeToken,
+          wilayas: Array.isArray(storedWilayas)
+            ? storedWilayas.map((w: string) => canonicalizeWilaya(String(w)))
+            : storedWilayas,
+          minSeverity: doc.data().minSeverity,
+        });
+      });
     }
 
     return subscribers;
@@ -190,11 +223,22 @@ export async function sendFireAlert(report: {
   const subscribers = await getVerifiedSubscribers();
   if (subscribers.length === 0) return;
 
+  const severityRank: Record<string, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+  const reportSeverityRank = severityRank[report.severity] ?? severityRank.medium;
+  const matchingSubscribers = subscribers.filter((subscriber) => {
+    // Older subscriptions may predate saved preferences; preserve their
+    // existing reach by treating empty regions as all regions and severity as medium.
+    const wilayas = subscriber.wilayas;
+    const matchesWilaya = !Array.isArray(wilayas) || wilayas.length === 0 || wilayas.includes(report.wilaya);
+    const minSeverityRank = severityRank[subscriber.minSeverity || "medium"] ?? severityRank.medium;
+    return matchesWilaya && reportSeverityRank >= minSeverityRank;
+  });
+
   const subject = `🔥 [${report.severity.toUpperCase()}] حريق في ${report.wilaya}`;
 
   const BATCH_SIZE = 10;
-  for (let i = 0; i < subscribers.length; i += BATCH_SIZE) {
-    const batch = subscribers.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < matchingSubscribers.length; i += BATCH_SIZE) {
+    const batch = matchingSubscribers.slice(i, i + BATCH_SIZE);
     await Promise.allSettled(
       batch.map(({ email, unsubscribeToken }) => {
         const unsubscribeUrl = unsubscribeToken
@@ -207,7 +251,7 @@ export async function sendFireAlert(report: {
     );
   }
 
-  logger.info({ count: subscribers.length, wilaya: report.wilaya }, "Fire alerts sent");
+  logger.info({ count: matchingSubscribers.length, wilaya: report.wilaya }, "Fire alerts sent");
 }
 
 export { buildAlertHtml };

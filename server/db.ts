@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { getDb, isAdminDb } from "./firebase.js";
 import { runClustering } from "./geo.js";
 import logger from "./logger.js";
@@ -125,21 +126,31 @@ export type ReportsDbResult =
 const REPORTS_READ_CAP = 5000;
 const READ_PAGE_SIZE = 999;
 
-async function migrateLegacyReportRow(db: any, id: string, legacy: any): Promise<void> {
+async function migrateLegacyReportRow(
+  db: import("firebase-admin/firestore").Firestore,
+  id: string,
+  legacy: Record<string, unknown>
+): Promise<void> {
   try {
-    const { publicDoc, privateDoc, imageDataUrl } = splitReportForPrivacy({ id, ...legacy });
-    if (privateDoc) {
-      await db.collection(REPORT_PRIVATE_COLLECTION).doc(id).set(privateDoc);
-    }
-    if (imageDataUrl) {
-      await db.collection(REPORT_IMAGES_COLLECTION).doc(id).set({
-        reportId: id,
-        image: imageDataUrl,
-        storedAt: new Date().toISOString(),
-      });
-    }
-    await db.collection("reports").doc(id).set(publicDoc);
-    logger.info({ reportId: id }, "Legacy report row migrated to privacy-split shards");
+    const migrated = await db.runTransaction(async (tx) => {
+      const reportRef = db.collection("reports").doc(id);
+      const current = await tx.get(reportRef);
+      // Compare every field we would replace, including moderation and identity.
+      // Firestore retries this read if a concurrent mutation wins before commit.
+      if (!current.exists || !isDeepStrictEqual(current.data(), legacy)) return false;
+      const { publicDoc, privateDoc, imageDataUrl } = splitReportForPrivacy({ id, ...legacy });
+      if (privateDoc) tx.set(db.collection(REPORT_PRIVATE_COLLECTION).doc(id), privateDoc);
+      if (imageDataUrl) {
+        tx.set(db.collection(REPORT_IMAGES_COLLECTION).doc(id), {
+          reportId: id,
+          image: imageDataUrl,
+          storedAt: new Date().toISOString(),
+        });
+      }
+      tx.set(reportRef, publicDoc);
+      return true;
+    });
+    if (migrated) logger.info({ reportId: id }, "Legacy report row migrated to privacy-split shards");
   } catch (err) {
     logger.warn({ err, reportId: id }, "Legacy report row migration failed (will retry next read)");
   }
