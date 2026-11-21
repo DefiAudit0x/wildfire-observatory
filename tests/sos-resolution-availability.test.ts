@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import { createHash } from "node:crypto";
 
 type StoredDoc = Record<string, unknown>;
 type Ref = { path: string };
@@ -10,6 +11,7 @@ const state = vi.hoisted(() => ({
   client: false,
   getDbError: undefined as Error | undefined,
   events: [] as string[],
+  docReads: [] as string[],
   beforeDocRead: undefined as ((path: string) => void) | undefined,
   readReports: vi.fn<() => Promise<{ docs: { id: string; data: () => StoredDoc }[] }>>(),
 }));
@@ -67,7 +69,13 @@ vi.mock("../server/firebase.js", () => ({
         const reportsQuery = { limit: () => reportsQuery, get: () => state.readReports() };
         return {
           orderBy: () => reportsQuery,
-          doc: (id: string) => ({ path: `${name}/${id}`, get: async () => docSnapshot({ path: `${name}/${id}` }) }),
+          doc: (id: string) => ({
+            path: `${name}/${id}`,
+            get: async () => {
+              state.docReads.push(`${name}/${id}`);
+              return docSnapshot({ path: `${name}/${id}` });
+            },
+          }),
           where: (field: string, _op: string, value: unknown) => ({ name, field, value }),
         };
       },
@@ -90,7 +98,7 @@ vi.mock("firebase/firestore", () => ({
 
 const { default: sosRouter } = await import("../server/routes/sos.js");
 const { invalidateReportsCache } = await import("../server/db.js");
-const { createSosWithAdmission, invalidateDocCache, resolveSosAtomically } = await import("../server/fs.js");
+const { createSosWithAdmission, docGet, invalidateDocCache, resolveSosAtomically } = await import("../server/fs.js");
 const { default: logger } = await import("../server/logger.js");
 let sequence = 0;
 function post(body: StoredDoc = {}) {
@@ -108,6 +116,7 @@ function post(body: StoredDoc = {}) {
 beforeEach(() => {
   state.docs.clear();
   state.events = [];
+  state.docReads = [];
   state.client = false;
   state.getDbError = undefined;
   state.beforeDocRead = undefined;
@@ -327,5 +336,79 @@ describe("Fix 13c duplicate admission replay (real route and helpers)", () => {
     expect(unresolved.status).toBe(409);
     expect(unresolved.body).toEqual(duplicateBody);
     expect([...state.docs.keys()].filter((path) => path.startsWith("trappedSos/"))).toHaveLength(2);
+  });
+});
+
+describe("Fix 13d fresh duplicate-path replay lookup (real route and helpers)", () => {
+  function gate<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((done) => { resolve = done; });
+    return { promise, resolve };
+  }
+
+  it("replays a newly committed key after the early lookup cached its missing document", async () => {
+    const key = "fix13d-missing-key";
+    const deviceId = "fix13d-missing-key-device";
+    const context = gate<{ docs: [] }>();
+    const contextStarted = gate<void>();
+    state.readReports.mockImplementation(() => { contextStarted.resolve(); return context.promise; });
+
+    const pending = post({ deviceId, clientGeneratedId: key }).then((res) => res);
+    await contextStarted.promise;
+    // The route's early lookup performed one real docGet against the fake
+    // Firestore and cached the absent ledger document in the production cache.
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`]);
+
+    const sosId = "fix13d-original-from-other-instance";
+    const admissionId = createHash("sha256").update(deviceId).digest("hex");
+    expect(await createSosWithAdmission(sosId, { id: sosId, deviceId, status: "active" }, admissionId, Date.now(), 300000, {
+      collection: "sosIdempotency",
+      key,
+      record: { sosId, deviceId, createdAt: new Date().toISOString() },
+    })).toBe("created");
+    // The transaction writes the ledger with raw tx.set; it does not clear
+    // the local process's cached negative lookup.
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`]);
+    expect(await docGet("sosIdempotency", key)).toBeNull();
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`]);
+
+    context.resolve({ docs: [] });
+    const replay = await pending;
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ id: sosId, status: "active" });
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`, `sosIdempotency/${key}`, `trappedSos/${sosId}`]);
+  });
+
+  it("keeps the early lookup cached and freshly reads a SOS that appeared after its negative cache", async () => {
+    const key = "fix13d-missing-sos";
+    const deviceId = "fix13d-missing-sos-device";
+    const sosId = "fix13d-original-sos-document";
+    const admissionId = createHash("sha256").update(deviceId).digest("hex");
+    const context = gate<{ docs: [] }>();
+    const contextStarted = gate<void>();
+    state.docs.set(`sosIdempotency/${key}`, { sosId, deviceId, createdAt: new Date().toISOString() });
+    state.readReports.mockImplementation(() => { contextStarted.resolve(); return context.promise; });
+
+    const pending = post({ deviceId, clientGeneratedId: key }).then((res) => res);
+    await contextStarted.promise;
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`, `trappedSos/${sosId}`]);
+
+    // Simulate another server instance committing after this process cached
+    // the missing SOS. Remote writes cannot invalidate this process's cache.
+    state.docs.set(`trappedSos/${sosId}`, { id: sosId, deviceId, status: "active" });
+    state.docs.set(`sosAdmissions/${admissionId}`, { acceptedAt: Date.now(), sosId });
+    expect(await docGet("trappedSos", sosId)).toBeNull();
+    expect(state.docReads).toEqual([`sosIdempotency/${key}`, `trappedSos/${sosId}`]);
+    context.resolve({ docs: [] });
+
+    const replay = await pending;
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ id: sosId, status: "active" });
+    expect(state.docReads).toEqual([
+      `sosIdempotency/${key}`,
+      `trappedSos/${sosId}`,
+      `sosIdempotency/${key}`,
+      `trappedSos/${sosId}`,
+    ]);
   });
 });
