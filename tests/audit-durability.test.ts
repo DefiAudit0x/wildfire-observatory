@@ -83,6 +83,46 @@ describe("S-M8: durable audit queue", () => {
     expect(state.docSetCalls.length).toBe(after);
   });
 
+  it("AUD-2: concurrent drains persist A once and retain failed B for retry", async () => {
+    state.docSetImpl.mockResolvedValue(false);
+    await logAdminAction("race.A");
+    await logAdminAction("race.B");
+    state.docSetCalls.length = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    state.docSetImpl.mockImplementation(async () => {
+      const action = state.docSetCalls.at(-1)?.data.action;
+      if (action === "race.A") { await gate; return true; }
+      return false;
+    });
+    const first = flushPendingAudit();
+    const second = flushPendingAudit();
+    release();
+    await Promise.all([first, second]);
+    const attempts = state.docSetCalls.map((call) => call.data.action);
+    state.docSetCalls.length = 0;
+    state.docSetImpl.mockResolvedValue(true);
+    expect(await flushPendingAudit()).toBe(1);
+    expect(state.docSetCalls.map((call) => call.data.action)).toEqual(["race.B"]);
+    expect(attempts).toEqual(["race.A", "race.B"]);
+    expect(await flushPendingAudit()).toBe(0);
+  });
+
+  it("AUD-2: a log joining a drain still persists its own new entry", async () => {
+    state.docSetImpl.mockResolvedValue(false);
+    await logAdminAction("joined.old");
+    state.docSetCalls.length = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    state.docSetImpl.mockImplementation(async () => { await gate; return true; });
+    const drain = flushPendingAudit();
+    const log = logAdminAction("joined.new");
+    release();
+    await Promise.all([drain, log]);
+    expect(state.docSetCalls.map((call) => call.data.action)).toEqual(["joined.old", "joined.new"]);
+    expect(await flushPendingAudit()).toBe(0);
+  });
+
   it("never throws — callers' .catch(() => {}) stay harmless", async () => {
     state.docSetImpl.mockRejectedValue(new Error("hard crash"));
     await expect(logAdminAction("test.hardcrash", {}, { ip: null })).resolves.toBeUndefined();

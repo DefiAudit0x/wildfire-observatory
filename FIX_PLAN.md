@@ -672,3 +672,48 @@ Re-watch on PR #137 (head 3a3bd13, ~09:30 CET) returned DO NOT MERGE with two in
 - Blocker 3 (parent finding) — 9 tests in `tests/components/operator-exports-authority.test.tsx` (Fix 6, ADM-1) failed on the merged tree: the 8b shared `csvCell` differed from Fix 6's local guard in two ways — it checked the formula trigger only at position 0 (no leading-whitespace handling, so `"  =1+1"` passed through) and it had no force-quote parameter (Fix 6 force-quoted the four text columns). The 8b note claiming identical behaviour on AdminPanel's data was wrong for these cases. Fix: the shared `csvCell` now takes `quoted = false`, checks the trigger after optional leading whitespace (`/^\s*[=+\-@\t\r]/`, keeping the ARC-M16 numeric exemption — pure numeric literals still pass through), and AdminPanel passes `quoted=true` for locationName, wilaya, description, reporterName. `reportsToCsv` calls it as `.map((v) => csvCell(v))` (the bare `.map(csvCell)` became a type error once the second parameter existed). A second, subtler failure was a test race the 8b identity feature introduced: the stubbed identity fetch returned `{}` for every URL, so if it resolved before the export click the merge wiped the prop's reporterName to `""`; the test's fetch stub now returns the malicious name only for the malicious report's own identity URL (id-matched after `decodeURIComponent`) and `{}` for the ordinary row — the value is the same through either order, so the test is deterministic (33/33 in 6 consecutive runs after 1–2 failures per run before).
 
 Files changed (7, +164/−12): `server/routes/notifications.ts` (+28/−2, optional `token` in the subscribe schema + the 403 gate in both verified branches), `src/utils/export.ts` (+15/−2, `quoted` param + whitespace-aware trigger), `src/components/AdminPanel.tsx` (+16/−2, per-column quoting in exportToCSV), `tests/notifications-subscribe-update.test.ts` (+79, 3 new 8e tests × 2 SDKs + token on the 8c tests), `tests/reports-admin-identity.test.ts` (+8/−1, agentId-less staff token + comment), `tests/components/operator-exports-authority.test.tsx` (+20/−1, identity-aware fetch stub + comment), `FIX_PLAN.md` (+10, this section). Tests: 6 new 8e tests (verified update with no token → 403, with the wrong token → 403, unverified re-subscribe with no token → verification flow, each in both SDKs). Verification: lint 0 diagnostics; build pass; affected 6 files / 69 passed; full server suite 713 passed (merged-tree baseline 707 + 6 new, 0 failed — the baseline itself had the 1 identity-test failure this fix closes); full React suite 864 passed (0 failed). Fail-without-fix proven: stashing only `server/routes/notifications.ts` fails exactly the 4 new rejection tests (6 passed); stashing only `src/utils/export.ts` + `src/components/AdminPanel.tsx` fails exactly the 9 operator-export neutralization tests (24 passed).
+## Fix 9 validation — AUD-2 / DB-1
+
+Base: `4b543b1257b29534dd0b50099a6e2e736d18e47b` (local main, PR #132). Created `fix/wildfire-9-audit-migration` directly from main, not the existing Fix 8 branch (`ca568e1`). Fetch succeeded; origin/main advanced to `5e579cb`, but the explicitly requested base remains `4b543b1`. No other fix branch is an ancestor. No dependencies installed; no other clone or worktree modified. No push, PR, or merge.
+
+### Changes
+
+- `server/routes/audit.ts`: one shared in-flight flush promise serializes queue recovery and lets concurrent callers join the drain. Retains stop-at-first-failure, the 500-entry newest-kept cap, and the 60-second sweeper. Remove only the entry actually persisted, so a concurrent cap eviction cannot cause removal of the next entry. A log joining a drain still persists its own entry afterwards.
+- `server/db.ts`: migrate legacy reports inside one Admin SDK transaction. Re-read the public row and abort without any writes if missing or if any stored field differs from the snapshot used to derive the migration. `isDeepStrictEqual` compares the complete document, covering status, severity, identity, images, and other overwritten fields; the report has no per-mutation version timestamp. Stage public/private/image writes together; Firestore's transaction read conflict handling protects changes between the re-read and commit. Keep catch-and-warn and retry on subsequent uncached reads. Confirmed the client SDK read path only scrubs fields and does not trigger a migration. Serializer, wire cache, moderation, and purge logic unchanged.
+- `tests/audit-durability.test.ts`: two new regressions use controllable persistence gates: concurrent [A,B] drain with B failing and later succeeding exactly once, plus a new log joining an older queued drain without duplicate persistence or deadlock.
+- `tests/report-migration-race.test.ts`: six new regressions with snapshot-capture hooks and staged transaction writes. Cover deletion, verification, resolution, severity correction, identity correction, and transaction failure. Assert no writes/shards on stale or failed migration; changed rows migrate on a fresh read while preserving changes; an untouched row migrates completely after failure recovery.
+- `tests/privacy-split.test.ts`: extend the existing fake transaction with `set`, required by transactional migration. Existing assertions unchanged.
+- `FIX_PLAN.md`: this evidence and handoff.
+
+### Fail-without-fix proof
+
+Kept all new tests and the compatible fake transaction in place, temporarily replaced ONLY `server/routes/audit.ts` and `server/db.ts` with exact `git show 4b543b1:<path>` bytes, then restored fixed bytes in a Python `finally` block. Ran the same command on both implementations:
+
+`npx vitest run --config vitest.server.config.ts tests/audit-durability.test.ts tests/report-migration-race.test.ts tests/privacy-split.test.ts`
+
+Unfixed: exit 1, **8 failed / 18 passed** (3 files: 2 failed, 1 passed). Fixed: exit 0, **26/26 passed** (3 files). Logs: `/tmp/fix9-baseline.log`, `/tmp/fix9-affected.log`. Per-regression evidence:
+
+| New regression | Exact unfixed failure | Fixed |
+| --- | --- | --- |
+| AUD-2 concurrent [A,B], B fails | Retry flush returns 0 instead of 1: B was lost; concurrent drain duplicated A | PASS: attempts [A,B], retry writes only B, subsequent flush empty |
+| AUD-2 log joins older drain | Attempts [joined.old, joined.old, joined.new], duplicating old entry | PASS: [joined.old, joined.new] |
+| DB-1 deleted after snapshot | Writes reportPrivate/legacy, reportImages/legacy, reports/legacy instead of no writes | PASS: no row or shards recreated |
+| DB-1 verified after snapshot | Same three unconditional writes | PASS: abort; next fresh migration retains verified |
+| DB-1 resolved after snapshot | Same three unconditional writes | PASS: abort; next fresh migration retains resolved |
+| DB-1 severity changed after snapshot | Same three unconditional writes | PASS: abort; next fresh migration retains critical severity |
+| DB-1 identity changed after snapshot | Same three unconditional writes | PASS: abort; next fresh migration retains corrected identity |
+| DB-1 transaction failure / untouched retry | Same three unconditional writes despite failed transaction backend | PASS: no partial writes, later untouched migration writes all three shards |
+
+### Validation
+
+- Affected suites: PASS, 3 files / 26 tests; includes all 8 new regressions and all 18 existing tests unchanged. Log `/tmp/fix9-affected.log`.
+- `npm run lint`: PASS, zero diagnostics (exit 0). Log `/tmp/fix9-lint.log`.
+- `npm run build`: PASS, production Vite/PWA and server bundles (exit 0). Existing Vite `__dirname` / future config loader warning only. Log `/tmp/fix9-build.log`.
+- `npm run test:server`: PASS, 68 files / 670 tests (exit 0). Log `/tmp/fix9-server.log`.
+- `npm run test:react -- --maxWorkers=2`: PASS, 74 files / 785 tests (exit 0). Log `/tmp/fix9-react.log`.
+- `npm run test:e2e`: attempted after verifying port 3000 free; exit 2 before Playwright: `Could not spawn java -version`. No Java/browser/dependency installation attempted. Log `/tmp/fix9-e2e.log`.
+- `git diff --check`: PASS.
+
+Deviations: none in functional scope. Tests use an in-memory staged transaction mock, not live Firestore; SDK contention/retry semantics are supplied by Firestore and are not integration-tested here. End-to-end verification is limited by missing Java. Sandbox approval checks delayed writes but all requested local edits and checks completed.
+
+Next: **Fix 10** — `ATM-2` (`server/atomic.ts`) and `FS-1` (`server/fs.ts`): invalidate server document and collection caches (triage rows 139–140).
