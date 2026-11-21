@@ -155,7 +155,17 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
     unitId = toUnitId(admin.unitId);
   }
   try {
-    const day = await docGet(rosterPath(unitId), date);
+    // Fix 15 (RSTR-5): docGet returns null both for a genuinely missing day
+    // and for a read failure, so the old code answered an outage with a
+    // successful empty unsaved roster — an operator saving that display
+    // after recovery would replace the real day. getFreshDocResult
+    // distinguishes the two: a failed read is a 503, never an empty roster.
+    const result = await getFreshDocResult(rosterPath(unitId), date);
+    if (result.status === "error") {
+      res.status(503).json({ error: "Database not available" });
+      return;
+    }
+    const day = result.status === "found" ? result.doc : null;
     res.json({ unitId, date, posts: day?.posts || [], saved: Boolean(day) });
   } catch (err) {
     logger.error({ err }, "Failed to read roster");

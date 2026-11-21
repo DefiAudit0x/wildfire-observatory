@@ -12,6 +12,8 @@ vi.mock("../server/fs.js", () => ({
   docDelete: async () => false,
 }));
 
+const rosterReadState = vi.hoisted(() => ({ mode: "missing" as "missing" | "error" | "found" }));
+
 vi.mock("../server/atomic.js", () => ({
   getFreshDoc: async (collection: string, id: string) => {
     if (collection !== "users") return null;
@@ -21,7 +23,13 @@ vi.mock("../server/atomic.js", () => ({
   // ARC-M08: canonicalizePersonnel now prefers getFreshDocResult — mirror the
   // same fixtures so both entry points stay covered.
   getFreshDocResult: async (collection: string, id: string) => {
-    if (collection !== "users") return { status: "missing" };
+    if (collection !== "users") {
+      // Fix 15: the roster GET now reads through getFreshDocResult, so the
+      // mock must be able to simulate a failed read and a found day too.
+      if (rosterReadState.mode === "error") return { status: "error" };
+      if (rosterReadState.mode === "found") return { status: "found", doc: { id, unitId: "unit-dz16", date: id, posts: [{ id: "p1", labelAr: "منصب", personnel: [] }] } };
+      return { status: "missing" };
+    }
     if (id === "unknown-agent") return { status: "missing" };
     return {
       status: "found",
@@ -43,6 +51,28 @@ describe("GET /api/roster/:date", () => {
   it("returns 401 without a token", async () => { const res = await supertest(createApp()).get("/api/roster/2026-08-07"); expect(res.status).toBe(401); });
   it("returns 400 for a malformed date", async () => { const res = await supertest(createApp()).get("/api/roster/07-08-2026").set("Authorization", `Bearer ${token("agent", "DZ16")}`); expect(res.status).toBe(400); });
   it("lets an agent read their unit's roster (empty when never saved)", async () => { const res = await supertest(createApp()).get("/api/roster/2026-08-07").set("Authorization", `Bearer ${token("agent", "DZ16")}`); expect(res.status).toBe(200); expect(res.body.unitId).toBe("unit-dz16"); expect(res.body.posts).toEqual([]); expect(res.body.saved).toBe(false); });
+  it("returns the saved roster when the day exists", async () => {
+    rosterReadState.mode = "found";
+    try {
+      const res = await supertest(createApp()).get("/api/roster/2026-08-07").set("Authorization", `Bearer ${token("agent", "DZ16")}`);
+      expect(res.status).toBe(200);
+      expect(res.body.saved).toBe(true);
+      expect(res.body.posts).toEqual([{ id: "p1", labelAr: "منصب", personnel: [] }]);
+    } finally {
+      rosterReadState.mode = "missing";
+    }
+  });
+  it("returns 503 when the roster read fails instead of an empty unsaved roster", async () => {
+    rosterReadState.mode = "error";
+    try {
+      const res = await supertest(createApp()).get("/api/roster/2026-08-07").set("Authorization", `Bearer ${token("agent", "DZ16")}`);
+      expect(res.status).toBe(503);
+      expect(res.body.saved).toBeUndefined();
+      expect(res.body.posts).toBeUndefined();
+    } finally {
+      rosterReadState.mode = "missing";
+    }
+  });
   it("lets a superadmin read a specific unit via ?unit=", async () => { const res = await supertest(createApp()).get("/api/roster/2026-08-07?unit=ALG").set("Authorization", `Bearer ${token("superadmin")}`); expect(res.status).toBe(200); expect(res.body.unitId).toBe("unit-alg"); });
 });
 
