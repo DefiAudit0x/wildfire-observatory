@@ -65,13 +65,13 @@ const memorySos: any[] = [];
 // still replays instead of duplicating.
 const SOS_IDEMPOTENCY_COLLECTION = "sosIdempotency";
 
-async function lookupSosByIdempotencyKey(clientGeneratedId: string): Promise<any | null> {
+async function lookupSosByIdempotencyKey(clientGeneratedId: string, fresh = false): Promise<any | null> {
   const mem = memorySos.find((s: any) => s.clientGeneratedId === clientGeneratedId);
   if (mem) return mem;
-  const key = await docGet(SOS_IDEMPOTENCY_COLLECTION, clientGeneratedId);
+  const key = await docGet(SOS_IDEMPOTENCY_COLLECTION, clientGeneratedId, fresh);
   const sosId = key?.sosId;
   if (typeof sosId !== "string" || !sosId) return null;
-  return await docGet("trappedSos", sosId);
+  return await docGet("trappedSos", sosId, fresh);
 }
 
 export interface SosSummary {
@@ -490,6 +490,23 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
       : undefined
   );
   if (admission === "duplicate") {
+    // A concurrent same-key submission may have committed after the early lookup.
+    if (data.clientGeneratedId) {
+      try {
+        const replay = await lookupSosByIdempotencyKey(data.clientGeneratedId, true);
+        if (replay) {
+          if (replay.deviceId !== data.deviceId) {
+            res.status(409).json({ error: "SOS retry key belongs to a different device" });
+            return;
+          }
+          logger.info({ sosId: replay.id }, "SOS replayed by clientGeneratedId");
+          res.json({ id: replay.id, status: replay.status });
+          return;
+        }
+      } catch (err) {
+        logger.error({ err }, "SOS idempotency lookup failed; returning duplicate");
+      }
+    }
     res.status(409).json({ error: "An SOS from this device was already received recently" });
     return;
   }

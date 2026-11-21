@@ -1034,3 +1034,77 @@ Lint and production build both passed (`/tmp/fix13b-lint.log`, `/tmp/fix13b-buil
 The full server suite passed **850/850** across 81 files and the full React suite passed **1013/1013** across 90 files (`/tmp/fix13b-server.log`, `/tmp/fix13b-react.log`). E2E exited 2 before Playwright because Firebase could not spawn `java -version` (`/tmp/fix13b-e2e.log`). Port 3000 was clear before the attempt. No live Firestore verification was possible.
 
 The work stays local. PR #142 needs a fresh CI and review watch before merge. Reconcile FIX_PLAN only if main has advanced past `251d8ef`.
+
+## Fix 13c — replay stored SOS after duplicate admission
+
+Local branch: `fix/wildfire-13c-sos-duplicate-replay`, based directly on main **eb312d8676d070c8bf6f932ba702fea26f7d1f28** (merged PR #142). `git fetch origin main` returned that exact hash. The requested branch already existed, was checked out, clean, and pointed at that exact base; resumed it rather than recreating or using the Fix 13 branch. No dependencies installed. No push, PR creation, or merge; no changes to the owner's clone or frozen dissection evidence.
+
+### Scope and route-contract evidence
+
+CodeRabbit comment **4653251361**, review **6006129797**, identifies the missed replay after two requests both pass the early lookup. The schema comment at baseline `server/routes/sos.ts:38–39` promises that the same key and logical SOS replay the FIRST stored SOS. The early path at baseline lines 386–403 implements the same-device check, replay log, and `{id, status}` response. However, admission at lines 479–494 can detect the first request's committed device window and return 409 without checking the key again.
+
+- `server/routes/sos.ts`: add **17 lines**, entirely inside `admission === "duplicate"`. When a key is supplied, call the existing `lookupSosByIdempotencyKey`; replay the original same-device SOS with the exact early-path log and response. Foreign-device keys return the same ownership-error 409 as the early path. Missing/unresolvable keys retain the original duplicate 409. Catch and log thrown lookup errors, then return the original duplicate 409. Early replay, the three-second context race, and admission itself are unchanged.
+- `tests/sos-resolution-availability.test.ts`: add **three tests**, extending the existing Firestore fake with a handle-acquisition failure switch. The Express router, replay lookup, `docGet`, report-context reader, and `createSosWithAdmission` remain real. No route/helper is replaced by a test mock and no real database is used. Existing assertions remain intact; no new `any` types.
+- `FIX_PLAN.md`: append this Fix 13c evidence and verification record to main's existing file.
+
+### Regression and fail-without-fix evidence
+
+Ran the unchanged new tests with **only** `server/routes/sos.ts` temporarily replaced by `git show eb312d8676d070c8bf6f932ba702fea26f7d1f28:server/routes/sos.ts`. A Python `finally` restored the exact saved fixed bytes and verified byte equality. Command:
+
+`npm run test:server -- tests/sos-resolution-availability.test.ts -t 'Fix 13c' --reporter=verbose`
+
+Baseline: **3 failed, 8 skipped**, exit **1**, `/tmp/fix13c-unfixed.log`. With the fix: **3 passed, 8 skipped**, exit **0**, `/tmp/fix13c-fixed.log`; the later affected-suite run verifies the final test bytes after removal of redundant cache invalidations.
+
+| New test | Failure on unfixed `eb312d8` | With Fix 13c |
+| --- | --- | --- |
+| Both early lookups miss; first commits before second admission | Second response expected 200, received 409 | Two real POSTs wait on independently gated Firestore context reads. Before release, no transaction or documents exist. First commits SOS/admission/key; second admission detects duplicate, then returns exactly the first `{id, status}` and replay log. Exactly two admission transactions and one stored SOS. |
+| Foreign-device key becomes resolvable before duplicate admission | Expected ownership error, received generic duplicate error (both 409) | Early lookup finds a dangling ledger entry. A real helper creates its other-device SOS during context, invalidating the cached missing SOS. Duplicate branch resolves the durable record and returns `SOS retry key belongs to a different device`, status 409. |
+| Duplicate lookup throws; unresolved-key safety control | Expected duplicate-branch lookup-failure log, but zero error log calls; baseline still returned 409 | Firestore fake throws during handle acquisition only after the real admission read, with the real document cache invalidated to force the failing lookup. Route catches/logs the exact error and responds 409 within the request's 4500 ms deadline. An unresolved-key duplicate also returns the original 409. |
+
+All **three new tests fail** against the original route. The no-key control inside the race test and unresolved-key control inside the failure test verify preserved behavior with the fix; they are **not claimed as independently failing regressions**. The third test's baseline failure proves the second lookup/catch is exercised, rather than treating an unchanged 409 alone as evidence of the catch. No-key duplicates are additionally covered by the unchanged `tests/sos.test.ts` case. The main race deliberately exercises the existing memory-first lookup after the first real request commits; the ownership test exercises the durable lookup. No live Firestore execution is claimed.
+
+### Verification
+
+- Affected suites (`sos-resolution-availability`, `atomicity`, `sos`): **85/85 passed**, three files, exit 0 (`/tmp/fix13c-affected.log`).
+- `npm run lint`: passed, exit 0 (`/tmp/fix13c-lint.log`).
+- `npm run build`: passed, exit 0; production Vite assets, PWA output, and bundled server (`/tmp/fix13c-build.log`).
+- Full `npm run test:server`: **853/853 passed**, 81 files, exit 0 (`/tmp/fix13c-server.log`).
+- Full `npm run test:react`: **1016/1016 passed**, 90 files, exit 0 (`/tmp/fix13c-react.log`).
+- `npm run test:e2e`: port 3000 confirmed free using `/proc/net/tcp{,6}` immediately before the attempt. **Blocked before Playwright**, exit 2: Firebase could not spawn `java -version`; Java is absent (`/tmp/fix13c-e2e.log`). No dependencies installed or unrelated processes stopped.
+- `git diff --check`: passed; final review confirms only the route, its existing real-helper test file, and this plan changed. Pre-commit hook also runs lint.
+
+Deviations: resumed the already-existing clean requested branch at the exact fetched base; the sandbox required scoped approval for work-clone fetch/writes because it lies outside the default writable roots. E2E remains environment-blocked by missing Java. No implementation scope expansion.
+
+Remaining for **PR #143**: reviewer verification, **push, PR creation, CI watch, and merge**. This round commits locally only.
+
+## Fix 13d — fresh duplicate-path SOS idempotency lookup
+
+Continued on `fix/wildfire-13c-sos-duplicate-replay` at the fetched authoritative head **d61d2741c806bf3af4da66c26b0c271621231356**. The branch was fetched and checked out at that exact commit before editing. No dependencies were installed, and no changes were made to the owner's clone or frozen dissection evidence.
+
+### Targeted changes
+
+- `server/routes/sos.ts`: thread `fresh = false` through `lookupSosByIdempotencyKey` and pass it to both `docGet` calls (idempotency key and stored SOS). The early replay path keeps the default cached read and the memory-first check. Only the post-admission duplicate branch passes `true`, bypassing cached negative results for both documents.
+- `tests/sos-resolution-availability.test.ts`: extend the Firestore fake to record Admin document reads. The tests invoke the actual `docGet` and route functions, so `docGet`'s production 60-second negative cache is exercised rather than reimplemented in a fake. Add two regressions: a missing key is cached before a separate admission commit writes the first SOS and key; and an existing key's missing SOS document is cached before another instance makes the SOS and admission visible. Both then hit real duplicate admission and assert the original `{id, status}` replay. Read counts and repeated default `docGet` calls prove cached misses are served without a Firestore read, while duplicate-path reads reach Firestore again. Existing Fix 13c race, ownership, and failure cases remain unchanged.
+- `FIX_PLAN.md`: record the fix, cache behavior, regression proof, and verification.
+
+### Fail-without-fix evidence
+
+With the new tests unchanged, temporarily replaced **only** `server/routes/sos.ts` with `git show HEAD:server/routes/sos.ts`, ran each regression separately, then restored and byte-verified the fixed source in a Python `finally` block. Both test commands exited **1** at `d61d274`; each expected a 200 replay and received the generic 409:
+
+| Regression | Result on unfixed `d61d274` | Result with Fix 13d |
+| --- | --- | --- |
+| Missing key cached before another admission commits the original SOS and ledger record | `expected 409 to be 200`; `/tmp/fix13d-unfixed-key.log` | 200 with the exact original `{id, status}`; passes |
+| Existing key resolves, but its missing SOS document is cached before another instance commits it | `expected 409 to be 200`; `/tmp/fix13d-unfixed-sos.log` | 200 with the exact original `{id, status}`; passes |
+
+The fixed route's targeted suite passed **13/13**, including both regressions and all existing 13c cases. The affected suites (`sos-resolution-availability`, `atomicity`, and `sos`) passed **87/87**. The fake only substitutes Firestore/network behavior; the Express route, admission helper, idempotency lookup, and `docGet` cache remain real. No real Firestore database was used.
+
+### Verification
+
+- `npm run lint`: passed, no TypeScript diagnostics.
+- `npm run build`: passed; Vite production assets and bundled server generated.
+- Full `npm run test:server`: **855/855 passed**, 81 files (`/tmp/fix13d-test-server.log`).
+- Full `npm run test:react`: an initial parallel run timed out one unrelated safe-zones stale-cache test (**1,017 passed, 1 failed**). The case passed alone (**1/1**), and a full retry with `--maxWorkers=2` passed **1,018/1,018**, 90 files.
+- `npm run test:e2e`: port 3000 was clear; Firebase emulator startup exited **2** before Playwright because Java is unavailable (`Could not spawn java -version`).
+- `git diff --check`: passed before commit.
+
+No scope deviations. All work remains local; no push, PR creation, or merge performed. Remaining for **PR #143**: push this commit, re-watch CI/review, and merge.
