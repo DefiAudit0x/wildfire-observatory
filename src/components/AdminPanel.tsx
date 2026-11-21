@@ -9,6 +9,7 @@ import ConfirmDialog from "./ui/ConfirmDialog";
 import ToastStack from "./ui/ToastStack";
 import useToasts from "../hooks/useToasts";
 import { apiFetch } from "../utils/adminApi";
+import { csvCell } from "../utils/export";
 import { useReportModeration } from "../hooks/useReportModeration";
 
 interface ConfirmState {
@@ -28,6 +29,9 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [password, setPassword] = useState("");
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [reporterIdentities, setReporterIdentities] = useState<Record<string, { reporterName?: string; reporterPhone?: string }>>({});
+  // Fix 8b: tracks the in-flight identity requests so the CSV export can
+  // wait for reporter names instead of writing "" for them.
+  const [reporterIdentitiesLoading, setReporterIdentitiesLoading] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -63,10 +67,12 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   useEffect(() => {
     if (!isAuthenticated) {
       setReporterIdentities({});
+      setReporterIdentitiesLoading(false);
       return;
     }
 
     let cancelled = false;
+    setReporterIdentitiesLoading(true);
     void Promise.all(reports.map(async (report) => {
       try {
         const res = await apiFetch(`/api/reports/${encodeURIComponent(report.id)}/identity`, "GET");
@@ -86,7 +92,9 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
       } catch {
         // A missing identity shard leaves the existing anonymous fallback intact.
       }
-    }));
+    })).finally(() => {
+      if (!cancelled) setReporterIdentitiesLoading(false);
+    });
 
     return () => {
       cancelled = true;
@@ -259,19 +267,16 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   const resolvedReports = adminReports.filter(r => r.status === "resolved");
 
   const exportToCSV = () => {
+    // Fix 8b: every column goes through the shared csvCell guard (the same
+    // one reportsToCsv uses) so citizen-supplied text — reporter name,
+    // location, wilaya, description — cannot inject spreadsheet formulas.
+    // csvCell also handles the quote escaping the builder used to do by hand.
     const rows = [
       ["ID", "الموقع", "الولاية", "الحالة", "الخطورة", "الوصف", "المُبلغ", "الوقت"].join(","),
       ...adminReports.map((r) =>
-        [
-          r.id,
-          `"${(r.locationName || "").replace(/"/g, '""')}"`,
-          `"${(r.wilaya || "").replace(/"/g, '""')}"`,
-          r.status,
-          r.severity,
-          `"${(r.description || "").replace(/"/g, '""')}"`,
-          `"${(r.reporterName || "").replace(/"/g, '""')}"`,
-          r.timestamp,
-        ].join(",")
+        [r.id, r.locationName || "", r.wilaya || "", r.status, r.severity, r.description || "", r.reporterName || "", r.timestamp]
+          .map(csvCell)
+          .join(",")
       ),
     ].join("\n");
 
@@ -431,7 +436,8 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
         </select>
         <button
           onClick={exportToCSV}
-          className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+          disabled={reporterIdentitiesLoading}
+          className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Download className="h-4 w-4" />
           <span>{isArabic ? "تصدير CSV" : "Exporter CSV"}</span>
