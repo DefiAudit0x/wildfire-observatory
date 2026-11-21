@@ -98,6 +98,16 @@ class MeshReputation {
         return record.reputation > REPUTATION_MIN / 2
     }
 
+    /** Sight an initiating peer before checking admission so first contact is not rejected. */
+    fun sightAndCheckAdmission(publicKey: String, now: Long): Boolean {
+        sight(publicKey, now)
+        return isAdmitted(publicKey)
+    }
+
+    /** Unknown endpoints retain existing handling; known keys must remain admitted. */
+    fun isInboundAdmitted(publicKey: String?): Boolean =
+        publicKey == null || isAdmitted(publicKey)
+
     /** Current score for a key; [REPUTATION_INITIAL] when the key is unknown (original getReputation fallback). */
     fun score(publicKey: String): Int =
         deviceRecords[publicKey]?.reputation ?: REPUTATION_INITIAL

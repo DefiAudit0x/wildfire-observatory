@@ -10,6 +10,7 @@ import { docSet, docUpdate, docGet } from "../fs.js";
 import { sendVerificationEmail } from "../email.js";
 import { boundDeviceId, issueDeviceCookie, ownsDevice } from "../deviceBinding.js";
 import { secretFingerprint } from "../crypto.js";
+import { WILAYA_NAMES } from "../geo.js";
 
 const router = Router();
 const unsubscribeSchema = z.object({ email: z.string().email().max(200), token: z.string().length(64) });
@@ -308,8 +309,31 @@ const subscribeSchema = z.object({
   email: z.string().email(),
   // L3 fix: bound the array and its members — an unbounded wilayas array let
   // a subscriber document balloon toward the 1 MiB Firestore doc limit.
-  wilayas: z.array(z.string().max(100)).max(20).optional(),
+  // Fix 8b: every entry must be a canonical region identifier (the exact
+  // WILAYA_BOUNDS labels report creation accepts). The alert filter compares
+  // by exact equality with report.wilaya, so a saved "Annaba" could never
+  // match "الجزائر - عنابة (Algérie - Annaba)" and the subscriber would
+  // silently receive zero alerts for that region. Unknown values are
+  // rejected with 400 instead of being stored.
+  wilayas: z
+    .array(z.string().max(100))
+    .max(20)
+    .optional()
+    .refine((list) => !list || list.every((w) => WILAYA_NAMES.includes(w)), {
+      message: "Unknown wilaya — use a canonical region identifier",
+    }),
   minSeverity: z.enum(["low", "medium", "high", "critical"]).optional(),
+  // Fix 8e: mailbox-control proof for updating a VERIFIED subscription
+  // (CodeRabbit review 6002033438, CWE-862). The pre-8e repair path let
+  // anyone who knew a verified subscriber's email rewrite their alert
+  // preferences — e.g. minSeverity "critical" to suppress expected alerts.
+  // The proof is the stored unsubscribeToken: the same 64-hex token the
+  // /unsubscribe endpoint already checks, delivered to the mailbox in the
+  // verification email and in every alert email's unsubscribe link. It is
+  // required only on the verified-update path; new and unverified
+  // subscriptions still prove mailbox control through the verification
+  // email, so they take no token.
+  token: z.string().length(64).optional(),
 });
 
 function generateVerificationToken(): string {
@@ -323,7 +347,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
     return;
   }
 
-  const { email, wilayas, minSeverity } = parsed.data;
+  const { email, wilayas, minSeverity, token } = parsed.data;
   const verificationToken = generateVerificationToken();
   const unsubscribeToken = generateVerificationToken();
   const verificationExpiresAt = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS).toISOString();
@@ -342,7 +366,27 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const existingDoc = await ref.get();
       if (existingDoc.exists) {
         if (existingDoc.data()?.verified === true) {
-          res.json({ success: true, message: "Subscription already verified." });
+          // Fix 8c: a verified subscriber re-submitting preferences must be
+          // able to repair them. The pre-8c early return ("Subscription
+          // already verified.") left legacy stored aliases unfixable
+          // (CodeRabbit review 6001797406). The email is already verified,
+          // so no new token or verification email is issued and `verified`
+          // stays true — only the schema-validated preferences change.
+          // Fix 8e: the caller must first prove mailbox control — the
+          // stored unsubscribeToken, the same check as the /unsubscribe
+          // endpoint (CodeRabbit review 6002033438, CWE-862). Without it,
+          // anyone who knew the email could rewrite the preferences.
+          if (token !== existingDoc.data()?.unsubscribeToken) {
+            res.status(403).json({ error: "Invalid unsubscribe token" });
+            return;
+          }
+          await ref.update({
+            email,
+            wilayas: wilayas || [],
+            minSeverity: minSeverity || "medium",
+            updatedAt: new Date().toISOString(),
+          });
+          res.json({ success: true, message: "Subscription preferences updated." });
           return;
         }
         await ref.update({
@@ -369,7 +413,22 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       const existingDoc = await getDoc(ref);
       if (existingDoc.exists()) {
         if (existingDoc.data()?.verified === true) {
-          res.json({ success: true, message: "Subscription already verified." });
+          // Fix 8c: same repair path as the Admin SDK branch above — a
+          // verified subscriber may update preferences without re-verifying.
+          // Fix 8e: same mailbox-control proof as the Admin SDK branch —
+          // the stored unsubscribeToken (CodeRabbit review 6002033438,
+          // CWE-862).
+          if (token !== existingDoc.data()?.unsubscribeToken) {
+            res.status(403).json({ error: "Invalid unsubscribe token" });
+            return;
+          }
+          await updateDoc(ref, {
+            email,
+            wilayas: wilayas || [],
+            minSeverity: minSeverity || "medium",
+            updatedAt: new Date().toISOString(),
+          });
+          res.json({ success: true, message: "Subscription preferences updated." });
           return;
         }
         await updateDoc(ref, {

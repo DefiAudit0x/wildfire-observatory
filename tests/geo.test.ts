@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getHaversineDistance, determineWilayaByCoords, runClustering, wilayaContainsCoords } from "../server/geo.js";
+import { getHaversineDistance, determineWilayaByCoords, runClustering, wilayaContainsCoords, canonicalizeWilaya, WILAYA_NAMES } from "../server/geo.js";
 import type { Report } from "../src/types";
 
 describe("getHaversineDistance", () => {
@@ -104,5 +104,40 @@ describe("v2.15.0: overlapping-rectangle disambiguation", () => {
   it("still resolves unambiguous wilayas correctly", () => {
     expect(determineWilayaByCoords(36.95, 7.7)).toContain("عنابة"); // Annaba only
     expect(determineWilayaByCoords(36.95, 6.4)).toContain("سكيكدة"); // Skikda only (outside Jijel lat cap)
+  });
+});
+
+describe("canonicalizeWilaya (Fix 8c — legacy stored region aliases)", () => {
+  const ANNABA = "الجزائر - عنابة (Algérie - Annaba)";
+
+  it("returns a canonical label unchanged", () => {
+    expect(canonicalizeWilaya(ANNABA)).toBe(ANNABA);
+  });
+
+  it("maps a French region name to its canonical label", () => {
+    expect(canonicalizeWilaya("Annaba")).toBe(ANNABA);
+    expect(canonicalizeWilaya("annaba")).toBe(ANNABA);
+    expect(canonicalizeWilaya("  Annaba  ")).toBe(ANNABA);
+  });
+
+  it("maps an Arabic region name to its canonical label", () => {
+    expect(canonicalizeWilaya("عنابة")).toBe(ANNABA);
+  });
+
+  it("maps a country-region side to its canonical label", () => {
+    expect(canonicalizeWilaya("Algérie - Annaba")).toBe(ANNABA);
+    expect(canonicalizeWilaya("الجزائر - عنابة")).toBe(ANNABA);
+  });
+
+  it("maps every canonical label's regions back to itself", () => {
+    for (const name of WILAYA_NAMES) {
+      expect(canonicalizeWilaya(name)).toBe(name);
+    }
+  });
+
+  it("returns an unrecognizable alias unchanged instead of guessing", () => {
+    expect(canonicalizeWilaya("Atlantis")).toBe("Atlantis");
+    expect(canonicalizeWilaya("Algiers")).toBe("Algiers");
+    expect(canonicalizeWilaya("")).toBe("");
   });
 });

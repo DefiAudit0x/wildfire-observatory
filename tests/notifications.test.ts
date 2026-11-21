@@ -57,6 +57,29 @@ describe("notification unsubscribe contract", () => {
   });
 });
 
+describe("notification subscribe contract (Fix 8b — canonical wilayas)", () => {
+  it("rejects a subscription with a non-canonical wilaya", async () => {
+    // "Annaba" is not a canonical region identifier: report creation stores
+    // "الجزائر - عنابة (Algérie - Annaba)", so saving "Annaba" could never
+    // match a report and the subscriber would silently receive nothing.
+    const res = await supertest(createApp())
+      .post("/api/notifications/subscribe")
+      .send({ email: "citizen@example.com", wilayas: ["Annaba"], minSeverity: "high" });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts a subscription with canonical wilaya labels", async () => {
+    // Validation passes, so the request reaches the database layer — with no
+    // database in this environment that answers 503, not 400.
+    const res = await supertest(createApp())
+      .post("/api/notifications/subscribe")
+      .send({ email: "citizen@example.com", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "high" });
+
+    expect(res.status).toBe(503);
+  });
+});
+
 describe("v2.15.0 — device enrollment contract (no implicit first-claim binding)", () => {
   const DEVICE = "web_0123456789abcdef";
 
