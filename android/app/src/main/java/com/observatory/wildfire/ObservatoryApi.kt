@@ -1,5 +1,6 @@
 package com.observatory.wildfire
 
+import java.io.InputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
@@ -13,7 +14,10 @@ import java.nio.charset.StandardCharsets
  *  - 10s connect/read timeouts (a Render cold start must never hang the UI);
  *  - instanceFollowRedirects = FALSE — an allow-listed host's 30x must never
  *    carry our JSON to another host (F8/S2 doctrine);
- *  - bounded 32KB reads — every endpoint the app calls returns bounded JSON;
+ *  - bounded 1 MiB reads — a response larger than the cap is a transport
+ *    failure, never a truncated success (Fix 17, NAPI-1: the old 32 KB cap
+ *    silently truncated valid reports/satellite lists, and the truncated
+ *    JSON then wiped last-good data as an empty parse);
  *  - a descriptive User-Agent (Render logs + Nominatim policy both want one).
  *
  * Transport failures return a null result — callers decide queue-vs-error;
@@ -37,7 +41,7 @@ class ObservatoryApi(private val baseUrl: String) {
         // directly, so it can NEVER drift from the release train again (the
         // 2.17.0 pin survived one train too long because of that manual step).
         val USER_AGENT = "WildfireObservatory-Android/${BuildConfig.VERSION_NAME}"
-        private const val MAX_RESPONSE_BYTES = 32 * 1024
+        internal const val MAX_RESPONSE_BYTES = 1 * 1024 * 1024
         private const val CONNECT_TIMEOUT_MS = 10_000
         private const val READ_TIMEOUT_MS = 10_000
         const val PRINCIPAL_COOKIE_NAME = "public_principal"
@@ -165,7 +169,10 @@ class ObservatoryApi(private val baseUrl: String) {
                 }
             }
             val status = http.responseCode
-            val body = readBody(http, status)
+            // Fix 17 (NAPI-1): readBody returns null when a 2xx body could
+            // not be read completely (overflow or stream error) — that is
+            // a transport failure, never a truncated success.
+            val body = readBody(http, status) ?: return Result.TransportFailure
             if (status in 200..299) {
                 // Capture Set-Cookie (case-insensitive per HTTP spec) so the
                 // caller can persist the principal cookie — identity for the
@@ -183,12 +190,36 @@ class ObservatoryApi(private val baseUrl: String) {
         }
     }
 
-    private fun readBody(http: HttpURLConnection, status: Int): String {
-        val stream = try {
-            if (status in 200..299) http.inputStream else (http.errorStream ?: return "")
+    /**
+     * Fix 17 (NAPI-1): bounded body read. Returns the full body decoded
+     * as UTF-8, or null when the body exceeds [maxBytes] or the stream
+     * fails mid-read. The buffer holds maxBytes + 1 bytes; the extra byte
+     * is the overflow detector — a body of exactly maxBytes bytes decodes
+     * fully, and a truncated body is never decoded at all (so a multi-byte
+     * character can never be split). Pure over the stream; JVM-testable.
+     */
+    internal fun readBoundedBody(stream: InputStream, maxBytes: Int = MAX_RESPONSE_BYTES): String? {
+        return try {
+            val buffer = ByteArray(maxBytes + 1)
+            var offset = 0
+            while (offset < buffer.size) {
+                val read = stream.read(buffer, offset, buffer.size - offset)
+                if (read < 0) break
+                offset += read
+            }
+            if (offset > maxBytes) null else String(buffer, 0, offset, StandardCharsets.UTF_8)
         } catch (e: Exception) {
-            return ""
+            null
         }
+    }
+
+    /**
+     * Error bodies keep the pre-Fix-17 behaviour: truncated at the cap,
+     * "" on failure. The status itself was read successfully, and turning
+     * an unreadable error body into a transport failure would flip a
+     * known 4xx into the retryable path.
+     */
+    private fun readErrorBody(stream: InputStream): String {
         return try {
             val buffer = ByteArray(MAX_RESPONSE_BYTES + 1)
             var offset = 0
@@ -200,6 +231,22 @@ class ObservatoryApi(private val baseUrl: String) {
             String(buffer, 0, minOf(offset, MAX_RESPONSE_BYTES), StandardCharsets.UTF_8)
         } catch (e: Exception) {
             ""
+        }
+    }
+
+    /**
+     * Returns null ONLY for a 2xx response whose body could not be read
+     * completely (overflow or stream error) — the caller maps that to
+     * TransportFailure. Non-2xx bodies never return null.
+     */
+    private fun readBody(http: HttpURLConnection, status: Int): String? {
+        val stream = try {
+            if (status in 200..299) http.inputStream else (http.errorStream ?: return "")
+        } catch (e: Exception) {
+            return if (status in 200..299) null else ""
+        }
+        return try {
+            if (status in 200..299) readBoundedBody(stream) else readErrorBody(stream)
         } finally {
             try {
                 stream.close()
