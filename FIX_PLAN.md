@@ -1250,3 +1250,35 @@ Fixes the follow-up Major from PR #146's re-watch on f121e80: the old Major 4654
 - `git diff --check`: passed.
 
 Deviations: the Xingchi gateway's `/v1/responses` endpoint was still down (sustained 503 since ~18:10 CET), so the parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b/15/15b) from CodeRabbit's verified finding and the component code. No scope expansion. Only local commit is authorized; remaining for **PR #146**: reviewer verification, push of the additional commit, CI re-watch, merge.
+
+## Fix 16 — correct native mesh delivery and SOS encoding (NSVC-1 + NSVC-5, both Major)
+
+Fixes NSVC-1 (report line 1500) and NSVC-5 (report line 1505), both in the native mesh path.
+
+NSVC-1: locally queued plaintext is encrypted separately for each connected peer (send loop), but a receiving peer B stored the received ciphertext/signature as a relay with `needsEncryption` left false and re-emitted that ciphertext verbatim to C. C holds a different private key, so decrypt returns null and the frame is skipped — A→B→C could never deliver A's report text to C, even though B decrypted it successfully. Hop allowance only moved bytes addressed to B.
+
+NSVC-5: `AppRepository.broadcastMeshIntel` selected wire type `echo` for kind `sos`, and `sendSos` uses that path before HTTP. MeshService encrypts EVERY locally queued type with AES-GCM, including echo — but MeshInbound treats echo as plaintext base64 and bypasses decryption, so `notifyListeners` received raw ciphertext decoded as UTF-8 ("encrypted garbage"). AppRepository could not parse that as JSON intel and never admitted the SOS coordinates. This contradicted MeshInbound's comment that no legitimate caller emits echo.
+
+### The fix
+
+NSVC-1 — re-encrypt on relay (`MeshService.kt`, `MeshQueue.kt`):
+- `MeshQueue` (companion) gained a pure, JVM-tested relay policy: `RelayMode { VERBATIM, REENCRYPT, NONE }` + `relayMode(type, decrypted, hopsLeft)`. `hopsLeft <= 0` → NONE; `echo` → VERBATIM (plaintext by design, every hop reads it); a decrypted non-echo frame → REENCRYPT; an undecryptable frame → VERBATIM (the intended recipient may be downstream).
+- `handleIncomingMessage` now dispatches on that policy instead of always relaying verbatim, still BEFORE the listener notify (audit B1 order preserved) and still under the same queue bound. The verbatim construction moved verbatim into `enqueueVerbatimRelay`.
+- `enqueueReencryptedRelay(payload, plaintext)` mirrors `broadcastMessage` exactly: one snapshot for the PoW prefix, the origin identity and the eventual encryption; a fresh PoW solved for the new id (difficulty 8, cheap); the same type and coordinates; `hopCount = 0`; one hop consumed (`hopsLeft - 1`); `needsEncryption = true` with the snapshot attached, so the send loop encrypts it separately for each of our peers. The re-encrypted copy is a fresh origin frame under our own key — the origin's signature does not (and cannot) survive a re-encryption, because the ciphertext it covers is replaced.
+- Fallbacks preserve today's behavior exactly: an oversized plaintext (> 256 KB, which `broadcastMessage` would reject at queue time) falls back to the verbatim relay; a PoW-budget exhaustion or any exception while building the copy falls back to the verbatim relay. Exactly one copy is admitted per frame — never both.
+- Scope note: the re-encrypted copy's frame timestamp is set at send time by `encryptForPeerWithSnapshot` (like every local message), so content can keep gossiping hop by hop while it keeps moving; the hop budget (`MAX_HOPS`), not the clock, bounds its spread. The verbatim relay keeps the origin timestamp. A frame whose bytes are not valid UTF-8 re-queues with the same replacement characters the UI path already produces.
+
+NSVC-5 — SOS rides as `report` (`AppRepository.kt`):
+- `broadcastMeshIntel` now always sends `"report"` instead of `"echo"` for kind `sos`. SOS is JSON intel like any report: receivers decrypt it through the normal path, `onMeshPlaintext` parses the JSON, and the coordinates are admitted to `meshIntel`. No legitimate caller emits echo anymore; the wire type stays accepted on the receive path for backward compatibility with older builds. SOS stays E2EE (its coordinates are sensitive emergency data) — the alternative of sending echo as true plaintext would have exposed them to any nearby sniffer.
+
+### Verification
+
+- `npm run lint`: 0 diagnostics.
+- `npm run build`: pass.
+- Full `npm run test:server`: **875/875 passed**.
+- Full `npm run test:react`: **1042/1042 passed**.
+- `git diff --check`: passed.
+- New tests `MeshQueueTest` (4 cases pinning the relay-mode matrix: decrypted report → REENCRYPT, echo even when decrypted → VERBATIM, undecryptable report → VERBATIM, no hops left → NONE). **Kotlin proof is CI-only**: this VM has no Java/Gradle/Android SDK/kotlinc (same as Fix 7), so the new unit tests and the Android build are verified by the PR's CI checks, not locally. There is no local fail-without-fix run for the Kotlin tests for the same reason; the policy function is pure and pinned, and the service wiring (helpers, PoW, snapshot, hop accounting) was verified by reading against `broadcastMessage` / `sendToTarget` / `MeshInbound.evaluate` field by field.
+- NSVC-5's one-line type change is not JVM-testable (`AppRepository` needs an Android `Context` and there is no `AppRepositoryTest` harness); its correctness rests on the read-through: `broadcastMessage` accepts `"report"`, the send loop encrypts report frames, receivers decrypt them in `MeshInbound`, and `onMeshPlaintext` parses the JSON and admits coordinates — all pre-existing, covered paths. CI build + existing Android tests are the gate.
+
+Deviations: the Xingchi gateway's `/v1/responses` endpoint was still down (sustained 503 since ~18:10 CET 2026-11-21, ~26 hours by this round), so Sol never started; the user explicitly instructed at ~20:15 CET 2026-11-22 to continue without Sol and start Fix 16 now. The parent implemented the fix directly (same pattern as 11b/11c/12b/12c/14b/15/15b/15c) from the findings and the existing code. No scope expansion. Only local commit is authorized; remaining for **PR #147**: reviewer verification, push, PR creation, CI watch, merge.
