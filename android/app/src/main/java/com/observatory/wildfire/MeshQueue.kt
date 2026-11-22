@@ -16,6 +16,37 @@ import java.util.concurrent.CopyOnWriteArrayList
  */
 class MeshQueue {
 
+    /**
+     * Fix 16 (NSVC-1): how an authenticated inbound frame is relayed.
+     *
+     * A verbatim relay re-emits the received frame unchanged. That is
+     * the ONLY correct mode for echo frames (plaintext by design — every
+     * hop can read them) and for E2EE frames this device could NOT
+     * decrypt (the intended recipient may be downstream, and the frame
+     * is the only copy that can ever reach them). But a verbatim relay
+     * of an E2EE frame this device DID decrypt is dead weight past the
+     * first hop: the origin encrypted it for this device's key, so no
+     * third peer can decrypt the re-emitted ciphertext — A→B→C can
+     * never deliver A's report text to C. Such a frame must be
+     * REENCRYPTed: its plaintext is re-queued as a fresh local-style
+     * message (origin messageId kept, this device's snapshot, one hop
+     * consumed) so the send loop encrypts it separately for each of
+     * our own peers. No hops left means no relay at all — the verbatim
+     * path already enforced that bound, and the re-encrypted path must
+     * not widen it.
+     *
+     * Fix 16b: this enum lives DIRECTLY in the class body, not in the
+     * companion object — `MeshQueue.RelayMode` does not resolve when the
+     * enum is nested in the companion (it would be
+     * `MeshQueue.Companion.RelayMode`), which broke all three Android
+     * builds on PR #147 (CodeRabbit Critical 4659699286, confirmed by
+     * the build log). The companion FUNCTION `relayMode` stays in the
+     * companion (functions DO resolve via the class name); all call
+     * sites (`MeshQueue.RelayMode.*`, `MeshQueue.relayMode(...)`) are
+     * unchanged by the move.
+     */
+    enum class RelayMode { VERBATIM, REENCRYPT, NONE }
+
     companion object {
         // Store-and-forward hygiene: a queued message lives at most 10 minutes
         // since its LAST delivery attempt — never since it was queued, so a
@@ -39,32 +70,24 @@ class MeshQueue {
         // that must stay alive for an emergency).
         const val MAX_PENDING_MESSAGES = 200
 
-        /**
-         * Fix 16 (NSVC-1): how an authenticated inbound frame is relayed.
-         *
-         * A verbatim relay re-emits the received frame unchanged. That is
-         * the ONLY correct mode for echo frames (plaintext by design — every
-         * hop can read them) and for E2EE frames this device could NOT
-         * decrypt (the intended recipient may be downstream, and the frame
-         * is the only copy that can ever reach them). But a verbatim relay
-         * of an E2EE frame this device DID decrypt is dead weight past the
-         * first hop: the origin encrypted it for this device's key, so no
-         * third peer can decrypt the re-emitted ciphertext — A→B→C can
-         * never deliver A's report text to C. Such a frame must be
-         * REENCRYPTed: its plaintext is re-queued as a fresh local-style
-         * message (new id, this device's snapshot, one hop consumed) so
-         * the send loop encrypts it separately for each of our own peers.
-         * No hops left means no relay at all — the verbatim path already
-         * enforced that bound, and the re-encrypted path must not widen it.
-         */
-        enum class RelayMode { VERBATIM, REENCRYPT, NONE }
-
         fun relayMode(type: String, decrypted: Boolean, hopsLeft: Int): RelayMode {
             if (hopsLeft <= 0) return RelayMode.NONE
             if (type == MeshInbound.TYPE_ECHO) return RelayMode.VERBATIM
             if (decrypted) return RelayMode.REENCRYPT
             return RelayMode.VERBATIM
         }
+
+        /**
+         * Fix 16c (CodeRabbit Major 4659699299 on PR #147): which queued
+         * entries a peer can actually READ. A re-encrypted entry is
+         * encrypted separately for each peer at send time, so every peer
+         * reads it; an echo entry is plaintext, so every peer reads it.
+         * A verbatim non-echo entry is the origin's ciphertext — readable
+         * only by the device the origin encrypted it for, which this
+         * device does not know.
+         */
+        fun isReadable(msg: MeshMessage): Boolean =
+            msg.needsEncryption || msg.type == MeshInbound.TYPE_ECHO
     }
 
     // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
@@ -187,6 +210,40 @@ class MeshQueue {
         synchronized(this) {
             evictIfFull()
             return pending.add(message)
+        }
+    }
+
+    /**
+     * Fix 16c: a readable entry for this messageId is already queued.
+     * Used by the service to skip admitting an unreadable verbatim copy
+     * that a readable copy would make redundant.
+     */
+    fun hasReadableEntry(messageId: String): Boolean =
+        pending.any { it.messageId == messageId && isReadable(it) }
+
+    /**
+     * Fix 16c: drop every queued UNREADABLE entry for this messageId and
+     * clear its forwarded markers, so the readable copy about to be
+     * admitted can still reach peers that only got the unreadable
+     * version. Returns true when anything was dropped.
+     *
+     * Safe because the markers for this id can only have been set by the
+     * unreadable entries' sends: a readable entry queued earlier would
+     * have blocked the unreadable admission (see hasReadableEntry), and
+     * markers from a readable entry sent more than 5 minutes ago have
+     * expired already. The Trickle-K count is derived from these markers
+     * each tick (forwardsInWindow), so clearing them resets it too.
+     * Dropping the unreadable copy loses nothing — every peer it could
+     * reach is also reachable by the readable copy, which is strictly
+     * better (decryptable by all).
+     */
+    fun dropUnreadableFor(messageId: String): Boolean {
+        synchronized(this) {
+            val removed = pending.removeAll { it.messageId == messageId && !isReadable(it) }
+            if (removed) {
+                forwardedMessages.keys.removeAll { it.endsWith(":$messageId") }
+            }
+            return removed
         }
     }
 
