@@ -232,4 +232,51 @@ class MeshQueueTest {
         threads.forEach { it.join() }
         org.junit.Assert.assertTrue("cap exceeded: ${q.pending.size}", q.pending.size <= 200)
     }
+
+    // Fix 16 (NSVC-1): the relay-mode decision. A decrypted report must be
+    // REENCRYPTed — a verbatim relay of an E2EE frame hands downstream
+    // peers ciphertext only this device's key can read, so A→B→C could
+    // never deliver readable content. Echo stays VERBATIM (plaintext by
+    // design, every hop reads it), undecryptable frames stay VERBATIM
+    // (the intended recipient may be downstream), and no hops left means
+    // no relay at all.
+    @Test
+    fun relayMode_reencryptsDecryptedReportWithHopsLeft() {
+        assertEquals(
+            MeshQueue.RelayMode.REENCRYPT,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = true, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_verbatimForEchoEvenWhenDecrypted() {
+        assertEquals(
+            MeshQueue.RelayMode.VERBATIM,
+            MeshQueue.relayMode(MeshInbound.TYPE_ECHO, decrypted = true, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_verbatimWhenNotDecryptable() {
+        assertEquals(
+            MeshQueue.RelayMode.VERBATIM,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = false, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_noneWhenNoHopsLeft() {
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = true, hopsLeft = 0)
+        )
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_ECHO, decrypted = true, hopsLeft = 0)
+        )
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = false, hopsLeft = 0)
+        )
+    }
 }
