@@ -191,7 +191,7 @@ class AppRepository(
         // physical coordinates and parseFrame rejects non-finite frames
         // (MeshWireTest pin). A no-fix broadcast would have to fabricate
         // coordinates — the exact Algiers-fallback sin v2.15.0 removes.
-        // So: no fix => no mesh broadcast; the echo stays local (coords-less
+        // So: no fix => no mesh broadcast; the message stays local (coords-less
         // chat entry) and the internet path (hasLocation:false) is the
         // honest channel for coordinate-less SOS.
         if (lat == null || lng == null) return false
