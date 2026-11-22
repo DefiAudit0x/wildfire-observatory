@@ -710,6 +710,16 @@ class MeshService : Service() {
      * device that must stay alive for an emergency).
      */
     private fun enqueueVerbatimRelay(payload: MeshWire.Frame) {
+        // Fix 16c: a readable copy of this content is already queued — the
+        // verbatim ciphertext would only hand peers bytes they cannot
+        // read, and its forwarded markers would suppress the readable
+        // copy for the same peer (same messageId). Skip it. Echo is
+        // plaintext, so it is readable and always admitted.
+        if (payload.type != MeshInbound.TYPE_ECHO &&
+            queue.hasReadableEntry(payload.messageId)
+        ) {
+            return
+        }
         queue.admit(MeshQueue.MeshMessage(
             messageId = payload.messageId,
             type = payload.type,
@@ -766,6 +776,11 @@ class MeshService : Service() {
                 Log.w(TAG, "Re-encrypted relay: PoW budget exhausted; falling back to verbatim relay")
                 return false
             }
+            // Fix 16c: a readable copy supersedes any unreadable verbatim
+            // copy of the same message already queued — drop it and clear
+            // its forwarded markers, so this copy can still reach peers
+            // that only got the unreadable version.
+            queue.dropUnreadableFor(messageId)
             queue.admit(MeshQueue.MeshMessage(
                 messageId = messageId,
                 type = payload.type,
