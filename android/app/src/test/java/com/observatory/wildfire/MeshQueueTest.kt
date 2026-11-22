@@ -328,10 +328,37 @@ class MeshQueueTest {
         val q = MeshQueue()
         q.pending.add(msg("m1", needsEncryption = true)) // readable only
         q.markForwarded("ep1", "m1", 100L)
+        q.deliveredTargets.getOrPut("m1") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.bindOutgoing(21L, "ep1", "m1")
 
         assertFalse(q.dropUnreadableFor("m1"))
         assertEquals(1, q.pending.size)
         assertTrue(q.isForwarded("ep1", "m1")) // markers untouched
+        assertTrue(q.deliveredTargets.containsKey("m1")) // delivery state untouched
+        assertEquals("m1", q.payloadToMessage[21L]?.messageId)
+    }
+
+    // Fix 16d (CodeRabbit Minor 4659815315 on PR #147): dropping the
+    // unreadable copy must also clear its delivery state, or its
+    // acknowledgements (keyed by messageId, shared across copies) evict
+    // the readable replacement early before its own transfer completes.
+    @Test
+    fun dropUnreadableFor_clearsDeliveryStateForThatIdOnly() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1")) // unreadable
+        q.pending.add(msg("m2")) // other id: untouched
+        q.deliveredTargets.getOrPut("m1") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.deliveredTargets.getOrPut("m2") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.bindOutgoing(11L, "ep1", "m1")
+        q.bindOutgoing(12L, "ep1", "m2")
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertFalse(q.deliveredTargets.containsKey("m1"))
+        assertTrue(q.deliveredTargets.containsKey("m2"))
+        assertNull(q.payloadToMessage[11L])
+        assertEquals("m2", q.payloadToMessage[12L]?.messageId)
+        assertEquals(listOf("m2"), q.pending.map { it.messageId })
     }
 
     @Test
