@@ -38,6 +38,33 @@ class MeshQueue {
         // frames grows pendingMessages without limit (OOM on a device
         // that must stay alive for an emergency).
         const val MAX_PENDING_MESSAGES = 200
+
+        /**
+         * Fix 16 (NSVC-1): how an authenticated inbound frame is relayed.
+         *
+         * A verbatim relay re-emits the received frame unchanged. That is
+         * the ONLY correct mode for echo frames (plaintext by design — every
+         * hop can read them) and for E2EE frames this device could NOT
+         * decrypt (the intended recipient may be downstream, and the frame
+         * is the only copy that can ever reach them). But a verbatim relay
+         * of an E2EE frame this device DID decrypt is dead weight past the
+         * first hop: the origin encrypted it for this device's key, so no
+         * third peer can decrypt the re-emitted ciphertext — A→B→C can
+         * never deliver A's report text to C. Such a frame must be
+         * REENCRYPTed: its plaintext is re-queued as a fresh local-style
+         * message (new id, this device's snapshot, one hop consumed) so
+         * the send loop encrypts it separately for each of our own peers.
+         * No hops left means no relay at all — the verbatim path already
+         * enforced that bound, and the re-encrypted path must not widen it.
+         */
+        enum class RelayMode { VERBATIM, REENCRYPT, NONE }
+
+        fun relayMode(type: String, decrypted: Boolean, hopsLeft: Int): RelayMode {
+            if (hopsLeft <= 0) return RelayMode.NONE
+            if (type == MeshInbound.TYPE_ECHO) return RelayMode.VERBATIM
+            if (decrypted) return RelayMode.REENCRYPT
+            return RelayMode.VERBATIM
+        }
     }
 
     // Message queue for Trickle algorithm — ciphertext + IV are relayed verbatim
