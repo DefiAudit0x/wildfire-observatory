@@ -191,12 +191,22 @@ class AppRepository(
         // physical coordinates and parseFrame rejects non-finite frames
         // (MeshWireTest pin). A no-fix broadcast would have to fabricate
         // coordinates — the exact Algiers-fallback sin v2.15.0 removes.
-        // So: no fix => no mesh broadcast; the echo stays local (coords-less
+        // So: no fix => no mesh broadcast; the message stays local (coords-less
         // chat entry) and the internet path (hasLocation:false) is the
         // honest channel for coordinate-less SOS.
         if (lat == null || lng == null) return false
         val json = ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
-        val ok = svc.broadcastMessage(json, if (kind == "sos") "echo" else "report", lat, lng)
+        // Fix 16 (NSVC-5): SOS must NOT ride as wire type "echo". Echo
+        // frames are plaintext-by-design on the wire (MeshInbound
+        // base64-decodes them without decrypting), but MeshService
+        // encrypts EVERY locally queued type with AES-GCM — so an SOS sent
+        // as echo arrived at peers as raw ciphertext decoded as UTF-8
+        // ("encrypted garbage") and its coordinates were never admitted.
+        // SOS is JSON intel like any report: send it as "report" so
+        // receivers decrypt it through the normal path and parse its
+        // coordinates. No legitimate caller emits echo anymore; the wire
+        // type stays accepted for backward compatibility with older builds.
+        val ok = svc.broadcastMessage(json, "report", lat, lng)
         if (ok) {
             val entry = MeshChatEntry(
                 id = "me_${System.currentTimeMillis()}",

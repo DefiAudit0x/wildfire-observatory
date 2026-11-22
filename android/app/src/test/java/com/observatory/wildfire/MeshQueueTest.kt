@@ -20,12 +20,14 @@ class MeshQueueTest {
 
     private fun msg(
         messageId: String,
+        type: String = "report",
+        needsEncryption: Boolean = false,
         lastSendAttemptAt: Long = 0L,
         attempted: Set<String> = emptySet()
     ): MeshQueue.MeshMessage =
         MeshQueue.MeshMessage(
             messageId = messageId,
-            type = "report",
+            type = type,
             payloadB64 = "cGF5bG9hZA==",
             iv = "aXZpdml2",
             hopCount = 0,
@@ -39,7 +41,8 @@ class MeshQueueTest {
             lng = 0.0,
             powNonce = 0,
             powDifficulty = MeshWire.NETWORK_POW_DIFFICULTY,
-            lastSendAttemptAt = lastSendAttemptAt
+            lastSendAttemptAt = lastSendAttemptAt,
+            needsEncryption = needsEncryption
         ).also { attempted.forEach { ep -> it.attemptedTargets.add(ep) } }
 
     private fun fill(queue: MeshQueue, count: Int, firstId: Int = 0, attemptBase: Long = 0L): Unit {
@@ -231,5 +234,143 @@ class MeshQueueTest {
         threads.forEach { it.start() }
         threads.forEach { it.join() }
         org.junit.Assert.assertTrue("cap exceeded: ${q.pending.size}", q.pending.size <= 200)
+    }
+
+    // Fix 16 (NSVC-1): the relay-mode decision. A decrypted report must be
+    // REENCRYPTed — a verbatim relay of an E2EE frame hands downstream
+    // peers ciphertext only this device's key can read, so A→B→C could
+    // never deliver readable content. Echo stays VERBATIM (plaintext by
+    // design, every hop reads it), undecryptable frames stay VERBATIM
+    // (the intended recipient may be downstream), and no hops left means
+    // no relay at all.
+    @Test
+    fun relayMode_reencryptsDecryptedReportWithHopsLeft() {
+        assertEquals(
+            MeshQueue.RelayMode.REENCRYPT,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = true, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_verbatimForEchoEvenWhenDecrypted() {
+        assertEquals(
+            MeshQueue.RelayMode.VERBATIM,
+            MeshQueue.relayMode(MeshInbound.TYPE_ECHO, decrypted = true, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_verbatimWhenNotDecryptable() {
+        assertEquals(
+            MeshQueue.RelayMode.VERBATIM,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = false, hopsLeft = 3)
+        )
+    }
+
+    @Test
+    fun relayMode_noneWhenNoHopsLeft() {
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = true, hopsLeft = 0)
+        )
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_ECHO, decrypted = true, hopsLeft = 0)
+        )
+        assertEquals(
+            MeshQueue.RelayMode.NONE,
+            MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = false, hopsLeft = 0)
+        )
+    }
+
+    // Fix 16c (CodeRabbit Major 4659699299 on PR #147): a readable entry
+    // supersedes unreadable entries for the same messageId. Without this,
+    // the verbatim copy's forwarded markers (keyed "$endpointId:$messageId")
+    // suppress the readable copy for the same peer, and the NSVC-1 harm
+    // returns order-dependently — whichever copy reaches a peer first wins.
+    @Test
+    fun dropUnreadableFor_removesOnlyUnreadableEntriesForThatId() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1")) // verbatim report: unreadable
+        q.pending.add(msg("m1", needsEncryption = true)) // re-encrypted: readable
+        q.pending.add(msg("m1", type = MeshInbound.TYPE_ECHO)) // echo: readable
+        q.pending.add(msg("m2")) // other id: untouched
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertEquals(listOf("m1", "m1", "m2"), q.pending.map { it.messageId })
+        assertTrue(q.pending.any { it.needsEncryption })
+        assertTrue(q.pending.any { it.type == MeshInbound.TYPE_ECHO })
+        assertTrue(q.pending.any { it.messageId == "m2" })
+    }
+
+    @Test
+    fun dropUnreadableFor_clearsForwardedMarkersForThatIdOnly() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1"))
+        q.markForwarded("ep1", "m1", 100L)
+        q.markForwarded("ep2", "m1", 100L)
+        q.markForwarded("ep1", "m2", 100L)
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertFalse(q.isForwarded("ep1", "m1"))
+        assertFalse(q.isForwarded("ep2", "m1"))
+        assertTrue(q.isForwarded("ep1", "m2"))
+        // The Trickle-K count is derived from the markers each tick, so it
+        // resets for m1 too and is untouched for m2.
+        assertEquals(0, q.forwardsInWindow(200L, 5_000L)["m1"] ?: 0)
+        assertEquals(1, q.forwardsInWindow(200L, 5_000L)["m2"])
+    }
+
+    @Test
+    fun dropUnreadableFor_returnsFalseWhenNothingToDrop() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1", needsEncryption = true)) // readable only
+        q.markForwarded("ep1", "m1", 100L)
+        q.deliveredTargets.getOrPut("m1") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.bindOutgoing(21L, "ep1", "m1")
+
+        assertFalse(q.dropUnreadableFor("m1"))
+        assertEquals(1, q.pending.size)
+        assertTrue(q.isForwarded("ep1", "m1")) // markers untouched
+        assertTrue(q.deliveredTargets.containsKey("m1")) // delivery state untouched
+        assertEquals("m1", q.payloadToMessage[21L]?.messageId)
+    }
+
+    // Fix 16d (CodeRabbit Minor 4659815315 on PR #147): dropping the
+    // unreadable copy must also clear its delivery state, or its
+    // acknowledgements (keyed by messageId, shared across copies) evict
+    // the readable replacement early before its own transfer completes.
+    @Test
+    fun dropUnreadableFor_clearsDeliveryStateForThatIdOnly() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1")) // unreadable
+        q.pending.add(msg("m2")) // other id: untouched
+        q.deliveredTargets.getOrPut("m1") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.deliveredTargets.getOrPut("m2") { java.util.concurrent.ConcurrentHashMap.newKeySet() }.add("ep1")
+        q.bindOutgoing(11L, "ep1", "m1")
+        q.bindOutgoing(12L, "ep1", "m2")
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertFalse(q.deliveredTargets.containsKey("m1"))
+        assertTrue(q.deliveredTargets.containsKey("m2"))
+        assertNull(q.payloadToMessage[11L])
+        assertEquals("m2", q.payloadToMessage[12L]?.messageId)
+        assertEquals(listOf("m2"), q.pending.map { it.messageId })
+    }
+
+    @Test
+    fun hasReadableEntry_distinguishesReadableFromUnreadable() {
+        val q = MeshQueue()
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m1")) // verbatim report: unreadable
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m2", type = MeshInbound.TYPE_ECHO)) // echo: readable
+        assertTrue(q.hasReadableEntry("m2"))
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m1", needsEncryption = true)) // re-encrypted: readable
+        assertTrue(q.hasReadableEntry("m1"))
     }
 }
