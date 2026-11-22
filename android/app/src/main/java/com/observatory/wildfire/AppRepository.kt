@@ -303,7 +303,18 @@ class AppRepository(
         // F1+F4: the idempotency key is minted ONCE per logical SOS, embedded
         // in the body AND used as the queue key — a replay (offline queue or
         // retry) can never become a second emergency call.
-        val key = ApiPayloads.newClientGeneratedId()
+        // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795): one
+        // pending SOS per device. A re-press while an SOS is already
+        // queued must NOT mint a second key — the server's 5-minute
+        // per-device window 409s the second key, and dropping it on 409
+        // (the first 18b attempt) loses a distinct emergency. Reuse the
+        // queued entry's key: the re-press is the same logical SOS, and
+        // the server's replay returns the stored SOS for a repeated key
+        // instead of a duplicate. A cold start can still restore several
+        // pre-fix entries; the first (oldest) key is reused and the rest
+        // keep the old retry behaviour — no loss, just no new key.
+        val key = sosQueue.snapshot().firstOrNull()?.key
+            ?: ApiPayloads.newClientGeneratedId()
         val built = ApiPayloads.buildSosJson(
             deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec,
             clientGeneratedId = key
@@ -334,7 +345,16 @@ class AppRepository(
                 )
                 onDone(false, null, extractServerError(result.body) ?: "تم رفض النداء (خطأ ${result.status})")
             } else {
-                sosQueue.enqueue(key, body)
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795):
+                // the re-press refreshes the WAITING entry's payload
+                // under the same key (fresher location/audio, same
+                // logical SOS). An in-flight entry is owned by the drain
+                // and is never touched — the emergency itself is already
+                // being sent; a fresh key is only minted when nothing is
+                // queued at all (see above).
+                if (!sosQueue.replacePayload(key, body)) {
+                    sosQueue.enqueue(key, body)
+                }
                 persistSnapshot()
                 // Fix 18 (NREP-5): confirm durability BEFORE promising
                 // storage; do NOT set queuedWhileOffline when the entry
@@ -592,26 +612,21 @@ class AppRepository(
                             if (io { api.post("/api/reports", e.payload).is2xx }) deliveredR.add(e.key)
                         }
                         for (e in reservedS) {
-                            val result = io { api.post("/api/sos", e.payload) }
-                            if (result.is2xx) {
-                                deliveredS.add(e.key)
-                            } else if (result is ObservatoryApi.Result.HttpError && result.status == 409) {
-                                // Fix 18 (NREP-5 follow-up, CodeRabbit Major
-                                // 4660191944): the server already holds a
-                                // NEWER SOS from this device — the queued
-                                // older copy is redundant and must be
-                                // dropped, not retried until it escapes the
-                                // 5-minute duplicate window and becomes a
-                                // second stored SOS. Only this 409 is
-                                // terminal; the other 409s (foreign key,
-                                // already resolved, team dispatched) keep
-                                // retrying as before.
-                                val message = extractServerError(result.body) ?: result.body
-                                if (isAlreadyReceivedRecentlyMessage(message)) {
-                                    Log.i(TAG, "SOS ${e.key} superseded by a newer SOS from this device — dropping queued copy")
-                                    deliveredS.add(e.key)
-                                }
-                            }
+                            // Fix 18 (NREP-5 follow-up, CodeRabbit Major
+                            // 4660269795): the first 18b attempt dropped a
+                            // queued SOS on the 409 "already received
+                            // recently" — withdrawn, it was over-broad:
+                            // the server's window is per device, so a
+                            // DISTINCT queued emergency inside the window
+                            // got the same 409 and was lost without ever
+                            // being stored. The duplicate is now prevented
+                            // at the source (sendSos reuses the queued
+                            // key — one pending SOS per device), so the
+                            // drain keeps the old retry-forever behaviour:
+                            // a 409 retries with backoff and is admitted
+                            // once the window passes. Nothing queued is
+                            // ever dropped on a 409.
+                            if (io { api.post("/api/sos", e.payload).is2xx }) deliveredS.add(e.key)
                         }
                         io {
                             reportQueue.commit(now, deliveredR)
@@ -780,7 +795,12 @@ class AppRepository(
             // never writes directly to the live file).
             val ok = writeFileDurably(tmp, f, arr.toString().toByteArray())
             if (!ok) {
-                Log.w(TAG, "queue persist($kind) failed — keeping previous file")
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Minor 4660269800):
+                // do NOT claim the previous file was kept — a failure
+                // after the rename leaves the NEW contents in place with
+                // unknown durability. The only honest statement is that
+                // durability is not confirmed.
+                Log.w(TAG, "queue persist($kind) failed — durability not confirmed")
             }
             QueuePersistResult(if (ok) persisted.size else 0, omitted, failed = !ok)
         }.getOrElse { e ->
@@ -873,33 +893,56 @@ class AppRepository(
         const val QUEUE_PERSIST_FAILED_MSG = "تعذر حفظ الطلب على الجهاز — سيُحاول إرساله طالما التطبيق مفتوح"
 
         /**
-         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191944): true
-         * only for the server's "already received recently" 409 — the
-         * message the SOS route returns when the device's duplicate
-         * window (5 min) already holds a NEWER SOS from this device
-         * (`server/routes/sos.ts:510`). The other 409s ("retry key
-         * belongs to a different device", "already resolved",
-         * TEAM_ALREADY_DISPATCHED) are not terminal in the same way.
-         * Pure over the extracted error message — JVM-testable.
+         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269789): sync a
+         * directory to storage via the raw syscall wrapper — opening a
+         * directory as a stream is rejected on Android (IoBridge) and on
+         * the JVM (OpenJDK's FileInputStream check), which is exactly why
+         * the first 18c attempt failed its own unit tests on CI (both
+         * success tests, `writeFileDurably` returning false). Android-
+         * only by construction: android.system.Os is a stub in JVM unit
+         * tests, so this function is never called there — the seam in
+         * [writeFileDurably] lets tests pass a fake instead. Proven by
+         * compilation (CI build) and device behaviour, not by a unit test.
          */
-        internal fun isAlreadyReceivedRecentlyMessage(message: String?): Boolean =
-            !message.isNullOrBlank() && message.contains("already received recently")
+        internal fun syncDirectory(dir: java.io.File): Boolean {
+            return try {
+                val fd = android.system.Os.open(dir.absolutePath, android.system.OsConstants.O_RDONLY, 0)
+                try {
+                    android.system.Os.fsync(fd)
+                    true
+                } finally {
+                    android.system.Os.close(fd)
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
 
         /**
          * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191946): write
          * [bytes] to [tmp], sync the file to storage, rename onto
          * [target] (retry once), then sync the containing directory so
-         * the rename itself is durable. Returns false (leaving the old
-         * [target] intact) if any step fails. A rename is atomic
-         * replacement, not durability — without the syncs, a battery
-         * loss before writeback could lose a queue already reported as
-         * saved. The directory sync uses FileInputStream, the portable
-         * JVM route: opening a directory read-only and syncing its fd
-         * works on Linux/Android (ext4/f2fs). Never throws — and it
-         * deliberately calls no android.util.Log (which is a stub that
-         * throws in JVM unit tests); the caller logs the failure.
+         * the rename itself is durable. Returns false if any step fails.
+         * A rename is atomic replacement, not durability — without the
+         * syncs, a battery loss before writeback could lose a queue
+         * already reported as saved. Failure contract (CodeRabbit Minor
+         * 4660269800 — the first 18c text got this wrong): a failure
+         * BEFORE the rename leaves the old [target] intact; a failure
+         * AFTER the rename (directory sync) leaves the NEW contents in
+         * place with unknown durability. Either way the return is false
+         * and the caller must not report the queue as durable. Never
+         * throws — and it deliberately calls no android.util.Log (which
+         * is a stub that throws in JVM unit tests); the caller logs the
+         * failure. [syncDir] is a seam for tests: production passes the
+         * real [syncDirectory], JVM tests pass a fake (Os is a stub
+         * there).
          */
-        internal fun writeFileDurably(tmp: java.io.File, target: java.io.File, bytes: ByteArray): Boolean {
+        internal fun writeFileDurably(
+            tmp: java.io.File,
+            target: java.io.File,
+            bytes: ByteArray,
+            syncDir: (java.io.File) -> Boolean = { dir -> syncDirectory(dir) }
+        ): Boolean {
             val dir = target.parentFile ?: return false
             return try {
                 java.io.FileOutputStream(tmp).use { out ->
@@ -910,7 +953,7 @@ class AppRepository(
                     tmp.delete()
                     return false
                 }
-                java.io.FileInputStream(dir).use { it.fd.sync() }
+                if (!syncDir(dir)) return false
                 true
             } catch (e: Exception) {
                 tmp.delete()
