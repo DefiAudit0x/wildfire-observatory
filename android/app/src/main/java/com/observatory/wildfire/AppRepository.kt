@@ -88,6 +88,17 @@ class AppRepository(
     private val reportQueue = OfflineQueue<String>()
     private val sosQueue = OfflineQueue<String>()
 
+    // Fix 18 (NREP-4): one lock per queue kind. Snapshot + write happen
+    // inside the same lock, so two writers for one kind are totally
+    // ordered — the later snapshot is always the later install. The
+    // persist lock is the OUTER lock; the queue monitor is taken only
+    // inside it via snapshot(). No code path may call persistQueues()
+    // while holding a queue monitor (today: enqueue/commit/reserveDue
+    // never call persist; the drain loop commits — releasing the monitor —
+    // before persisting).
+    private val reportQueuePersistLock = Any()
+    private val sosQueuePersistLock = Any()
+
     @Volatile
     var meshService: MeshService? = null
 
@@ -266,8 +277,17 @@ class AppRepository(
                     reportQueue.enqueue(key, body)
                     broadcastMeshIntel("report", "$locationName — $description", lat, lng)
                     persistSnapshot()
-                    persistQueues()
-                    onDone(true, OFFLINE_QUEUED_MSG)
+                    // Fix 18 (NREP-5): confirm durability BEFORE promising
+                    // storage. The entry stays in memory (the drain loop
+                    // can still send it while the app lives), but onDone
+                    // (false) when it is not on disk — process death would
+                    // lose it, so claiming storage would be dishonest.
+                    val (reportsResult, _) = persistQueues()
+                    if (reportsResult.durable) {
+                        onDone(true, OFFLINE_QUEUED_MSG)
+                    } else {
+                        onDone(false, QUEUE_PERSIST_FAILED_MSG)
+                    }
                 }
             }
             bumpQueueSize()
@@ -315,12 +335,26 @@ class AppRepository(
                 onDone(false, null, extractServerError(result.body) ?: "تم رفض النداء (خطأ ${result.status})")
             } else {
                 sosQueue.enqueue(key, body)
-                _state.value = _state.value.copy(
-                    sos = SosUiState(sending = false, queuedWhileOffline = true)
-                )
                 persistSnapshot()
-                persistQueues()
-                onDone(true, null, OFFLINE_QUEUED_MSG)
+                // Fix 18 (NREP-5): confirm durability BEFORE promising
+                // storage; do NOT set queuedWhileOffline when the entry
+                // is memory-only — that flag is cleared by the drain loop
+                // only when the queue empties, and it would keep promising
+                // a send that process death will cancel. The entry stays
+                // in memory (the drain loop can still send it while the
+                // app lives), but onDone(false) when it is not on disk.
+                val (_, sosResult) = persistQueues()
+                if (sosResult.durable) {
+                    _state.value = _state.value.copy(
+                        sos = SosUiState(sending = false, queuedWhileOffline = true)
+                    )
+                    onDone(true, null, OFFLINE_QUEUED_MSG)
+                } else {
+                    _state.value = _state.value.copy(
+                        sos = SosUiState(sending = false, queuedWhileOffline = false)
+                    )
+                    onDone(false, null, QUEUE_PERSIST_FAILED_MSG)
+                }
             }
             bumpQueueSize()
         }
@@ -572,7 +606,19 @@ class AppRepository(
                         // Delivered/poisoned/backoff-timed entries all changed
                         // on disk's behalf — sync so a process death cannot
                         // resurrect delivered items or lose attempt history.
-                        persistQueues()
+                        // Fix 18 (NREP-5): surface an incomplete persist in
+                        // the log (a failed sync means a process death could
+                        // resurrect delivered items); the loop itself keeps
+                        // running — a persist failure must never kill it.
+                        val (drainReports, drainSos) = persistQueues()
+                        if (!drainReports.durable || !drainSos.durable) {
+                            Log.w(
+                                TAG,
+                                "Offline queue persist incomplete after drain: " +
+                                    "reports omitted=${drainReports.omitted} failed=${drainReports.failed}, " +
+                                    "sos omitted=${drainSos.omitted} failed=${drainSos.failed}"
+                            )
+                        }
                         bumpQueueSize()
                         if (deliveredR.isNotEmpty() || deliveredS.isNotEmpty()) {
                             persistSnapshot()
@@ -642,25 +688,58 @@ class AppRepository(
         emptyList()
     }
 
-    private fun persistQueues() {
-        persistQueueFile("reports", reportQueue.snapshot())
-        persistQueueFile("sos", sosQueue.snapshot())
+    /**
+     * Fix 18 (NREP-5): outcome of one queue-file persist. `durable` is
+     * true only when every entry in the passed snapshot is on disk — a
+     * per-entry skip, a budget break, a failed rename, or any exception
+     * all mean the kind is NOT durable. `persisted` counts entries
+     * selected for writing (0 when the write failed — nothing new is
+     * on disk then); `omitted` counts entries kept memory-only.
+     */
+    data class QueuePersistResult(val persisted: Int, val omitted: Int, val failed: Boolean) {
+        val durable: Boolean get() = !failed && omitted == 0
     }
 
-    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>) {
-        runCatching {
+    private fun persistQueues(): Pair<QueuePersistResult, QueuePersistResult> {
+        val reports = persistQueueFileLocked("reports", reportQueuePersistLock) { reportQueue.snapshot() }
+        val sos = persistQueueFileLocked("sos", sosQueuePersistLock) { sosQueue.snapshot() }
+        return reports to sos
+    }
+
+    /**
+     * Fix 18 (NREP-4): the snapshot is taken AND the file is written
+     * while holding the per-kind lock — taking the snapshot outside the
+     * lock and only locking the write would NOT fix the finding, because
+     * the race is precisely snapshot-taken-then-overtaken. Per-kind
+     * locking is sufficient (separate files, separate tmp files) and
+     * avoids blocking a reports persist on a slow SOS persist.
+     */
+    private fun persistQueueFileLocked(
+        kind: String,
+        lock: Any,
+        snapshot: () -> List<OfflineQueue.Entry<String>>
+    ): QueuePersistResult {
+        synchronized(lock) {
+            return persistQueueFile(kind, snapshot())
+        }
+    }
+
+    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>): QueuePersistResult {
+        val (persisted, omitted) = OfflineQueue.selectPersistable(
+            entries, MAX_PERSIST_ENTRY_CHARS, MAX_PERSIST_TOTAL_CHARS
+        )
+        if (omitted > 0) {
+            Log.w(TAG, "queue($kind) persist: $omitted of ${entries.size} entries kept memory-only (oversized or over budget)")
+            // Review nit: keep the dropped entries identifiable — for an
+            // emergency app, knowing WHICH SOS went memory-only matters.
+            val oversizedKeys = entries.filter { it.payload.length > MAX_PERSIST_ENTRY_CHARS }.map { it.key }
+            if (oversizedKeys.isNotEmpty()) {
+                Log.w(TAG, "queue($kind) persist: oversized entries kept memory-only: $oversizedKeys")
+            }
+        }
+        return runCatching {
             val arr = JSONArray()
-            var totalChars = 0
-            for (e in entries) {
-                if (e.payload.length > MAX_PERSIST_ENTRY_CHARS) {
-                    Log.w(TAG, "queue($kind) entry ${e.key} too large to persist (${e.payload.length} chars) — memory-only")
-                    continue
-                }
-                if (totalChars + e.payload.length > MAX_PERSIST_TOTAL_CHARS) {
-                    Log.w(TAG, "queue($kind) persist budget reached — ${entries.size - arr.length()} newest entries kept memory-only")
-                    break
-                }
-                totalChars += e.payload.length
+            for (e in persisted) {
                 arr.put(
                     JSONObject().apply {
                         put("key", e.key)
@@ -675,11 +754,21 @@ class AppRepository(
             val f = queueFile(kind)
             val tmp = java.io.File(context.filesDir, "queue_$kind.json.tmp")
             tmp.writeText(arr.toString())
-            if (!tmp.renameTo(f)) {
-                f.writeText(arr.toString())
+            // Fix 18 (NREP-4): never write directly to the live file — a
+            // crash mid-write would corrupt the queue. Retry the rename
+            // once; if it still fails, keep the old file intact and
+            // report failure (the old direct-write fallback is deleted).
+            if (!tmp.renameTo(f) && !tmp.renameTo(f)) {
+                Log.w(TAG, "queue persist($kind) rename failed — keeping previous file")
                 tmp.delete()
+                QueuePersistResult(0, omitted, failed = true)
+            } else {
+                QueuePersistResult(persisted.size, omitted, failed = false)
             }
-        }.onFailure { Log.w(TAG, "queue persist($kind) failed", it) }
+        }.getOrElse { e ->
+            Log.w(TAG, "queue persist($kind) failed", e)
+            QueuePersistResult(0, omitted, failed = true)
+        }
     }
 
     /** Cold-start fallback: the last good API snapshot survives process death. */
@@ -751,9 +840,19 @@ class AppRepository(
         private const val MESH_INTEL_MAX = 100
         /** Per-entry persistence guard: a maxed legal payload (700k-char SOS audio) fits; runaway garbage does not. */
         private const val MAX_PERSIST_ENTRY_CHARS = 800_000
-        /** Total per-file budget — bounds disk even with a full 60-entry queue of big payloads. */
-        private const val MAX_PERSIST_TOTAL_CHARS = 12_000_000
+        /**
+         * Fix 18 (NREP-5): total per-file budget — 60 entries × ~700,000
+         * chars (a full queue of legal max-size SOS audio payloads) ≈
+         * 42 M chars, rounded up to 48 M with headroom for JSON escaping.
+         * Worst case two files × ~48 MB (+ one tmp each during write) is
+         * the honest price of the "durable queue" promise. The old 12 M
+         * budget silently dropped the newest emergencies after ~17
+         * max-size SOS payloads, below the queue capacity of 60.
+         */
+        private const val MAX_PERSIST_TOTAL_CHARS = 48_000_000
         const val OFFLINE_QUEUED_MSG = "لا يوجد اتصال — حُفظ الطلب وسيرسل تلقائيًا عند عودة الشبكة"
+        /** Fix 18 (NREP-5): the entry is queued in memory only — it is NOT on disk, so process death would lose it. */
+        const val QUEUE_PERSIST_FAILED_MSG = "تعذر حفظ الطلب على الجهاز — سيُحاول إرساله طالما التطبيق مفتوح"
     }
 }
 
