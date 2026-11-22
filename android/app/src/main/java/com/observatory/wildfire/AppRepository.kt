@@ -88,6 +88,17 @@ class AppRepository(
     private val reportQueue = OfflineQueue<String>()
     private val sosQueue = OfflineQueue<String>()
 
+    // Fix 18 (NREP-4): one lock per queue kind. Snapshot + write happen
+    // inside the same lock, so two writers for one kind are totally
+    // ordered — the later snapshot is always the later install. The
+    // persist lock is the OUTER lock; the queue monitor is taken only
+    // inside it via snapshot(). No code path may call persistQueues()
+    // while holding a queue monitor (today: enqueue/commit/reserveDue
+    // never call persist; the drain loop commits — releasing the monitor —
+    // before persisting).
+    private val reportQueuePersistLock = Any()
+    private val sosQueuePersistLock = Any()
+
     @Volatile
     var meshService: MeshService? = null
 
@@ -266,8 +277,23 @@ class AppRepository(
                     reportQueue.enqueue(key, body)
                     broadcastMeshIntel("report", "$locationName — $description", lat, lng)
                     persistSnapshot()
-                    persistQueues()
-                    onDone(true, OFFLINE_QUEUED_MSG)
+                    // Fix 18 (NREP-5): confirm durability BEFORE promising
+                    // storage. The entry stays in memory (the drain loop
+                    // can still send it while the app lives), but onDone
+                    // (false) when it is not on disk — process death would
+                    // lose it, so claiming storage would be dishonest.
+                    val (reportsResult, _) = persistQueues()
+                    // Fix 18 (NREP-5 follow-up, CodeRabbit Major
+                    // 4660332342): `durable` alone is vacuous for an
+                    // empty snapshot — the drain may have reserved this
+                    // entry between the enqueue and the persist. Report
+                    // queuing only when THIS submission's key is in the
+                    // file that was actually written.
+                    if (reportsResult.durable && key in reportsResult.persistedKeys) {
+                        onDone(true, OFFLINE_QUEUED_MSG)
+                    } else {
+                        onDone(false, QUEUE_PERSIST_FAILED_MSG)
+                    }
                 }
             }
             bumpQueueSize()
@@ -283,7 +309,18 @@ class AppRepository(
         // F1+F4: the idempotency key is minted ONCE per logical SOS, embedded
         // in the body AND used as the queue key — a replay (offline queue or
         // retry) can never become a second emergency call.
-        val key = ApiPayloads.newClientGeneratedId()
+        // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795): one
+        // pending SOS per device. A re-press while an SOS is already
+        // queued must NOT mint a second key — the server's 5-minute
+        // per-device window 409s the second key, and dropping it on 409
+        // (the first 18b attempt) loses a distinct emergency. Reuse the
+        // queued entry's key: the re-press is the same logical SOS, and
+        // the server's replay returns the stored SOS for a repeated key
+        // instead of a duplicate. A cold start can still restore several
+        // pre-fix entries; the first (oldest) key is reused and the rest
+        // keep the old retry behaviour — no loss, just no new key.
+        val key = sosQueue.snapshot().firstOrNull()?.key
+            ?: ApiPayloads.newClientGeneratedId()
         val built = ApiPayloads.buildSosJson(
             deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec,
             clientGeneratedId = key
@@ -314,13 +351,51 @@ class AppRepository(
                 )
                 onDone(false, null, extractServerError(result.body) ?: "تم رفض النداء (خطأ ${result.status})")
             } else {
-                sosQueue.enqueue(key, body)
-                _state.value = _state.value.copy(
-                    sos = SosUiState(sending = false, queuedWhileOffline = true)
-                )
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795):
+                // the re-press refreshes the WAITING entry's payload
+                // under the same key (fresher location/audio, same
+                // logical SOS). An in-flight entry is owned by the drain
+                // and is never touched — the emergency itself is already
+                // being sent; a fresh key is only minted when nothing is
+                // queued at all (see above).
+                val admitted = sosQueue.replacePayload(key, body) || sosQueue.enqueue(key, body)
                 persistSnapshot()
-                persistQueues()
-                onDone(true, null, OFFLINE_QUEUED_MSG)
+                // Fix 18 (NREP-5): confirm durability BEFORE promising
+                // storage; do NOT set queuedWhileOffline when the entry
+                // is memory-only — that flag is cleared by the drain loop
+                // only when the queue empties, and it would keep promising
+                // a send that process death will cancel. The entry stays
+                // in memory (the drain loop can still send it while the
+                // app lives), but onDone(false) when it is not on disk.
+                val (_, sosResult) = persistQueues()
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660332342):
+                // `durable` alone is vacuous for an empty snapshot. When
+                // admission was rejected (key in flight — `admitted` is
+                // false), the drain owns the entry's fate: it may deliver
+                // it, or poison-drop it after 8 failed attempts, while
+                // the persist still reports durable on an empty snapshot
+                // — so never report queuing then. Report queuing only
+                // when this submission was admitted AND its key is in the
+                // file that was actually written AND still in the queue.
+                // Known residual: an admitted entry at 7 failed attempts
+                // can still be poison-dropped by the drain after a
+                // truthful report — the pre-existing MAX_ATTEMPTS
+                // doctrine, out of scope for this part (changing it is a
+                // separate product decision, not a queue bug).
+                val keyStored = sosResult.durable &&
+                    key in sosResult.persistedKeys &&
+                    sosQueue.snapshot().any { it.key == key }
+                if (admitted && keyStored) {
+                    _state.value = _state.value.copy(
+                        sos = SosUiState(sending = false, queuedWhileOffline = true)
+                    )
+                    onDone(true, null, OFFLINE_QUEUED_MSG)
+                } else {
+                    _state.value = _state.value.copy(
+                        sos = SosUiState(sending = false, queuedWhileOffline = false)
+                    )
+                    onDone(false, null, QUEUE_PERSIST_FAILED_MSG)
+                }
             }
             bumpQueueSize()
         }
@@ -558,6 +633,20 @@ class AppRepository(
                             if (io { api.post("/api/reports", e.payload).is2xx }) deliveredR.add(e.key)
                         }
                         for (e in reservedS) {
+                            // Fix 18 (NREP-5 follow-up, CodeRabbit Major
+                            // 4660269795): the first 18b attempt dropped a
+                            // queued SOS on the 409 "already received
+                            // recently" — withdrawn, it was over-broad:
+                            // the server's window is per device, so a
+                            // DISTINCT queued emergency inside the window
+                            // got the same 409 and was lost without ever
+                            // being stored. The duplicate is now prevented
+                            // at the source (sendSos reuses the queued
+                            // key — one pending SOS per device), so the
+                            // drain keeps the old retry-forever behaviour:
+                            // a 409 retries with backoff and is admitted
+                            // once the window passes. Nothing queued is
+                            // ever dropped on a 409.
                             if (io { api.post("/api/sos", e.payload).is2xx }) deliveredS.add(e.key)
                         }
                         io {
@@ -572,7 +661,19 @@ class AppRepository(
                         // Delivered/poisoned/backoff-timed entries all changed
                         // on disk's behalf — sync so a process death cannot
                         // resurrect delivered items or lose attempt history.
-                        persistQueues()
+                        // Fix 18 (NREP-5): surface an incomplete persist in
+                        // the log (a failed sync means a process death could
+                        // resurrect delivered items); the loop itself keeps
+                        // running — a persist failure must never kill it.
+                        val (drainReports, drainSos) = persistQueues()
+                        if (!drainReports.durable || !drainSos.durable) {
+                            Log.w(
+                                TAG,
+                                "Offline queue persist incomplete after drain: " +
+                                    "reports omitted=${drainReports.omitted} failed=${drainReports.failed}, " +
+                                    "sos omitted=${drainSos.omitted} failed=${drainSos.failed}"
+                            )
+                        }
                         bumpQueueSize()
                         if (deliveredR.isNotEmpty() || deliveredS.isNotEmpty()) {
                             persistSnapshot()
@@ -642,25 +743,71 @@ class AppRepository(
         emptyList()
     }
 
-    private fun persistQueues() {
-        persistQueueFile("reports", reportQueue.snapshot())
-        persistQueueFile("sos", sosQueue.snapshot())
+    /**
+     * Fix 18 (NREP-5): outcome of one queue-file persist. `durable` is
+     * true only when every entry in the passed snapshot is on disk — a
+     * per-entry skip, a budget break, a failed rename, or any exception
+     * all mean the kind is NOT durable. `persisted` counts entries
+     * selected for writing (0 when the write failed — nothing new is
+     * on disk then); `omitted` counts entries kept memory-only.
+     * `persistedKeys` is the set of keys actually written (empty when
+     * the write failed). `durable` is VACUOUS for an empty snapshot —
+     * an empty queue persists as an empty array — so a caller reporting
+     * about ONE submission must also check that submission's key is in
+     * `persistedKeys` (Fix 18 follow-up, CodeRabbit Major 4660332342:
+     * an in-flight re-pressed SOS whose admission was rejected got
+     * reported as queued on the strength of a vacuously durable empty
+     * snapshot, while the drain's commit was about to poison-drop it).
+     */
+    data class QueuePersistResult(
+        val persisted: Int,
+        val omitted: Int,
+        val failed: Boolean,
+        val persistedKeys: Set<String> = emptySet()
+    ) {
+        val durable: Boolean get() = !failed && omitted == 0
     }
 
-    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>) {
-        runCatching {
+    private fun persistQueues(): Pair<QueuePersistResult, QueuePersistResult> {
+        val reports = persistQueueFileLocked("reports", reportQueuePersistLock) { reportQueue.snapshot() }
+        val sos = persistQueueFileLocked("sos", sosQueuePersistLock) { sosQueue.snapshot() }
+        return reports to sos
+    }
+
+    /**
+     * Fix 18 (NREP-4): the snapshot is taken AND the file is written
+     * while holding the per-kind lock — taking the snapshot outside the
+     * lock and only locking the write would NOT fix the finding, because
+     * the race is precisely snapshot-taken-then-overtaken. Per-kind
+     * locking is sufficient (separate files, separate tmp files) and
+     * avoids blocking a reports persist on a slow SOS persist.
+     */
+    private fun persistQueueFileLocked(
+        kind: String,
+        lock: Any,
+        snapshot: () -> List<OfflineQueue.Entry<String>>
+    ): QueuePersistResult {
+        synchronized(lock) {
+            return persistQueueFile(kind, snapshot())
+        }
+    }
+
+    private fun persistQueueFile(kind: String, entries: List<OfflineQueue.Entry<String>>): QueuePersistResult {
+        val (persisted, omitted) = OfflineQueue.selectPersistable(
+            entries, MAX_PERSIST_ENTRY_CHARS, MAX_PERSIST_TOTAL_CHARS
+        )
+        if (omitted > 0) {
+            Log.w(TAG, "queue($kind) persist: $omitted of ${entries.size} entries kept memory-only (oversized or over budget)")
+            // Review nit: keep the dropped entries identifiable — for an
+            // emergency app, knowing WHICH SOS went memory-only matters.
+            val oversizedKeys = entries.filter { it.payload.length > MAX_PERSIST_ENTRY_CHARS }.map { it.key }
+            if (oversizedKeys.isNotEmpty()) {
+                Log.w(TAG, "queue($kind) persist: oversized entries kept memory-only: $oversizedKeys")
+            }
+        }
+        return runCatching {
             val arr = JSONArray()
-            var totalChars = 0
-            for (e in entries) {
-                if (e.payload.length > MAX_PERSIST_ENTRY_CHARS) {
-                    Log.w(TAG, "queue($kind) entry ${e.key} too large to persist (${e.payload.length} chars) — memory-only")
-                    continue
-                }
-                if (totalChars + e.payload.length > MAX_PERSIST_TOTAL_CHARS) {
-                    Log.w(TAG, "queue($kind) persist budget reached — ${entries.size - arr.length()} newest entries kept memory-only")
-                    break
-                }
-                totalChars += e.payload.length
+            for (e in persisted) {
                 arr.put(
                     JSONObject().apply {
                         put("key", e.key)
@@ -674,12 +821,31 @@ class AppRepository(
             }
             val f = queueFile(kind)
             val tmp = java.io.File(context.filesDir, "queue_$kind.json.tmp")
-            tmp.writeText(arr.toString())
-            if (!tmp.renameTo(f)) {
-                f.writeText(arr.toString())
-                tmp.delete()
+            // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191946):
+            // the write is durable, not just atomic — the temp file is
+            // synced before the rename and the directory after it, so
+            // durable==true means the queue survives battery loss. A
+            // failed write keeps the previous file intact (the helper
+            // never writes directly to the live file).
+            val ok = writeFileDurably(tmp, f, arr.toString().toByteArray())
+            if (!ok) {
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Minor 4660269800):
+                // do NOT claim the previous file was kept — a failure
+                // after the rename leaves the NEW contents in place with
+                // unknown durability. The only honest statement is that
+                // durability is not confirmed.
+                Log.w(TAG, "queue persist($kind) failed — durability not confirmed")
             }
-        }.onFailure { Log.w(TAG, "queue persist($kind) failed", it) }
+            QueuePersistResult(
+                if (ok) persisted.size else 0,
+                omitted,
+                failed = !ok,
+                persistedKeys = if (ok) persisted.map { it.key }.toSet() else emptySet()
+            )
+        }.getOrElse { e ->
+            Log.w(TAG, "queue persist($kind) failed", e)
+            QueuePersistResult(0, omitted, failed = true)
+        }
     }
 
     /** Cold-start fallback: the last good API snapshot survives process death. */
@@ -751,9 +917,88 @@ class AppRepository(
         private const val MESH_INTEL_MAX = 100
         /** Per-entry persistence guard: a maxed legal payload (700k-char SOS audio) fits; runaway garbage does not. */
         private const val MAX_PERSIST_ENTRY_CHARS = 800_000
-        /** Total per-file budget — bounds disk even with a full 60-entry queue of big payloads. */
-        private const val MAX_PERSIST_TOTAL_CHARS = 12_000_000
+        /**
+         * Fix 18 (NREP-5): total per-file budget — 60 entries × ~700,000
+         * chars (a full queue of legal max-size SOS audio payloads) ≈
+         * 42 M chars, rounded up to 48 M with headroom for JSON escaping.
+         * Worst case two files × ~48 MB (+ one tmp each during write) is
+         * the honest price of the "durable queue" promise. The old 12 M
+         * budget silently dropped the newest emergencies after ~17
+         * max-size SOS payloads, below the queue capacity of 60.
+         */
+        private const val MAX_PERSIST_TOTAL_CHARS = 48_000_000
         const val OFFLINE_QUEUED_MSG = "لا يوجد اتصال — حُفظ الطلب وسيرسل تلقائيًا عند عودة الشبكة"
+        /** Fix 18 (NREP-5): the entry is queued in memory only — it is NOT on disk, so process death would lose it. */
+        const val QUEUE_PERSIST_FAILED_MSG = "تعذر حفظ الطلب على الجهاز — سيُحاول إرساله طالما التطبيق مفتوح"
+
+        /**
+         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269789): sync a
+         * directory to storage via the raw syscall wrapper — opening a
+         * directory as a stream is rejected on Android (IoBridge) and on
+         * the JVM (OpenJDK's FileInputStream check), which is exactly why
+         * the first 18c attempt failed its own unit tests on CI (both
+         * success tests, `writeFileDurably` returning false). Android-
+         * only by construction: android.system.Os is a stub in JVM unit
+         * tests, so this function is never called there — the seam in
+         * [writeFileDurably] lets tests pass a fake instead. Proven by
+         * compilation (CI build) and device behaviour, not by a unit test.
+         */
+        internal fun syncDirectory(dir: java.io.File): Boolean {
+            return try {
+                val fd = android.system.Os.open(dir.absolutePath, android.system.OsConstants.O_RDONLY, 0)
+                try {
+                    android.system.Os.fsync(fd)
+                    true
+                } finally {
+                    android.system.Os.close(fd)
+                }
+            } catch (e: Exception) {
+                false
+            }
+        }
+
+        /**
+         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191946): write
+         * [bytes] to [tmp], sync the file to storage, rename onto
+         * [target] (retry once), then sync the containing directory so
+         * the rename itself is durable. Returns false if any step fails.
+         * A rename is atomic replacement, not durability — without the
+         * syncs, a battery loss before writeback could lose a queue
+         * already reported as saved. Failure contract (CodeRabbit Minor
+         * 4660269800 — the first 18c text got this wrong): a failure
+         * BEFORE the rename leaves the old [target] intact; a failure
+         * AFTER the rename (directory sync) leaves the NEW contents in
+         * place with unknown durability. Either way the return is false
+         * and the caller must not report the queue as durable. Never
+         * throws — and it deliberately calls no android.util.Log (which
+         * is a stub that throws in JVM unit tests); the caller logs the
+         * failure. [syncDir] is a seam for tests: production passes the
+         * real [syncDirectory], JVM tests pass a fake (Os is a stub
+         * there).
+         */
+        internal fun writeFileDurably(
+            tmp: java.io.File,
+            target: java.io.File,
+            bytes: ByteArray,
+            syncDir: (java.io.File) -> Boolean = { dir -> syncDirectory(dir) }
+        ): Boolean {
+            val dir = target.parentFile ?: return false
+            return try {
+                java.io.FileOutputStream(tmp).use { out ->
+                    out.write(bytes)
+                    out.fd.sync()
+                }
+                if (!tmp.renameTo(target) && !tmp.renameTo(target)) {
+                    tmp.delete()
+                    return false
+                }
+                if (!syncDir(dir)) return false
+                true
+            } catch (e: Exception) {
+                tmp.delete()
+                false
+            }
+        }
     }
 }
 

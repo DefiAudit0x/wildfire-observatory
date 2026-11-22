@@ -276,4 +276,63 @@ class OfflineQueueTest {
         q.restoreAll(emptyList())
         assertEquals(0, q.size())
     }
+
+    // ---------- Fix 18 (NREP-5): selectPersistable ----------
+
+    private fun entry(key: String, payloadChars: Int) =
+        OfflineQueue.Entry(key, "x".repeat(payloadChars))
+
+    @Test
+    fun `a full queue of max-size SOS payloads fits the new 48M budget`() {
+        val entries = (0 until 60).map { entry("k$it", 700_000) }
+        val (persisted, omitted) = OfflineQueue.selectPersistable(entries, 800_000, 48_000_000)
+        assertEquals(60, persisted.size)
+        assertEquals(0, omitted)
+    }
+
+    @Test
+    fun `the old 12M budget dropped most of a full max-size queue`() {
+        // Fail-without-fix shape: 60 × 700k = 42M chars; the old budget
+        // held 17 entries and silently dropped the 43 newest emergencies.
+        val entries = (0 until 60).map { entry("k$it", 700_000) }
+        val (persisted, omitted) = OfflineQueue.selectPersistable(entries, 800_000, 12_000_000)
+        assertEquals(17, persisted.size)
+        assertEquals(43, omitted)
+        assertEquals((0 until 17).map { "k$it" }, persisted.map { it.key })
+    }
+
+    @Test
+    fun `one oversized entry is omitted and the rest persist`() {
+        val entries = listOf(entry("k1", 10), entry("k2", 900_000), entry("k3", 10))
+        val (persisted, omitted) = OfflineQueue.selectPersistable(entries, 800_000, 48_000_000)
+        assertEquals(listOf("k1", "k3"), persisted.map { it.key })
+        assertEquals(1, omitted)
+    }
+
+    @Test
+    fun `over the total budget only the newest tail is omitted`() {
+        val entries = listOf(entry("k1", 100), entry("k2", 100), entry("k3", 100))
+        val (persisted, omitted) = OfflineQueue.selectPersistable(entries, 800_000, 250)
+        assertEquals(listOf("k1", "k2"), persisted.map { it.key })
+        assertEquals(1, omitted)
+    }
+
+    @Test
+    fun `empty list persists nothing and omits nothing`() {
+        val (persisted, omitted) = OfflineQueue.selectPersistable(emptyList(), 800_000, 48_000_000)
+        assertEquals(0, persisted.size)
+        assertEquals(0, omitted)
+    }
+
+    @Test
+    fun `an entry exactly at the budget boundary persists, one char over does not`() {
+        val at = listOf(entry("k1", 1_000))
+        val (persistedAt, omittedAt) = OfflineQueue.selectPersistable(at, 800_000, 1_000)
+        assertEquals(1, persistedAt.size)
+        assertEquals(0, omittedAt)
+        val over = listOf(entry("k1", 1_001))
+        val (persistedOver, omittedOver) = OfflineQueue.selectPersistable(over, 800_000, 1_000)
+        assertEquals(0, persistedOver.size)
+        assertEquals(1, omittedOver)
+    }
 }
