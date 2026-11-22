@@ -469,12 +469,20 @@ class AppRepository(
      */
     suspend fun refreshAll() = withContext(Dispatchers.IO) {
         val prev = _state.value
-        val reports = fetchList("/api/reports") { Parsers.parseReports(it) } ?: prev.reports
-        val hotspots = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) } ?: prev.hotspots
-        val safezones = fetchList("/api/safezones") { Parsers.parseSafezones(it) } ?: prev.safezones
-        val wilayas = fetchList("/api/wilayas") { Parsers.parseWilayas(it) } ?: prev.wilayas
-        val allSucceeded = reports !== prev.reports || hotspots !== prev.hotspots ||
-            safezones !== prev.safezones || wilayas !== prev.wilayas
+        // Fix 17 (NREP-1): keep the nullable fetch results separate from
+        // the last-good fallback, so success is decided by nullability
+        // (all four endpoints returned a list), not by the old OR over
+        // reference identity — one success used to stamp a mixed old/new
+        // snapshot as a fully-successful pass.
+        val reportsR = fetchList("/api/reports") { Parsers.parseReports(it) }
+        val hotspotsR = fetchList("/api/satellite-data") { Parsers.parseHotspots(it) }
+        val safezonesR = fetchList("/api/safezones") { Parsers.parseSafezones(it) }
+        val wilayasR = fetchList("/api/wilayas") { Parsers.parseWilayas(it) }
+        val allSucceeded = RefreshPolicy.refreshSucceeded(reportsR, hotspotsR, safezonesR, wilayasR)
+        val reports = reportsR ?: prev.reports
+        val hotspots = hotspotsR ?: prev.hotspots
+        val safezones = safezonesR ?: prev.safezones
+        val wilayas = wilayasR ?: prev.wilayas
         _state.value = _state.value.copy(
             reports = reports,
             hotspots = hotspots,
@@ -503,7 +511,21 @@ class AppRepository(
         // v2.15.0: returns NULL on failure (caller keeps last-good data) —
         // a failed endpoint is no longer indistinguishable from an empty one.
         return when (val r = api.get(path)) {
-            is ObservatoryApi.Result.Ok -> parse(r.body)
+            is ObservatoryApi.Result.Ok -> {
+                val parsed = parse(r.body)
+                // Fix 17 (NREP-2): the parsers collapse "malformed body"
+                // and "genuinely empty array" into the same emptyList(),
+                // so an empty parse is only a success when the body really
+                // was an empty array. Anything else that parses to nothing
+                // is a failure — the caller keeps last-good data instead
+                // of wiping it. A valid array whose every item is
+                // malformed is also treated as a failure (zero usable
+                // items must not wipe last-good data).
+                if (parsed.isEmpty() && !RefreshPolicy.isGenuineEmptyBody(r.body)) {
+                    Log.w(TAG, "GET $path returned a malformed body; keeping last-good data")
+                    null
+                } else parsed
+            }
             else -> {
                 Log.w(TAG, "GET $path failed: $r")
                 null
@@ -676,7 +698,13 @@ class AppRepository(
     }
 
     private fun persistSnapshot() {
-        if (_state.value.reports.isEmpty() && _state.value.hotspots.isEmpty()) return
+        // Fix 17 (NREP-3): no early return when reports and hotspots are
+        // both empty. After a fully-successful refresh an empty list is
+        // real information (the threats are gone), and the snapshot must
+        // replace the stale record — otherwise the next cold start
+        // resurrects removed/resolved threats (and stale safezones).
+        // Persisting the empty snapshot also keeps lastSyncMs and the
+        // safezones, and keeps one code path for all five callers.
         runCatching {
             val o = JSONObject()
             o.put("reports", JSONArray(_state.value.reports.map { r ->
