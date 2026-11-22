@@ -242,6 +242,18 @@ class MeshQueue {
             val removed = pending.removeAll { it.messageId == messageId && !isReadable(it) }
             if (removed) {
                 forwardedMessages.keys.removeAll { it.endsWith(":$messageId") }
+                // Fix 16d (CodeRabbit Minor 4659815315 on PR #147): also
+                // clear the delivery state, or the unreadable copy's
+                // acknowledgements (deliveredTargets is keyed by
+                // messageId, shared across copies) evict the readable
+                // replacement early on the next sweep before its own
+                // transfer completes — and if that transfer then fails, no
+                // queued entry remains for retry. At drop time the
+                // replacement has not been admitted yet, so it has no
+                // bindings; a late SUCCESS for the dropped copy finds no
+                // binding and cannot falsely acknowledge the replacement.
+                deliveredTargets.remove(messageId)
+                payloadToMessage.entries.removeAll { (_, binding) -> binding.messageId == messageId }
             }
             return removed
         }
