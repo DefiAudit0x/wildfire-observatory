@@ -592,7 +592,26 @@ class AppRepository(
                             if (io { api.post("/api/reports", e.payload).is2xx }) deliveredR.add(e.key)
                         }
                         for (e in reservedS) {
-                            if (io { api.post("/api/sos", e.payload).is2xx }) deliveredS.add(e.key)
+                            val result = io { api.post("/api/sos", e.payload) }
+                            if (result.is2xx) {
+                                deliveredS.add(e.key)
+                            } else if (result is ObservatoryApi.Result.HttpError && result.status == 409) {
+                                // Fix 18 (NREP-5 follow-up, CodeRabbit Major
+                                // 4660191944): the server already holds a
+                                // NEWER SOS from this device — the queued
+                                // older copy is redundant and must be
+                                // dropped, not retried until it escapes the
+                                // 5-minute duplicate window and becomes a
+                                // second stored SOS. Only this 409 is
+                                // terminal; the other 409s (foreign key,
+                                // already resolved, team dispatched) keep
+                                // retrying as before.
+                                val message = extractServerError(result.body) ?: result.body
+                                if (isAlreadyReceivedRecentlyMessage(message)) {
+                                    Log.i(TAG, "SOS ${e.key} superseded by a newer SOS from this device — dropping queued copy")
+                                    deliveredS.add(e.key)
+                                }
+                            }
                         }
                         io {
                             reportQueue.commit(now, deliveredR)
@@ -753,18 +772,17 @@ class AppRepository(
             }
             val f = queueFile(kind)
             val tmp = java.io.File(context.filesDir, "queue_$kind.json.tmp")
-            tmp.writeText(arr.toString())
-            // Fix 18 (NREP-4): never write directly to the live file — a
-            // crash mid-write would corrupt the queue. Retry the rename
-            // once; if it still fails, keep the old file intact and
-            // report failure (the old direct-write fallback is deleted).
-            if (!tmp.renameTo(f) && !tmp.renameTo(f)) {
-                Log.w(TAG, "queue persist($kind) rename failed — keeping previous file")
-                tmp.delete()
-                QueuePersistResult(0, omitted, failed = true)
-            } else {
-                QueuePersistResult(persisted.size, omitted, failed = false)
+            // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191946):
+            // the write is durable, not just atomic — the temp file is
+            // synced before the rename and the directory after it, so
+            // durable==true means the queue survives battery loss. A
+            // failed write keeps the previous file intact (the helper
+            // never writes directly to the live file).
+            val ok = writeFileDurably(tmp, f, arr.toString().toByteArray())
+            if (!ok) {
+                Log.w(TAG, "queue persist($kind) failed — keeping previous file")
             }
+            QueuePersistResult(if (ok) persisted.size else 0, omitted, failed = !ok)
         }.getOrElse { e ->
             Log.w(TAG, "queue persist($kind) failed", e)
             QueuePersistResult(0, omitted, failed = true)
@@ -853,6 +871,52 @@ class AppRepository(
         const val OFFLINE_QUEUED_MSG = "لا يوجد اتصال — حُفظ الطلب وسيرسل تلقائيًا عند عودة الشبكة"
         /** Fix 18 (NREP-5): the entry is queued in memory only — it is NOT on disk, so process death would lose it. */
         const val QUEUE_PERSIST_FAILED_MSG = "تعذر حفظ الطلب على الجهاز — سيُحاول إرساله طالما التطبيق مفتوح"
+
+        /**
+         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191944): true
+         * only for the server's "already received recently" 409 — the
+         * message the SOS route returns when the device's duplicate
+         * window (5 min) already holds a NEWER SOS from this device
+         * (`server/routes/sos.ts:510`). The other 409s ("retry key
+         * belongs to a different device", "already resolved",
+         * TEAM_ALREADY_DISPATCHED) are not terminal in the same way.
+         * Pure over the extracted error message — JVM-testable.
+         */
+        internal fun isAlreadyReceivedRecentlyMessage(message: String?): Boolean =
+            !message.isNullOrBlank() && message.contains("already received recently")
+
+        /**
+         * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660191946): write
+         * [bytes] to [tmp], sync the file to storage, rename onto
+         * [target] (retry once), then sync the containing directory so
+         * the rename itself is durable. Returns false (leaving the old
+         * [target] intact) if any step fails. A rename is atomic
+         * replacement, not durability — without the syncs, a battery
+         * loss before writeback could lose a queue already reported as
+         * saved. The directory sync uses FileInputStream, the portable
+         * JVM route: opening a directory read-only and syncing its fd
+         * works on Linux/Android (ext4/f2fs). Never throws — and it
+         * deliberately calls no android.util.Log (which is a stub that
+         * throws in JVM unit tests); the caller logs the failure.
+         */
+        internal fun writeFileDurably(tmp: java.io.File, target: java.io.File, bytes: ByteArray): Boolean {
+            val dir = target.parentFile ?: return false
+            return try {
+                java.io.FileOutputStream(tmp).use { out ->
+                    out.write(bytes)
+                    out.fd.sync()
+                }
+                if (!tmp.renameTo(target) && !tmp.renameTo(target)) {
+                    tmp.delete()
+                    return false
+                }
+                java.io.FileInputStream(dir).use { it.fd.sync() }
+                true
+            } catch (e: Exception) {
+                tmp.delete()
+                false
+            }
+        }
     }
 }
 
