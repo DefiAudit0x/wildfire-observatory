@@ -20,12 +20,14 @@ class MeshQueueTest {
 
     private fun msg(
         messageId: String,
+        type: String = "report",
+        needsEncryption: Boolean = false,
         lastSendAttemptAt: Long = 0L,
         attempted: Set<String> = emptySet()
     ): MeshQueue.MeshMessage =
         MeshQueue.MeshMessage(
             messageId = messageId,
-            type = "report",
+            type = type,
             payloadB64 = "cGF5bG9hZA==",
             iv = "aXZpdml2",
             hopCount = 0,
@@ -39,7 +41,8 @@ class MeshQueueTest {
             lng = 0.0,
             powNonce = 0,
             powDifficulty = MeshWire.NETWORK_POW_DIFFICULTY,
-            lastSendAttemptAt = lastSendAttemptAt
+            lastSendAttemptAt = lastSendAttemptAt,
+            needsEncryption = needsEncryption
         ).also { attempted.forEach { ep -> it.attemptedTargets.add(ep) } }
 
     private fun fill(queue: MeshQueue, count: Int, firstId: Int = 0, attemptBase: Long = 0L): Unit {
@@ -278,5 +281,69 @@ class MeshQueueTest {
             MeshQueue.RelayMode.NONE,
             MeshQueue.relayMode(MeshInbound.TYPE_REPORT, decrypted = false, hopsLeft = 0)
         )
+    }
+
+    // Fix 16c (CodeRabbit Major 4659699299 on PR #147): a readable entry
+    // supersedes unreadable entries for the same messageId. Without this,
+    // the verbatim copy's forwarded markers (keyed "$endpointId:$messageId")
+    // suppress the readable copy for the same peer, and the NSVC-1 harm
+    // returns order-dependently — whichever copy reaches a peer first wins.
+    @Test
+    fun dropUnreadableFor_removesOnlyUnreadableEntriesForThatId() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1")) // verbatim report: unreadable
+        q.pending.add(msg("m1", needsEncryption = true)) // re-encrypted: readable
+        q.pending.add(msg("m1", type = MeshInbound.TYPE_ECHO)) // echo: readable
+        q.pending.add(msg("m2")) // other id: untouched
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertEquals(listOf("m1", "m1", "m2"), q.pending.map { it.messageId })
+        assertTrue(q.pending.any { it.needsEncryption })
+        assertTrue(q.pending.any { it.type == MeshInbound.TYPE_ECHO })
+        assertTrue(q.pending.any { it.messageId == "m2" })
+    }
+
+    @Test
+    fun dropUnreadableFor_clearsForwardedMarkersForThatIdOnly() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1"))
+        q.markForwarded("ep1", "m1", 100L)
+        q.markForwarded("ep2", "m1", 100L)
+        q.markForwarded("ep1", "m2", 100L)
+
+        assertTrue(q.dropUnreadableFor("m1"))
+
+        assertFalse(q.isForwarded("ep1", "m1"))
+        assertFalse(q.isForwarded("ep2", "m1"))
+        assertTrue(q.isForwarded("ep1", "m2"))
+        // The Trickle-K count is derived from the markers each tick, so it
+        // resets for m1 too and is untouched for m2.
+        assertEquals(0, q.forwardsInWindow(200L, 5_000L)["m1"] ?: 0)
+        assertEquals(1, q.forwardsInWindow(200L, 5_000L)["m2"])
+    }
+
+    @Test
+    fun dropUnreadableFor_returnsFalseWhenNothingToDrop() {
+        val q = MeshQueue()
+        q.pending.add(msg("m1", needsEncryption = true)) // readable only
+        q.markForwarded("ep1", "m1", 100L)
+
+        assertFalse(q.dropUnreadableFor("m1"))
+        assertEquals(1, q.pending.size)
+        assertTrue(q.isForwarded("ep1", "m1")) // markers untouched
+    }
+
+    @Test
+    fun hasReadableEntry_distinguishesReadableFromUnreadable() {
+        val q = MeshQueue()
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m1")) // verbatim report: unreadable
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m2", type = MeshInbound.TYPE_ECHO)) // echo: readable
+        assertTrue(q.hasReadableEntry("m2"))
+        assertFalse(q.hasReadableEntry("m1"))
+        q.pending.add(msg("m1", needsEncryption = true)) // re-encrypted: readable
+        assertTrue(q.hasReadableEntry("m1"))
     }
 }
