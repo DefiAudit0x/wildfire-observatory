@@ -121,6 +121,23 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
     }
 
     /**
+     * Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795): replace
+     * the payload of a WAITING entry under the same key — a re-pressed
+     * SOS refreshes the queued entry with fresher data instead of
+     * minting a second idempotency key. Attempts/backoff survive (the
+     * entry keeps its retry clock). In-flight entries are owned by the
+     * drain and are never touched; returns false for them and for an
+     * absent key.
+     */
+    @Synchronized
+    fun replacePayload(key: String, payload: T): Boolean {
+        val idx = items.indexOfFirst { it.key == key }
+        if (idx < 0) return false
+        items[idx] = items[idx].copy(payload = payload)
+        return true
+    }
+
+    /**
      * Hydrate the queue from persisted state (F1: cold-start survival).
      * Replaces the WAITING contents with [entries] in order, deduped by key
      * (keys currently in flight are never duplicated), capped at capacity
