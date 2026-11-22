@@ -59,6 +59,40 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
             val shift = (failedAttempts - 1).coerceAtMost(20)
             return (BACKOFF_BASE_MS shl shift).coerceAtMost(BACKOFF_MAX_MS)
         }
+
+        /**
+         * Fix 18 (NREP-5): pure persistence-budget selection. Splits a
+         * snapshot (oldest first, as [OfflineQueue.snapshot] returns it)
+         * into the entries that fit on disk and the count that stays
+         * memory-only. An entry over [maxEntryChars] is skipped; once the
+         * cumulative [maxTotalChars] budget is exceeded, that entry and
+         * every newer one is omitted. An entry exactly at the budget
+         * boundary is persisted. Pure over primitives — JVM-testable.
+         */
+        fun selectPersistable(
+            entries: List<Entry<String>>,
+            maxEntryChars: Int,
+            maxTotalChars: Int
+        ): Pair<List<Entry<String>>, Int> {
+            val persisted = ArrayList<Entry<String>>(entries.size)
+            var totalChars = 0
+            var omitted = 0
+            for ((index, e) in entries.withIndex()) {
+                if (e.payload.length > maxEntryChars) {
+                    omitted++
+                    continue
+                }
+                if (totalChars + e.payload.length > maxTotalChars) {
+                    // Budget reached: this and every newer entry stays
+                    // memory-only (the newest emergencies are the ones cut).
+                    omitted += entries.size - index
+                    break
+                }
+                totalChars += e.payload.length
+                persisted.add(e)
+            }
+            return persisted to omitted
+        }
     }
 
     private val items = ArrayDeque<Entry<T>>()
