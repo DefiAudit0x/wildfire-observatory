@@ -734,9 +734,22 @@ class MeshService : Service() {
      * local-style message so the send loop encrypts it separately for each
      * of our peers. Mirrors broadcastMessage exactly — one snapshot for
      * the PoW prefix, the origin identity and the eventual encryption;
-     * a fresh PoW solved for the new id; the same coordinates and type;
-     * one hop consumed. Returns false (caller falls back to the verbatim
+     * a fresh PoW solved for (origin messageId, our snapshot's id); the
+     * same coordinates and type; one hop consumed. Returns false (caller falls back to the verbatim
      * relay) when the PoW budget is exhausted or any step throws.
+     *
+     * The copy KEEPS the origin messageId (independent-review Major on the
+     * first draft, which minted a fresh UUID): both mesh dedup mechanisms
+     * are keyed by messageId — the anti-replay seen-cache and the
+     * Trickle/forwarded-marker suppression — so a fresh id would make
+     * every copy look like a new message and fan out exponentially
+     * (~66k frames for one report in a 10-device clique). With the origin
+     * id, the markers bound re-sends per peer; the nonce stays fresh, so
+     * the copy still passes the seen-cache at its first hop. Known
+     * remainder (follow-up, not this part): the same report can still be
+     * NOTIFIED twice when heard over two paths, because the seen-cache key
+     * covers (messageId, nonce) and the nonces differ — content dedup in
+     * onMeshPlaintext is a separate change.
      *
      * Note the plaintext here is the UTF-8 decoding the listener path
      * already performs — a frame whose bytes are not valid UTF-8 carries
@@ -745,7 +758,7 @@ class MeshService : Service() {
     private fun enqueueReencryptedRelay(payload: MeshWire.Frame, plaintext: String): Boolean {
         return try {
             val snapshot = CryptoEngine.getEphemeralSnapshot()
-            val messageId = UUID.randomUUID().toString()
+            val messageId = payload.messageId
             val powNonce = MeshWire.ProofOfWork.solve(
                 MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId),
                 PO_W_DIFFICULTY
