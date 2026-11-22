@@ -650,28 +650,32 @@ class MeshService : Service() {
 
             // Store-and-forward relay FIRST (audit B1): enqueue relay BEFORE
             // notifying local listeners so a listener exception cannot stop propagation.
-            if (payload.hopsLeft > 0) {
-                // H1 fix: the relay path must respect the same queue bound as
-                // broadcastMessage — otherwise a peer flooding unique valid
-                // frames grows pendingMessages without limit (OOM on a device
-                // that must stay alive for an emergency).
-                queue.admit(MeshQueue.MeshMessage(
-                    messageId = payload.messageId,
-                    type = payload.type,
-                    payloadB64 = payload.payloadB64,
-                    iv = payload.iv,
-                    hopCount = payload.hopCount,
-                    hopsLeft = payload.hopsLeft - 1,
-                    origEphemeralId = payload.origEphemeralId,
-                    origPublicKey = payload.origPublicKey,
-                    timestamp = payload.timestamp,
-                    signature = payload.signature,
-                    nonce = payload.nonce,
-                    lat = payload.lat,
-                    lng = payload.lng,
-                    powNonce = payload.powNonce,
-                    powDifficulty = payload.powDifficulty
-                ))
+            //
+            // Fix 16 (NSVC-1): a verbatim relay of an E2EE frame this device
+            // decrypted is undecryptable past the first hop — the origin
+            // encrypted it for THIS device's key, so re-emitting the same
+            // ciphertext to a third peer hands it bytes nobody downstream
+            // can read. Such a frame's PLAINTEXT is re-queued instead (a
+            // fresh origin frame under our own snapshot, same content and
+            // coordinates, one hop consumed) so the send loop encrypts it
+            // separately for each of OUR peers — that is what makes A→B→C
+            // deliver readable content. Echo frames are plaintext by design
+            // and keep the verbatim relay; frames we could not decrypt keep
+            // it too (the intended recipient may be downstream). Any failure
+            // building the re-encrypted copy falls back to the verbatim
+            // relay, so this path can never do worse than today.
+            when (MeshQueue.relayMode(payload.type, decrypted != null, payload.hopsLeft)) {
+                MeshQueue.RelayMode.VERBATIM -> enqueueVerbatimRelay(payload)
+                MeshQueue.RelayMode.REENCRYPT -> {
+                    // relayMode returns REENCRYPT only when decrypted != null.
+                    val plainBytes = decrypted
+                    if (plainBytes == null || plainBytes.size > MAX_PLAINTEXT_BYTES ||
+                        !enqueueReencryptedRelay(payload, String(plainBytes, Charsets.UTF_8))
+                    ) {
+                        enqueueVerbatimRelay(payload)
+                    }
+                }
+                MeshQueue.RelayMode.NONE -> {}
             }
 
             if (decrypted != null && decrypted.size > MAX_PLAINTEXT_BYTES) {
@@ -695,6 +699,83 @@ class MeshService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Message handling error", e)
             return false
+        }
+    }
+
+    /**
+     * Verbatim store-and-forward relay: re-emit the received frame
+     * unchanged (one hop consumed). H1 fix: the relay path respects the
+     * same queue bound as broadcastMessage — otherwise a peer flooding
+     * unique valid frames grows pendingMessages without limit (OOM on a
+     * device that must stay alive for an emergency).
+     */
+    private fun enqueueVerbatimRelay(payload: MeshWire.Frame) {
+        queue.admit(MeshQueue.MeshMessage(
+            messageId = payload.messageId,
+            type = payload.type,
+            payloadB64 = payload.payloadB64,
+            iv = payload.iv,
+            hopCount = payload.hopCount,
+            hopsLeft = payload.hopsLeft - 1,
+            origEphemeralId = payload.origEphemeralId,
+            origPublicKey = payload.origPublicKey,
+            timestamp = payload.timestamp,
+            signature = payload.signature,
+            nonce = payload.nonce,
+            lat = payload.lat,
+            lng = payload.lng,
+            powNonce = payload.powNonce,
+            powDifficulty = payload.powDifficulty
+        ))
+    }
+
+    /**
+     * Fix 16 (NSVC-1): re-queue a decrypted frame's plaintext as a fresh
+     * local-style message so the send loop encrypts it separately for each
+     * of our peers. Mirrors broadcastMessage exactly — one snapshot for
+     * the PoW prefix, the origin identity and the eventual encryption;
+     * a fresh PoW solved for the new id; the same coordinates and type;
+     * one hop consumed. Returns false (caller falls back to the verbatim
+     * relay) when the PoW budget is exhausted or any step throws.
+     *
+     * Note the plaintext here is the UTF-8 decoding the listener path
+     * already performs — a frame whose bytes are not valid UTF-8 carries
+     * the same replacement characters the UI would have shown.
+     */
+    private fun enqueueReencryptedRelay(payload: MeshWire.Frame, plaintext: String): Boolean {
+        return try {
+            val snapshot = CryptoEngine.getEphemeralSnapshot()
+            val messageId = UUID.randomUUID().toString()
+            val powNonce = MeshWire.ProofOfWork.solve(
+                MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId),
+                PO_W_DIFFICULTY
+            ) ?: run {
+                Log.w(TAG, "Re-encrypted relay: PoW budget exhausted; falling back to verbatim relay")
+                return false
+            }
+            queue.admit(MeshQueue.MeshMessage(
+                messageId = messageId,
+                type = payload.type,
+                payloadB64 = "",
+                iv = "",
+                hopCount = 0,
+                hopsLeft = payload.hopsLeft - 1,
+                origEphemeralId = snapshot.ephemeralId,
+                origPublicKey = snapshot.publicKeyB64,
+                timestamp = System.currentTimeMillis(),
+                signature = "",
+                nonce = protocolRandom.nextInt(),
+                lat = payload.lat,
+                lng = payload.lng,
+                powNonce = powNonce,
+                powDifficulty = PO_W_DIFFICULTY,
+                snapshot = snapshot,
+                needsEncryption = true,
+                plaintext = plaintext
+            ))
+        } catch (e: Exception) {
+            Log.w(TAG, "Re-encrypted relay failed; falling back to verbatim relay", e)
+            false
         }
     }
 
