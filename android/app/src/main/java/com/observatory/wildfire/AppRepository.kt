@@ -283,7 +283,13 @@ class AppRepository(
                     // (false) when it is not on disk — process death would
                     // lose it, so claiming storage would be dishonest.
                     val (reportsResult, _) = persistQueues()
-                    if (reportsResult.durable) {
+                    // Fix 18 (NREP-5 follow-up, CodeRabbit Major
+                    // 4660332342): `durable` alone is vacuous for an
+                    // empty snapshot — the drain may have reserved this
+                    // entry between the enqueue and the persist. Report
+                    // queuing only when THIS submission's key is in the
+                    // file that was actually written.
+                    if (reportsResult.durable && key in reportsResult.persistedKeys) {
                         onDone(true, OFFLINE_QUEUED_MSG)
                     } else {
                         onDone(false, QUEUE_PERSIST_FAILED_MSG)
@@ -352,9 +358,7 @@ class AppRepository(
                 // and is never touched — the emergency itself is already
                 // being sent; a fresh key is only minted when nothing is
                 // queued at all (see above).
-                if (!sosQueue.replacePayload(key, body)) {
-                    sosQueue.enqueue(key, body)
-                }
+                val admitted = sosQueue.replacePayload(key, body) || sosQueue.enqueue(key, body)
                 persistSnapshot()
                 // Fix 18 (NREP-5): confirm durability BEFORE promising
                 // storage; do NOT set queuedWhileOffline when the entry
@@ -364,7 +368,24 @@ class AppRepository(
                 // in memory (the drain loop can still send it while the
                 // app lives), but onDone(false) when it is not on disk.
                 val (_, sosResult) = persistQueues()
-                if (sosResult.durable) {
+                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660332342):
+                // `durable` alone is vacuous for an empty snapshot. When
+                // admission was rejected (key in flight — `admitted` is
+                // false), the drain owns the entry's fate: it may deliver
+                // it, or poison-drop it after 8 failed attempts, while
+                // the persist still reports durable on an empty snapshot
+                // — so never report queuing then. Report queuing only
+                // when this submission was admitted AND its key is in the
+                // file that was actually written AND still in the queue.
+                // Known residual: an admitted entry at 7 failed attempts
+                // can still be poison-dropped by the drain after a
+                // truthful report — the pre-existing MAX_ATTEMPTS
+                // doctrine, out of scope for this part (changing it is a
+                // separate product decision, not a queue bug).
+                val keyStored = sosResult.durable &&
+                    key in sosResult.persistedKeys &&
+                    sosQueue.snapshot().any { it.key == key }
+                if (admitted && keyStored) {
                     _state.value = _state.value.copy(
                         sos = SosUiState(sending = false, queuedWhileOffline = true)
                     )
@@ -729,8 +750,21 @@ class AppRepository(
      * all mean the kind is NOT durable. `persisted` counts entries
      * selected for writing (0 when the write failed — nothing new is
      * on disk then); `omitted` counts entries kept memory-only.
+     * `persistedKeys` is the set of keys actually written (empty when
+     * the write failed). `durable` is VACUOUS for an empty snapshot —
+     * an empty queue persists as an empty array — so a caller reporting
+     * about ONE submission must also check that submission's key is in
+     * `persistedKeys` (Fix 18 follow-up, CodeRabbit Major 4660332342:
+     * an in-flight re-pressed SOS whose admission was rejected got
+     * reported as queued on the strength of a vacuously durable empty
+     * snapshot, while the drain's commit was about to poison-drop it).
      */
-    data class QueuePersistResult(val persisted: Int, val omitted: Int, val failed: Boolean) {
+    data class QueuePersistResult(
+        val persisted: Int,
+        val omitted: Int,
+        val failed: Boolean,
+        val persistedKeys: Set<String> = emptySet()
+    ) {
         val durable: Boolean get() = !failed && omitted == 0
     }
 
@@ -802,7 +836,12 @@ class AppRepository(
                 // durability is not confirmed.
                 Log.w(TAG, "queue persist($kind) failed — durability not confirmed")
             }
-            QueuePersistResult(if (ok) persisted.size else 0, omitted, failed = !ok)
+            QueuePersistResult(
+                if (ok) persisted.size else 0,
+                omitted,
+                failed = !ok,
+                persistedKeys = if (ok) persisted.map { it.key }.toSet() else emptySet()
+            )
         }.getOrElse { e ->
             Log.w(TAG, "queue persist($kind) failed", e)
             QueuePersistResult(0, omitted, failed = true)
