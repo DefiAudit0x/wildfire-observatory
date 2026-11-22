@@ -18,7 +18,7 @@ class RefreshPolicyTest {
     @Test
     fun `all four succeed including genuinely empty lists`() {
         assertTrue(RefreshPolicy.refreshSucceeded(listOf(1), listOf(2), listOf(3), listOf(4)))
-        assertTrue(RefreshPolicy.refreshSucceeded(emptyList<Int>(), emptyList(), emptyList(), emptyList()))
+        assertTrue(RefreshPolicy.refreshSucceeded(emptyList<Int>(), emptyList<Int>(), emptyList<Int>(), emptyList<Int>()))
     }
 
     @Test
