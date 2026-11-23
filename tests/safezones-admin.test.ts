@@ -84,6 +84,14 @@ describe("safe-zones admin endpoint (Fix 26 — SZM-1)", () => {
       .set("Authorization", `Bearer ${generateAdminToken()}`)
       .send({ ...zoneB, isActive: false });
     expect(put.status).toBe(200);
+    // Fix 26b (watch Minor 4666538099): the GET assertions below only read
+    // the pre-seeded mock, so a PUT returning 200 without writing would
+    // pass them — pin the write itself.
+    expect(fsMock.docUpdate).toHaveBeenCalledWith(
+      "safeZones",
+      "zone-b",
+      expect.objectContaining({ isActive: false })
+    );
 
     const pub = await supertest(createApp())
       .get("/api/safezones")
