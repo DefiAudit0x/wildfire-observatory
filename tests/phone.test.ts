@@ -32,6 +32,14 @@ describe("normalizeMaghrebPhone (Fix 29 VOL-1)", () => {
     ["+21623456789", "+21623456789"],
     ["+212612345678", "+212612345678"],
     ["+218912345678", "+218912345678"],
+    // Fix 29b (CodeRabbit Minor 4): spaced/hyphenated international forms
+    // normalize to the same E.164 string — the old fallback returned the
+    // raw input with spaces, which validation then rejected.
+    ["+213 550 123 456", "+213550123456"],
+    ["+216 23 456 789", "+21623456789"],
+    ["+213-550-123-456", "+213550123456"],
+    ["+218 91 234 5678", "+218912345678"],
+    [" 0550123456 ", "+213550123456"],
     // Invalid inputs pass through unchanged (validation rejects them).
     ["aaaaaa", "aaaaaa"],
     ["", ""],

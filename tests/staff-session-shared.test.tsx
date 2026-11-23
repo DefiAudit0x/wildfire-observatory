@@ -46,6 +46,30 @@ function installFetch() {
   };
 }
 
+// Deferred /api/auth/session mock for the stale-probe test: each session
+// call parks until the test resolves it, so the test controls exactly
+// which answer settles first.
+function installDeferredFetch() {
+  const pending: Array<(res: Response) => void> = [];
+  const fetchMock = vi.fn((input: unknown) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("/api/auth/session")) {
+      return new Promise<Response>((resolve) => {
+        pending.push(resolve);
+      });
+    }
+    return Promise.resolve(json({ ok: true }, 200));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return {
+    fetchMock,
+    authCalls: () => fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/auth/session")),
+    resolveAuth: (index: number, status: number) => {
+      pending[index](status === 200 ? json(commanderSession, 200) : json({ error: "unauthorized" }, 401));
+    },
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -95,6 +119,45 @@ describe("staff session — one shared store (Fix 29 AUTH-1)", () => {
     await waitFor(() => expect(net.authCalls().length).toBe(2));
     expect(a.result.current.session.authenticated).toBe(true);
     expect(b.result.current.session.authenticated).toBe(true);
+  });
+
+  // ORDER MATTERS (fail-without-fix isolation): the visibility test must
+  // run before any test that mounts a generic probe — the visibility
+  // handler is module-level and installed once, so a probe mounted earlier
+  // would install it and make this test pass vacuously on old code. The
+  // staleness test runs last for the same reason: when it fails on old
+  // code its parked fetch never resolves, leaving a dead sharedFetch that
+  // would wedge every later staff test.
+  it("a staff-only mount recovers on tab return (Fix 29b Minor 2)", async () => {
+    vi.useFakeTimers();
+    const net = installFetch();
+    net.setSessionStatus(200);
+    renderHook(() => useStaffSession());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(net.authCalls().length).toBe(1);
+    // No generic listener is mounted, so only the staff subscription could
+    // have installed the visibility handler.
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(net.authCalls().length).toBe(2);
+  });
+
+  it("staff mounting after the admin probe reads the session at once (Fix 29b Minor 3)", async () => {
+    const net = installFetch();
+    net.setSessionStatus(200);
+    const probe = renderHook(() => useSessionProbe());
+    await waitFor(() => expect(probe.result.current).toBe(true));
+    // The probe created the interval and ticked with zero staff subscribers
+    // (App.tsx mounts it before the staff hook). The staff hook mounting
+    // now must fetch immediately — no timer is advanced in this test.
+    const staff = renderHook(() => useStaffSession());
+    await waitFor(() => expect(staff.result.current.session.authenticated).toBe(true));
+    expect(staff.result.current.loading).toBe(false);
+    expect(net.authCalls().length).toBe(1);
   });
 
   it("one /api/auth/session fetch per tick with three instances mounted", async () => {
@@ -157,5 +220,31 @@ describe("staff session — one shared store (Fix 29 AUTH-1)", () => {
     expect(net.adminCalls().length).toBe(2);
     expect(probe.result.current).toBe(true);
     expect(net.authCalls().length).toBe(0);
+  });
+
+  it("a forced refetch is not overwritten by a stale in-flight probe (Fix 29b Minor 1)", async () => {
+    const net = installDeferredFetch();
+    const a = renderHook(() => useStaffSession());
+    const b = renderHook(() => useStaffSession());
+    // Mount fetch #1 is in flight with the pre-login (401) answer pending.
+    expect(net.authCalls().length).toBe(1);
+    // StaffManager logs in: the refetch must start a FRESH request, not
+    // share the stale probe.
+    act(() => {
+      a.result.current.refetch();
+    });
+    expect(net.authCalls().length).toBe(2);
+    // The stale pre-login probe settles 401 — the generation guard ignores it.
+    await act(async () => {
+      net.resolveAuth(0, 401);
+    });
+    expect(b.result.current.session.authenticated).toBe(false);
+    // The forced fetch settles 200 — this is the answer that sticks.
+    await act(async () => {
+      net.resolveAuth(1, 200);
+    });
+    await waitFor(() => expect(b.result.current.session.authenticated).toBe(true));
+    expect(b.result.current.session.role).toBe("commander");
+    expect(a.result.current.loading).toBe(false);
   });
 });
