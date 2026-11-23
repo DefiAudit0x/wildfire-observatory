@@ -1,6 +1,9 @@
 package com.observatory.wildfire
 
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -50,5 +53,75 @@ class PhotoPipelineTest {
     @Test fun `custom maxDim is honored`() {
         // maxDim 1024: 4032 → 2016 → 1008 fits → sample 4
         assertEquals(4, PhotoPipeline.targetSample(4032, 3024, maxDim = 1024))
+    }
+
+    // ---------- Fix 19 (NPHOTO-1): the decoded-byte budget must fit the wire gate ----------
+
+    @Test fun `MAX_BYTES data URI fits the 500000 char wire gate`() {
+        // A data URI is the 23-char "data:image/jpeg;base64," prefix +
+        // base64 (4 chars per 3 bytes, NO_WRAP). Fail-without-fix:
+        // reverting MAX_BYTES to 450,000 makes this fail (600,023).
+        val dataUriChars = 23 + ((PhotoPipeline.MAX_BYTES + 2) / 3) * 4
+        assertTrue(dataUriChars <= 500_000)
+    }
+
+    @Test fun `the exact budget boundary is 374982 bytes`() {
+        // 374,982 -> 499,976 + 23 = 499,999 fits; one byte more does not.
+        assertEquals(499_999, 23 + ((374_982 + 2) / 3) * 4)
+        assertTrue(23 + ((374_983 + 2) / 3) * 4 > 500_000)
+        // The tempting round number does NOT fit — do not "round it up".
+        assertTrue(23 + ((375_000 + 2) / 3) * 4 > 500_000)
+    }
+
+    // ---------- Fix 19 (NCAM-2): the atomic write ----------
+
+    private fun tempDir(): File =
+        java.nio.file.Files.createTempDirectory("atomic-write-test").toFile()
+
+    @Test fun `a successful atomic write replaces the original and leaves no temp`() {
+        val dir = tempDir()
+        try {
+            val target = File(dir, "capture.jpg")
+            target.writeText("old")
+            assertTrue(PhotoPipeline.writeAtomically(target) { out ->
+                out.write("new".toByteArray())
+                true
+            })
+            assertEquals("new", target.readText())
+            assertFalse(File(dir, "capture.jpg.stamped").exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `a writer that reports failure leaves the original intact and deletes the temp`() {
+        val dir = tempDir()
+        try {
+            val target = File(dir, "capture.jpg")
+            target.writeText("old")
+            assertFalse(PhotoPipeline.writeAtomically(target) { out ->
+                out.write("partial".toByteArray())
+                false
+            })
+            assertEquals("old", target.readText())
+            assertFalse(File(dir, "capture.jpg.stamped").exists())
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test fun `a writer that throws leaves the original intact and deletes the temp`() {
+        val dir = tempDir()
+        try {
+            val target = File(dir, "capture.jpg")
+            target.writeText("old")
+            assertFalse(PhotoPipeline.writeAtomically(target) { _ ->
+                throw RuntimeException("boom")
+            })
+            assertEquals("old", target.readText())
+            assertFalse(File(dir, "capture.jpg.stamped").exists())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 }

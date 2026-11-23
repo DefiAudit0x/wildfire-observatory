@@ -387,11 +387,20 @@ class CameraCaptureFragment : Fragment() {
             ContextCompat.getMainExecutor(requireContext()),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                    // Fix 19 (NCAM-1): the callback runs on the main
+                    // executor and can fire after the user closed the
+                    // camera — drop the result instead of delivering
+                    // into a destroyed fragment (setFragmentResult and
+                    // popBack need a live FragmentManager).
+                    if (!isAdded) { captureInFlight = false; return }
                     processAndDeliver(file, stamp, alignment)
                 }
 
                 override fun onError(exception: ImageCaptureException) {
                     captureInFlight = false
+                    // Fix 19 (NCAM-1): no activity to toast in once
+                    // detached — requireContext() would throw.
+                    if (!isAdded) return
                     Toast.makeText(
                         requireContext(), R.string.camera_open_fail, Toast.LENGTH_SHORT
                     ).show()
@@ -411,9 +420,11 @@ class CameraCaptureFragment : Fragment() {
         stamp: TelemetryCamera.Stamp,
         alignment: TelemetryCamera.Alignment?
     ) {
-        // Captured BEFORE going background: viewLifecycleOwner is illegal to
-        // touch from another thread after onDestroyView.
-        val uiScope = viewLifecycleOwner.lifecycleScope
+        // Fix 19 (NCAM-1): the fragment scope, not the view scope — it
+        // lives until onDestroy, so the delivery launch itself can never
+        // throw for a destroyed view. The isAdded check inside the launch
+        // still guards the actual delivery.
+        val uiScope = lifecycleScope
         stampExecutor.execute {
             val preScan = try {
                 val bitmap = TelemetryOverlay.decodeUpright(file)
@@ -423,11 +434,20 @@ class CameraCaptureFragment : Fragment() {
                     TelemetryOverlay.stamp(stamped, stamp, alignment)
                     val pixels = TelemetryOverlay.downsamplePixels(stamped)
                     val scan = TelemetryCamera.preScan(pixels)
-                    file.outputStream().use { out ->
+                    // Fix 19 (NCAM-2): never write in place — opening
+                    // the original for writing truncates it before a
+                    // single stamped byte exists. Write to a temp file
+                    // and rename on success; on any failure the temp is
+                    // deleted and the ORIGINAL file is delivered raw,
+                    // genuinely intact.
+                    val wroteOk = PhotoPipeline.writeAtomically(file) { out ->
                         stamped.compress(Bitmap.CompressFormat.JPEG, 85, out)
                     }
                     stamped.recycle()
-                    scan
+                    if (wroteOk) scan else {
+                        Log.w(TAG, "stamp write failed, delivering raw capture")
+                        null
+                    }
                 } else null
             } catch (e: Exception) {
                 Log.w(TAG, "stamp failed, delivering raw capture", e)
