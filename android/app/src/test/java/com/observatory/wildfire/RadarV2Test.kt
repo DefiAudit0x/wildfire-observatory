@@ -243,6 +243,25 @@ class RadarV2Test {
         assertFalse(RadarV2.aiBriefingCacheHit(noneKey, key, t, t))
     }
 
+    // Fix 22c: the display re-check is distance-based, not an exact-key
+    // recomparison — LocationEngine publishes fresh fixes continuously,
+    // so the doubles at completion time almost always differ slightly
+    // from request time even when the user never moved.
+    @Test
+    fun guidance_same_place_is_one_kilometre() {
+        // Same fix → same place.
+        assertTrue(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.70, 3.00))
+        // ~555 m away (0.005° latitude ≈ 555 m) → same place.
+        assertTrue(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.705, 3.00))
+        // ~2.2 km away (0.02° latitude) → a different place.
+        assertFalse(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.72, 3.00))
+        // Location appeared or vanished mid-flight → not the same place.
+        assertFalse(RadarV2.samePlaceForGuidance(null, null, 36.70, 3.00))
+        assertFalse(RadarV2.samePlaceForGuidance(36.70, 3.00, null, null))
+        // Both without a location → same (no-location briefing for a no-location request).
+        assertTrue(RadarV2.samePlaceForGuidance(null, null, null, null))
+    }
+
     // v2.15.0: Kotlin Double ordering ranks NaN ABOVE every finite value —
     // an unknown-clearance route used to win the "Safest" slot. It must sink.
     @Test
