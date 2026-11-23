@@ -283,6 +283,47 @@ class TeamLocationLogicTest {
         assertFalse(TeamLocationLogic.shouldAutoArrive(1))
     }
 
+    // Fix 23 (NTEAMSV-1): a fix counts toward the arrival streak only when
+    // it is a NEW measurement — strictly newer than the last fix that
+    // counted. Predicate cases first, then the composed replay sequence
+    // (the exact loop the service runs, with the predicate gating
+    // nextArrivalStreak). Fail-without-fix: drop the isNewArrivalFix gate
+    // (the old service shape — nextArrivalStreak on every beat) and beat 2
+    // advances the streak to 2 → shouldAutoArrive true → the test fails.
+    @Test
+    fun `arrival fix counts only when strictly newer`() {
+        assertTrue(TeamLocationLogic.isNewArrivalFix(1000, null)) // first fix of a leg counts
+        assertFalse(TeamLocationLogic.isNewArrivalFix(1000, 1000)) // replay
+        assertFalse(TeamLocationLogic.isNewArrivalFix(999, 1000)) // older fix arriving late
+        assertTrue(TeamLocationLogic.isNewArrivalFix(1001, 1000)) // fresh fix
+    }
+
+    @Test
+    fun `replayed fix does not advance the arrival streak`() {
+        var streak = 0
+        var last: Long? = null
+        // Beat 1: fix t=1_000_000, 10 m from target → counts
+        if (TeamLocationLogic.isNewArrivalFix(1_000_000, last)) {
+            streak = TeamLocationLogic.nextArrivalStreak(streak, 10.0); last = 1_000_000
+        }
+        assertEquals(1, streak)
+        // Beat 2: SAME fix replayed (no new GPS callback) → must NOT advance
+        if (TeamLocationLogic.isNewArrivalFix(1_000_000, last)) {
+            streak = TeamLocationLogic.nextArrivalStreak(streak, 10.0); last = 1_000_000
+        }
+        assertEquals(1, streak)
+        assertFalse(TeamLocationLogic.shouldAutoArrive(streak))
+        // Beat 3: fresh fix t=1_015_000, 10 m → counts → arrival
+        if (TeamLocationLogic.isNewArrivalFix(1_015_000, last)) {
+            streak = TeamLocationLogic.nextArrivalStreak(streak, 10.0); last = 1_015_000
+        }
+        assertEquals(2, streak)
+        assertTrue(TeamLocationLogic.shouldAutoArrive(streak))
+        // Out of range still resets (the distance-first order).
+        streak = TeamLocationLogic.nextArrivalStreak(streak, 60.0)
+        assertEquals(0, streak)
+    }
+
     @Test
     fun `mission target coords parse from the extracted mission object`() {
         val mission = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42,\"sosLat\":36.7503,\"sosLng\":5.0703"
