@@ -247,4 +247,51 @@ describe("staff session — one shared store (Fix 29 AUTH-1)", () => {
     expect(b.result.current.session.role).toBe("commander");
     expect(a.result.current.loading).toBe(false);
   });
+
+  it("a stale body parsing late does not overwrite a newer session (Fix 29c)", async () => {
+    // The first fetch's BODY parks: its json() resolves only when the test
+    // says so. The forced refetch's body resolves at once. Runs last (see
+    // the ordering note at the top of this describe): if it fails early
+    // its parked body would wedge later staff tests.
+    let resolveJson1!: (value: unknown) => void;
+    const json1 = new Promise<unknown>((resolve) => {
+      resolveJson1 = resolve;
+    });
+    let sessionCalls = 0;
+    const fetchMock = vi.fn((input: unknown) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/api/auth/session")) {
+        sessionCalls += 1;
+        if (sessionCalls === 1) {
+          return Promise.resolve({ ok: true, json: () => json1 } as unknown as Response);
+        }
+        return Promise.resolve(json(commanderSession, 200));
+      }
+      return Promise.resolve(json({ ok: true }, 200));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const a = renderHook(() => useStaffSession());
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/api/auth/session")).length).toBe(1);
+    // Flush so fetch #1 passes the generation check and parks INSIDE
+    // res.json() — calling refetch before this flush would let #1 bail at
+    // the pre-parse check instead, and the race would never be exercised.
+    await act(async () => {});
+    // Forced refetch commits the commander session while body #1 is parked.
+    act(() => {
+      a.result.current.refetch();
+    });
+    await waitFor(() => expect(a.result.current.session.authenticated).toBe(true));
+    expect(a.result.current.session.role).toBe("commander");
+    // The stale body now parses with a DIFFERENT session — it must not
+    // overwrite the newer one in the store.
+    await act(async () => {
+      resolveJson1({ user: { role: "viewer", unitId: "unit-9", name: "Stale", agentId: "agent-9" } });
+    });
+    // A late subscriber reads the store directly: commander, not viewer.
+    const b = renderHook(() => useStaffSession());
+    expect(b.result.current.session.role).toBe("commander");
+    expect(b.result.current.session.unitId).toBe("unit-1");
+    expect(b.result.current.loading).toBe(false);
+  });
 });
