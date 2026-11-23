@@ -1,15 +1,22 @@
 // Fix 31 — GDE-1 (arrow navigation must move focus with the selection) and
 // GDE-2 (speech must stop when the guide unmounts or its content changes).
 // Speech stubs copy the Fix 26b pattern (safe-evacuation.test.tsx:242-253).
+import { StrictMode } from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import SafetyGuides from "../../src/components/SafetyGuides";
 
 const speakMock = vi.fn();
 const cancelMock = vi.fn();
 // Captures every utterance the component creates, so tests can assert on
-// the language it chose without asserting on jsdom's innerText fidelity.
-const utterances: { text: string; lang: string }[] = [];
+// the language it chose without asserting on jsdom's innerText fidelity,
+// and can fire a superseded utterance's late events (Fix 31b).
+const utterances: {
+  text: string;
+  lang: string;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+}[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -25,7 +32,14 @@ beforeEach(() => {
       onerror: (() => void) | null = null;
       constructor(text: string) {
         this.text = text;
-        utterances.push(this as unknown as { text: string; lang: string });
+        utterances.push(
+          this as unknown as {
+            text: string;
+            lang: string;
+            onend: (() => void) | null;
+            onerror: (() => void) | null;
+          }
+        );
       }
     }
   );
@@ -122,5 +136,41 @@ describe("SafetyGuides read-aloud lifecycle (Fix 31 — GDE-2)", () => {
     fireEvent.click(readButtonAr());
     expect(cancelMock).toHaveBeenCalledTimes(1);
     expect(speakMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("mounting under StrictMode does not cancel speech this guide never started (Fix 31b)", () => {
+    // The app runs under StrictMode (main.tsx:68), whose simulated unmount
+    // runs the unmount cleanup on mount. With no guide utterance in
+    // progress the cleanup must not touch speechSynthesis at all.
+    render(
+      <StrictMode>
+        <SafetyGuides lang="ar" />
+      </StrictMode>
+    );
+    expect(cancelMock).not.toHaveBeenCalled();
+    expect(speakMock).not.toHaveBeenCalled();
+  });
+
+  it("a late error from a superseded utterance does not flip the toggle while a new read plays (Fix 31b)", () => {
+    render(<SafetyGuides lang="ar" />);
+    // Read tab A, then switch tabs (cancels A), then read again (B).
+    fireEvent.click(readButtonAr());
+    expect(speakMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getAllByRole("tab")[1]);
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(readButtonAr());
+    expect(speakMock).toHaveBeenCalledTimes(2);
+    // A's error fires late, after B started. On old code it flips
+    // `speaking` false; the next click would then speak instead of stop.
+    // The invocation MUST be wrapped in act: a bare call schedules the
+    // state update but it never flushes before the next click's handler
+    // reads `speaking` from its closure, so the test would pass vacuously
+    // on old code (proven by probe: bare call → click cancels on old code).
+    act(() => {
+      utterances[0].onerror?.();
+    });
+    fireEvent.click(readButtonAr());
+    expect(speakMock).toHaveBeenCalledTimes(2);
+    expect(cancelMock).toHaveBeenCalledTimes(2);
   });
 });
