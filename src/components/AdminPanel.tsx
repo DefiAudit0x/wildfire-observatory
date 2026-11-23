@@ -35,6 +35,9 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Fix 32 (ADM-3): pending flag for the awaited logout — prevents duplicate
+  // POSTs from a double-click while revocation is in flight.
+  const [loggingOut, setLoggingOut] = useState(false);
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -121,15 +124,42 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     }
   };
 
-  const handleLogout = () => {
+  // Fix 32 (ADM-3): the local UI switch must wait for the server revocation.
+  // Flipping isAuthenticated first and fire-and-forgetting the POST left a
+  // valid HTTP-only cookie behind on any failure — the next remount re-probed
+  // it and silently re-authenticated a workstation the operator believed
+  // logged out. Boundary: a 200 here does not guarantee server-side
+  // revocation — the route discards the revokeAdminSession boolean
+  // (server/routes/admin.ts:134–137). That is ADM-5, triaged to Fix 41
+  // (server); ADM-3 closes the client half only.
+  const handleLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      const res = await apiFetch("/api/admin/logout", "POST");
+      if (res.ok) {
+        setIsAuthenticated(false);
+        setPassword("");
+      } else {
+        push(isArabic ? "تعذّر تسجيل الخروج — تحقق من الاتصال وحاول مجدداً" : "Échec de la déconnexion — vérifiez la connexion et réessayez", "error");
+      }
+    } catch {
+      push(isArabic ? "تعذّر تسجيل الخروج — تحقق من الاتصال وحاول مجدداً" : "Échec de la déconnexion — vérifiez la connexion et réessayez", "error");
+    } finally {
+      setLoggingOut(false);
+    }
+  };
+
+  // Session-expiry paths (401 from any surface): the session is already dead,
+  // so there is nothing to revoke server-side — clear local state only.
+  const logoutLocal = () => {
     setIsAuthenticated(false);
     setPassword("");
-    fetch("/api/admin/logout", { method: "POST" }).catch(() => {});
   };
 
   const handleAuthError = (res: Response) => {
     if (res.status === 401) {
-      handleLogout();
+      logoutLocal();
       push(isArabic ? "انتهت صلاحية جلستك — سجّل الدخول مجدداً" : "Session expirée — veuillez vous reconnecter", "warning");
       return true;
     }
@@ -143,7 +173,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   const { updatingIds, updateStatus, updateSeverity } = useReportModeration(isArabic, {
     onSettled: onRefresh,
     onSessionExpiry: (message) => {
-      handleLogout();
+      logoutLocal();
       push(message, "warning");
     },
     onError: (message) => push(message, "error"),
@@ -187,6 +217,38 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
       },
     });
   };
+
+  // Statistics calculation for the admin summary cards — placed before the
+  // early returns below: the page-clamp effect is a hook and hooks must run
+  // on every render, including while the auth card is shown.
+  const adminReports = reports.map((report) => ({ ...report, ...reporterIdentities[report.id] }));
+  const pendingReports = adminReports.filter(r => r.status === "pending");
+  const verifiedReports = adminReports.filter(r => r.status === "verified");
+  const resolvedReports = adminReports.filter(r => r.status === "resolved");
+
+  const filteredReports = adminReports.filter((r) => {
+    const matchesSearch =
+      !searchQuery.trim() ||
+      (r.locationName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.wilaya || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.description || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (r.reporterName || "").toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === "all" || r.status === statusFilter;
+    return matchesSearch && matchesStatus;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filteredReports.length / ITEMS_PER_PAGE));
+  const safePage = Math.min(page, totalPages);
+  const paginatedReports = filteredReports.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
+
+  // Fix 32 (ADM-4): safePage clamped only the rendered page — a deletion or
+  // refresh that shrank totalPages left the page STATE above it, and Previous
+  // then decremented the stale state (5 → 4 while the display stayed 3).
+  // Clamp the state whenever the page count changes. This cannot loop:
+  // setPage with an identical value bails out of rendering.
+  useEffect(() => {
+    setPage((p) => Math.min(p, totalPages));
+  }, [totalPages]);
 
   if (authChecking) {
     return (
@@ -260,12 +322,6 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     );
   }
 
-  // Statistics calculation for the admin summary cards
-  const adminReports = reports.map((report) => ({ ...report, ...reporterIdentities[report.id] }));
-  const pendingReports = adminReports.filter(r => r.status === "pending");
-  const verifiedReports = adminReports.filter(r => r.status === "verified");
-  const resolvedReports = adminReports.filter(r => r.status === "resolved");
-
   const exportToCSV = () => {
     // Fix 8b: every column goes through the shared csvCell guard (the same
     // one reportsToCsv uses) so citizen-supplied text — reporter name,
@@ -298,21 +354,6 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const filteredReports = adminReports.filter((r) => {
-    const matchesSearch =
-      !searchQuery.trim() ||
-      (r.locationName || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.wilaya || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.description || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (r.reporterName || "").toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === "all" || r.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
-
-  const totalPages = Math.max(1, Math.ceil(filteredReports.length / ITEMS_PER_PAGE));
-  const safePage = Math.min(page, totalPages);
-  const paginatedReports = filteredReports.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
 
   return (
     <div id="admin-panel-container" className="space-y-6 w-full animate-fade-in">
@@ -351,7 +392,8 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
           
           <button
             onClick={handleLogout}
-            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer"
+            disabled={loggingOut}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Lock className="h-3.5 w-3.5" />
             <span>{isArabic ? "خروج" : "Déconnexion"}</span>
@@ -652,7 +694,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-3 pt-1">
             <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              onClick={() => setPage((p) => Math.max(1, Math.min(p, totalPages) - 1))}
               disabled={safePage <= 1}
               className="px-4 py-2 bg-zinc-900 hover:bg-zinc-800 border border-white/10 rounded-lg text-xs font-bold text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-all"
             >
