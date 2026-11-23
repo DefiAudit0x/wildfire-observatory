@@ -59,6 +59,16 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const [isSending, setIsSending] = useState(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  // Fix 27 (SOSM-3): the modal can unmount while getUserMedia is pending
+  // (the header close button stays live during the await). The flag is
+  // flipped false by the unmount cleanup and checked the moment the
+  // permission await resolves — a granted stream for a dead modal is
+  // stopped at once, never stored, recorded, analysed, or timed.
+  const mountedRef = useRef(true);
+  // Fix 27 (SOSM-2): the timer callback must read the current count without
+  // closing over stale state — and the stop must not live inside a state
+  // updater (StrictMode double-invokes updaters in dev).
+  const recordingTimeRef = useRef(0);
   // W-H3: full modal a11y contract (dialog role, focus trap, Escape, focus
   // restore). Escape is suppressed while RECORDING — a stray keystroke must
   // never discard a trapped person's voice note — and while SENDING.
@@ -78,6 +88,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const capturedAudioRef = useRef<string>("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  // Fix 27b: per-recording completion promise, resolved by the onstop
+  // handler with the converted audio. stop() flips state to "inactive"
+  // synchronously while the final dataavailable slice is still a queued
+  // task — a Send landing in that window must wait for this promise
+  // instead of snapshotting the chunks immediately, or the very take
+  // SOSM-2 exists to preserve whole goes out missing its last ~100 ms.
+  const recordingDoneRef = useRef<{ promise: Promise<string>; resolve: (audio: string) => void } | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   // F4 mirror: mint the SOS idempotency key ONCE per modal session and reuse
   // it across retries — the server replays the FIRST stored SOS for the same
@@ -162,7 +179,17 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   };
 
   useEffect(() => {
+    // Fix 27 review (Minor 1): StrictMode double-invokes this effect in
+    // dev (setup → cleanup → setup) with the SAME ref objects — without
+    // this reset the cleanup's `false` would stick for the component's
+    // lifetime and the first startRecording would discard the granted
+    // stream as "disposed". Production builds don't double-invoke, but the
+    // flag's lifecycle must be right regardless.
+    mountedRef.current = true;
     return () => {
+      // Fix 27 (SOSM-3): flip first — anything a pending getUserMedia
+      // resolves into after this point belongs to a dead modal.
+      mountedRef.current = false;
       // ARC-M19 fix: unmounting mid-recording (user closes the modal early)
       // used to leave the 1-second recording timer and the audio-level
       // animation loop running against an unmounted component, while the mic
@@ -185,7 +212,12 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   }, []);
 
   // Honest verification: report real risk detection, never fabricate a distance.
+  // Fix 27 (SOSM-1): this effect is the PRE-recording verification only. Once
+  // the user has started recording (or sending/sent/failed), a fresh GPS fix
+  // or a new threat object must not reset the flow — the recorder keeps
+  // running, the success screen stays, and Escape stays suppressed.
   useEffect(() => {
+    if (step !== "verifying" && step !== "no_location" && step !== "no_fires" && step !== "verified") return;
     if (!userLocation) {
       setStep("no_location");
       setNearestThreatState(null);
@@ -198,15 +230,39 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     }
     setNearestThreatState(nearestThreat);
     setStep("verified");
-  }, [userLocation, nearestThreat]);
+  }, [userLocation, nearestThreat, step]);
 
   const [micStatus, setMicStatus] = useState<"idle" | "recording" | "permission_denied">("idle");
+  // Fix 27 (SOSM-2): true once the 20 s limit stopped the recorder — the
+  // "speak now" line would be a lie then (the mic is already dead).
+  const [recordingComplete, setRecordingComplete] = useState(false);
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const animFrameRef = useRef<number | null>(null);
+
+  // Fix 27 (SOSM-2): the recorded chunks → base64 conversion, shared by the
+  // manual stop and the timer auto-stop. Resolves "" when there is no real
+  // audio (blob ≤ 200 bytes — the same threshold stopRecordingAndSend uses).
+  const chunksToBase64 = async (): Promise<string> => {
+    try {
+      const mimeType = mediaRecorderRef.current?.mimeType || "audio/webm";
+      const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+      if (audioBlob.size <= 200) return "";
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = () => resolve("");
+        reader.readAsDataURL(audioBlob);
+      });
+    } catch {
+      return "";
+    }
+  };
 
   const startRecording = async () => {
     setStep("recording");
     setRecordingTime(0);
+    recordingTimeRef.current = 0;
+    setRecordingComplete(false);
     setMicStatus("recording");
     setSendError(null);
     audioChunksRef.current = [];
@@ -215,6 +271,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Fix 27 (SOSM-3): the user may have closed the modal while the
+        // permission prompt was open. A granted stream for a dead modal must
+        // be stopped at once — never stored, recorded, analysed, or timed.
+        if (!mountedRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         mediaStreamRef.current = stream;
 
         let mimeType = "";
@@ -229,10 +292,30 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         const mediaRecorder = new MediaRecorder(stream, options);
         mediaRecorderRef.current = mediaRecorder;
 
+        // Fix 27b: mint the per-recording completion promise here — the
+        // onstop handler below resolves it with the converted audio once
+        // the final dataavailable slice has landed.
+        let resolveRecordingDone!: (audio: string) => void;
+        const recordingDone = new Promise<string>((resolve) => { resolveRecordingDone = resolve; });
+        recordingDoneRef.current = { promise: recordingDone, resolve: resolveRecordingDone };
+
         mediaRecorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) {
             audioChunksRef.current.push(event.data);
           }
+        };
+        // Fix 27 (SOSM-2): the timer stops this recorder without going through
+        // stopRecordingAndSend, so the conversion must live on the recorder
+        // itself — otherwise the auto-stopped take is never turned into audio
+        // and Send falls back to the synthetic siren. stopRecordingAndSend
+        // overwrites onstop with its own handler before calling stop() on
+        // the manual path, so the manual path is unaffected.
+        mediaRecorder.onstop = async () => {
+          const base64 = await chunksToBase64();
+          if (base64 && base64.length >= 100) capturedAudioRef.current = base64;
+          // Fix 27b: resolve with the converted audio even when it is
+          // empty/short — a waiter must never hang on a failed take.
+          recordingDoneRef.current?.resolve(base64);
         };
 
         // Real-time audio analyzer for visualizer meter
@@ -279,17 +362,26 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       setMicStatus("permission_denied");
     }
 
+    // Fix 27 (SOSM-2): the stop is a plain statement now, not a side effect
+    // inside the setRecordingTime updater (StrictMode double-invokes updaters
+    // in dev). The display reaches 20 — the old `return prev` froze it at 19.
     timerRef.current = setInterval(() => {
-      setRecordingTime((prev) => {
-        if (prev + 1 >= MAX_AUDIO_DURATION_SEC) {
-          if (timerRef.current) clearInterval(timerRef.current);
-          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-            try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
-          }
-          return prev;
+      const next = recordingTimeRef.current + 1;
+      if (next >= MAX_AUDIO_DURATION_SEC) {
+        if (timerRef.current) clearInterval(timerRef.current);
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+          try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
         }
-        return prev + 1;
-      });
+        recordingTimeRef.current = MAX_AUDIO_DURATION_SEC;
+        setRecordingTime(MAX_AUDIO_DURATION_SEC);
+        // Only a real recorder reached the limit — with a denied mic there
+        // is no take to complete, and the amber warning below stays the
+        // honest message.
+        if (mediaRecorderRef.current) setRecordingComplete(true);
+        return;
+      }
+      recordingTimeRef.current = next;
+      setRecordingTime(next);
     }, 1000);
   };
 
@@ -384,7 +476,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     let finalAudioBase64 = "";
 
     // Stop MediaRecorder if active and await chunks
+    // Fix 27b: remember whether THIS call stopped the recorder — the
+    // inactive branch below must only await the onstop completion promise
+    // when the recorder was stopped elsewhere (timer/browser); the manual
+    // path overwrites onstop, so its promise would never resolve.
+    let stoppedByThisCall = false;
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      stoppedByThisCall = true;
       await new Promise<void>((resolve) => {
         if (!mediaRecorderRef.current) return resolve();
         mediaRecorderRef.current.onstop = () => {
@@ -411,6 +509,34 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
           resolve();
         }
       });
+    }
+
+    // Fix 27 (SOSM-2): the recorder is already inactive after the timer's
+    // auto-stop, but the chunks are still in memory — convert them here
+    // instead of falling through to the synthetic siren. This also covers
+    // any browser-initiated stop that bypassed both handlers.
+    // Fix 27b: when the recorder was stopped outside this call, its final
+    // dataavailable slice may still be a queued task — await the onstop
+    // conversion first so the take is sent whole. The 1 s race is the
+    // backstop: a recorder that never fires onstop must not hold Send
+    // hostage; on timeout the immediate snapshot below runs instead.
+    // Fix 27c: the wait must NOT be gated on chunks already being buffered
+    // — a stop inside the first ~100 ms (before the first timeslice) leaves
+    // the final slice as the ONLY audio, and gating on length > 0 would
+    // discard it in favour of the siren. The length check lives on the
+    // snapshot only, where it skips a pointless FileReader call.
+    if ((!finalAudioBase64 || finalAudioBase64.length < 100) &&
+        mediaRecorderRef.current?.state === "inactive") {
+      if (!stoppedByThisCall && recordingDoneRef.current) {
+        const done = await Promise.race([
+          recordingDoneRef.current.promise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+        ]);
+        if (done) finalAudioBase64 = done;
+      }
+      if (audioChunksRef.current.length > 0 && (!finalAudioBase64 || finalAudioBase64.length < 100)) {
+        finalAudioBase64 = await chunksToBase64();
+      }
     }
 
     // Stop mic stream tracks
@@ -763,10 +889,17 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
               <div className="space-y-1">
                 <h3 className="text-xl font-bold text-white font-mono">00:{recordingTime < 10 ? `0${recordingTime}` : recordingTime}</h3>
-                <p className="text-sm text-red-400 animate-pulse font-bold flex items-center justify-center gap-1">
-                  <Activity className="h-4 w-4" />
-                  {isArabic ? "تحدث الآن لتسجيل استغاثتك الصوتية المباشرة..." : "Parlez pour enregistrer votre message vocal..."}
-                </p>
+                {recordingComplete ? (
+                  <p className="text-sm text-emerald-400 font-bold flex items-center justify-center gap-1">
+                    <Activity className="h-4 w-4" />
+                    {isArabic ? "انتهى التسجيل (20 ثانية) — اضغط لإرسال الصوت والموقع فوراً" : "Enregistrement terminé (20 s) — envoyez le message et la position"}
+                  </p>
+                ) : (
+                  <p className="text-sm text-red-400 animate-pulse font-bold flex items-center justify-center gap-1">
+                    <Activity className="h-4 w-4" />
+                    {isArabic ? "تحدث الآن لتسجيل استغاثتك الصوتية المباشرة..." : "Parlez pour enregistrer votre message vocal..."}
+                  </p>
+                )}
                 {micStatus === "permission_denied" && (
                   <p className="text-xs text-amber-300 bg-amber-950/60 p-2 rounded-lg border border-amber-500/30 font-semibold mt-2">
                     {isArabic
