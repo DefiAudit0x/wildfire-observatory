@@ -1,4 +1,5 @@
 import { haversineKm } from "../../utils/geo";
+import { REPORT_STATUSES } from "../../utils/datasetValidators";
 
 /**
  * ARC-H13 decomposition — shared vocabulary for the ReportForm hook family.
@@ -22,7 +23,7 @@ export interface SubmissionResultView {
   responseValid: boolean;
   isOfflineDraft?: boolean;
   imageNotAttached?: boolean;
-  status?: "pending" | "verified";
+  status?: (typeof REPORT_STATUSES)[number];
   id?: string;
   error?: string;
   message?: string;
@@ -95,7 +96,16 @@ export function normalizeSubmissionResult(value: unknown): SubmissionResultView 
     return { responseValid: false, error: "The server returned an invalid response." };
   }
   const raw = value as Record<string, unknown>;
-  const status = raw.status === "pending" || raw.status === "verified" ? raw.status : undefined;
+  // Fix 28 (RFSH-1): the gate must accept every status the server contract
+  // accepts — a durable replay of a moderator-resolved/rejected report
+  // returns its stored status, and narrowing it to pending/verified made
+  // the offline sync loop throw and wedge at the oldest draft. The type
+  // above and this gate both derive from REPORT_STATUSES so they can never
+  // drift apart again; the badge gate (useReportSubmit.ts, status ===
+  // "verified") is a separate check and does not move.
+  const status = REPORT_STATUSES.includes(raw.status as (typeof REPORT_STATUSES)[number])
+    ? (raw.status as (typeof REPORT_STATUSES)[number])
+    : undefined;
   const id = typeof raw.id === "string" && raw.id.trim().length >= 3 ? raw.id.trim() : undefined;
   const ai = raw.aiVerification && typeof raw.aiVerification === "object"
     ? raw.aiVerification as Record<string, unknown>

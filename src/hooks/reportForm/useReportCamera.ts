@@ -170,9 +170,19 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
   // leaked live (privacy). A reentrancy guard plus an unmount cleanup effect
   // guarantee the hardware is released exactly once.
   const cameraStartingRef = useRef(false);
+  // Fix 28 (RCAM-1): request-owner token. A stream granted after the user
+  // taps Close or switches tabs belongs to a dead request — it must be
+  // stopped at once, never stored. The token is bumped by stopCamera and
+  // on unmount; the late resolution checks it before storing anything.
+  const cameraRequestRef = useRef(0);
+  // Fix 28 (RCAM-1): unmount leg — bump the token so a permission resolving
+  // after the form unmounts is recognised as orphaned. Kept separate from
+  // the [stream] cleanup below, which also runs on every stream change.
+  useEffect(() => () => { cameraRequestRef.current++; }, []);
   const startCamera = async () => {
     if (cameraStartingRef.current || stream) return;
     cameraStartingRef.current = true;
+    const myRequest = ++cameraRequestRef.current;
     try {
       setIsCameraOpen(true);
       setCameraStatus("closed");
@@ -182,6 +192,13 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
         audio: false,
       };
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      // Fix 28 (RCAM-1): the user may have closed the overlay (or switched
+      // tabs) while the prompt was pending — stop the orphaned stream at
+      // once and never store it, so the camera button is not bricked either.
+      if (myRequest !== cameraRequestRef.current) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       setStream(mediaStream);
       setCameraStatus("active");
       // iOS (Safari 13+) gates motion sensors behind an explicit permission
@@ -190,6 +207,8 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
         const DOE = (window as any).DeviceOrientationEvent;
         if (DOE && typeof DOE.requestPermission === "function") {
           const permission = await DOE.requestPermission();
+          // Fix 28 (RCAM-1): a closed camera must not gain heading state.
+          if (myRequest !== cameraRequestRef.current) return;
           if (permission !== "granted") {
             setHeading(null);
             setPitch(null);
@@ -201,6 +220,10 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
         console.warn("DeviceOrientation permission request failed", err);
       }
     } catch (err: unknown) {
+      // Fix 28 (RCAM-1): an invalidated request goes silent — the user
+      // deliberately closed; "camera unavailable" would be the wrong
+      // message (stopCamera already set status "closed").
+      if (myRequest !== cameraRequestRef.current) return;
       console.warn("Camera hardware unavailable", err);
       setCameraStatus("unavailable");
       setStream(null);
@@ -212,6 +235,9 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
   };
 
   const stopCamera = () => {
+    // Fix 28 (RCAM-1): bump FIRST — this is what invalidates a pending
+    // getUserMedia so its late resolution is recognised as orphaned.
+    cameraRequestRef.current++;
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
