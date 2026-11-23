@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getNearestActiveThreat } from "../src/utils/threats.js";
+import { getNearestActiveThreat, isFreshThreatTimestamp } from "../src/utils/threats.js";
 import { determineWilayaByCoords, OUT_OF_COVERAGE } from "../src/utils/geo.js";
 import type { Report, SatelliteHotspot } from "../src/types.js";
 
@@ -138,5 +138,36 @@ describe("determineWilayaByCoords (client mirror of server geofence)", () => {
 
   it("marks positions outside coverage (north of all fallback bands)", () => {
     expect(determineWilayaByCoords(38.5, 3.0)).toBe(OUT_OF_COVERAGE);
+  });
+});
+
+describe("isFreshThreatTimestamp (Fix 25 — RAD-3 leans on this gate)", () => {
+  const NOW = Date.parse("2026-11-23T12:00:00.000Z");
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  it("accepts exactly 30 minutes old", () => {
+    expect(isFreshThreatTimestamp(iso(NOW - 30 * 60 * 1000), NOW)).toBe(true);
+  });
+
+  it("rejects 30 minutes and 1 ms old", () => {
+    expect(isFreshThreatTimestamp(iso(NOW - 30 * 60 * 1000 - 1), NOW)).toBe(false);
+  });
+
+  it("accepts a timestamp 2 minutes in the future (clock skew)", () => {
+    expect(isFreshThreatTimestamp(iso(NOW + 2 * 60 * 1000), NOW)).toBe(true);
+  });
+
+  it("rejects a timestamp 2 minutes and 1 ms in the future", () => {
+    expect(isFreshThreatTimestamp(iso(NOW + 2 * 60 * 1000 + 1), NOW)).toBe(false);
+  });
+
+  it("rejects an unparseable string", () => {
+    expect(isFreshThreatTimestamp("not-a-date", NOW)).toBe(false);
+  });
+
+  it("rejects a non-string value", () => {
+    expect(isFreshThreatTimestamp(NOW, NOW)).toBe(false);
+    expect(isFreshThreatTimestamp(null, NOW)).toBe(false);
+    expect(isFreshThreatTimestamp(undefined, NOW)).toBe(false);
   });
 });
