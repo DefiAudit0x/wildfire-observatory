@@ -230,7 +230,16 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
       setIsCameraOpen(false);
       setErrorMsg(isArabic ? "الكاميرا غير متاحة أو لم يُسمح لها. يمكنك إرفاق صورة من جهازك أو متابعة البلاغ بدون صورة." : "Caméra indisponible ou permission refusée. Vous pouvez joindre une photo ou continuer sans image.");
     } finally {
-      cameraStartingRef.current = false;
+      // Fix 28c (CodeRabbit Minor, watch 2 on PR #159): only the LIVE
+      // request may release the guard — a stale completion (a request
+      // invalidated by Close, whose late grant is stopped as an orphan)
+      // must not clear the guard of the retry that started after it,
+      // or a third tap would start yet another request and invalidate
+      // the retry. stopCamera's immediate clear (line 247) stays: it is
+      // what permits the retry itself.
+      if (myRequest === cameraRequestRef.current) {
+        cameraStartingRef.current = false;
+      }
     }
   };
 
