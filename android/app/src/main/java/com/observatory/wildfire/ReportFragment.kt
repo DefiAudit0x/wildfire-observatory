@@ -253,7 +253,19 @@ class ReportFragment : Fragment() {
             state.status == LocationLogic.Status.NO_PERMISSION -> getString(R.string.gps_no_permission)
             state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
             fix == null -> getString(R.string.gps_searching)
-            else -> getString(R.string.report_location_line_fmt, fix.lat, fix.lng, fix.accuracyM.toInt())
+            // Fix 20 (NREPORT-1): a fix too old to submit is labelled
+            // stale — the user sees WHY submit refuses, instead of a
+            // coordinate line that looks submittable.
+            !LocationLogic.isUsableFix(fix, System.currentTimeMillis()) ->
+                getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+            else -> {
+                // Review Nit 3: D1 promises age disclosure whenever a fix
+                // is shown — the age rides the line even for usable fixes.
+                // Clamped at 0: a far-future (hostile-clock) fix would
+                // otherwise print a negative age.
+                val ageS = maxOf(0, ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt())
+                getString(R.string.report_location_line_fmt, fix.lat, fix.lng, fix.accuracyM.toInt(), ageS)
+            }
         }
         // Autofill place name + wilaya once a fix EXISTS — fresh or stale
         // (v2.19.0: the old < 60 s freshness gate was the "لماذا لا تُملأ"
@@ -429,6 +441,13 @@ class ReportFragment : Fragment() {
         val wilaya = wilayaInput?.text?.toString()?.trim().orEmpty()
         val desc = descriptionInput?.text?.toString()?.trim().orEmpty()
         if (fix == null) {
+            Toast.makeText(ctx, R.string.report_need_fix, Toast.LENGTH_LONG).show()
+            return
+        }
+        // Fix 20 (NREPORT-1): a fix older than 10 minutes is not a real
+        // recent measurement — refuse BEFORE disabling the button or
+        // calling submitReport, so nothing is queued either.
+        if (!LocationLogic.isUsableFix(fix, System.currentTimeMillis())) {
             Toast.makeText(ctx, R.string.report_need_fix, Toast.LENGTH_LONG).show()
             return
         }

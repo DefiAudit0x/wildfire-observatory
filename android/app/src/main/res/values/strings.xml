@@ -83,6 +83,8 @@
     <string name="sos_no_fix_title">لا يوجد موقع محدد</string>
     <string name="sos_no_fix_message">هاتفك لم يتوصل بإشارة GPS بعد. سيُرسل النداء بعلامة «بدون تحديد GPS» وإحداثيات افتراضية — فرق الإنقاذ لن تعتمد عليها. الأفضل الانتظار لحظات حتى يظهر الموقع.</string>
     <string name="sos_send_anyway">أرسل مع العلامة</string>
+    <!-- Fix 20 (NSOS-1): stale-fix SOS marker, parallel to the no-fix marker. -->
+    <string name="sos_stale_fix_fmt">⚠ موقع قديم — منذ %1$d ث — %2$s</string>
     <string name="cancel">إلغاء</string>
     <string name="sos_failed_fmt">فشل الإرسال: %1$s</string>
     <string name="sos_sent_fire_fmt">أُرسل النداء — الأولوية: %1$s · أقرب حريق: %2$.1f كلم · تأكيد ميداني: %3$s</string>
@@ -105,7 +107,7 @@
     <string name="report_location_name_hint">اسم الموقع (يُملأ تلقائيًا)</string>
     <string name="report_wilaya_hint">الولاية (تُملأ تلقائيًا)</string>
     <string name="report_description_hint">الوصف — 10 أحرف على الأقل (دخان؟ لهب؟ اتجاه؟)</string>
-    <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$d م</string>
+    <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$d م — منذ %4$d ث</string>
     <string name="report_attach">إرفاق صورة</string>
     <string name="report_camera">تصوير</string>
     <string name="report_gallery">من المعرض</string>

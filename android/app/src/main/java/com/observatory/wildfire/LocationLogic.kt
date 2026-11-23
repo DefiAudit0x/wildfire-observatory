@@ -121,4 +121,15 @@ object LocationLogic {
         fix != null &&
             (nowMs - fix.timeMs) >= -CLOCK_SKEW_MS && // v2.15.0: never future
             (nowMs - fix.timeMs) <= FIX_FRESH_MS
+
+    /**
+     * Fix 20: true when a fix is a real recent measurement (≤ 10 min),
+     * not live. The bar for actions that must not be refused for want of
+     * a 60 s lock (report submit, SOS) — always with age disclosure in
+     * the UI. Shares the skew rule with [isFreshFix].
+     */
+    fun isUsableFix(fix: FixSnapshot?, nowMs: Long): Boolean =
+        fix != null &&
+            (nowMs - fix.timeMs) >= -CLOCK_SKEW_MS &&
+            (nowMs - fix.timeMs) <= FIX_STALE_DROP_MS
 }

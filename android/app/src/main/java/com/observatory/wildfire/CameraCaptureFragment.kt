@@ -111,8 +111,14 @@ class CameraCaptureFragment : Fragment() {
     private val app get() = requireActivity().application as ObservatoryApp
 
     // F2 house rule: named listeners, removed in onDestroyView.
+    // Fix 20b: refresh the whole HUD, not just the alignment line —
+    // updateHud() is where the freshness branch lives, and on a device
+    // without a rotation-vector sensor nothing else re-runs it. updateHud()
+    // ends with updateAlignmentLine(), so alignment behavior is unchanged.
+    // The engine re-notifies every 3 s while FIXED, so the 60 s boundary
+    // is crossed on a live tick, not only on the next fix.
     private val locationListener: (LocationEngine.State) -> Unit = { _ ->
-        activity?.runOnUiThread { updateAlignmentLine() }
+        activity?.runOnUiThread { updateHud() }
     }
 
     // --- Compass ingestion (4 Hz throttle + rounded-change skip) ---
@@ -285,10 +291,18 @@ class CameraCaptureFragment : Fragment() {
             if (includeTelemetry) getString(R.string.camera_stamp_on) else getString(R.string.camera_stamp_off)
 
         val fix = app.locationEngine.currentFix()
+        val nowMs = System.currentTimeMillis()
+        // Fix 20 (NCAM-3): a stale fix prints as last-known, never as the
+        // current position — its coordinates stay off the HUD.
+        val fixText = when {
+            fix == null -> getString(R.string.camera_gps_not_set)
+            LocationLogic.isFreshFix(fix, nowMs) ->
+                String.format(java.util.Locale.US, "%.5f, %.5f", fix.lat, fix.lng)
+            else -> getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+        }
         statusText?.text = getString(
             R.string.camera_status_fmt,
-            fix?.let { String.format(java.util.Locale.US, "%.5f, %.5f", it.lat, it.lng) }
-                ?: getString(R.string.camera_gps_not_set),
+            fixText,
             heading?.let { "${it}°" } ?: "N/A",
             currentPitch?.let { "${it}°" } ?: "N/A"
         )
@@ -299,10 +313,13 @@ class CameraCaptureFragment : Fragment() {
         val view = alignmentText ?: return
         val fix = app.locationEngine.currentFix()
         val heading = currentHeading
-        val match = if (fix != null && heading != null) {
+        // Fix 20 (NCAM-3): no cross-check against a stale position — a
+        // match against where the user WAS is worse than no match.
+        val freshFix = fix?.takeIf { LocationLogic.isFreshFix(it, System.currentTimeMillis()) }
+        val match = if (freshFix != null && heading != null) {
             TelemetryCamera.crossCheck(
                 app.repository.state.value.reports,
-                fix.lat, fix.lng, heading.toDouble(), System.currentTimeMillis()
+                freshFix.lat, freshFix.lng, heading.toDouble(), System.currentTimeMillis()
             )
         } else null
         view.text = when {
@@ -313,7 +330,7 @@ class CameraCaptureFragment : Fragment() {
                 match.distanceKm,
                 match.bearingDeg.roundToInt()
             )
-            fix == null || heading == null -> getString(R.string.camera_alignment_no_fix)
+            freshFix == null || heading == null -> getString(R.string.camera_alignment_no_fix)
             else -> getString(R.string.camera_alignment_none)
         }
     }
@@ -363,15 +380,20 @@ class CameraCaptureFragment : Fragment() {
         // Freeze telemetry NOW (web freezes heading/pitch/lat/lng at capture).
         val fix = app.locationEngine.currentFix()
         val nowMs = System.currentTimeMillis()
-        val alignment = if (fix != null && currentHeading != null) {
+        // Fix 20 (NCAM-3): a stale fix stamps NO coordinates — the stamp
+        // carries the capture time, so old coordinates would be burned
+        // into the photo as its apparent capture position. Passing null
+        // is the existing no-fix path in buildStamp.
+        val freshFix = fix?.takeIf { LocationLogic.isFreshFix(it, nowMs) }
+        val alignment = if (freshFix != null && currentHeading != null) {
             TelemetryCamera.crossCheck(
                 app.repository.state.value.reports,
-                fix.lat, fix.lng, currentHeading!!.toDouble(), nowMs
+                freshFix.lat, freshFix.lng, currentHeading!!.toDouble(), nowMs
             )
         } else null
         val stamp = TelemetryCamera.buildStamp(
-            lat = fix?.lat,
-            lng = fix?.lng,
+            lat = freshFix?.lat,
+            lng = freshFix?.lng,
             heading = currentHeading,
             headingSource = headingSource,
             pitch = currentPitch,
