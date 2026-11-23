@@ -354,6 +354,46 @@ describe("useReportCamera lifecycle", () => {
     expect(result.current.stream).toBe(stream2);
     expect(result.current.cameraStatus).toBe("active");
   });
+
+  // Fix 28c (CodeRabbit Minor, watch 2 on PR #159): only the live request
+  // may release the start guard — a stale completion (request A, invalidated
+  // by Close) must not clear the guard of the retry B that started after
+  // it, or a third tap would start request C and invalidate B.
+  it("a stale completion does not clear the retry's guard", async () => {
+    const gate1 = deferredCamera<unknown>();
+    const gate2 = deferredCamera<unknown>();
+    const getUserMediaMock = vi.fn().mockReturnValue(gate1.promise);
+    stubGetUserMedia(getUserMediaMock);
+    const stream1 = fakeCameraStream();
+    const stream2 = fakeCameraStream();
+    const { result } = renderCameraHook();
+    // Request A, then Close, then retry B while A is still pending.
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    act(() => result.current.stopCamera());
+    getUserMediaMock.mockReturnValue(gate2.promise);
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    // A completes as an orphan — its finally must NOT release B's guard.
+    await act(async () => {
+      gate1.resolve(stream1);
+    });
+    expect(stream1.track.stop).toHaveBeenCalledTimes(1);
+    // Third tap while B is still pending must hit the guard, not start C.
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    // B completes normally and owns the camera.
+    await act(async () => {
+      gate2.resolve(stream2);
+    });
+    expect(result.current.stream).toBe(stream2);
+    expect(result.current.cameraStatus).toBe("active");
+  });
 });
 
 // ---- Image pipeline ----------------------------------------------------------
