@@ -92,6 +92,30 @@ class LocationLogicTest {
         assertTrue(!LocationLogic.isFreshFix(null, now))
     }
 
+    // Fix 20: the 10-minute usable window (report submit, SOS) — a real
+    // recent measurement, not live. Fail-without-fix: the helper is new
+    // code; the 61 s case is usable but NOT fresh, which is the whole
+    // point of the two bars.
+    @Test
+    fun `usable window is ten minutes`() {
+        assertTrue(!LocationLogic.isUsableFix(null, now))
+        assertTrue(LocationLogic.isUsableFix(fix(30_000), now))
+        // 61 s: past the 60 s live bar, still usable.
+        assertTrue(!LocationLogic.isFreshFix(fix(61_000), now))
+        assertTrue(LocationLogic.isUsableFix(fix(61_000), now))
+        // Exactly 10 min is usable; one millisecond more is not.
+        assertTrue(LocationLogic.isUsableFix(fix(LocationLogic.FIX_STALE_DROP_MS), now))
+        assertTrue(!LocationLogic.isUsableFix(fix(LocationLogic.FIX_STALE_DROP_MS + 1), now))
+        // Future beyond the 60 s skew allowance is usable for neither bar;
+        // a small drift inside the skew is tolerated by both.
+        val farFuture = LocationLogic.FixSnapshot(36.8, 7.6, 10f, now + 5 * 60_000L, "gps")
+        assertTrue(!LocationLogic.isUsableFix(farFuture, now))
+        assertTrue(!LocationLogic.isFreshFix(farFuture, now))
+        val slightlyFuture = LocationLogic.FixSnapshot(36.8, 7.6, 10f, now + 30_000L, "gps")
+        assertTrue(LocationLogic.isUsableFix(slightlyFuture, now))
+        assertTrue(LocationLogic.isFreshFix(slightlyFuture, now))
+    }
+
     // v2.15.0: future fix timestamps (clock skew / hostile source) are
     // rejected instead of ranking as "fresher than fresh".
     @Test
