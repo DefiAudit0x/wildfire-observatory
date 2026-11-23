@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ShieldAlert, BookOpen, HeartPulse, Flame, Home, Printer, Volume2 } from "lucide-react";
 
 interface SafetyGuidesProps {
@@ -38,6 +38,13 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
 
   const tabIds = ["before", "during", "after", "firstaid"] as const;
 
+  // Fix 31 (GDE-1): the keyboard handler must move focus with the selection.
+  // Without this, focus stays on the old tab, the next arrow press
+  // recomputes from the old tab's id, and selection can never advance past
+  // the second tab. The refs are indexed in the same order as `tabIds`
+  // (before/during/after/firstaid — the same order as the `tabs` array).
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
   const onTabKeyDown = (e: React.KeyboardEvent, current: string) => {
     const currentIndex = tabIds.indexOf(current as any);
     let nextIndex = currentIndex;
@@ -48,7 +55,34 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     else return;
     e.preventDefault();
     setActiveTab(tabIds[nextIndex]);
+    // The DOM node is the same across the re-render, so focusing it
+    // synchronously is correct even though its tabIndex is still -1 until
+    // the re-render lands.
+    tabRefs.current[nextIndex]?.focus();
   };
+
+  // Fix 31 (GDE-2): leaving the guides app tab unmounts this component and
+  // takes the stop button with it — the utterance must stop with the view.
+  useEffect(() => () => {
+    window.speechSynthesis?.cancel();
+  }, []);
+
+  // Fix 31 (GDE-2): the utterance captured the panel text at click time. A
+  // guide-tab or language switch replaces that text in place — the old
+  // utterance must stop instead of speaking beside the new content. The
+  // prevContentRef guard keeps the mount run a no-op: without it, opening
+  // the guides tab would cancel whatever is speaking at that moment.
+  // setSpeaking(false) is load-bearing: without it the button stays in its
+  // "speaking" visual state and the next click would cancel instead of
+  // starting a new read.
+  const prevContentRef = useRef({ tab: activeTab, lang });
+  useEffect(() => {
+    if (prevContentRef.current.tab !== activeTab || prevContentRef.current.lang !== lang) {
+      prevContentRef.current = { tab: activeTab, lang };
+      window.speechSynthesis?.cancel();
+      setSpeaking(false);
+    }
+  }, [activeTab, lang]);
 
   return (
     <div className="bg-zinc-900/50 border border-white/5 rounded-xl p-5 shadow-[0_4px_25px_rgba(0,0,0,0.5)]" dir={isArabic ? "rtl" : "ltr"}>
@@ -70,13 +104,18 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
       {/* Tabs */}
       <div className="flex items-center gap-1.5 mb-2">
         <div role="tablist" aria-label={isArabic ? "أقسام دليل السلامة" : "Rubriques du guide"} className="flex flex-wrap gap-1.5 bg-black/50 p-1 rounded-lg border border-white/5 flex-1">
-          {tabs.map((tab) => (
+          {tabs.map((tab, idx) => (
             <button
               key={tab.id}
               role="tab"
               aria-selected={activeTab === tab.id}
               aria-controls="guide-panel"
               tabIndex={activeTab === tab.id ? 0 : -1}
+              // Fix 31 (GDE-1): braces so the callback returns undefined —
+              // in React 19 a returned value is treated as a cleanup fn.
+              ref={(el) => {
+                tabRefs.current[idx] = el;
+              }}
               onKeyDown={(e) => onTabKeyDown(e, tab.id)}
               onClick={() => setActiveTab(tab.id as any)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer flex-1 justify-center min-w-[120px] ${
