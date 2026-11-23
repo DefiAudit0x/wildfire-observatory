@@ -238,6 +238,13 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
     // Fix 28 (RCAM-1): bump FIRST — this is what invalidates a pending
     // getUserMedia so its late resolution is recognised as orphaned.
     cameraRequestRef.current++;
+    // Fix 28b (CodeRabbit Minor, watch 1 on PR #159): release the start
+    // guard too — a retry tapped while the first permission prompt is still
+    // pending would otherwise hit the guard and return silently (no camera,
+    // no message). The pending request stays invalidated by the token, so
+    // its late grant is still stopped as an orphan; the finally of that
+    // call re-clears the guard harmlessly.
+    cameraStartingRef.current = false;
     if (stream) {
       stream.getTracks().forEach((track) => track.stop());
       setStream(null);
