@@ -550,4 +550,118 @@ describe("RosterBoard overlapping requests (Fix 24b)", () => {
     expect(screen.getByText("منصب أ")).toBeTruthy();
     expect(screen.queryByText("تعذر تحميل الجدول.")).toBeNull();
   });
+
+  it("an add that lands while another day is on screen refetches the selected day (Major 4664428918)", async () => {
+    const dayA = todayISO();
+    const dayB = shiftISO(dayA, 1);
+    let releasePost!: (v: Response) => void;
+    const postGate = new Promise<Response>((resolve) => {
+      releasePost = resolve;
+    });
+    let releaseGetB!: (v: Response) => void;
+    const getBGate = new Promise<Response>((resolve) => {
+      releaseGetB = resolve;
+    });
+    let releaseGetAStale!: (v: Response) => void;
+    const getAStaleGate = new Promise<Response>((resolve) => {
+      releaseGetAStale = resolve;
+    });
+    const savedDayA = {
+      unitId: "unit-dz16",
+      date: dayA,
+      posts: [{ id: "p1", labelAr: "منصب أ", status: "active", personnel: [] }],
+      saved: true,
+    };
+    const savedDayB = {
+      unitId: "unit-dz16",
+      date: dayB,
+      posts: [{ id: "p1", labelAr: "منصب الغد", status: "active", personnel: [] }],
+      saved: true,
+    };
+    const postB = { id: "p2", labelAr: "منصب ب", status: "active", personnel: [] };
+    const savedDayAWithPost = {
+      unitId: "unit-dz16",
+      date: dayA,
+      posts: [
+        { id: "p1", labelAr: "منصب أ", status: "active", personnel: [] },
+        postB,
+      ],
+      saved: true,
+    };
+    let getACalls = 0;
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (String(url).includes("/api/roster/")) {
+        if (method === "POST") return postGate;
+        if (String(url).includes(`/api/roster/${dayB}`)) return getBGate;
+        getACalls += 1;
+        if (getACalls === 1) {
+          return new Response(JSON.stringify(savedDayA), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (getACalls === 2) return getAStaleGate;
+        // The 24d refetch: a fresh GET for A, read post-commit.
+        return new Response(JSON.stringify(savedDayAWithPost), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ users: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    // Start the POST for day A (gated), navigate to B and let B LOAD,
+    // then return to A (A's GET now in flight).
+    fireEvent.change(screen.getByPlaceholderText(/اسم المنصب/), { target: { value: "منصب ب" } });
+    fireEvent.click(screen.getByText("إضافة المنصب"));
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(
+          ([u, init]: any[]) => String(u).includes("/api/roster/") && init?.method === "POST"
+        )
+      ).toBe(true)
+    );
+    fireEvent.click(screen.getByTitle("اليوم التالي"));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]: any[]) => String(u).includes(`/api/roster/${dayB}`))).toBe(true)
+    );
+    releaseGetB(
+      new Response(JSON.stringify(savedDayB), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await waitFor(() => expect(screen.getByText("منصب الغد")).toBeTruthy());
+    fireEvent.click(screen.getByTitle("اليوم السابق"));
+    await waitFor(() => expect(getACalls).toBe(2));
+    // The POST completes while the LIVE roster is B's: the merge cannot
+    // apply, so the board must refetch day A (fresh, post-commit) instead
+    // of killing A's GET and getting stuck on B's roster under A's header.
+    releasePost(
+      new Response(JSON.stringify(postB), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    expect(screen.queryByText("منصب الغد")).toBeNull();
+    expect(screen.getByText("منصب أ")).toBeTruthy();
+    // The stale GET for A lands after the fresh load, WITHOUT the new
+    // post — it must be ignored, not reinstall the day without the post.
+    releaseGetAStale(
+      new Response(JSON.stringify(savedDayA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+    expect(screen.queryByText("تعذر تحميل الجدول.")).toBeNull();
+  });
 });
