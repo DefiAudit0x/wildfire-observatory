@@ -1411,4 +1411,6 @@ The first watch on d4bf3e0 returned DO NOT MERGE: all own checks + both Analyzes
 
 Fix (one line): the listener now calls `updateHud()` instead of `updateAlignmentLine()` — `updateHud()` already ends with `updateAlignmentLine()`, so alignment behavior is preserved exactly. The second half of CodeRabbit's suggestion (a scheduled refresh at the freshness-expiry boundary) is unnecessary: `LocationEngine` re-notifies listeners every 3 s while FIXED (`statusPoller`, `publish()` notifies on every tick while state is FIXED), so the 3 s ticks re-evaluate the `isFreshFix` branch continuously while the view is active.
 
-Remaining for Fix 20: re-push 20b, re-watch CI on the new head (incl. the `instrumented` disposition), merge.
+Follow-up (not a blocker, recorded from the second watch on eec8918): CodeRabbit Minor (review 6015705510) — a stale fix makes `takePhoto` pass `alignment = null`, and `alignmentStampLines(null)` returns `"NO EXISTING REPORT WITHIN BEARING/RANGE"` although no search ran. The same null→negative mapping pre-exists for the no-fix / no-heading cases, so this is not a regression of the NCAM-3 guarantee (no stale coordinates are stamped — only the alignment verdict line is misleading). Closing it properly needs a new "check unavailable" result threaded through the renderer plus a new stamp string — CodeRabbit itself labels it "Heavy lift" — the same shape as the Fix 19 pre-scan Minor, recorded here as a follow-up rather than blocking the merge.
+
+Remaining for Fix 20: re-push the follow-up record, re-watch CI on the new head, merge.
