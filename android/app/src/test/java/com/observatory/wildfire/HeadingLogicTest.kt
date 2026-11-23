@@ -41,4 +41,23 @@ class HeadingLogicTest {
         assertEquals(15.0, HeadingLogic.normalizeDeg(375.0), 1e-9)
         assertTrue(HeadingLogic.normalizeDeg(-720.0) in 0.0..360.0)
     }
+
+    // Fix 21 (NHEAD-1): the first real sample after a null previous
+    // ALWAYS publishes. Fail-without-fix: the old expression
+    // `lastNotified ?: value` made prev == cur, delta 0 → false.
+    @Test
+    fun `shouldPublishHeading first sample always publishes`() {
+        assertTrue(HeadingLogic.shouldPublishHeading(null, 42.0, 1.0))
+        assertTrue(!HeadingLogic.shouldPublishHeading(null, null, 1.0))
+    }
+
+    @Test
+    fun `shouldPublishHeading one degree gate with wrap`() {
+        assertTrue(!HeadingLogic.shouldPublishHeading(45.0, 45.0, 1.0))
+        assertTrue(!HeadingLogic.shouldPublishHeading(45.0, 45.5, 1.0))
+        assertTrue(HeadingLogic.shouldPublishHeading(45.0, 46.0, 1.0))
+        assertTrue(HeadingLogic.shouldPublishHeading(45.0, 44.0, 1.0))
+        assertTrue(HeadingLogic.shouldPublishHeading(359.0, 0.5, 1.0))
+        assertTrue(!HeadingLogic.shouldPublishHeading(359.0, 359.5, 1.0))
+    }
 }
