@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { Compass, Wind, AlertTriangle, ShieldCheck, HelpCircle } from "lucide-react";
 import { Report, SatelliteHotspot } from "../types";
 import { haversineKm } from "../utils/geo";
+import { isFreshThreatTimestamp } from "../utils/threats";
 
 interface EvacuationRadarProps {
   reports: Report[];
@@ -28,11 +29,15 @@ interface EvacuationRadarProps {
  */
 export default function EvacuationRadar({ reports, satellites = [], userLocation, lang }: EvacuationRadarProps) {
   const isArabic = lang === "ar";
+  // Fix 25 (RAD-1): a wind reading is live for exactly one refresh cycle.
+  // The state carries its observation time; every consumer below keys off
+  // `windFresh`, never off the mere presence of a reading.
+  const WIND_MAX_AGE_MS = 10 * 60 * 1000;
   const [wind, setWind] = useState<{
     direction: number;
     speed: number;
     temperature: number;
-    isLive: true;
+    fetchedAtMs: number;
   } | null>(null);
 
   // Live wind from Open-Meteo (free, no API key) at the user's location
@@ -46,23 +51,37 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
     setWind(null);
 
     const fetchWind = async () => {
+      // Fix 25 (RAD-1): a failed refresh ages the last-good reading out
+      // once it is past the window (the SZM-2 doctrine from Fix 12:
+      // bounded stale-serve, then clear). A transient failure inside the
+      // window keeps the reading — it is still within one refresh cycle.
+      const ageOutStaleWind = () =>
+        setWind((prev) => (prev && Date.now() - prev.fetchedAtMs > WIND_MAX_AGE_MS ? null : prev));
       try {
         const res = await fetch(
           `https://api.open-meteo.com/v1/forecast?latitude=${activeLoc.lat.toFixed(2)}&longitude=${activeLoc.lng.toFixed(2)}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh`
         );
-        if (!res.ok) return;
+        if (!res.ok) {
+          ageOutStaleWind();
+          return;
+        }
         const data = await res.json();
         const cur = data?.current;
-        if (!cur || !Number.isFinite(cur.temperature_2m) || !Number.isFinite(cur.wind_speed_10m) || !Number.isFinite(cur.wind_direction_10m)) return;
+        if (!cur || !Number.isFinite(cur.temperature_2m) || !Number.isFinite(cur.wind_speed_10m) || !Number.isFinite(cur.wind_direction_10m)) {
+          ageOutStaleWind();
+          return;
+        }
         if (cancelled) return;
         setWind({
           direction: Math.round(cur.wind_direction_10m),
           speed: Math.round(cur.wind_speed_10m * 10) / 10,
           temperature: Math.round(cur.temperature_2m * 10) / 10,
-          isLive: true,
+          fetchedAtMs: Date.now(),
         });
       } catch {
-        // No live weather means no spread-direction guidance.
+        // No live weather means no spread-direction guidance — and a
+        // reading past its window is no longer live either.
+        ageOutStaleWind();
       }
     };
 
@@ -146,6 +165,10 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
     const reportBlips: Blip[] = reports
       .filter((r) => (r.status === "verified" || r.status === "pending"))
       .filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lng))
+      // Fix 25 (RAD-3): same freshness gate as the Home banner and wilaya
+      // severity — a days-old or future-dated report must not determine
+      // the closest fire or the escape heading.
+      .filter((r) => isFreshThreatTimestamp(r.timestamp))
       .map((r) => {
         const dist = getDistance(userLocation.lat, userLocation.lng, r.lat, r.lng);
         return {
@@ -160,6 +183,9 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
     const satelliteBlips: Blip[] = satellites
       .filter((s) => s.confidence >= 70)
       .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng))
+      // Fix 25 (RAD-3): same freshness gate as the Home banner — a stale
+      // satellite point must not determine the closest fire.
+      .filter((s) => isFreshThreatTimestamp(s.scanTime))
       .map((s) => {
         const dist = getDistance(userLocation.lat, userLocation.lng, s.lat, s.lng);
         return {
@@ -179,7 +205,13 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
 
   const closestFire = blips[0];
   const oppositeFireHeading = closestFire ? (closestFire.bearing + 180) % 360 : null;
-  const driftHeading = wind?.isLive ? (wind.direction + 180) % 360 : null;
+  // Fix 25 (RAD-1): freshness is derived once here and gates every wind
+  // consumer below — the drift heading, the spread sector, the wind arrow,
+  // the value line and the Live badge. A reading past its window is not
+  // live, even if no refresh has failed yet (backgrounded tabs throttle
+  // the interval, so the failure-path clearing alone is not enough).
+  const windFresh = wind !== null && Date.now() - wind.fetchedAtMs <= WIND_MAX_AGE_MS;
+  const driftHeading = wind !== null && windFresh ? (wind.direction + 180) % 360 : null;
 
   // Spread sector path: a ±22° cone from the center toward driftHeading.
   const spreadSectorPath = (() => {
@@ -195,7 +227,7 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
   // Wind vector arrow: FROM the wind's origin toward the observer point
   // (meteorological direction = where the wind comes FROM).
   const windArrow = (() => {
-    if (!wind?.isLive) return null;
+    if (!wind || !windFresh) return null;
     const from = polar(wind.direction, kmToPx(RANGE_KM * 0.62));
     const to = polar(wind.direction, kmToPx(RANGE_KM * 0.25));
     return { x1: from[0], y1: from[1], x2: to[0], y2: to[1] };
@@ -229,15 +261,15 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
           <div>
             <p className="text-[10px] text-gray-400">{isArabic ? "ناقل الرياح السطحية" : "Vent & Vitesse"}</p>
             <p className="font-bold text-orange-400">
-              {wind ? `${wind.speed} km/h • ${getDirectionName(wind.direction)} (${wind.temperature}°C)` : (isArabic ? "البيانات غير متاحة" : "Données indisponibles")}
+              {wind && windFresh ? `${wind.speed} km/h • ${getDirectionName(wind.direction)} (${wind.temperature}°C)` : (isArabic ? "البيانات غير متاحة" : "Données indisponibles")}
             </p>
           </div>
-          <span className={`text-[8px] border border-white/10 rounded px-1 py-0.5 ${wind?.isLive ? "text-emerald-400" : "text-slate-500"}`}
-            title={wind?.isLive
+          <span className={`text-[8px] border border-white/10 rounded px-1 py-0.5 ${windFresh ? "text-emerald-400" : "text-slate-500"}`}
+            title={windFresh
               ? (isArabic ? "بيانات جوية حية من Open-Meteo" : "Données météo live Open-Meteo")
               : (isArabic ? "بيانات الرياح الحية غير متاحة؛ لا يتم حساب اتجاه الانتشار" : "Données de vent live indisponibles; aucune propagation n'est calculée")}
           >
-            {wind?.isLive ? (isArabic ? "مباشر" : "Live") : (isArabic ? "غير متاح" : "Indisponible")}
+            {windFresh ? (isArabic ? "مباشر" : "Live") : (isArabic ? "غير متاح" : "Indisponible")}
           </span>
         </div>
       </div>

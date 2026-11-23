@@ -95,12 +95,15 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
       : isArabic
         ? "لا توجد ولايات مهددة"
         : "Aucune wilaya menacée";
+  // Fix 25 (WIL-1): all three branches describe REPORTS, never official
+  // orders, team readiness, or "control" — this component has seen none of
+  // those. The flag means a fresh critical citizen report exists.
   const threatenedWilayasDesc =
     mostThreatenedWilayas.length > 0
       ? mostThreatenedWilayas.some((w) => w.evacuationRecommended)
-        ? (isArabic ? "إجراءات إخلاء نشطة في هذه المناطق" : "Évacuations en cours dans ces zones")
-        : (isArabic ? "مراقبة مكثفة وفرق تدخل جاهزة" : "Surveillance intensive, équipes en alerte")
-      : (isArabic ? "جميع المناطق تحت السيطرة" : "Toutes les zones sous contrôle");
+        ? (isArabic ? "بلاغات حرجة حديثة في هذه المناطق" : "Signalements critiques récents dans ces zones")
+        : (isArabic ? "بلاغات حديثة دون مستوى حرج — تابع المستجدات" : "Signalements récents non critiques — restez vigilants")
+      : (isArabic ? "لا بلاغات حديثة في هذه المناطق" : "Aucun signalement récent dans ces zones");
 
   const stats = [
     {
