@@ -223,6 +223,45 @@ describe("EvacuationRadar wind expiry and clock-driven recompute (Fix 25b)", () 
     expect(screen.getByText("البيانات غير متاحة")).toBeTruthy();
   });
 
+  it("the expiry timer fires one millisecond past the window, not at it", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Promise<Response>((resolve) => {
+            calls += 1;
+            if (calls === 1) resolve(windSuccessResponse());
+          })
+      )
+    );
+    render(
+      <EvacuationRadar
+        reports={[mkReport({})]}
+        satellites={[]}
+        userLocation={{ lat: 36.8, lng: 7.6 }}
+        lang="ar"
+      />
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("مباشر")).toBeTruthy();
+    // At exactly the boundary the timer has not fired yet (it is
+    // scheduled 1 ms past the window) — the reading is still live.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+    });
+    expect(screen.getByText("مباشر")).toBeTruthy();
+    // One millisecond later the timer fires and the strict `>` guard
+    // clears it. With the timer at exactly the window this stays live
+    // until the next 60 s clock tick — the Major's mechanism.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.getByText("غير متاح")).toBeTruthy();
+  });
+
   it("the wind fetch carries a timeout signal", async () => {
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => windSuccessResponse());
     vi.stubGlobal("fetch", fetchMock);
