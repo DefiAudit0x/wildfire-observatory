@@ -95,6 +95,12 @@ class FakeTransaction {
   private completeScheduled = false;
   private queuedOps: Array<() => void> = [];
   private active: boolean;
+  private aborted = false;
+  // Fix 28b: a real IndexedDB abort rolls the transaction's writes back.
+  // Snapshot the rows when the transaction becomes active so abort() can
+  // restore them; without this the fake would commit puts that real IDB
+  // discards, and the abort test would pass vacuously.
+  private rowsSnapshot: Map<string, OfflineDraftRecord> | null = null;
 
   constructor(private mode: IDBTransactionMode) {
     if (mode === "readwrite") {
@@ -104,6 +110,7 @@ class FakeTransaction {
       } else {
         fakeState.activeWriteTx = this;
         this.active = true;
+        this.ensureSnapshot();
       }
     } else {
       this.active = true;
@@ -138,13 +145,13 @@ class FakeTransaction {
   }
 
   private maybeComplete(): void {
-    if (this.pending !== 0 || this.completeScheduled) return;
+    if (this.aborted || this.pending !== 0 || this.completeScheduled) return;
     this.completeScheduled = true;
     queueMicrotask(() => {
       this.completeScheduled = false;
       // A new request may have arrived meanwhile (e.g. puts issued inside a
       // getAll onsuccess) — wait for those instead of completing early.
-      if (this.pending !== 0) return;
+      if (this.aborted || this.pending !== 0) return;
       this.oncomplete?.();
       if (this.mode === "readwrite") {
         fakeState.activeWriteTx = null;
@@ -157,8 +164,29 @@ class FakeTransaction {
   private activate(): void {
     this.active = true;
     fakeState.activeWriteTx = this;
+    this.ensureSnapshot();
     const ops = this.queuedOps.splice(0);
     for (const op of ops) op();
+  }
+
+  private ensureSnapshot(): void {
+    if (this.rowsSnapshot) return;
+    this.rowsSnapshot = new Map(fakeState.rows);
+  }
+
+  abort(): void {
+    if (this.aborted) return;
+    this.aborted = true;
+    this.active = false;
+    if (this.rowsSnapshot) fakeState.rows = this.rowsSnapshot;
+    if (this.mode === "readwrite" && fakeState.activeWriteTx === this) {
+      fakeState.activeWriteTx = null;
+      const next = fakeState.writeQueue.shift();
+      if (next) next.activate();
+    }
+    queueMicrotask(() => {
+      this.onabort?.();
+    });
   }
 }
 
@@ -261,5 +289,55 @@ describe("Fix 28 DRAFT-2 — draft store merge is one transaction, freshness win
     const loaded = await loadOfflineDrafts();
     expect(loaded).toHaveLength(1);
     expect(loaded[0].updatedAt).toBe(2000);
+  });
+});
+
+describe("Fix 28b — replace returns the committed records, failures roll back", () => {
+  it("returns the record with the store's stamp", async () => {
+    const committed = await replaceOfflineDrafts([{ id: "d1", content: "draft" }]);
+    expect(committed).toHaveLength(1);
+    expect(typeof committed[0].updatedAt).toBe("number");
+    const stored = await loadOfflineDrafts();
+    expect(stored[0].updatedAt).toBe(committed[0].updatedAt);
+  });
+
+  it("a retry update built on the returned record persists; built on the stale snapshot it does not", async () => {
+    const [committed] = await replaceOfflineDrafts([{ id: "d1", content: "draft" }]);
+    // Stale snapshot: the pre-write input plus retry metadata, no stamp —
+    // the freshness guard skips it, and the call hands the stored record
+    // back so the caller holds the truth instead of phantom metadata.
+    const staleRetry = await replaceOfflineDrafts([
+      { id: "d1", content: "draft", retryCount: 1, lastError: "network down" },
+    ]);
+    expect(staleRetry).toHaveLength(1);
+    expect(staleRetry[0].retryCount).toBeUndefined();
+    expect(staleRetry[0].updatedAt).toBe(committed.updatedAt);
+    expect((await loadOfflineDrafts())[0].retryCount).toBeUndefined();
+    // Built on the RETURNED record, the same retry update persists (tie wins).
+    const freshRetry = await replaceOfflineDrafts([
+      { ...committed, retryCount: 1, lastError: "network down" },
+    ]);
+    expect(freshRetry[0].retryCount).toBe(1);
+    expect((await loadOfflineDrafts())[0].retryCount).toBe(1);
+  });
+
+  it("a failure mid-merge rolls the whole batch back", async () => {
+    // Seed directly (no restamp) so the d1 change is NEWER than the stored
+    // stamp and its put really is queued before the failure.
+    seed({ id: "d1", content: "original", updatedAt: 1000 });
+    seed({ id: "d2", content: "original", updatedAt: 1000 });
+    // stripStamp JSON-serialises every record it compares — a BigInt value
+    // throws there, after the d1 put was already queued.
+    const bad = { id: "d2", content: "bad", tag: 1n as unknown as string };
+    await expect(
+      replaceOfflineDrafts([
+        { id: "d1", content: "changed", updatedAt: 2000 },
+        bad,
+      ]),
+    ).rejects.toThrow();
+    const stored = await loadOfflineDrafts();
+    expect(stored).toHaveLength(2);
+    expect(stored.find((r) => r.id === "d1")?.content).toBe("original");
+    expect(stored.find((r) => r.id === "d2")?.content).toBe("original");
   });
 });

@@ -319,6 +319,41 @@ describe("useReportCamera lifecycle", () => {
     });
     expect(result.current.isCameraOpen).toBe(true);
   });
+
+  // Fix 28b (CodeRabbit Minor, watch 1 on PR #159): stopCamera must release
+  // the start guard too — a retry tapped while the first permission prompt
+  // is still pending hit the guard and returned silently (no camera, no
+  // message). The first grant is still an orphan and gets stopped.
+  it("a retry tapped while the first prompt is still pending starts a fresh request", async () => {
+    const gate1 = deferredCamera<unknown>();
+    const gate2 = deferredCamera<unknown>();
+    const getUserMediaMock = vi.fn().mockReturnValue(gate1.promise);
+    stubGetUserMedia(getUserMediaMock);
+    const stream1 = fakeCameraStream();
+    const stream2 = fakeCameraStream();
+    const { result } = renderCameraHook();
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    act(() => result.current.stopCamera());
+    // Retry BEFORE the first grant resolves — the window the old code
+    // swallowed at the start guard.
+    getUserMediaMock.mockReturnValue(gate2.promise);
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    expect(getUserMediaMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      gate1.resolve(stream1);
+    });
+    expect(stream1.track.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.stream).toBeNull();
+    await act(async () => {
+      gate2.resolve(stream2);
+    });
+    expect(result.current.stream).toBe(stream2);
+    expect(result.current.cameraStatus).toBe("active");
+  });
 });
 
 // ---- Image pipeline ----------------------------------------------------------
@@ -455,6 +490,9 @@ describe("useOfflineDraftQueue", () => {
     vi.mocked(loadOfflineDrafts).mockReset();
     vi.mocked(replaceOfflineDrafts).mockReset();
     vi.mocked(removeOfflineDrafts).mockReset();
+    // Fix 28b: the store returns the records AS COMMITTED — the mock echoes
+    // its input, which is the store's contract for an uncontended write.
+    vi.mocked(replaceOfflineDrafts).mockImplementation(async (records) => records);
   });
 
   it("loads persisted drafts and normalizes their shape on mount", async () => {
@@ -471,7 +509,6 @@ describe("useOfflineDraftQueue", () => {
   it("auto-syncs on connectivity return, removing only accepted drafts", async () => {
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
     const onSubmit = vi.fn().mockResolvedValue({ responseValid: true, id: "rep-1", status: "pending" });
-    vi.mocked(replaceOfflineDrafts).mockResolvedValue(undefined);
     vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
 
     const { result } = renderHook(() =>
@@ -494,7 +531,6 @@ describe("useOfflineDraftQueue", () => {
   it("keeps a draft and records the retry when the server refuses it", async () => {
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1", { retryCount: 1 })]);
     const onSubmit = vi.fn().mockRejectedValue(new Error("network down"));
-    vi.mocked(replaceOfflineDrafts).mockResolvedValue(undefined);
     vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
 
     const { result } = renderHook(() =>
@@ -536,6 +572,34 @@ describe("useOfflineDraftQueue", () => {
     expect(removeOfflineDrafts).not.toHaveBeenCalled();
   });
 
+  // Fix 28b: the hook holds the records AS COMMITTED — the store restamps
+  // on write, so state must come from the store's return value, not from
+  // the pre-write snapshot. The mock returns a restamped record; if the
+  // hook kept its own snapshot, the stamp would stay undefined.
+  it("holds the committed records the store returns, not the pre-write snapshot", async () => {
+    vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
+    const onSubmit = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.mocked(replaceOfflineDrafts).mockImplementation(async (records) => [
+      { ...records[0], updatedAt: 9999999999999 },
+    ]);
+    vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+    );
+    await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(result.current.syncStatusMsg).toContain("فشلت"));
+
+    await waitFor(() => {
+      expect(result.current.offlineDrafts[0].updatedAt).toBe(9999999999999);
+      expect(result.current.offlineDrafts[0].retryCount).toBe(1);
+    });
+  });
+
   // Fix 28 (RFSH-1): a moderated replay must not wedge the queue — the
   // oldest draft was already resolved by a moderator, so the server replays
   // it with status "resolved"; the loop must accept it and move on to the
@@ -547,7 +611,6 @@ describe("useOfflineDraftQueue", () => {
         ? { responseValid: true, id: "rep-old", status: "resolved" }
         : { responseValid: true, id: "rep-new", status: "pending" },
     );
-    vi.mocked(replaceOfflineDrafts).mockResolvedValue(undefined);
     vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
 
     const { result } = renderHook(() =>
