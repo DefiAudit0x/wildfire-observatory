@@ -85,6 +85,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   // is the live date — the only honest post-await comparison.
   const dateRef = useRef(date);
   dateRef.current = date;
+  // Fix 24d (CodeRabbit Major 4664428918, PR #155): the closure's `roster`
+  // is the render at click time — by the time the POST lands the board may
+  // be showing another day's roster. This ref is the LIVE roster — the
+  // only honest post-await comparison for it, mirroring dateRef above.
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
   const fetchRoster = useCallback(async () => {
     rosterReqRef.current?.abort();
     const controller = new AbortController();
@@ -243,6 +249,26 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         // fetchRoster would fetch the OLD day and abort the new load).
         if (requestedDate !== dateRef.current) return;
         if (!roster) {
+          await fetchRoster();
+          return;
+        }
+        // Fix 24d (CodeRabbit Major 4664428918, PR #155): the 24c
+        // invalidation ran unconditionally, but the merge updater rejects
+        // a live roster from another day — add on A → navigate to B (B
+        // loads) → back to A (A's GET in flight) → POST completes: the
+        // guard passes and the captured roster is A's, yet the LIVE roster
+        // is B's, so the merge is a no-op while the invalidation killed
+        // A's GET — the board is stuck showing B's roster under A's header
+        // with loading false and no fetch in flight. (Same shape when the
+        // live roster is null after a failed B load: an empty board, no
+        // error.) Gate the invalidation on the live roster actually being
+        // the requested day; otherwise refetch the selected day — the
+        // fresh GET reads post-commit and includes the new post, and
+        // fetchRoster aborts the stale GET itself. The check must use the
+        // live roster ref, NOT the closure's roster: the closure holds the
+        // click-time render and would say "matches" even when the live
+        // roster is B's.
+        if (rosterRef.current?.date !== requestedDate) {
           await fetchRoster();
           return;
         }
