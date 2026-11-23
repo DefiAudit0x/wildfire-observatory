@@ -53,6 +53,9 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
     onAuthErrorRef.current = onAuthError;
   });
 
+  // Fix 26b: sequence counter for fetchZones (see below).
+  const fetchSeqRef = useRef(0);
+
   // Fix 26 (SZM-1): the manager loads from the admin endpoint, which
   // returns inactive records too — the public GET hides them by design,
   // so the "inactive" filter and the reactivation toggle were dead code
@@ -61,9 +64,17 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   // through the panel's session flow instead of silently keeping a stale
   // list (the old fetchZones ignored non-OK responses entirely).
   const fetchZones = useCallback(async () => {
+    // Fix 26b (watch Major 4666538050): sequence guard — the mount effect
+    // and the safezones:changed subscription can both start a GET, so an
+    // older response landing last overwrote the newer list and cleared
+    // `loading` while the newer request was still in flight (the same
+    // defect class Fix 24 fixed in CentralCommand with seq refs; Fix 26's
+    // own loadZones in SafeEvacuation already has the guard).
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
       const res = await apiFetch("/api/safezones/admin", "GET");
+      if (seq !== fetchSeqRef.current) return;
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setZones(data);
@@ -71,9 +82,10 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
         onAuthErrorRef.current(res);
       }
     } catch (err) {
+      if (seq !== fetchSeqRef.current) return;
       console.error("Failed to load safe zones", err);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) setLoading(false);
     }
   }, []);
 
