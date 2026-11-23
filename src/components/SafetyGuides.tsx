@@ -80,12 +80,19 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
   };
 
   // Fix 31b (CodeRabbit review 6030686627, Minors 1–2): one ref names the
-  // utterance this guide currently owns. The GDE-2 cancels must touch only
-  // that utterance: a bare cancel() stops any speech — including another
-  // component's (StrictMode's simulated unmount runs the cleanup on mount;
-  // TrappedSOSModal's speakEmergency has no unmount cancel) — and `speaking`
-  // is true exactly while this ref is non-null, so the ref is also the
-  // guard for both cancels below.
+  // utterance this guide currently owns. The GDE-2 cancels run only while
+  // this ref is non-null — i.e. only while the guide itself has speech in
+  // progress — and each onend/onerror resets `speaking` only while its own
+  // utterance is still current. (Review 6030887055, follow-up: this is the
+  // honest limit of the guarantee, not per-utterance cancellation — the Web
+  // Speech API has no per-utterance cancel and no queue introspection, so
+  // cancel() is global. If another component's utterance is queued behind
+  // the guide's — the only known case is TrappedSOSModal's emergency speech,
+  // which needs a guide read in progress AND SOS speech queued behind it AND
+  // a guide tab/view change inside that window — the cancel stops it too.
+  // Accepted residual: the window is that narrow, and the SOS modal itself
+  // stays visible. A shared speech-ownership design across the three
+  // speaking components is the real fix for that residual; see FIX_PLAN.md.)
   const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   // Fix 31 (GDE-2): leaving the guides app tab unmounts this component and
