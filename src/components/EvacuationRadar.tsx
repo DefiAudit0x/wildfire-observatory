@@ -103,8 +103,13 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
         // The age-out guard makes a stale timer harmless: it clears only
         // a reading that is actually past the window, so an older timer
         // firing after a newer fetch cannot clear the newer reading.
+        // Fix 25c (CodeRabbit Major 4665662295): the timer fires 1 ms
+        // PAST the window, not at it — the guard is a strict `>` and
+        // `windFresh` is `<=`, so a timer firing at precisely the
+        // boundary millisecond would be a no-op and the badge would stay
+        // live until the next 60 s clock tick.
         if (windExpiryRef.current !== null) clearTimeout(windExpiryRef.current);
-        windExpiryRef.current = setTimeout(ageOutStaleWind, WIND_MAX_AGE_MS);
+        windExpiryRef.current = setTimeout(ageOutStaleWind, WIND_MAX_AGE_MS + 1);
       } catch {
         // No live weather means no spread-direction guidance — and a
         // reading past its window is no longer live either.
