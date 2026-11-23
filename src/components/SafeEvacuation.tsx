@@ -253,6 +253,18 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     }
   }, []);
 
+  // Fix 26b (watch Major 4666538069): a centre is identified by id AND
+  // destination — an admin can move a centre keeping its id (PUT validates
+  // the full schema incl. lat/lng and broadcasts safezones:changed), and
+  // routing to the old coordinates would send a citizen to the wrong
+  // place. All three revalidation points compare both.
+  const zoneState = (zone: SafeZone): "ok" | "gone" | "moved" => {
+    const current = zonesRef.current.find((z) => z.id === zone.id);
+    if (!current) return "gone";
+    if (current.lat !== zone.lat || current.lng !== zone.lng) return "moved";
+    return "ok";
+  };
+
   // (existing) load safe zones from the admin-managed Firestore collection
   useEffect(() => {
     loadZones();
@@ -274,26 +286,40 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     return () => clearInterval(timer);
   }, [loadZones]);
 
-  // Fix 26 (EVAC-2): if the active route's centre is no longer listed,
-  // clear the route (marker, polyline, summary, voice) and say why. The
-  // effect is a no-op in every other case — selecting a zone does not
-  // change `zones`, so it cannot loop.
+  // Fix 26 (EVAC-2): if the active route's centre is no longer listed, or
+  // has moved (Fix 26b: same id, new coordinates — the destination itself
+  // changed), clear the route (marker, polyline, summary, voice) and say
+  // why. The effect is a no-op in every other case — selecting a zone does
+  // not change `zones`, so it cannot loop.
   useEffect(() => {
     zonesRef.current = zones;
-    if (activeRoute && !zones.some((z) => z.id === activeRoute.id)) {
-      setActiveRoute(null);
-      setRouteInfo(null);
-      setRouteGeometry(null);
-      // Fix 26 review (Nit N1): clear the route error too — the stale
-      // "values below are an estimate" warning otherwise lingers in the
-      // empty-state overlay after the route is gone.
-      setRouteError(null);
-      setZonesNotice(
-        isArabic
+    if (!activeRoute) return;
+    const state = zoneState(activeRoute);
+    if (state === "ok") return;
+    setActiveRoute(null);
+    setRouteInfo(null);
+    setRouteGeometry(null);
+    // Fix 26 review (Nit N1): clear the route error too — the stale
+    // "values below are an estimate" warning otherwise lingers in the
+    // empty-state overlay after the route is gone.
+    setRouteError(null);
+    // Fix 26b (watch Major 4666538087): stop the voice summary here — its
+    // stop button lives inside the route summary block and unmounts with
+    // the route, so without this the citizen keeps hearing the old
+    // destination with no way to stop it from this view (onend/onerror
+    // only reset on a natural end; the only other cancel is the component
+    // unmount cleanup).
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
+    setZonesNotice(
+      state === "moved"
+        ? isArabic
+          ? "تم نقل مركز الإخلاء هذا — أُلغي المسار إليه."
+          : "Ce centre d'évacuation a été déplacé — l'itinéraire a été annulé."
+        : isArabic
           ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته — أُلغي المسار إليه."
           : "Ce centre d'évacuation a été désactivé ou supprimé — l'itinéraire a été annulé."
-      );
-    }
+    );
   }, [zones, activeRoute, isArabic]);
 
   // Real compass heading via device orientation. No synthetic heading is shown
@@ -330,12 +356,18 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     // Fix 26 (EVAC-2): refuse a click on a zone that is no longer listed.
     // The button disappears once the list refreshes, so this bites only in
     // the in-flight window — but that window is exactly when a citizen can
-    // still be routed to a dead centre.
-    if (!zonesRef.current.some((z) => z.id === zone.id)) {
+    // still be routed to a dead centre. Fix 26b: a moved centre (same id,
+    // new coordinates) is refused the same way.
+    const clickState = zoneState(zone);
+    if (clickState !== "ok") {
       setZonesNotice(
-        isArabic
-          ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته — اختر مركزًا آخر."
-          : "Ce centre d'évacuation a été désactivé ou supprimé — choisissez un autre centre."
+        clickState === "moved"
+          ? isArabic
+            ? "تم نقل مركز الإخلاء هذا — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été déplacé — choisissez un autre centre."
+          : isArabic
+            ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été désactivé ou supprimé — choisissez un autre centre."
       );
       return;
     }
@@ -383,13 +415,21 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     // Fix 26 (EVAC-2): a refresh can land DURING the OSRM call — the
     // [zones] effect cannot clear a route that was never set (it was nulled
     // at the top of this handler), so re-check here, before the post-fetch
-    // setActiveRoute resurrects a centre the refresh just removed.
-    if (!zonesRef.current.some((z) => z.id === zone.id)) {
+    // setActiveRoute resurrects a centre the refresh just removed. Fix 26b:
+    // a centre moved mid-calculation (same id, new coordinates) is refused
+    // the same way — activating the captured old `zone` object would route
+    // to the old destination.
+    const postState = zoneState(zone);
+    if (postState !== "ok") {
       setIsCalculating(false);
       setZonesNotice(
-        isArabic
-          ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته أثناء حساب المسار — اختر مركزًا آخر."
-          : "Ce centre d'évacuation a été désactivé ou supprimé pendant le calcul — choisissez un autre centre."
+        postState === "moved"
+          ? isArabic
+            ? "تم نقل مركز الإخلاء هذا أثناء حساب المسار — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été déplacé pendant le calcul — choisissez un autre centre."
+          : isArabic
+            ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته أثناء حساب المسار — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été désactivé ou supprimé pendant le calcul — choisissez un autre centre."
       );
       return;
     }
