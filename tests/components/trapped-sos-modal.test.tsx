@@ -16,6 +16,10 @@ const recorderInstances: MockMediaRecorder[] = [];
 
 class MockMediaRecorder {
   static isTypeSupported = (_mime: string) => false;
+  /** Fix 27b: when true, stop() flips state at once but delivers the final
+      chunk + onstop on a later microtask — the real MediaRecorder ordering
+      (state is inactive synchronously, the final dataavailable is queued). */
+  static asyncStop = false;
   state: "recording" | "inactive" = "recording";
   mimeType = "";
   ondataavailable: ((event: { data: Blob }) => void) | null = null;
@@ -29,15 +33,27 @@ class MockMediaRecorder {
   start(_timeslice?: number) {}
   stop() {
     this.state = "inactive";
-    this.onstop?.();
+    if (MockMediaRecorder.asyncStop) {
+      queueMicrotask(() => {
+        this.ondataavailable?.({ data: new Blob([new Uint8Array(300)]) });
+        this.onstop?.();
+      });
+    } else {
+      this.onstop?.();
+    }
   }
 }
 
 class MockFileReader {
+  /** Fix 27b (review Trivial): every Blob handed to readAsDataURL, in
+      order — the mock resolves the same canned string for any blob, so
+      asserting only audioUrl cannot catch a truncated conversion. */
+  static blobSizes: number[] = [];
   result: string | null = null;
   onloadend: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  readAsDataURL(_blob: Blob) {
+  readAsDataURL(blob: Blob) {
+    MockFileReader.blobSizes.push(blob.size);
     // Deliberately async: the onstop conversion must be pending until the
     // test flushes microtasks, so the ms-race case is real.
     queueMicrotask(() => {
@@ -94,6 +110,8 @@ function emitChunk() {
 beforeEach(() => {
   vi.useFakeTimers();
   recorderInstances.length = 0;
+  MockMediaRecorder.asyncStop = false;
+  MockFileReader.blobSizes = [];
   sosBodies.length = 0;
   getUserMediaMock.mockReset();
   vi.stubGlobal("MediaRecorder", MockMediaRecorder);
@@ -185,6 +203,9 @@ describe("Fix 27 SOSM-2 — the auto-stopped take is sent", () => {
     expect(sosBodies).toHaveLength(1);
     expect(sosBodies[0].audioUrl).toBe(CANNED_AUDIO);
     expect(sosBodies[0].audioDuration).toBe(20);
+    // Fix 27b (review Trivial): the conversion that produced the sent
+    // audio saw the one emitted 300-byte chunk.
+    expect(MockFileReader.blobSizes[0]).toBe(300);
     expect(screen.getByText("تم استلام ونشر نداء الاستغاثة!")).toBeTruthy();
   });
 
@@ -203,6 +224,29 @@ describe("Fix 27 SOSM-2 — the auto-stopped take is sent", () => {
     await act(async () => {});
     expect(sosBodies).toHaveLength(1);
     expect(sosBodies[0].audioUrl).toBe(CANNED_AUDIO);
+  });
+
+  it("Send tapped before the timer-stop's final slice lands still sends the whole take (27b)", async () => {
+    // The real MediaRecorder flips state to inactive synchronously while
+    // the final ~100 ms slice is still a queued task. stop() in async mode
+    // delivers that slice (300 bytes) only on a later microtask — Send is
+    // tapped synchronously in between, so the conversion that feeds the
+    // POST must wait for it instead of snapshotting the chunks at once.
+    MockMediaRecorder.asyncStop = true;
+    const stream = fakeStream();
+    getUserMediaMock.mockResolvedValue(stream);
+    renderModal();
+    await startRecording();
+    emitChunk(); // 300 bytes during recording
+    recorderInstances[0].stop();
+    fireEvent.click(screen.getByText("إنهاء التسجيل وإرسال الصوت والموقع فوراً 🚨"));
+    await act(async () => {});
+    expect(sosBodies).toHaveLength(1);
+    expect(sosBodies[0].audioUrl).toBe(CANNED_AUDIO);
+    // The conversion that produced the sent audio saw BOTH chunks (300
+    // during recording + 300 final slice) — on old code the snapshot ran
+    // first and blobSizes[0] was 300.
+    expect(MockFileReader.blobSizes[0]).toBe(600);
   });
 });
 
