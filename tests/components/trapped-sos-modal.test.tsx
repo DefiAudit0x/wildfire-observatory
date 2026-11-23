@@ -248,6 +248,25 @@ describe("Fix 27 SOSM-2 — the auto-stopped take is sent", () => {
     // first and blobSizes[0] was 300.
     expect(MockFileReader.blobSizes[0]).toBe(600);
   });
+
+  it("a stop before the first timeslice still sends the final slice as real audio (27c)", async () => {
+    // The recorder stops externally before ANY chunk was buffered — the
+    // final dataavailable slice is the only audio. The wait must not be
+    // gated on chunks already being present, or the take is discarded in
+    // favour of the synthetic siren.
+    MockMediaRecorder.asyncStop = true;
+    const stream = fakeStream();
+    getUserMediaMock.mockResolvedValue(stream);
+    renderModal();
+    await startRecording();
+    // No emitChunk() — nothing buffered yet.
+    recorderInstances[0].stop();
+    fireEvent.click(screen.getByText("إنهاء التسجيل وإرسال الصوت والموقع فوراً 🚨"));
+    await act(async () => {});
+    expect(sosBodies).toHaveLength(1);
+    expect(sosBodies[0].audioUrl).toBe(CANNED_AUDIO);
+    expect(MockFileReader.blobSizes[0]).toBe(300);
+  });
 });
 
 describe("Fix 27 SOSM-3 — close during the permission await leaks nothing", () => {
