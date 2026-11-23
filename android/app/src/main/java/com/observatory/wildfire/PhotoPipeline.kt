@@ -46,7 +46,7 @@ object PhotoPipeline {
      * JPEG-compress stepping the quality down until [maxBytes] holds; null
      * when even the floor quality overshoots (caller shows "too big").
      * Byte-identical behavior to the v2.0.0 picker loop: compress at q,
-     * then q -= 15, looping while still oversized AND q > 20 — so the floor
+     * then q -= 15, looping while still oversized AND q >= 20 — so the floor
      * quality itself is always attempted.
      */
     fun compressWithinBudget(bitmap: Bitmap, maxBytes: Int = MAX_BYTES): ByteArray? {
@@ -57,7 +57,7 @@ object PhotoPipeline {
             bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
             bytes = out.toByteArray()
             quality -= QUALITY_STEP
-        } while (bytes.size > maxBytes && quality > FLOOR_QUALITY)
+        } while (bytes.size > maxBytes && quality >= FLOOR_QUALITY)
         return if (bytes.size > maxBytes) null else bytes
     }
 
