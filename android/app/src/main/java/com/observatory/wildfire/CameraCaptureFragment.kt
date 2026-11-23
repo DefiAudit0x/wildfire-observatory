@@ -111,8 +111,14 @@ class CameraCaptureFragment : Fragment() {
     private val app get() = requireActivity().application as ObservatoryApp
 
     // F2 house rule: named listeners, removed in onDestroyView.
+    // Fix 20b: refresh the whole HUD, not just the alignment line —
+    // updateHud() is where the freshness branch lives, and on a device
+    // without a rotation-vector sensor nothing else re-runs it. updateHud()
+    // ends with updateAlignmentLine(), so alignment behavior is unchanged.
+    // The engine re-notifies every 3 s while FIXED, so the 60 s boundary
+    // is crossed on a live tick, not only on the next fix.
     private val locationListener: (LocationEngine.State) -> Unit = { _ ->
-        activity?.runOnUiThread { updateAlignmentLine() }
+        activity?.runOnUiThread { updateHud() }
     }
 
     // --- Compass ingestion (4 Hz throttle + rounded-change skip) ---
