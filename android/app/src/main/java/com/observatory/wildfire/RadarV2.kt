@@ -188,4 +188,15 @@ object RadarV2 {
      */
     fun aiCacheKey(lat: Double?, lng: Double?, lang: String, hourBucket: Long): String =
         "ai_guidance_${lang}_${lat ?: "none"}_${lng ?: "none"}_$hourBucket"
+
+    /**
+     * Fix 22 (NMAP-2): a cached briefing is a hit only when it was fetched
+     * for the SAME key (same coordinates, same hour bucket, same language)
+     * AND is still within TTL. Either condition alone is wrong: key-only
+     * would serve an hour-old briefing across the TTL, age-only is the
+     * original bug (a briefing at A served at B).
+     */
+    fun aiBriefingCacheHit(
+        cachedKey: String?, currentKey: String, cachedAtMs: Long, nowMs: Long
+    ): Boolean = cachedKey != null && cachedKey == currentKey && aiCacheFresh(cachedAtMs, nowMs)
 }

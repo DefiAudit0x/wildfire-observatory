@@ -500,8 +500,15 @@ class MapFragment : Fragment() {
 
     private fun onAiBriefingRequested() {
         val now = System.currentTimeMillis()
+        // Fix 22 (NMAP-2): the coordinates are read BEFORE the lookup and
+        // the cache is keyed on them — text + age alone served a briefing
+        // fetched at A to a user now at B. The hour bucket is now /
+        // AI_CACHE_TTL_MS (epoch-hour); a briefing never crosses an hour
+        // boundary even inside TTL.
+        val coords = lastUserLatLng
+        val currentKey = RadarV2.aiCacheKey(coords?.first, coords?.second, "ar", now / RadarV2.AI_CACHE_TTL_MS)
         val cached = app.aiBriefingText
-        if (cached != null && RadarV2.aiCacheFresh(app.aiBriefingAt, now)) {
+        if (cached != null && RadarV2.aiBriefingCacheHit(app.aiBriefingKey, currentKey, app.aiBriefingAt, now)) {
             showAiCard(cached)
             return
         }
@@ -512,7 +519,6 @@ class MapFragment : Fragment() {
         app.aiLastRequestMs = now
         aiCard?.visibility = View.VISIBLE
         aiCardBody?.text = getString(R.string.ai_loading)
-        val coords = lastUserLatLng
         viewLifecycleOwner.lifecycleScope.launch {
             val body = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 when (val r = app.api.post("/api/ai/guidance", ApiPayloads.buildAiGuidanceBody(coords?.first, coords?.second))) {
@@ -523,12 +529,22 @@ class MapFragment : Fragment() {
             if (!isAdded) return@launch
             if (body == null) {
                 // Honest failure — no locally authored guidance, ever.
-                if (cached != null) showAiCard(cached) else {
+                // Fix 22 (NMAP-2): the fallback is key-scoped too — only
+                // same-location stale text may show; a briefing fetched
+                // elsewhere must not appear precisely when the fresh
+                // request failed. Fix 22b: re-read the CURRENT text, not
+                // the tap-time capture — with two overlapping same-key
+                // requests, the second may have stored a fresher briefing
+                // while the first was in flight, and the old capture
+                // would show an older location's text instead.
+                val samePlaceStale = if (app.aiBriefingKey == currentKey) app.aiBriefingText else null
+                if (samePlaceStale != null) showAiCard(samePlaceStale) else {
                     aiCardBody?.text = getString(R.string.ai_failed)
                 }
                 return@launch
             }
             app.aiBriefingText = body
+            app.aiBriefingKey = currentKey
             app.aiBriefingAt = System.currentTimeMillis()
             showAiCard(body)
         }
@@ -720,14 +736,11 @@ class MapFragment : Fragment() {
                     snap.hotspots.map { it.lat to it.lng }
             rankedRoutes = RadarV2.rankRoutes(
                 raw.map { (pts, dist, dur) ->
-                    val minFire = if (pts.isEmpty()) {
-                        Double.NaN
-                    } else if (threats.isEmpty()) {
-                        Double.MAX_VALUE
-                    } else {
-                        pts.minOf { p -> GeoMath.minDistanceToPolylineM(p.first, p.second, threats) }
-                    }
-                    RadarV2.RouteOption(pts, dist, dur, minFire)
+                    // Fix 22 (NMAP-1): the clearance is the min distance
+                    // between the ROAD polyline and the FIRE points — the
+                    // old code measured each road vertex against imaginary
+                    // fire-to-fire segments.
+                    RadarV2.RouteOption(pts, dist, dur, GeoMath.minDistanceBetweenPolylineAndPointsM(pts, threats))
                 }
             )
             renderRouteChips()

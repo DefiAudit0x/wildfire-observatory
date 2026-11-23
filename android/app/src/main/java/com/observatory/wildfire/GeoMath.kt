@@ -108,4 +108,25 @@ object GeoMath {
         }
         return best
     }
+
+    /**
+     * Fix 22 (NMAP-1): minimum distance between a ROUTE polyline and a set
+     * of POINTS (fire locations). The old call site passed each road vertex
+     * as the point and the fires as the "polyline", which measured vertices
+     * against imaginary fire-to-fire segments: a fire on the road between
+     * two vertices was missed, and two fires straddling a vertex invented
+     * a zero-clearance segment. The correct geometry is the min over fires
+     * of the fire's distance to the road polyline. Edge cases mirror the
+     * call site's old guards: an empty route is unknown clearance (NaN —
+     * fails open to "crosses", per RouteOption); no fires is clear
+     * (MAX_VALUE).
+     */
+    fun minDistanceBetweenPolylineAndPointsM(
+        route: List<Pair<Double, Double>>,
+        points: List<Pair<Double, Double>>
+    ): Double {
+        if (route.isEmpty()) return Double.NaN
+        if (points.isEmpty()) return Double.MAX_VALUE
+        return points.minOf { p -> minDistanceToPolylineM(p.first, p.second, route) }
+    }
 }
