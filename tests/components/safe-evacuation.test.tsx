@@ -116,7 +116,12 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
     await act(async () => {
       fireEvent.click(buttons[1]);
     });
-    await screen.findByText("المسار نشط على الخريطة");
+    // Fix 26b: the 1 s default findBy timeout is too tight under parallel
+    // load — the real Leaflet map init can push the route summary past it
+    // (two intermittent failures at ~1.1 s / ~2.1 s in targeted runs, both
+    // green on retry). The assertion is unchanged — the route must still
+    // appear — it just tolerates a slow environment.
+    await screen.findByText("المسار نشط على الخريطة", {}, { timeout: 5000 });
   }
 
   it("a deactivated centre disappears, its active route is cleared, and the notice shows", async () => {
@@ -192,9 +197,88 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
     ).toBeTruthy();
   });
 
+  it("a moved centre clears the active route with a moved notice (watch Major 4666538069)", async () => {
+    await renderPage();
+    await calculateRouteForB();
+    // Admin moves B to new coordinates, keeping its id.
+    zonesData = [zoneA, { ...zoneB, lat: 36.9, lng: 7.9 }];
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    expect(screen.queryByText("المسار نشط على الخريطة")).toBeNull();
+    expect(screen.queryByText("مسار طريق حقيقي")).toBeNull();
+    expect(screen.getByText("تم نقل مركز الإخلاء هذا — أُلغي المسار إليه.")).toBeTruthy();
+    // B is still listed (same id) — only the route to its OLD destination
+    // is gone.
+    expect(screen.getByText("مركز ب")).toBeTruthy();
+  });
+
+  it("a centre moved mid-calculation does not resurrect the old destination (watch Major 4666538069)", async () => {
+    osrmDeferred = { resolve: () => {} };
+    await renderPage();
+    const buttons = screen.getAllByText("اعرض مسار الطريق");
+    await act(async () => {
+      fireEvent.click(buttons[1]);
+    });
+    expect(screen.getAllByText("جاري حساب المسار...")).toHaveLength(2);
+    // B moves while OSRM is still pending.
+    zonesData = [zoneA, { ...zoneB, lat: 36.9, lng: 7.9 }];
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    await act(async () => {
+      osrmDeferred!.resolve(osrmSuccessResponse());
+    });
+    expect(screen.queryByText("المسار نشط على الخريطة")).toBeNull();
+    expect(screen.queryByText("مسار طريق حقيقي")).toBeNull();
+    expect(
+      screen.getByText("تم نقل مركز الإخلاء هذا أثناء حساب المسار — اختر مركزًا آخر.")
+    ).toBeTruthy();
+  });
+
+  it("clearing the route mid-speech stops the voice summary (watch Major 4666538087)", async () => {
+    const cancelMock = vi.fn();
+    const speakMock = vi.fn();
+    vi.stubGlobal("speechSynthesis", { speak: speakMock, cancel: cancelMock });
+    vi.stubGlobal(
+      "SpeechSynthesisUtterance",
+      class {
+        text: string;
+        lang = "";
+        rate = 1;
+        onend: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        constructor(text: string) {
+          this.text = text;
+        }
+      }
+    );
+    await renderPage();
+    await calculateRouteForB();
+    // Start the voice summary.
+    await act(async () => {
+      fireEvent.click(screen.getByText("استمع إلى ملخص المسار"));
+    });
+    expect(speakMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("إيقاف الملاحة الصوتية")).toBeTruthy();
+    // Admin deactivates B mid-speech — the stop button unmounts with the
+    // route, so the clearing branch itself must cancel.
+    zonesData = [zoneA];
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    expect(cancelMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("إيقاف الملاحة الصوتية")).toBeNull();
+    expect(screen.queryByText("المسار نشط على الخريطة")).toBeNull();
+  });
+
   it("with no change, a centre stays selectable and its route calculates (control)", async () => {
     await renderPage();
     await calculateRouteForB();
     expect(screen.getByText("مسار طريق حقيقي")).toBeTruthy();
   });
-});
+  // Fix 26b: the whole suite runs on 1.5 shared CPUs, and the real Leaflet
+  // map init can push a test past Vitest's 5 s default test timeout under
+  // full-suite load (the speech test hit it at exactly 5000 ms) — the
+  // findBy timeouts are not the binding constraint, the test timeout is.
+}, 15000);

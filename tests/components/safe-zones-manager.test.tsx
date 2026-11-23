@@ -138,4 +138,54 @@ describe("SafeZonesManager admin endpoint (Fix 26 — SZM-1)", () => {
     });
     expect(adminCalls()).toBe(2);
   });
+
+  it("an older overlapping GET never overwrites a newer list or clears loading early (watch Major 4666538050)", async () => {
+    await renderManager();
+    expect(adminCalls()).toBe(1);
+    // Two overlapping admin GETs, resolved out of order.
+    const deferreds: { resolve: (res: Response) => void }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/safezones/admin") {
+          return new Promise<Response>((resolve) => {
+            deferreds.push({ resolve });
+          });
+        }
+        return new Response("{}", { status: 404 });
+      })
+    );
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    expect(deferreds).toHaveLength(2);
+    const renamedA = { ...zoneA, nameAr: "مركز أ المعدّل" };
+    // The OLDER response lands first, with a renamed zone A.
+    await act(async () => {
+      deferreds[0].resolve(
+        new Response(JSON.stringify([renamedA, zoneB]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    });
+    // The older response is discarded: no renamed row, and the refresh
+    // button is still disabled (loading not cleared while the newer GET
+    // is in flight).
+    expect(screen.queryByText("مركز أ المعدّل")).toBeNull();
+    expect(document.querySelectorAll("button[disabled]").length).toBeGreaterThan(0);
+    // The NEWER response lands: zone B removed.
+    await act(async () => {
+      deferreds[1].resolve(
+        new Response(JSON.stringify([zoneA]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
+      );
+    });
+    expect(screen.queryByText("مركز ب")).toBeNull();
+    expect(screen.getByText("مركز أ")).toBeTruthy();
+    expect(document.querySelectorAll("button[disabled]").length).toBe(0);
+  });
 });
