@@ -77,6 +77,13 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
       if (seq !== fetchSeqRef.current) return;
       if (res.ok) {
         const data = await res.json();
+        // Fix 26c (watch Minor 4666879313): the check must ALSO run after
+        // the parse. If the older response's body streams slowly, a newer
+        // request can start and complete during the older json() await —
+        // then the older body overwrote the newer list. (The sibling
+        // loadZones in SafeEvacuation already checks after res.json(); this
+        // was the one place that didn't.)
+        if (seq !== fetchSeqRef.current) return;
         if (Array.isArray(data)) setZones(data);
       } else {
         onAuthErrorRef.current(res);
