@@ -246,6 +246,22 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
           await fetchRoster();
           return;
         }
+        // Fix 24c (CodeRabbit Major 4664210880, PR #155): a same-day GET
+        // issued while this POST was in flight (navigate away and back
+        // during the POST) can land AFTER the merge and reinstall the day
+        // WITHOUT the new post — the server read it before the POST
+        // committed — and a later save would then delete the post
+        // server-side. Invalidate that read the way fetchRoster does:
+        // abort + replace the ref so its isCurrent() goes false. Merely
+        // aborting is NOT enough — the ref would still point at the
+        // aborted controller, its catch branch would setRoster(null) +
+        // show a load error, wiping the merge. And clear loading here:
+        // the discarded read's finally only clears it when it is current.
+        // (Pre-Fix-24 the trailing fetchRoster() did this invalidation as
+        // a side effect; the Fix 24 merge removed it.)
+        rosterReqRef.current?.abort();
+        rosterReqRef.current = null;
+        setLoading(false);
         setRoster((r) =>
           r && r.date === requestedDate
             ? {
