@@ -34,8 +34,11 @@ export function useStaffSession(): { session: StaffSession; refetch: () => void;
     });
   }, []);
 
+  // Fix 29b (CodeRabbit Minor 1): refetch is a forced read — it must not
+  // reuse a tick probe that started before the caller (a post-login
+  // refetch sharing a pre-login probe would settle with its 401).
   const refetch = useCallback(() => {
-    void fetchSharedSession();
+    void fetchSharedSession(true);
   }, []);
 
   return { session, refetch, loading };
