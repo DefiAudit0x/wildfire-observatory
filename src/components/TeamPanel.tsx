@@ -398,6 +398,13 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     const seq = ++missionSeqRef.current; // F7: the flip is now the newest mission source
     const result = await flipMissionOnScene(current.token);
     setFlipBusy(false);
+    // Fix 24 (TEAM-1): F5 doctrine for the manual flip — this verdict
+    // belongs to the session that was current at press time. If the
+    // session changed mid-flight (native revocation + fresh join, or a
+    // leave), applying it would clear the NEW membership (fatal branch)
+    // or commit a mission with no session at all (ok branch — the F7
+    // seq check cannot see a leave, which takes no sequence number).
+    if (sessionRef.current !== current) return;
     if (result.ok) {
       // F7 (P6): a heartbeat launched BEFORE the flip still carries the older
       // en_route verdict — it must not flash over the on_scene answer the
@@ -433,6 +440,10 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     setLeaveError(false);
     const result = await leaveTeam(current.token);
     setLeaving(false);
+    // Fix 24 (TEAM-1): same guard — an old leave must not tear down a
+    // replacement session. In particular its stopTeamTracking() would
+    // kill a native FGS the NEW session just started.
+    if (sessionRef.current !== current) return;
     if (result.ok) {
       // F6 (P5): leaving the team must also kill the native FGS — the stop
       // control is about to vanish with the session card, and an orphaned

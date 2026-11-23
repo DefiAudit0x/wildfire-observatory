@@ -56,14 +56,23 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const locationsErrorRef = useRef(false);
   const reportedFallbackRef = useRef(false);
 
+  const sosFetchSeq = useRef(0);
   const fetchFullSos = useCallback(async () => {
     if (!unlocked) return;
+    // Fix 24 (CMD-1): ARC-W1 for the SOS loader — the 15 s poll, the
+    // visibility return and the resolve flow can all have a fetch in
+    // flight; only the latest-issued one may commit, or a slow response
+    // resurrects a just-resolved SOS.
+    const seq = ++sosFetchSeq.current;
     try {
       // W-M10: 15s ceiling (apiFetch) — a hung link used to loop the
       // "loading" spinner forever with no error and no retry path.
       const res = await apiFetch("/api/sos/full", "GET");
+      if (seq !== sosFetchSeq.current) return;
       if (res.ok) {
-        setFullSos(await res.json());
+        const data = await res.json();
+        if (seq !== sosFetchSeq.current) return;
+        setFullSos(data);
         sosErrorRef.current = false;
         const source = res.headers.get("X-SOS-Source");
         if (source === "memory_fallback" && !reportedFallbackRef.current) {
@@ -81,6 +90,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       }
     } catch (err) {
       console.error("Failed to fetch full SOS list:", err);
+      if (seq !== sosFetchSeq.current) return;
       if (!sosErrorRef.current) {
         sosErrorRef.current = true;
         push(isArabic ? "تعذر جلب قائمة الاستغاثات" : "Impossible de charger les SOS", "error");
@@ -89,30 +99,40 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlocked]);
 
+  const locationsFetchSeq = useRef(0);
   const fetchUserLocations = useCallback(async () => {
+    // Fix 24 (CMD-1): same latest-wins rule for the locations loader.
+    const seq = ++locationsFetchSeq.current;
     setLoadingUsers(true);
     try {
       // W-M10: 15s ceiling — see fetchFullSos.
       const res = await apiFetch("/api/locations", "GET");
+      if (seq !== locationsFetchSeq.current) return;
       if (res.ok) {
         const data = await res.json();
+        if (seq !== locationsFetchSeq.current) return;
         setActiveUsers(data);
         locationsErrorRef.current = false;
       } else if (!locationsErrorRef.current) {
         locationsErrorRef.current = true;
         push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
       }
-      if (onRefresh) {
+      // The parent refresh belongs to the latest fetch only — a stale
+      // success must not re-trigger it.
+      if (seq === locationsFetchSeq.current && onRefresh) {
         onRefresh();
       }
     } catch (err) {
       console.error("Failed to fetch user locations:", err);
+      if (seq !== locationsFetchSeq.current) return;
       if (!locationsErrorRef.current) {
         locationsErrorRef.current = true;
         push(isArabic ? "تعذر جلب مواقع المستخدمين" : "Failed to load user locations", "error");
       }
     } finally {
-      setLoadingUsers(false);
+      // Only the latest fetch clears the spinner — mirror the teams
+      // fetcher's `if (seq === teamsFetchSeq.current) setTeamsRefreshing(false)`.
+      if (seq === locationsFetchSeq.current) setLoadingUsers(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onRefresh]);
@@ -318,6 +338,13 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       });
       if (res.ok) {
         if (onRefresh) onRefresh();
+        // Fix 24 (CMD-1): the resolve's local removal is not enough on its
+        // own — a GET issued before the resolve can land after it and
+        // reinstall the resolved SOS (the finding's exact interleaving).
+        // Bumping the SOS sequence invalidates every in-flight SOS fetch,
+        // so only a fetch issued after the resolve may commit; the next
+        // 15 s poll refetches the fresh list.
+        sosFetchSeq.current++;
         setFullSos((prev) => prev.filter((s) => s.id !== sos.id));
         push(isArabic ? `تم إثبات النجدة — ${sos.name} بأمان` : `SOS résolu — ${sos.name} sain et sauf`);
       } else {
