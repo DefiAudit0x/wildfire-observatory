@@ -90,6 +90,18 @@ describe("POST /api/volunteer/register", () => {
     expect(res.status).toBe(400);
   });
 
+  // Fix 29 (VOL-1): the server schema is the backstop — it still rejects a
+  // spaced phone with 400. The client normalizes before sending, so a
+  // spaced number never reaches the server from the form anymore.
+  it("still rejects a spaced phone number (server backstop)", async () => {
+    const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "مختبر حماية",
+      phone: "0550 123 456",
+      wilaya: "الجزائر - تيبازة",
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("rejects foreign non-Maghreb numbers", async () => {
     const res = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
       fullName: "مختبر حماية",

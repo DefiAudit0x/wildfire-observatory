@@ -315,6 +315,42 @@ describe("observatory poll — dataset commits and failure isolation", () => {
   });
 });
 
+// Fix 29 (POLL-1): StrictMode replays the mount effect (setup → cleanup →
+// setup). The old cleanup-only effect left mountedRef false after the
+// replay, so every later dataset/health/spinner write was discarded while
+// the poll kept fetching — the feed looked alive and was dead. The control
+// pins that the replay, not the hook generally, is what the test exercises.
+//
+// NOTE: this MUST use renderHook's reactStrictMode option. A wrapper
+// component that renders <StrictMode> does NOT double-invoke effects in
+// this suite (probed 2026-11-23: setups=1 via wrapper, setups=2 via the
+// option) — a wrapper-based StrictMode test passes vacuously on old code.
+describe("observatory poll — StrictMode replay (Fix 29 POLL-1)", () => {
+  it("commits all five datasets and clears loading after a StrictMode replay", async () => {
+    installFetch(fullRouter());
+    const { result } = renderHook(() => useObservatoryData(), { reactStrictMode: true });
+    await act(async () => {});
+
+    await waitFor(() => expect(result.current.reports).toHaveLength(1));
+    expect(result.current.satellites).toHaveLength(1);
+    expect(result.current.wilayas).toHaveLength(1);
+    expect(result.current.sosCalls).toHaveLength(1);
+    expect(result.current.notifications).toHaveLength(1);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.lastBackendContact).toBeGreaterThan(0);
+    expect(result.current.lastRefreshed).toBeGreaterThan(0);
+  });
+
+  it("commits all five datasets without StrictMode (control)", async () => {
+    installFetch(fullRouter());
+    const { result } = await mount();
+
+    await waitFor(() => expect(result.current.reports).toHaveLength(1));
+    expect(result.current.loading).toBe(false);
+    expect(result.current.lastBackendContact).toBeGreaterThan(0);
+  });
+});
+
 describe("mesh sync — gossip admission and consensus protocol", () => {
   it("admits a valid gossip report and dedupes by report id — forced honest pending + mesh origin (v2.15.0)", async () => {
     installFetch(fullRouter());
