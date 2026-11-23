@@ -145,11 +145,14 @@ export const MAGHREB_REGIONS: MaghrebRegion[] = [
 
 /** Curated northeast-Algeria focus wilayas for the AI copilot quick filter
     (the observatory's initial coverage area). Short names, no country prefix. */
-export const NORTHEAST_ALGERIA_FOCUS: { ar: string; fr: string }[] = [
-  { ar: "الطارف", fr: "El Tarf" },
-  { ar: "سكيكدة", fr: "Skikda" },
-  { ar: "عنابة", fr: "Annaba" },
-  { ar: "سوق أهراس", fr: "Souk Ahras" },
-  { ar: "جيجل", fr: "Jijel" },
-  { ar: "قالمة", fr: "Guelma" },
+export const NORTHEAST_ALGERIA_FOCUS: { code: string; ar: string; fr: string }[] = [
+  // code = the official wilaya number: the stable identity for selection.
+  // Display text (ar/fr) must never be identity — a language switch or a
+  // rewording would silently unselect the wilaya (Fix 30, AI-2).
+  { code: "36", ar: "الطارف", fr: "El Tarf" },
+  { code: "21", ar: "سكيكدة", fr: "Skikda" },
+  { code: "23", ar: "عنابة", fr: "Annaba" },
+  { code: "41", ar: "سوق أهراس", fr: "Souk Ahras" },
+  { code: "18", ar: "جيجل", fr: "Jijel" },
+  { code: "24", ar: "قالمة", fr: "Guelma" },
 ];
