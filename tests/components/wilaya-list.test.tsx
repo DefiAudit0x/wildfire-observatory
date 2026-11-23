@@ -86,3 +86,50 @@ describe("StatisticsPanel threatened-wilayas wording (Fix 25 — WIL-1)", () => 
     expect(screen.queryByText("جميع المناطق تحت السيطرة")).toBeNull();
   });
 });
+
+describe("StatisticsPanel satellite-only wording (Fix 25b — Minor 4665366923)", () => {
+  it("a satellite-only threatened wilaya says satellite detections, not citizen reports (ar)", () => {
+    stubHistory();
+    render(
+      <StatisticsPanel
+        reports={[]}
+        satellites={[]}
+        wilayas={[mkWilaya({ evacuationRecommended: false, severity: "low", activeFires: 0, satelliteHotspots: 3 })]}
+        lang="ar"
+      />
+    );
+    expect(screen.getByText("رصد أقمار اصطناعية حديث دون بلاغات حرجة")).toBeTruthy();
+    expect(screen.queryByText("بلاغات حديثة دون مستوى حرج — تابع المستجدات")).toBeNull();
+  });
+
+  it("a satellite-only threatened wilaya says satellite detections, not citizen reports (fr)", () => {
+    stubHistory();
+    render(
+      <StatisticsPanel
+        reports={[]}
+        satellites={[]}
+        wilayas={[mkWilaya({ evacuationRecommended: false, severity: "low", activeFires: 0, satelliteHotspots: 3 })]}
+        lang="fr"
+      />
+    );
+    expect(screen.getByText("Détections satellites récentes sans signalement critique")).toBeTruthy();
+    expect(screen.queryByText("Signalements récents non critiques — restez vigilants")).toBeNull();
+  });
+
+  it("a mixed list (one wilaya with real reports) keeps the reports wording (ar)", () => {
+    stubHistory();
+    render(
+      <StatisticsPanel
+        reports={[]}
+        satellites={[]}
+        wilayas={[
+          mkWilaya({ nameAr: "عنابة", nameFr: "Annaba", evacuationRecommended: false, severity: "high", activeFires: 2, satelliteHotspots: 0 }),
+          mkWilaya({ nameAr: "سطيف", nameFr: "Sétif", evacuationRecommended: false, severity: "low", activeFires: 0, satelliteHotspots: 3 }),
+        ]}
+        lang="ar"
+      />
+    );
+    expect(screen.getByText("بلاغات حديثة دون مستوى حرج — تابع المستجدات")).toBeTruthy();
+    expect(screen.queryByText("رصد أقمار اصطناعية حديث دون بلاغات حرجة")).toBeNull();
+  });
+});

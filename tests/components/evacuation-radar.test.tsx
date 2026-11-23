@@ -176,3 +176,82 @@ describe("EvacuationRadar threat freshness (Fix 25 — RAD-3)", () => {
     expect(screen.getByText("بلاغ قريب ضمن نطاق الرادار")).toBeTruthy();
   });
 });
+
+describe("EvacuationRadar wind expiry and clock-driven recompute (Fix 25b)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("a stalled refresh never renders, yet the wind still expires at its own boundary", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Promise<Response>((resolve) => {
+            calls += 1;
+            // First call succeeds; every later refresh hangs forever —
+            // no render, no failure path, nothing for the parent to lean on.
+            if (calls === 1) resolve(windSuccessResponse());
+          })
+      )
+    );
+    render(
+      <EvacuationRadar
+        reports={[mkReport({})]}
+        satellites={[]}
+        userLocation={{ lat: 36.8, lng: 7.6 }}
+        lang="ar"
+      />
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("مباشر")).toBeTruthy();
+    // Past the boundary the expiry timer clears the reading on its own,
+    // even though the 10-minute refresh is still hanging.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 1);
+    });
+    expect(screen.getByText("غير متاح")).toBeTruthy();
+    expect(screen.getByText("البيانات غير متاحة")).toBeTruthy();
+  });
+
+  it("the wind fetch carries a timeout signal", async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => windSuccessResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    render(<EvacuationRadar reports={[]} satellites={[]} userLocation={{ lat: 36.8, lng: 7.6 }} lang="ar" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText("مباشر")).toBeTruthy();
+    const signal = (fetchMock.mock.calls[0]?.[1] as { signal?: unknown } | undefined)?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("blips recompute as time advances with no prop change: a report ages out at 31 minutes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => windFailureResponse()));
+    render(
+      <EvacuationRadar
+        reports={[mkReport({})]}
+        satellites={[]}
+        userLocation={{ lat: 36.8, lng: 7.6 }}
+        lang="ar"
+      />
+    );
+    expect(screen.getByText("بلاغ قريب ضمن نطاق الرادار")).toBeTruthy();
+    // No new props arrive — only the 60-second clock ticks. At 31 minutes
+    // the report is past the 30-minute freshness window and must drop off.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31 * 60 * 1000);
+    });
+    expect(screen.getByText("لا توجد أهداف حريق ضمن نطاق 30 كم")).toBeTruthy();
+    expect(screen.queryByText("بلاغ قريب ضمن نطاق الرادار")).toBeNull();
+  });
+});
