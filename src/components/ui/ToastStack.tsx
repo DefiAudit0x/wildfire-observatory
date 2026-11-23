@@ -32,8 +32,17 @@ export default function ToastStack({ toasts }: ToastStackProps) {
   // modal (z-2000), so action feedback vanished exactly when it mattered
   // (field-reported overlap bug). Centered with left-1/2 -translate-x-1/2:
   // direction-neutral in RTL.
+  // Fix 30 (TST-1): toasts are the only feedback for several actions
+  // (report sent, confirmation failed) — the container is a polite live
+  // region so screen readers announce them. No focus change: yanking
+  // focus to a transient, auto-dismissing element would pull keyboard
+  // users out of the form they just submitted.
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[3000] flex flex-col items-center gap-2 w-full max-w-sm px-4">
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[3000] flex flex-col items-center gap-2 w-full max-w-sm px-4"
+    >
       {toasts.map((t) => (
         <div
           key={t.id}
