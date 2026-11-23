@@ -788,3 +788,53 @@ describe("TeamPanel — stale manual actions (Fix 24 / TEAM-1)", () => {
     expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
   });
 });
+
+describe("TeamPanel — leave after a cleared session still stops native tracking (Fix 24b / CodeRabbit Major 4663970078)", () => {
+  it("a leave that lands after a flip's fatal verdict still stops the native service", async () => {
+    const stopTeamTracking = vi.fn();
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking,
+    };
+    let releaseFlip!: (v: unknown) => void;
+    const flipGate = new Promise((resolve) => {
+      releaseFlip = resolve;
+    });
+    let releaseLeave!: (v: unknown) => void;
+    const leaveGate = new Promise((resolve) => {
+      releaseLeave = resolve;
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/mission/phase") {
+        return flipGate;
+      }
+      if (url === "/api/teams/leave") {
+        return leaveGate;
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    // Flip in flight, then leave confirmed while it is still in flight.
+    fireEvent.click(await screen.findByRole("button", { name: /وصلت إلى الموقع/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /الانسحاب من الفريق/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /نعم، انسحاب/ }));
+    // The flip lands first with a fatal verdict: the session is cleared
+    // (and its fatal branch never stops native tracking).
+    releaseFlip(jsonRes(403, { code: "MEMBER_REVOKED", error: "revoked" }));
+    await waitFor(() => expect(screen.getByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeTruthy());
+    expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+    // The leave then succeeds — Fix 24's TEAM-1 guard must not swallow
+    // the FGS stop: with no session left, the leave owns it.
+    releaseLeave(jsonRes(200, { ok: true }));
+    await waitFor(() => expect(stopTeamTracking).toHaveBeenCalledTimes(1));
+  });
+});
