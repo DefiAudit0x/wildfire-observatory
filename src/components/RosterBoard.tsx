@@ -248,7 +248,15 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         }
         setRoster((r) =>
           r && r.date === requestedDate
-            ? { ...r, posts: [...r.posts, data] }
+            ? {
+                ...r,
+                // Fix 24b (CodeRabbit Minor 4663970069, PR #155): a GET
+                // issued before the POST can be processed by the server
+                // after the POST's write and land first, already containing
+                // the new post — appending the POST's copy again would
+                // duplicate the row until reload.
+                posts: r.posts.some((p) => p.id === data.id) ? r.posts : [...r.posts, data],
+              }
             : r
         );
       } else {
@@ -602,7 +610,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
             </div>
             <button
               onClick={addPost}
-              disabled={saving}
+              disabled={saving || loading}
               className="px-4 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
