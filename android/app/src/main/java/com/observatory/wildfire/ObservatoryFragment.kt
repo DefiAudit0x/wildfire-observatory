@@ -1,6 +1,8 @@
 package com.observatory.wildfire
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -39,6 +41,23 @@ class ObservatoryFragment : Fragment() {
     // call, so a failing endpoint is retried at most every 10 min, not on
     // every location publish.
     private var lastWeatherAttemptMs = 0L
+
+    // Fix 21c: time-based freshness re-evaluation. Location events alone
+    // cannot expire the banner or the weather line — the engine suppresses
+    // unchanged non-FIXED states and, while offline, no repository state
+    // emission ever fires render(). A 10 s tick re-runs the three
+    // freshness-gated displays while the view is resumed.
+    private val freshnessHandler = Handler(Looper.getMainLooper())
+    private val freshnessTick = object : Runnable {
+        override fun run() {
+            refreshFreshnessDisplays()
+            freshnessHandler.postDelayed(this, FRESHNESS_TICK_MS)
+        }
+    }
+
+    companion object {
+        private const val FRESHNESS_TICK_MS = 10_000L
+    }
 
     // v2.19.0 — the compass: the radar went heading-up and the awareness line
     // carries "your wilaya + nearest threat". Created per-view (nothing else
@@ -113,6 +132,17 @@ class ObservatoryFragment : Fragment() {
         }
 
         playEntranceCascade(view)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Fix 21c: start the freshness tick while the view is resumed.
+        freshnessHandler.post(freshnessTick)
+    }
+
+    override fun onPause() {
+        freshnessHandler.removeCallbacks(freshnessTick)
+        super.onPause()
     }
 
     /**
@@ -211,11 +241,27 @@ class ObservatoryFragment : Fragment() {
                 }
             }
         }
-        // Fix 21b: render the fresh snapshot weather into the line — the
-        // trigger skips the fetch when the reading is already fresh, and
-        // the layout starts the line GONE with its text written only in
-        // the fetch callback, so without this a mount with fresh weather
-        // showed nothing for up to 10 min.
+        refreshFreshnessDisplays()
+    }
+
+    // Fix 21c: the single re-evaluation point for every freshness-gated
+    // display — weather line, proximity banner, radar. Driven by location
+    // events (renderGps), repository emissions (render, via the banner +
+    // radar calls) and the 10 s tick, so nothing stays live past its age
+    // gate just because no event arrived.
+    private fun refreshFreshnessDisplays() {
+        val snap = app.repository.state.value
+        val now = System.currentTimeMillis()
+        updateWeatherLine(snap, now)
+        updateProximityBanner(snap)
+        updateRadar()
+    }
+
+    // Fix 21b/21c: render the fresh snapshot weather into the line (text
+    // + VISIBLE when weatherFresh, else GONE). Called from renderGps and
+    // from the 10 s freshness tick, so the line expires on time even when
+    // no location event arrives.
+    private fun updateWeatherLine(snap: AppRepository.Snapshot, now: Long) {
         val w = snap.weather
         if (w != null && RadarV2.weatherFresh(snap.weatherFetchedAtMs, now)) {
             weatherText?.text = getString(
@@ -226,7 +272,53 @@ class ObservatoryFragment : Fragment() {
         } else {
             weatherText?.visibility = View.GONE
         }
-        updateRadar()
+    }
+
+    // Fix 21c: the proximity banner, extracted from render() so the same
+    // isFreshFix gate runs from render, renderGps and the freshness tick —
+    // render() alone cannot expire it (no state emission while offline).
+    private fun updateProximityBanner(snap: AppRepository.Snapshot) {
+        val now = System.currentTimeMillis()
+        // Proximity banner — needs a user position.
+        // Fix 21 (NOBS-1): a retained fix is not a live position — the
+        // banner stays GONE on a stale fix, exactly as when there is none.
+        val fix = app.locationEngine.currentFix().takeIf { LocationLogic.isFreshFix(it, now) }
+        banner?.visibility = View.GONE
+        if (fix != null) {
+            // v2.15.0: threat pins exclude rejected AND resolved reports —
+            // a resolved fire must never raise "خطر مباشر" again (staleness
+            // is filtered inside ProximityLogic via `now`).
+            val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
+            val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
+                snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
+                snap.meshIntel.mapNotNull { intel ->
+                    val lat = intel.lat ?: return@mapNotNull null
+                    val lng = intel.lng ?: return@mapNotNull null
+                    ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
+                }
+            when (val level = ProximityLogic.evaluate(fix.lat, fix.lng, pins, now)) {
+                null -> Unit
+                else -> {
+                    banner?.visibility = View.VISIBLE
+                    val nearest = ProximityLogic.nearestFreshKm(fix.lat, fix.lng, pins, now)
+                    bannerText?.text = getString(
+                        when (level) {
+                            ProximityLogic.Level.CRITICAL -> R.string.proximity_critical_fmt
+                            ProximityLogic.Level.WARNING -> R.string.proximity_warning_fmt
+                            ProximityLogic.Level.WATCH -> R.string.proximity_watch_fmt
+                        },
+                        nearest ?: 0.0
+                    )
+                    banner?.setBackgroundColor(
+                        when (level) {
+                            ProximityLogic.Level.CRITICAL -> 0x33D21034
+                            ProximityLogic.Level.WARNING -> 0x33FF6B35
+                            ProximityLogic.Level.WATCH -> 0x3338BDF8
+                        }
+                    )
+                }
+            }
+        }
     }
 
     private fun render(snap: AppRepository.Snapshot) {
@@ -274,46 +366,9 @@ class ObservatoryFragment : Fragment() {
             snap.hotspots.count { it.confidence >= 70 }
         )
 
-        // Proximity banner — needs a user position.
-        // Fix 21 (NOBS-1): a retained fix is not a live position — the
-        // banner stays GONE on a stale fix, exactly as when there is none.
-        val fix = app.locationEngine.currentFix().takeIf { LocationLogic.isFreshFix(it, now) }
-        banner?.visibility = View.GONE
-        if (fix != null) {
-            // v2.15.0: threat pins exclude rejected AND resolved reports —
-            // a resolved fire must never raise "خطر مباشر" again (staleness
-            // is filtered inside ProximityLogic via `now`).
-            val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
-            val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
-                snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
-                snap.meshIntel.mapNotNull { intel ->
-                    val lat = intel.lat ?: return@mapNotNull null
-                    val lng = intel.lng ?: return@mapNotNull null
-                    ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
-                }
-            when (val level = ProximityLogic.evaluate(fix.lat, fix.lng, pins, now)) {
-                null -> Unit
-                else -> {
-                    banner?.visibility = View.VISIBLE
-                    val nearest = ProximityLogic.nearestFreshKm(fix.lat, fix.lng, pins, now)
-                    bannerText?.text = getString(
-                        when (level) {
-                            ProximityLogic.Level.CRITICAL -> R.string.proximity_critical_fmt
-                            ProximityLogic.Level.WARNING -> R.string.proximity_warning_fmt
-                            ProximityLogic.Level.WATCH -> R.string.proximity_watch_fmt
-                        },
-                        nearest ?: 0.0
-                    )
-                    banner?.setBackgroundColor(
-                        when (level) {
-                            ProximityLogic.Level.CRITICAL -> 0x33D21034
-                            ProximityLogic.Level.WARNING -> 0x33FF6B35
-                            ProximityLogic.Level.WATCH -> 0x3338BDF8
-                        }
-                    )
-                }
-            }
-        }
+        // Fix 21c: the banner lives in updateProximityBanner() so the same
+        // isFreshFix gate runs from render, renderGps and the freshness tick.
+        updateProximityBanner(snap)
         updateRadar()
     }
 
@@ -380,6 +435,7 @@ class ObservatoryFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        freshnessHandler.removeCallbacks(freshnessTick)
         app.locationEngine.removeListener(locationListener)
         headingEngine?.let { it.removeListener(headingListener); it.stop() }
         headingEngine = null
