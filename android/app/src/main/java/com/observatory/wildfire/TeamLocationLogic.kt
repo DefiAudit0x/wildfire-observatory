@@ -85,6 +85,20 @@ object TeamLocationLogic {
     fun shouldAutoArrive(streak: Int): Boolean = streak >= ARRIVAL_STREAK_NEEDED
 
     /**
+     * Fix 23 (NTEAMSV-1): a fix counts toward the arrival streak only when
+     * it is a NEW measurement — its GPS timestamp strictly newer than the
+     * last fix that counted. The service replays the same cached Location
+     * on every beat while GPS is quiet, so counting by invocation let ONE
+     * fix satisfy the two-fix threshold. An equal or older timestamp is not
+     * a new measurement: it neither advances the streak nor resets it (only
+     * an out-of-range fix resets — the existing doctrine). `fix.time` is
+     * GPS/provider time, not the device wall clock, so device clock changes
+     * cannot fake it. First fix of a leg: lastCounted is null → counts.
+     */
+    fun isNewArrivalFix(fixTimeMs: Long, lastCountedFixTimeMs: Long?): Boolean =
+        lastCountedFixTimeMs == null || fixTimeMs > lastCountedFixTimeMs
+
+    /**
      * Mission target from the raw mission JSON substring the beat extractor
      * produced. Regex-based on purpose (house rule: no org.json in JVM unit
      * tests — same as parseHeartbeatIntervalMs). Null = no usable target:
