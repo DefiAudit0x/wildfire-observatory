@@ -1,6 +1,8 @@
 package com.observatory.wildfire
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -34,7 +36,28 @@ class ObservatoryFragment : Fragment() {
     private var weatherText: TextView? = null
     private var banner: View? = null
     private var bannerText: TextView? = null
-    private var weatherRequested = false
+    // Fix 21 (NOBS-2): the once-per-view flag is gone — the last ATTEMPT
+    // time throttles refreshes (MapFragment's pattern). Set BEFORE the
+    // call, so a failing endpoint is retried at most every 10 min, not on
+    // every location publish.
+    private var lastWeatherAttemptMs = 0L
+
+    // Fix 21c: time-based freshness re-evaluation. Location events alone
+    // cannot expire the banner or the weather line — the engine suppresses
+    // unchanged non-FIXED states and, while offline, no repository state
+    // emission ever fires render(). A 10 s tick re-runs the three
+    // freshness-gated displays while the view is resumed.
+    private val freshnessHandler = Handler(Looper.getMainLooper())
+    private val freshnessTick = object : Runnable {
+        override fun run() {
+            refreshFreshnessDisplays()
+            freshnessHandler.postDelayed(this, FRESHNESS_TICK_MS)
+        }
+    }
+
+    companion object {
+        private const val FRESHNESS_TICK_MS = 10_000L
+    }
 
     // v2.19.0 — the compass: the radar went heading-up and the awareness line
     // carries "your wilaya + nearest threat". Created per-view (nothing else
@@ -111,6 +134,17 @@ class ObservatoryFragment : Fragment() {
         playEntranceCascade(view)
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Fix 21c: start the freshness tick while the view is resumed.
+        freshnessHandler.post(freshnessTick)
+    }
+
+    override fun onPause() {
+        freshnessHandler.removeCallbacks(freshnessTick)
+        super.onPause()
+    }
+
     /**
      * v2.20.0 Neo motion — the dashboard sections rise into place with a
      * light stagger once per view creation (280 ms each, 60 ms apart).
@@ -185,10 +219,16 @@ class ObservatoryFragment : Fragment() {
         gpsChip?.text = text
         gpsChip?.setTextColor(color)
 
-        // Weather follows the fix (fetched at most once per fragment view).
+        // Weather follows the fix, throttled to one attempt per 10 min and
+        // only while the reading is stale (Fix 21, NOBS-2). The fresh-fix
+        // gate stays: no fetch is triggered from a dead position.
         val fix = state.fix
-        if (!weatherRequested && fix != null && LocationLogic.isFreshFix(fix, System.currentTimeMillis())) {
-            weatherRequested = true
+        val now = System.currentTimeMillis()
+        val snap = app.repository.state.value
+        val weatherStale = snap.weather == null || !RadarV2.weatherFresh(snap.weatherFetchedAtMs, now)
+        if (fix != null && LocationLogic.isFreshFix(fix, now) && weatherStale &&
+                now - lastWeatherAttemptMs >= RadarV2.WEATHER_MAX_AGE_MS) {
+            lastWeatherAttemptMs = now
             app.repository.fetchWeatherAt(fix.lat, fix.lng) { w ->
                 activity?.runOnUiThread {
                     weatherText?.visibility = if (w == null) View.GONE else View.VISIBLE
@@ -201,7 +241,84 @@ class ObservatoryFragment : Fragment() {
                 }
             }
         }
+        refreshFreshnessDisplays()
+    }
+
+    // Fix 21c: the single re-evaluation point for every freshness-gated
+    // display — weather line, proximity banner, radar. Driven by location
+    // events (renderGps), repository emissions (render, via the banner +
+    // radar calls) and the 10 s tick, so nothing stays live past its age
+    // gate just because no event arrived.
+    private fun refreshFreshnessDisplays() {
+        val snap = app.repository.state.value
+        val now = System.currentTimeMillis()
+        updateWeatherLine(snap, now)
+        updateProximityBanner(snap)
         updateRadar()
+    }
+
+    // Fix 21b/21c: render the fresh snapshot weather into the line (text
+    // + VISIBLE when weatherFresh, else GONE). Called from renderGps and
+    // from the 10 s freshness tick, so the line expires on time even when
+    // no location event arrives.
+    private fun updateWeatherLine(snap: AppRepository.Snapshot, now: Long) {
+        val w = snap.weather
+        if (w != null && RadarV2.weatherFresh(snap.weatherFetchedAtMs, now)) {
+            weatherText?.text = getString(
+                R.string.weather_fmt,
+                w.tempC.toInt(), w.humidityPct, w.windKph.toInt(), w.windFromDeg.toInt()
+            )
+            weatherText?.visibility = View.VISIBLE
+        } else {
+            weatherText?.visibility = View.GONE
+        }
+    }
+
+    // Fix 21c: the proximity banner, extracted from render() so the same
+    // isFreshFix gate runs from render, renderGps and the freshness tick —
+    // render() alone cannot expire it (no state emission while offline).
+    private fun updateProximityBanner(snap: AppRepository.Snapshot) {
+        val now = System.currentTimeMillis()
+        // Proximity banner — needs a user position.
+        // Fix 21 (NOBS-1): a retained fix is not a live position — the
+        // banner stays GONE on a stale fix, exactly as when there is none.
+        val fix = app.locationEngine.currentFix().takeIf { LocationLogic.isFreshFix(it, now) }
+        banner?.visibility = View.GONE
+        if (fix != null) {
+            // v2.15.0: threat pins exclude rejected AND resolved reports —
+            // a resolved fire must never raise "خطر مباشر" again (staleness
+            // is filtered inside ProximityLogic via `now`).
+            val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
+            val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
+                snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
+                snap.meshIntel.mapNotNull { intel ->
+                    val lat = intel.lat ?: return@mapNotNull null
+                    val lng = intel.lng ?: return@mapNotNull null
+                    ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
+                }
+            when (val level = ProximityLogic.evaluate(fix.lat, fix.lng, pins, now)) {
+                null -> Unit
+                else -> {
+                    banner?.visibility = View.VISIBLE
+                    val nearest = ProximityLogic.nearestFreshKm(fix.lat, fix.lng, pins, now)
+                    bannerText?.text = getString(
+                        when (level) {
+                            ProximityLogic.Level.CRITICAL -> R.string.proximity_critical_fmt
+                            ProximityLogic.Level.WARNING -> R.string.proximity_warning_fmt
+                            ProximityLogic.Level.WATCH -> R.string.proximity_watch_fmt
+                        },
+                        nearest ?: 0.0
+                    )
+                    banner?.setBackgroundColor(
+                        when (level) {
+                            ProximityLogic.Level.CRITICAL -> 0x33D21034
+                            ProximityLogic.Level.WARNING -> 0x33FF6B35
+                            ProximityLogic.Level.WATCH -> 0x3338BDF8
+                        }
+                    )
+                }
+            }
+        }
     }
 
     private fun render(snap: AppRepository.Snapshot) {
@@ -249,44 +366,9 @@ class ObservatoryFragment : Fragment() {
             snap.hotspots.count { it.confidence >= 70 }
         )
 
-        // Proximity banner — needs a user position.
-        val fix = app.locationEngine.currentFix()
-        banner?.visibility = View.GONE
-        if (fix != null) {
-            // v2.15.0: threat pins exclude rejected AND resolved reports —
-            // a resolved fire must never raise "خطر مباشر" again (staleness
-            // is filtered inside ProximityLogic via `now`).
-            val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
-            val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
-                snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
-                snap.meshIntel.mapNotNull { intel ->
-                    val lat = intel.lat ?: return@mapNotNull null
-                    val lng = intel.lng ?: return@mapNotNull null
-                    ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
-                }
-            when (val level = ProximityLogic.evaluate(fix.lat, fix.lng, pins, now)) {
-                null -> Unit
-                else -> {
-                    banner?.visibility = View.VISIBLE
-                    val nearest = ProximityLogic.nearestFreshKm(fix.lat, fix.lng, pins, now)
-                    bannerText?.text = getString(
-                        when (level) {
-                            ProximityLogic.Level.CRITICAL -> R.string.proximity_critical_fmt
-                            ProximityLogic.Level.WARNING -> R.string.proximity_warning_fmt
-                            ProximityLogic.Level.WATCH -> R.string.proximity_watch_fmt
-                        },
-                        nearest ?: 0.0
-                    )
-                    banner?.setBackgroundColor(
-                        when (level) {
-                            ProximityLogic.Level.CRITICAL -> 0x33D21034
-                            ProximityLogic.Level.WARNING -> 0x33FF6B35
-                            ProximityLogic.Level.WATCH -> 0x3338BDF8
-                        }
-                    )
-                }
-            }
-        }
+        // Fix 21c: the banner lives in updateProximityBanner() so the same
+        // isFreshFix gate runs from render, renderGps and the freshness tick.
+        updateProximityBanner(snap)
         updateRadar()
     }
 
@@ -296,9 +378,14 @@ class ObservatoryFragment : Fragment() {
         val fix = app.locationEngine.currentFix()
         val now = System.currentTimeMillis()
 
-        if (fix == null) {
+        // Fix 21 (NOBS-1): a retained fix is not a live position. Without
+        // this gate the radar kept asserting current proximity from wherever
+        // the user WAS after GPS loss (userHasFix=true, blips, wilaya and
+        // nearest-threat all anchored on the old coordinates).
+        val liveFix = fix.takeIf { LocationLogic.isFreshFix(it, now) }
+        if (liveFix == null) {
             radar.setData(emptyList(), userHasFix = false, windFromDeg = null, headingDeg = currentHeadingDeg)
-            awarenessText?.setText(R.string.radar_awareness_nofix)
+            awarenessText?.setText(R.string.radar_awareness_waiting)
             return
         }
         val blips = ArrayList<RadarModel.Blip>()
@@ -306,27 +393,30 @@ class ObservatoryFragment : Fragment() {
             if (r.status == "rejected") continue
             if (!ProximityLogic.isFresh(r.timestampMs, now)) continue
             val kind = if (r.status == "verified") RadarModel.Kind.VERIFIED_REPORT else RadarModel.Kind.PENDING_REPORT
-            blips.add(RadarModel.blipFrom(fix.lat, fix.lng, r.lat, r.lng, kind, r.locationName))
+            blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, r.lat, r.lng, kind, r.locationName))
         }
         for (h in snap.hotspots) {
             if (h.confidence < 70) continue
             if (!ProximityLogic.isFresh(h.scanTimeMs, now)) continue
-            blips.add(RadarModel.blipFrom(fix.lat, fix.lng, h.lat, h.lng, RadarModel.Kind.HOTSPOT, h.satellite))
+            blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, h.lat, h.lng, RadarModel.Kind.HOTSPOT, h.satellite))
         }
         for (s in snap.safezones) {
-            blips.add(RadarModel.blipFrom(fix.lat, fix.lng, s.lat, s.lng, RadarModel.Kind.SAFEZONE, s.nameAr))
+            blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, s.lat, s.lng, RadarModel.Kind.SAFEZONE, s.nameAr))
         }
         for (m in snap.meshIntel) {
             val lat = m.lat ?: continue
             val lng = m.lng ?: continue
-            blips.add(RadarModel.blipFrom(fix.lat, fix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
+            blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
         }
-        radar.setData(blips, userHasFix = true, windFromDeg = snap.weather?.windFromDeg, headingDeg = currentHeadingDeg)
+        // Fix 21 (NOBS-2): a stale wind passes null (existing path in
+        // RadarView.setData — the drift cone simply does not draw).
+        val freshWind = snap.weather?.takeIf { RadarV2.weatherFresh(snap.weatherFetchedAtMs, now) }?.windFromDeg
+        radar.setData(blips, userHasFix = true, windFromDeg = freshWind, headingDeg = currentHeadingDeg)
 
         // v2.19.0 awareness line: your wilaya + the nearest threat inside the
         // 30 km card (distance + Arabic compass direction) — "أين أنا وماذا
         // يفعل هذا الرادار" answered in one honest sentence.
-        val wilaya = Wilayas.nearest(fix.lat, fix.lng)
+        val wilaya = Wilayas.nearest(liveFix.lat, liveFix.lng)
         val nearest = blips.filter { it.kind != RadarModel.Kind.SAFEZONE }.minByOrNull { it.distKm }
         awarenessText?.text = if (nearest == null || nearest.distKm > RadarModel.RANGE_KM) {
             getString(R.string.radar_awareness_calm_fmt, wilaya.nameAr)
@@ -345,6 +435,7 @@ class ObservatoryFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        freshnessHandler.removeCallbacks(freshnessTick)
         app.locationEngine.removeListener(locationListener)
         headingEngine?.let { it.removeListener(headingListener); it.stop() }
         headingEngine = null

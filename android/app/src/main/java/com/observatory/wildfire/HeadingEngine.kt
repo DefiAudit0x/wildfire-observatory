@@ -136,11 +136,10 @@ class HeadingEngine(private val context: Context) {
 
     private fun publish(force: Boolean = false) {
         val value = smoothed
-        if (!force) {
-            val prev = lastNotified ?: value ?: return
-            val cur = value ?: return
-            if (Math.abs(HeadingLogic.angleDeltaDeg(prev, cur)) < PUBLISH_MIN_DELTA_DEG) return
-        }
+        // Fix 21 (NHEAD-1): the first real sample after a null previous
+        // publishes — the old inline expression made prev == current, so
+        // the delta was always zero and no live heading ever went out.
+        if (!force && !HeadingLogic.shouldPublishHeading(lastNotified, value, PUBLISH_MIN_DELTA_DEG)) return
         lastNotified = value
         val payload = State(value, sensorPresent)
         for (l in listeners) {

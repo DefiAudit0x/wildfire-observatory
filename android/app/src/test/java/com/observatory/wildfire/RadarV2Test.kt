@@ -188,6 +188,17 @@ class RadarV2Test {
         assertFalse(RadarV2.aiCacheFresh(t + 1, t)) // future-stamped cache is not fresh
     }
 
+    // Fix 21 (NOBS-2): weather is fresh only within 10 minutes of its fetch.
+    @Test
+    fun weather_is_fresh_only_within_ten_minutes() {
+        val t = 1_000_000L
+        assertTrue(RadarV2.weatherFresh(t, t))
+        assertTrue(RadarV2.weatherFresh(t, t + 9L * 60L * 1000L))
+        assertFalse(RadarV2.weatherFresh(t, t + RadarV2.WEATHER_MAX_AGE_MS))
+        assertFalse(RadarV2.weatherFresh(0L, t))
+        assertFalse(RadarV2.weatherFresh(t + 1, t)) // future-stamped reading is not fresh
+    }
+
     @Test
     fun ai_requests_wait_at_least_five_seconds() {
         val t = 1_000_000L

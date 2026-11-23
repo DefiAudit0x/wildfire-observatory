@@ -71,6 +71,8 @@ class AppRepository(
         val safezones: List<Safezone> = emptyList(),
         val wilayas: List<WilayaStatus> = emptyList(),
         val weather: WeatherNow? = null,
+        /** Fix 21 (NOBS-2): when the weather in this snapshot was fetched (0 = never). */
+        val weatherFetchedAtMs: Long = 0L,
         val online: Boolean = false,
         val meshState: String = "unknown",
         val meshPeers: Int = 0,
@@ -563,7 +565,11 @@ class AppRepository(
             hotspots = hotspots,
             safezones = safezones,
             wilayas = wilayas,
-            weather = prev.weather,
+            // Fix 21c: the weather fields are deliberately NOT copied
+            // from prev — the copy keeps the receiver's current values,
+            // so a fetchWeatherAt that lands mid-refresh survives (the
+            // old copy reverted it to prev). With no overlap current ==
+            // prev, so the Fix 21 R7 carry still holds.
             lastSyncMs = if (allSucceeded) System.currentTimeMillis() else prev.lastSyncMs
         )
         if (allSucceeded) persistSnapshot()
@@ -574,7 +580,10 @@ class AppRepository(
             val r = io { api.get(ApiPayloads.buildOpenMeteoUrl(lat, lng)) }
             val w = if (r is ObservatoryApi.Result.Ok) Parsers.parseWeather(r.body) else null
             if (w != null) {
-                _state.value = _state.value.copy(weather = w)
+                // Fix 21 (NOBS-2): stamp the fetch time with the reading —
+                // on failure both fields stay untouched, so the old weather
+                // keeps its old timestamp and its age keeps growing.
+                _state.value = _state.value.copy(weather = w, weatherFetchedAtMs = System.currentTimeMillis())
             }
             onDone(w)
         }

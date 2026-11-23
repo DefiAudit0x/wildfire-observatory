@@ -170,6 +170,13 @@ object RadarV2 {
     fun aiCacheFresh(cachedAtMs: Long, nowMs: Long): Boolean =
         cachedAtMs > 0 && nowMs >= cachedAtMs && (nowMs - cachedAtMs) < AI_CACHE_TTL_MS
 
+    /** Fix 21 (NOBS-2): weather older than this no longer drives guidance. Same 10-min cadence as the map's WIND_REFRESH_MS. */
+    const val WEATHER_MAX_AGE_MS = 10L * 60L * 1000L
+
+    /** True when a fetched weather reading is still young enough to display/drive the radar. */
+    fun weatherFresh(fetchedAtMs: Long, nowMs: Long): Boolean =
+        fetchedAtMs > 0 && nowMs >= fetchedAtMs && (nowMs - fetchedAtMs) < WEATHER_MAX_AGE_MS
+
     /** May a new guidance request go out (5s spacing since the last)? */
     fun aiRequestAllowed(lastRequestMs: Long, nowMs: Long): Boolean =
         lastRequestMs <= 0 || (nowMs >= lastRequestMs && (nowMs - lastRequestMs) >= AI_MIN_REQUEST_INTERVAL_MS)
