@@ -24,6 +24,7 @@ import {
   getBearingDirection,
   getDistanceKm,
   normalizeLoadedDraft,
+  normalizeSubmissionResult,
   safeAlignmentAccuracyValue,
 } from "../src/hooks/reportForm/reportFormShared";
 import { useReportCamera } from "../src/hooks/reportForm/useReportCamera";
@@ -106,6 +107,36 @@ describe("reportFormShared pure contract", () => {
     expect(safeAlignmentAccuracyValue(-5)).toBe(0);
     expect(safeAlignmentAccuracyValue(88)).toBe(88);
   });
+
+  // Fix 28 (RFSH-1): the validator must accept every status the server
+  // contract accepts — a durable replay of a moderator-resolved/rejected
+  // report returns its stored status, and narrowing it to pending/verified
+  // made the offline sync loop throw and wedge at the oldest draft.
+  it("accepts a durable replay of a moderator-resolved report", () => {
+    const result = normalizeSubmissionResult({ responseValid: true, id: "rep-old", status: "resolved" });
+    expect(result.responseValid).toBe(true);
+    expect(result.status).toBe("resolved");
+    expect(result.id).toBe("rep-old");
+  });
+
+  it("accepts a durable replay of a moderator-rejected report", () => {
+    const result = normalizeSubmissionResult({ responseValid: true, id: "rep-old", status: "rejected" });
+    expect(result.responseValid).toBe(true);
+    expect(result.status).toBe("rejected");
+  });
+
+  it("keeps the pending/verified contract and the malformed-shape rejections (control)", () => {
+    expect(normalizeSubmissionResult({ responseValid: true, id: "rep-1", status: "pending" }).responseValid).toBe(true);
+    expect(normalizeSubmissionResult({ responseValid: true, id: "rep-1", status: "verified" }).responseValid).toBe(true);
+    expect(normalizeSubmissionResult({ responseValid: true, id: "rep-1", status: "resolved" }).status).toBe("resolved");
+    // Malformed shapes stay invalid.
+    expect(normalizeSubmissionResult({ responseValid: true, status: "pending" }).responseValid).toBe(false);
+    expect(normalizeSubmissionResult({ responseValid: true, id: "ab", status: "pending" }).responseValid).toBe(false);
+    expect(normalizeSubmissionResult({ responseValid: true, id: "rep-1", status: "bogus" }).responseValid).toBe(false);
+    expect(normalizeSubmissionResult("not an object").responseValid).toBe(false);
+    // An offline draft is still accepted via the offline branch.
+    expect(normalizeSubmissionResult({ responseValid: true, isOfflineDraft: true }).responseValid).toBe(true);
+  });
 });
 
 // ---- Camera correlation ------------------------------------------------------
@@ -170,6 +201,123 @@ describe("useReportCamera correlation", () => {
     expect(result.current.pitchSource).toBe("none");
     expect(result.current.showCalibrationGuide).toBe(false);
     expect(result.current.isCameraOpen).toBe(false);
+  });
+});
+
+// ---- Camera lifecycle (Fix 28 RCAM-1) ---------------------------------------
+// jsdom has no navigator.mediaDevices — each test stubs getUserMedia with a
+// deferred promise. window.DeviceOrientationEvent is undefined in jsdom, so
+// the DOE block is skipped and the tests exercise the getUserMedia await only.
+
+function deferredCamera<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function fakeCameraStream() {
+  const track = { stop: vi.fn() };
+  return { getTracks: () => [track], track };
+}
+
+function stubGetUserMedia(mock: ReturnType<typeof vi.fn>) {
+  Object.defineProperty(navigator, "mediaDevices", {
+    value: { getUserMedia: mock },
+    configurable: true,
+  });
+}
+
+function renderCameraHook() {
+  return renderHook(() =>
+    useReportCamera({ lat: "36.75", lng: "5.06", reports: [], isArabic: true, setErrorMsg: noop }),
+  );
+}
+
+describe("useReportCamera lifecycle", () => {
+  afterEach(() => {
+    // The mediaDevices stub is defined per test (configurable) — remove it
+    // so no later test in this file can see a stale getUserMedia.
+    delete (navigator as { mediaDevices?: unknown }).mediaDevices;
+  });
+
+  it("a stream granted after Close is stopped at once and never stored", async () => {
+    const gate = deferredCamera<unknown>();
+    const getUserMediaMock = vi.fn().mockReturnValue(gate.promise);
+    stubGetUserMedia(getUserMediaMock);
+    const stream = fakeCameraStream();
+    const { result } = renderCameraHook();
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    expect(result.current.isCameraOpen).toBe(true);
+    expect(result.current.cameraStatus).toBe("closed"); // pending
+    act(() => result.current.stopCamera());
+    await act(async () => {
+      gate.resolve(stream);
+    });
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.stream).toBeNull();
+    expect(result.current.cameraStatus).toBe("closed"); // not "active"
+  });
+
+  it("a stream granted after unmount is stopped at once", async () => {
+    const gate = deferredCamera<unknown>();
+    const getUserMediaMock = vi.fn().mockReturnValue(gate.promise);
+    stubGetUserMedia(getUserMediaMock);
+    const stream = fakeCameraStream();
+    const { result, unmount } = renderCameraHook();
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    unmount();
+    await act(async () => {
+      gate.resolve(stream);
+    });
+    expect(stream.track.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a grant while mounted still activates the camera (control)", async () => {
+    const getUserMediaMock = vi.fn();
+    stubGetUserMedia(getUserMediaMock);
+    const stream = fakeCameraStream();
+    getUserMediaMock.mockResolvedValue(stream);
+    const { result } = renderCameraHook();
+    await act(async () => {
+      await result.current.startCamera();
+    });
+    expect(result.current.stream).toBe(stream);
+    expect(result.current.cameraStatus).toBe("active");
+    act(() => result.current.stopCamera());
+    // stopCamera stops the tracks AND the [stream] cleanup re-runs on the
+    // null assignment and stops them again (pre-existing double stop) —
+    // the control pins only that the track IS stopped and the state clears.
+    expect(stream.track.stop).toHaveBeenCalled();
+    expect(result.current.stream).toBeNull();
+  });
+
+  it("the camera button works again after a Close-during-permission (not bricked)", async () => {
+    const gate = deferredCamera<unknown>();
+    const getUserMediaMock = vi.fn().mockReturnValue(gate.promise);
+    stubGetUserMedia(getUserMediaMock);
+    const stream = fakeCameraStream();
+    const { result } = renderCameraHook();
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    act(() => result.current.stopCamera());
+    await act(async () => {
+      gate.resolve(stream);
+    });
+    expect(result.current.stream).toBeNull();
+    // Second tap with a fresh pending grant must NOT early-return.
+    const gate2 = deferredCamera<unknown>();
+    getUserMediaMock.mockReturnValue(gate2.promise);
+    await act(async () => {
+      void result.current.startCamera();
+    });
+    expect(result.current.isCameraOpen).toBe(true);
   });
 });
 
@@ -386,6 +534,35 @@ describe("useOfflineDraftQueue", () => {
     // Snapshot preserved in memory despite server acceptance — no loss.
     expect(result.current.offlineDrafts).toHaveLength(1);
     expect(removeOfflineDrafts).not.toHaveBeenCalled();
+  });
+
+  // Fix 28 (RFSH-1): a moderated replay must not wedge the queue — the
+  // oldest draft was already resolved by a moderator, so the server replays
+  // it with status "resolved"; the loop must accept it and move on to the
+  // newer draft behind it instead of throwing and breaking at the oldest.
+  it("syncs past a moderator-resolved replay and clears the whole queue", async () => {
+    vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1"), draftRow("d2")]);
+    const onSubmit = vi.fn(async (payload: { clientGeneratedId: string }) =>
+      payload.clientGeneratedId === "d1"
+        ? { responseValid: true, id: "rep-old", status: "resolved" }
+        : { responseValid: true, id: "rep-new", status: "pending" },
+    );
+    vi.mocked(replaceOfflineDrafts).mockResolvedValue(undefined);
+    vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+    );
+    await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(2));
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(result.current.syncStatusMsg).toContain("تم قبول ومزامنة"));
+
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+    expect(removeOfflineDrafts).toHaveBeenCalledWith(["d1", "d2"]);
+    await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(0));
   });
 });
 
