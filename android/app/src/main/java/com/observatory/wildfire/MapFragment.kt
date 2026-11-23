@@ -107,6 +107,15 @@ class MapFragment : Fragment() {
 
     private var mapReady = false
     private var lastUserLatLng: Pair<Double, Double>? = null
+    // Fix 20 (NMAP-3): the fix TIME travels with the position — the pair
+    // alone cannot say whether the origin is still live.
+    private var lastUserFixMs: Long = 0L
+
+    /** Fix 20 (NMAP-3): true when the last heard fix is still a live (≤ 60 s) measurement. */
+    private fun hasFreshOrigin(nowMs: Long = System.currentTimeMillis()): Boolean =
+        lastUserLatLng != null &&
+            (nowMs - lastUserFixMs) >= -LocationLogic.CLOCK_SKEW_MS &&
+            (nowMs - lastUserFixMs) <= LocationLogic.FIX_FRESH_MS
     // F11: recenter discipline. The old onFix called animateTo on EVERY
     // fix, fighting the user's free pan. Recentering now happens only on
     // the first fix, when the user walks their marker OUT of the visible
@@ -213,6 +222,12 @@ class MapFragment : Fragment() {
             renderFollowButton()
             val ll = lastUserLatLng
             if (followMode && ll != null) {
+                // Fix 20 (NMAP-3): never ride to an old position — wait
+                // for a fresh fix instead.
+                if (!hasFreshOrigin()) {
+                    Toast.makeText(requireContext(), R.string.gps_searching, Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
                 programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
                 mv.controller.animateTo(GeoPoint(ll.first, ll.second))
             }
@@ -222,6 +237,12 @@ class MapFragment : Fragment() {
         // two steps later. Manual pan releases it (scrollListener above).
         view.findViewById<View>(R.id.recenter_button).setOnClickListener {
             val ll = lastUserLatLng ?: return@setOnClickListener
+            // Fix 20 (NMAP-3): same refusal as follow — no jump to a
+            // stale position.
+            if (!hasFreshOrigin()) {
+                Toast.makeText(requireContext(), R.string.gps_searching, Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
             followMode = true
             renderFollowButton()
             programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
@@ -292,6 +313,7 @@ class MapFragment : Fragment() {
         val moved = lastUserLatLng != null &&
             (lastUserLatLng!!.first != fix.lat || lastUserLatLng!!.second != fix.lng)
         lastUserLatLng = fix.lat to fix.lng
+        lastUserFixMs = fix.timeMs
         val point = GeoPoint(fix.lat, fix.lng)
         if (userMarker == null) {
             userMarker = Marker(mv).apply {
@@ -305,9 +327,13 @@ class MapFragment : Fragment() {
         }
         userMarker?.position = point
         updateUserMarkerRotation(fix)
+        // Fix 20 (NMAP-3): the marker stays visible at the last-known
+        // position, but the map only RIDES a live fix — a stale fix never
+        // moves the view.
+        val fresh = LocationLogic.isFreshFix(fix, System.currentTimeMillis())
         // v2.19.0 follow mode: the map RIDES the person (every fresh fix),
         // not just a one-shot jump — that was the "static picture" verdict.
-        if (followMode) {
+        if (followMode && fresh) {
             programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
             mv.controller.animateTo(point)
         }
@@ -315,17 +341,23 @@ class MapFragment : Fragment() {
         // applies even without follow; leaving follow ON afterwards.
         if (!firstFixSeen) {
             firstFixSeen = true
-            if (!followMode) mv.controller.animateTo(point)
+            if (!followMode && fresh) mv.controller.animateTo(point)
         }
         val box = mv.boundingBox
         val outsideView = box == null || !box.contains(point)
-        if (!followMode && outsideView) {
+        if (!followMode && outsideView && fresh) {
             programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
             mv.controller.animateTo(point)
         }
         // Status line now names the wilaya — offline-safe nearest-centroid.
+        // Fix 20 (NMAP-3): a stale fix is labelled stale, never presented
+        // as the current position.
         val wilayaAr = Wilayas.nearest(fix.lat, fix.lng).nameAr
-        statusText?.text = getString(R.string.map_status_wilaya_fmt, fix.accuracyM.toInt(), wilayaAr)
+        statusText?.text = if (fresh) {
+            getString(R.string.map_status_wilaya_fmt, fix.accuracyM.toInt(), wilayaAr)
+        } else {
+            getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+        }
         // S4: rings ride the user's position; wind refreshes on web parity's
         // 10-minute cadence (the cone itself redraws via the snapshot flow).
         if (moved || ringLines.isEmpty()) drawRings(mv)
@@ -640,7 +672,10 @@ class MapFragment : Fragment() {
     private fun fetchEvacuationRoute() {
         val mv = map ?: return
         val user = lastUserLatLng
-        if (user == null) {
+        // Fix 20 (NMAP-3): a stale origin is no origin — an evacuation
+        // road from where the user WAS is worse than no road. Same toast
+        // as the no-fix case (the existing refusal path).
+        if (user == null || !hasFreshOrigin()) {
             Toast.makeText(requireContext(), R.string.route_need_fix, Toast.LENGTH_LONG).show()
             return
         }
