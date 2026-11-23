@@ -32,6 +32,15 @@ const POLL_INTERVAL_MS = 60 * 1000;
 let sharedSession: StaffSession = { ...UNAUTHENTICATED_SESSION };
 let sharedLoading = true;
 let sharedFetch: Promise<void> | null = null;
+// Fix 29b (CodeRabbit Minor 1): a forced refetch must not reuse a probe
+// that started before it. sharedFetchForced records whether the in-flight
+// fetch was itself started by a force — a force bypasses a tick probe but
+// shares a forced fetch, so two simultaneous refetches still cost one
+// request. fetchGeneration is the supersede guard: only the latest started
+// fetch may write state, so a stale probe settling late can never
+// overwrite the fresh answer.
+let sharedFetchForced = false;
+let fetchGeneration = 0;
 const sessionSubscribers = new Set<SessionSubscriber>();
 
 function notifySessionSubscribers(): void {
@@ -49,12 +58,23 @@ function notifySessionSubscribers(): void {
  * session subscriber. Concurrent callers share the in-flight request. It
  * never throws to callers — a failed probe reads as unauthenticated, exactly
  * as the old per-instance refetch did.
+ *
+ * Fix 29b (CodeRabbit Minor 1): `force` starts a fresh request instead of
+ * reusing a probe that may predate the caller — a post-login refetch must
+ * not settle with the pre-login probe's 401. A forced fetch shares an
+ * already-forced in-flight one (two simultaneous refetches still cost one
+ * request), and the generation guard means only the latest started fetch
+ * writes state, so the superseded probe's late settle is ignored.
  */
-export function fetchSharedSession(): Promise<void> {
-  if (sharedFetch) return sharedFetch;
+export function fetchSharedSession(force = false): Promise<void> {
+  if (sharedFetch && (!force || sharedFetchForced)) return sharedFetch;
+  const generation = ++fetchGeneration;
+  sharedFetchForced = force;
   sharedFetch = (async () => {
     try {
       const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+      // Superseded: a newer fetch owns the answer — write nothing.
+      if (generation !== fetchGeneration) return;
       if (res.ok) {
         const data = await res.json();
         sharedSession = {
@@ -68,12 +88,16 @@ export function fetchSharedSession(): Promise<void> {
         sharedSession = { ...UNAUTHENTICATED_SESSION };
       }
     } catch {
+      if (generation !== fetchGeneration) return;
       sharedSession = { ...UNAUTHENTICATED_SESSION };
     } finally {
-      sharedLoading = false;
-      sharedFetch = null;
+      if (generation === fetchGeneration) {
+        sharedLoading = false;
+        sharedFetch = null;
+        sharedFetchForced = false;
+        notifySessionSubscribers();
+      }
     }
-    notifySessionSubscribers();
   })();
   return sharedFetch;
 }
@@ -98,7 +122,20 @@ export function isStaffSessionLoading(): boolean {
 export function subscribeStaffSession(subscriber: SessionSubscriber): () => void {
   subscriber(sharedSession, sharedLoading);
   sessionSubscribers.add(subscriber);
+  // Fix 29b (CodeRabbit Minor 2): the visibility handler must exist for
+  // staff-only mounts too — it used to be installed only by
+  // subscribeSessionPoll, so a staff-only mount never recovered on tab
+  // return. hookVisibilityOnce is idempotent.
+  hookVisibilityOnce();
   ensureInterval();
+  // Fix 29b (CodeRabbit Minor 3): a first staff subscriber fetches at once.
+  // ensureInterval only ticks when it creates the interval, so when the
+  // admin probe (App.tsx line 31) already created it before the staff hook
+  // (line 32) mounted, the staff session waited up to 60 s with a valid
+  // cookie. The old per-instance hook fetched on every mount; the first
+  // subscriber restores that. Later subscribers read the snapshot, and a
+  // fetch already in flight is shared, not duplicated.
+  if (sessionSubscribers.size === 1) void fetchSharedSession();
   return () => {
     sessionSubscribers.delete(subscriber);
     if (sessionSubscribers.size === 0) {
@@ -161,7 +198,16 @@ function maybeStopInterval(): void {
 export function subscribeSessionPoll(listener: PollListener): () => void {
   listeners.add(listener);
   hookVisibilityOnce();
-  ensureInterval();
+  if (intervalId === null) {
+    tick();
+    intervalId = window.setInterval(tick, POLL_INTERVAL_MS);
+  } else {
+    // Fix 29b (same class as Minor 3): a listener mounting after the
+    // interval exists would otherwise wait up to 60 s for its first probe.
+    // The tick on interval creation already calls it on first mount, so
+    // this arm only fires for late mounts — no double probe.
+    listener();
+  }
   return () => {
     listeners.delete(listener);
     maybeStopInterval();
