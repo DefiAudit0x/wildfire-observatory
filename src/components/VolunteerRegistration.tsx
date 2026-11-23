@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Shield, User, Phone, Mail, MapPin, Send, CheckCircle, Loader2, BadgeCheck, AlertTriangle } from "lucide-react";
 import { Language } from "../types";
 import { MAGHREB_REGIONS } from "../data/maghrebRegions";
-import { isValidMaghrebPhone } from "../utils/phone";
+import { isValidMaghrebPhone, normalizeMaghrebPhone } from "../utils/phone";
 
 interface VolunteerRegistrationProps {
   lang: Language;
@@ -32,8 +32,12 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
 
     // ARC-L17: one shared Maghreb phone policy (src/utils/phone.ts) — the four
     // inline regexes that used to live here moved there verbatim.
-    const cleanPhone = phone.replace(/[\s\-]/g, "");
-    if (!isValidMaghrebPhone(cleanPhone)) {
+    // Fix 29 (VOL-1): validate AND send the normalized (E.164) form — the
+    // server schema judges the raw string, so validating a cleaned string
+    // and sending the raw one let spaced numbers and 8-digit Tunisian
+    // numbers pass the client and die on the server.
+    const normalizedPhone = normalizeMaghrebPhone(phone);
+    if (!isValidMaghrebPhone(normalizedPhone)) {
       setErrorMsg(isArabic
         ? "رقم الهاتف غير صحيح. يرجى إدخال رقم مغاربي صالح (مثال: 0550123456 أو +213550123456)."
         : "Numéro invalide. Veuillez entrer un numéro maghrébin valide (ex: 0550123456 ou +213550123456).");
@@ -50,7 +54,7 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
       const res = await fetch("/api/volunteer/register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, phone, email: email || undefined, wilaya, type }),
+        body: JSON.stringify({ fullName, phone: normalizedPhone, email: email || undefined, wilaya, type }),
       });
       if (res.ok) {
         setSuccess(true);
