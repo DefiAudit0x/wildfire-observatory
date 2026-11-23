@@ -77,6 +77,13 @@ export function fetchSharedSession(force = false): Promise<void> {
       if (generation !== fetchGeneration) return;
       if (res.ok) {
         const data = await res.json();
+        // Fix 29c (CodeRabbit Minor, review 6028708124): re-check AFTER
+        // parsing — a forced fetch may have started and committed while
+        // this body was parsing, and the stale result must not overwrite
+        // it. Without this, the module store holds the older session
+        // (current subscribers keep the newer one in React state, but a
+        // late subscriber reads the stale one).
+        if (generation !== fetchGeneration) return;
         sharedSession = {
           authenticated: true,
           role: data.user?.role || null,
