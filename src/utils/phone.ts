@@ -44,7 +44,13 @@ export function normalizeMaghrebPhone(value: string): string {
   if (tn) return `+216${tn[1]}${tn[2]}`;
   const ly = /^0([2-9])(\d{8})$/.exec(v);
   if (ly) return `+218${ly[1]}${ly[2]}`;
-  return value;
+  // Fix 29b (CodeRabbit Minor 4): return the STRIPPED candidate, not the
+  // raw input — `+213 550 123 456` is a valid number with spaces, and
+  // ` +213550123456 ` passed validation (trim) but was submitted with
+  // spaces, so the server rejected it. For genuinely invalid input v is
+  // identical to value unless it carries spaces/hyphens, which validation
+  // rejects either way.
+  return v;
 }
 
 const GENERIC_PHONE = /^\+?[0-9][0-9 ()-]{5,29}$/;
