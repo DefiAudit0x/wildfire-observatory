@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { MapPin, Plus, Trash2, RefreshCw, ShieldCheck, AlertTriangle, Save, Search } from "lucide-react";
 import { Language } from "../../types";
 import { apiFetch } from "../../utils/adminApi"; // ARC-L21: one shared admin/staff fetch helper
+import { useLiveEvents } from "../../utils/live";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import ToastStack from "../ui/ToastStack";
 import useToasts from "../../hooks/useToasts";
@@ -42,24 +43,68 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   const [busyZoneIds, setBusyZoneIds] = useState<Set<string>>(new Set());
   const { toasts, push } = useToasts();
 
+  // Fix 26 review (Minor m1 — ARC-M27): onAuthError is an inline prop
+  // recreated on every parent render, so its identity in the fetchZones
+  // dependency array re-ran the mount effect on EVERY keystroke typed
+  // anywhere in the admin panel. The latest callback lives in a ref (the
+  // BadgeManager pattern); the effect fires on mount only.
+  const onAuthErrorRef = useRef(onAuthError);
+  useEffect(() => {
+    onAuthErrorRef.current = onAuthError;
+  });
+
+  // Fix 26b: sequence counter for fetchZones (see below).
+  const fetchSeqRef = useRef(0);
+
+  // Fix 26 (SZM-1): the manager loads from the admin endpoint, which
+  // returns inactive records too — the public GET hides them by design,
+  // so the "inactive" filter and the reactivation toggle were dead code
+  // until now. apiFetch adds the 15 s timeout and routes a non-OK
+  // response through onAuthError, so an expired admin session surfaces
+  // through the panel's session flow instead of silently keeping a stale
+  // list (the old fetchZones ignored non-OK responses entirely).
   const fetchZones = useCallback(async () => {
+    // Fix 26b (watch Major 4666538050): sequence guard — the mount effect
+    // and the safezones:changed subscription can both start a GET, so an
+    // older response landing last overwrote the newer list and cleared
+    // `loading` while the newer request was still in flight (the same
+    // defect class Fix 24 fixed in CentralCommand with seq refs; Fix 26's
+    // own loadZones in SafeEvacuation already has the guard).
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     try {
-      const res = await fetch("/api/safezones");
+      const res = await apiFetch("/api/safezones/admin", "GET");
+      if (seq !== fetchSeqRef.current) return;
       if (res.ok) {
         const data = await res.json();
+        // Fix 26c (watch Minor 4666879313): the check must ALSO run after
+        // the parse. If the older response's body streams slowly, a newer
+        // request can start and complete during the older json() await —
+        // then the older body overwrote the newer list. (The sibling
+        // loadZones in SafeEvacuation already checks after res.json(); this
+        // was the one place that didn't.)
+        if (seq !== fetchSeqRef.current) return;
         if (Array.isArray(data)) setZones(data);
+      } else {
+        onAuthErrorRef.current(res);
       }
     } catch (err) {
+      if (seq !== fetchSeqRef.current) return;
       console.error("Failed to load safe zones", err);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeqRef.current) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     fetchZones();
   }, [fetchZones]);
+
+  // Fix 26 (SZM-1, D5): a second admin's toggle/delete shows up without
+  // a manual refresh — the same 4-line pattern as the citizen page.
+  useLiveEvents((event) => {
+    if (event.type === "safezones:changed") fetchZones();
+  });
 
   const handleAddZone = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { getCartoKey, cartoUrl } from "../lib/basemap";
 import L from "leaflet";
 import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, Car, Compass, Activity, Flame } from "lucide-react";
 import { Report, SatelliteHotspot } from "../types";
 import { haversineKm, minDistanceToPolylineKm } from "../utils/geo";
 import { isFreshThreatTimestamp } from "../utils/threats";
+import { useLiveEvents } from "../utils/live";
 
 interface SafeEvacuationProps {
   lang: "ar" | "fr";
@@ -52,6 +53,16 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
   const [heading, setHeading] = useState<number | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [zonesStatus, setZonesStatus] = useState<"loading" | "ready" | "fallback">("loading");
+  // Fix 26 (EVAC-2): a dedicated notice for a centre that was deactivated
+  // or removed while this page was open — distinct from routeError, which
+  // carries OSRM-failure text; the two messages must never share one slot.
+  const [zonesNotice, setZonesNotice] = useState<string | null>(null);
+  // Fix 26 (EVAC-2): sequence guard against overlapping zone loads (the
+  // house pattern — cf. the teams loader's ARC-W1 seq guard) and a ref
+  // mirror of the current list, because handleCalculateRoute closes over
+  // the render-time `zones` and must check the list as it stands now.
+  const zonesSeqRef = useRef(0);
+  const zonesRef = useRef<SafeZone[]>([]);
 
   // ---- Leaflet map (always mounted under the state overlays) ---------------
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
@@ -208,31 +219,108 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     }
   }, [routeGeometry, activeRoute, fireSources, userLocation, isArabic]);
 
+  // Fix 26 (EVAC-2): the zone load, extracted so the mount effect, the
+  // live-event subscription and the polling backstop all share one
+  // guarded loader. The client-side `isActive !== false` filter stays as
+  // defence in depth — the public GET already filters server-side.
+  const loadZones = useCallback(async () => {
+    const seq = ++zonesSeqRef.current;
+    try {
+      const res = await fetch("/api/safezones");
+      if (!res.ok) throw new Error("bad status");
+      const data = await res.json();
+      if (seq !== zonesSeqRef.current) return;
+      if (Array.isArray(data) && data.length > 0) {
+        setZones(data.filter((z: SafeZone) => z.isActive !== false));
+        setZonesStatus("ready");
+      } else {
+        setZones([]);
+        setZonesStatus("fallback");
+      }
+    } catch {
+      if (seq !== zonesSeqRef.current) return;
+      // Fix 26 review (Major M1): a failed REFRESH must not wipe the list.
+      // The mount-only fallback used to empty the zones on any failure —
+      // harmless at mount, but loadZones now runs on every event and every
+      // 60 s poll, so one network blip or 500 emptied the list, the [zones]
+      // effect cleared the active route, and the notice falsely claimed the
+      // centre was deactivated (and the next successful poll never restored
+      // the route). Keep the old list; the "fallback" status still shows
+      // the honest "couldn't verify" banner. Only the first load — when
+      // there is no list yet — clears to empty.
+      if (zonesRef.current.length === 0) setZones([]);
+      setZonesStatus("fallback");
+    }
+  }, []);
+
+  // Fix 26b (watch Major 4666538069): a centre is identified by id AND
+  // destination — an admin can move a centre keeping its id (PUT validates
+  // the full schema incl. lat/lng and broadcasts safezones:changed), and
+  // routing to the old coordinates would send a citizen to the wrong
+  // place. All three revalidation points compare both.
+  const zoneState = (zone: SafeZone): "ok" | "gone" | "moved" => {
+    const current = zonesRef.current.find((z) => z.id === zone.id);
+    if (!current) return "gone";
+    if (current.lat !== zone.lat || current.lng !== zone.lng) return "moved";
+    return "ok";
+  };
+
   // (existing) load safe zones from the admin-managed Firestore collection
   useEffect(() => {
-    let cancelled = false;
-    fetch("/api/safezones")
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("bad status"))))
-      .then((data) => {
-        if (cancelled) return;
-        if (Array.isArray(data) && data.length > 0) {
-          setZones(data.filter((z: any) => z.isActive !== false));
-          setZonesStatus("ready");
-        } else {
-          setZones([]);
-          setZonesStatus("fallback");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setZones([]);
-          setZonesStatus("fallback");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    loadZones();
+  }, [loadZones]);
+
+  // Fix 26 (EVAC-2): every mutation clears the server cache BEFORE it
+  // broadcasts, so a refetch on the event always reads fresh data — no
+  // debounce is needed (the poll hook's 3 s trailing delay exists because
+  // fetchData is heavy; a zones refetch is one small GET).
+  useLiveEvents((event) => {
+    if (event.type === "safezones:changed") loadZones();
+  });
+
+  // Fix 26 (EVAC-2): 60 s polling backstop — bounds staleness to ~60 s if
+  // the socket is dead. Same interval as the server's zone TTL, so a poll
+  // never serves data older than the server's own freshness bound.
+  useEffect(() => {
+    const timer = setInterval(loadZones, 60_000);
+    return () => clearInterval(timer);
+  }, [loadZones]);
+
+  // Fix 26 (EVAC-2): if the active route's centre is no longer listed, or
+  // has moved (Fix 26b: same id, new coordinates — the destination itself
+  // changed), clear the route (marker, polyline, summary, voice) and say
+  // why. The effect is a no-op in every other case — selecting a zone does
+  // not change `zones`, so it cannot loop.
+  useEffect(() => {
+    zonesRef.current = zones;
+    if (!activeRoute) return;
+    const state = zoneState(activeRoute);
+    if (state === "ok") return;
+    setActiveRoute(null);
+    setRouteInfo(null);
+    setRouteGeometry(null);
+    // Fix 26 review (Nit N1): clear the route error too — the stale
+    // "values below are an estimate" warning otherwise lingers in the
+    // empty-state overlay after the route is gone.
+    setRouteError(null);
+    // Fix 26b (watch Major 4666538087): stop the voice summary here — its
+    // stop button lives inside the route summary block and unmounts with
+    // the route, so without this the citizen keeps hearing the old
+    // destination with no way to stop it from this view (onend/onerror
+    // only reset on a natural end; the only other cancel is the component
+    // unmount cleanup).
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
+    setZonesNotice(
+      state === "moved"
+        ? isArabic
+          ? "تم نقل مركز الإخلاء هذا — أُلغي المسار إليه."
+          : "Ce centre d'évacuation a été déplacé — l'itinéraire a été annulé."
+        : isArabic
+          ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته — أُلغي المسار إليه."
+          : "Ce centre d'évacuation a été désactivé ou supprimé — l'itinéraire a été annulé."
+    );
+  }, [zones, activeRoute, isArabic]);
 
   // Real compass heading via device orientation. No synthetic heading is shown
   // when the browser/device does not expose a compass signal.
@@ -263,6 +351,24 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
       setActiveRoute(null);
       setRouteInfo(null);
       setRouteGeometry(null);
+      return;
+    }
+    // Fix 26 (EVAC-2): refuse a click on a zone that is no longer listed.
+    // The button disappears once the list refreshes, so this bites only in
+    // the in-flight window — but that window is exactly when a citizen can
+    // still be routed to a dead centre. Fix 26b: a moved centre (same id,
+    // new coordinates) is refused the same way.
+    const clickState = zoneState(zone);
+    if (clickState !== "ok") {
+      setZonesNotice(
+        clickState === "moved"
+          ? isArabic
+            ? "تم نقل مركز الإخلاء هذا — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été déplacé — choisissez un autre centre."
+          : isArabic
+            ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été désactivé ou supprimé — choisissez un autre centre."
+      );
       return;
     }
     setIsCalculating(true);
@@ -306,8 +412,30 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     } finally {
       window.clearTimeout(timeout);
     }
+    // Fix 26 (EVAC-2): a refresh can land DURING the OSRM call — the
+    // [zones] effect cannot clear a route that was never set (it was nulled
+    // at the top of this handler), so re-check here, before the post-fetch
+    // setActiveRoute resurrects a centre the refresh just removed. Fix 26b:
+    // a centre moved mid-calculation (same id, new coordinates) is refused
+    // the same way — activating the captured old `zone` object would route
+    // to the old destination.
+    const postState = zoneState(zone);
+    if (postState !== "ok") {
+      setIsCalculating(false);
+      setZonesNotice(
+        postState === "moved"
+          ? isArabic
+            ? "تم نقل مركز الإخلاء هذا أثناء حساب المسار — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été déplacé pendant le calcul — choisissez un autre centre."
+          : isArabic
+            ? "تم إلغاء تنشيط مركز الإخلاء هذا أو إزالته أثناء حساب المسار — اختر مركزًا آخر."
+            : "Ce centre d'évacuation a été désactivé ou supprimé pendant le calcul — choisissez un autre centre."
+      );
+      return;
+    }
     setIsCalculating(false);
     setActiveRoute(zone);
+    setZonesNotice(null);
     setRouteInfo({ distanceKm, durationMin, source });
     setRouteGeometry(source === "osrm" ? geometry : null);
     if (source === "estimate") {
@@ -402,6 +530,14 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
               {isArabic
                 ? "تعذر التحقق من حالة مراكز الإخلاء حاليًا. لا تعتبر أي مركز آمنًا أو مفتوحًا دون تأكيد رسمي."
                 : "Impossible de vérifier l'état actuel des centres d'évacuation. Ne considérez aucun centre comme ouvert ou sûr sans confirmation officielle."}
+            </p>
+          )}
+
+          {/* Fix 26 (EVAC-2): a centre deactivated/removed while this page
+              was open — the route to it was cancelled, or the click was refused. */}
+          {zonesNotice && (
+            <p role="status" className="mb-3 rounded-lg border border-amber-500/30 bg-amber-950/30 p-2 text-[10px] leading-relaxed text-amber-300">
+              {zonesNotice}
             </p>
           )}
 
