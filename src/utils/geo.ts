@@ -17,6 +17,40 @@ export function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: n
 }
 
 /**
+ * Shortest distance (km) from a point to a polyline given as [lng, lat]
+ * pairs (OSRM GeoJSON order). Every segment is measured, so a fire on the
+ * road between two vertices — or exactly at the destination — is never
+ * skipped. Empty route → Infinity; single point → point distance;
+ * duplicate consecutive vertices → treated as that point.
+ *
+ * Equirectangular projection into local kilometres around the fire:
+ * sub-metre error at these scales, far below the 2.5 km alert threshold
+ * the evacuation page compares against.
+ */
+export function minDistanceToPolylineKm(route: [number, number][], lat: number, lng: number): number {
+  if (route.length === 0) return Infinity;
+  const R = 6371;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  const toX = (lng2: number) => ((lng2 - lng) * Math.PI) / 180 * cosLat * R;
+  const toY = (lat2: number) => ((lat2 - lat) * Math.PI) / 180 * R;
+  const pointSegKm = (x1: number, y1: number, x2: number, y2: number): number => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.hypot(x1, y1);
+    const t = Math.max(0, Math.min(1, -(x1 * dx + y1 * dy) / lenSq));
+    return Math.hypot(x1 + t * dx, y1 + t * dy);
+  };
+  if (route.length === 1) return Math.hypot(toX(route[0][0]), toY(route[0][1]));
+  let min = Infinity;
+  for (let i = 0; i < route.length - 1; i++) {
+    const d = pointSegKm(toX(route[i][0]), toY(route[i][1]), toX(route[i + 1][0]), toY(route[i + 1][1]));
+    if (d < min) min = d;
+  }
+  return min;
+}
+
+/**
  * Client-side mirror of the server's wilaya determination (server/geo.ts).
  * The server remains the authority (it rejects mismatched wilaya/coords),
  * this copy only powers early suggestions and pre-submit warnings in the UI.
