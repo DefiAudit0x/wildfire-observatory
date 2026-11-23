@@ -527,6 +527,10 @@ class MapFragment : Fragment() {
                 }
             }
             if (!isAdded) return@launch
+            // Fix 22c: the live location at completion time — the user may
+            // have moved while the request was in flight, and guidance
+            // fetched for A must not display as current guidance at B.
+            val liveCoords = lastUserLatLng
             if (body == null) {
                 // Honest failure — no locally authored guidance, ever.
                 // Fix 22 (NMAP-2): the fallback is key-scoped too — only
@@ -537,10 +541,29 @@ class MapFragment : Fragment() {
                 // requests, the second may have stored a fresher briefing
                 // while the first was in flight, and the old capture
                 // would show an older location's text instead.
-                val samePlaceStale = if (app.aiBriefingKey == currentKey) app.aiBriefingText else null
+                // Fix 22c: the stored key must match the request location
+                // AND the user must still be (near) there — a request made
+                // at A that fails after the user moved to B must not show
+                // A's cached briefing.
+                val samePlaceStale = if (app.aiBriefingKey == currentKey &&
+                    RadarV2.samePlaceForGuidance(coords?.first, coords?.second, liveCoords?.first, liveCoords?.second)
+                ) app.aiBriefingText else null
                 if (samePlaceStale != null) showAiCard(samePlaceStale) else {
                     aiCardBody?.text = getString(R.string.ai_failed)
                 }
+                return@launch
+            }
+            // Fix 22c: the request succeeded, but if the user moved while
+            // it was in flight the result is guidance for the OLD location.
+            // Store it under its own (request-time) key so a later tap at
+            // that location can still hit it — but do not display it as
+            // current guidance; the card says the location changed and the
+            // user re-taps at the new location.
+            if (!RadarV2.samePlaceForGuidance(coords?.first, coords?.second, liveCoords?.first, liveCoords?.second)) {
+                app.aiBriefingText = body
+                app.aiBriefingKey = currentKey
+                app.aiBriefingAt = System.currentTimeMillis()
+                aiCardBody?.text = getString(R.string.ai_moved)
                 return@launch
             }
             app.aiBriefingText = body
