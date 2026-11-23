@@ -25,15 +25,31 @@ const STYLES: Record<ToastType, string> = {
 };
 
 export default function ToastStack({ toasts }: ToastStackProps) {
-  if (toasts.length === 0) return null;
+  // Fix 30b (CodeRabbit Major, review 6029588769): the live region must
+  // STAY MOUNTED when the list is empty. The old `if (toasts.length === 0)
+  // return null;` meant every toast arrived in the same commit as the
+  // region itself, and screen readers can miss content that appears
+  // together with its live region (W3C ARIA22). Toasts auto-dismiss in
+  // 4 s and the list is empty most of the time, so the "first toast after
+  // an empty interval" is essentially every toast. The empty container
+  // renders nothing visible (no children, zero height).
   // z-[3000]: toasts report the outcome of user actions (report sent, SOS
   // dispatched). They must stay clickable/visible above EVERYTHING —
   // previously z-[110] put them UNDER the SOS FAB (z-1500) and the SOS
   // modal (z-2000), so action feedback vanished exactly when it mattered
   // (field-reported overlap bug). Centered with left-1/2 -translate-x-1/2:
   // direction-neutral in RTL.
+  // Fix 30 (TST-1): toasts are the only feedback for several actions
+  // (report sent, confirmation failed) — the container is a polite live
+  // region so screen readers announce them. No focus change: yanking
+  // focus to a transient, auto-dismissing element would pull keyboard
+  // users out of the form they just submitted.
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[3000] flex flex-col items-center gap-2 w-full max-w-sm px-4">
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[3000] flex flex-col items-center gap-2 w-full max-w-sm px-4"
+    >
       {toasts.map((t) => (
         <div
           key={t.id}

@@ -92,7 +92,15 @@ function HeaderBar({
   const sourceCountLabel = isArabic
     ? `${freshSourceCount}/${DATASET_KEYS.length} مصادر حديثة`
     : `${freshSourceCount}/${DATASET_KEYS.length} sources à jour`;
-  const backendReachable = lastBackendContact > 0;
+  // Fix 30 (HDR-1): reachability is a present-tense claim, so it needs a
+  // freshness window (the same 3-minute window the datasets use) AND a
+  // non-offline composite — a contact from hours ago, or a contact
+  // followed by total failure, must not read as "reachable now". The
+  // "اتصال:" timestamp below stays as the honest historical record.
+  const backendReachable =
+    lastBackendContact > 0 &&
+    nowTick - lastBackendContact <= STALE_AFTER_MS &&
+    sync !== "offline";
   const backendLabel = isArabic
     ? backendReachable ? "الخادم متاح" : "الخادم غير متاح"
     : backendReachable ? "Serveur joignable" : "Serveur indisponible";

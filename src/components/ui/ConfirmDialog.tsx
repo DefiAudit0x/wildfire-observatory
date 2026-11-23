@@ -38,7 +38,7 @@ export default function ConfirmDialog({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
       <div
         ref={dialogRef}
@@ -52,7 +52,11 @@ export default function ConfirmDialog({
             <AlertTriangle className="h-5 w-5" />
           </div>
           <div className="space-y-1 min-w-0">
-            <h3 className="font-extrabold text-sm text-slate-100">{title}</h3>
+            {/* Fix 30 (DLG-1): the heading is the dialog's accessible
+                name, so screen-reader dialog navigation can identify
+                which confirmation this is. One static id is safe: only
+                one ConfirmDialog is ever open at a time. */}
+            <h3 id="confirm-dialog-title" className="font-extrabold text-sm text-slate-100">{title}</h3>
             <p className="text-xs text-gray-400 leading-relaxed">{message}</p>
           </div>
         </div>

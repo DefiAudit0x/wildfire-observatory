@@ -21,6 +21,15 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   const latestRequestRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const retryTimeoutRef = useRef<number | null>(null);
+  // Fix 30 (AI-1): a load the throttle skipped, fired after the remaining
+  // interval. Same pattern as retryTimeoutRef.
+  const deferredTimeoutRef = useRef<number | null>(null);
+
+  // Fix 30 (AI-2): the request label is the current-language display name
+  // for the selected wilaya CODE — the server only displays the string, so
+  // the wire behavior is unchanged while the stored identity is stable.
+  const activeWilayaEntry = NORTHEAST_ALGERIA_FOCUS.find((w) => w.code === activeWilaya);
+  const activeWilayaLabel = activeWilayaEntry ? (isArabic ? activeWilayaEntry.ar : activeWilayaEntry.fr) : undefined;
 
   const getCacheKey = () => {
     // No silent default coordinates: without a map click the key says "unknown
@@ -33,7 +42,6 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
   };
 
   const fetchGuidance = async (force = false, attempt = 0) => {
-    const requestId = ++latestRequestRef.current;
     const cacheKey = getCacheKey();
 
     if (!force) {
@@ -48,6 +56,13 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
             // (its own finally can't, because latestRequestRef moved on).
             abortRef.current?.abort();
             setLoading(false);
+            // Fix 30 (AI-1): the cached answer resolves the current
+            // context, so a deferred load scheduled for an older context
+            // is no longer needed.
+            if (deferredTimeoutRef.current !== null) {
+              window.clearTimeout(deferredTimeoutRef.current);
+              deferredTimeoutRef.current = null;
+            }
             return;
           }
         }
@@ -61,7 +76,31 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
     // literally says "refresh" and must always fire. Auto-loads (effect) and
     // cache-miss loads respect the interval.
     if (!force && now - lastRequestRef.current < MIN_REQUEST_INTERVAL_MS) {
+      // Fix 30 (AI-1): the throttle used to skip the load entirely — the
+      // new context never got its guidance. Schedule it after the
+      // remaining interval instead (force=false: by then the interval has
+      // elapsed, so it passes the throttle naturally). Only one deferred
+      // load may be pending; a newer call replaces it.
+      const remaining = MIN_REQUEST_INTERVAL_MS - (now - lastRequestRef.current);
+      if (deferredTimeoutRef.current !== null) {
+        window.clearTimeout(deferredTimeoutRef.current);
+      }
+      deferredTimeoutRef.current = window.setTimeout(() => {
+        deferredTimeoutRef.current = null;
+        void fetchGuidance();
+      }, Math.max(0, remaining));
       return;
+    }
+    // Fix 30 (AI-1): mint the request ID only for a call that will
+    // actually run. Minting it before the throttle let a throttled
+    // replacement consume an ID, so the aborted predecessor's finally
+    // refused to clear `loading` (its ID was no longer latest) and the
+    // refresh button stayed disabled forever.
+    const requestId = ++latestRequestRef.current;
+    // A real run supersedes any pending deferred load.
+    if (deferredTimeoutRef.current !== null) {
+      window.clearTimeout(deferredTimeoutRef.current);
+      deferredTimeoutRef.current = null;
     }
     lastRequestRef.current = now;
 
@@ -81,7 +120,9 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
           // explicit "location unknown" notice — no silent regional default.
           lat: mapClickedCoords?.lat,
           lng: mapClickedCoords?.lng,
-          wilaya: activeWilaya || undefined,
+          // Fix 30 (AI-2): send the current-language display name for the
+          // selected wilaya code — the wire format is unchanged.
+          wilaya: activeWilayaLabel,
           lang: lang,
         }),
         signal: controller.signal,
@@ -145,6 +186,12 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
         window.clearTimeout(retryTimeoutRef.current);
         retryTimeoutRef.current = null;
       }
+      // Fix 30 (AI-1): a deferred load belongs to this effect run — the
+      // next run schedules or fires its own load for the new context.
+      if (deferredTimeoutRef.current !== null) {
+        window.clearTimeout(deferredTimeoutRef.current);
+        deferredTimeoutRef.current = null;
+      }
     };
   }, [lang, mapClickedCoords, activeWilaya]);
 
@@ -185,9 +232,11 @@ export default function AICopilot({ mapClickedCoords, lang }: AICopilotProps) {
           {NORTHEAST_ALGERIA_FOCUS.map((w, idx) => (
             <button
               key={idx}
-              onClick={() => setActiveWilaya(isArabic ? w.ar : w.fr)}
+              // Fix 30 (AI-2): store the wilaya CODE, not the rendered name
+              // — the selection now survives a language switch.
+              onClick={() => setActiveWilaya(w.code)}
               className={`text-xs px-2.5 py-1 rounded-full border transition-all cursor-pointer font-medium ${
-                activeWilaya === (isArabic ? w.ar : w.fr)
+                activeWilaya === w.code
                   ? "bg-red-600 text-white border-red-600 shadow-[0_0_12px_rgba(220,38,38,0.3)]"
                   : "bg-black/40 text-slate-400 border-white/5 hover:border-white/10"
               }`}
