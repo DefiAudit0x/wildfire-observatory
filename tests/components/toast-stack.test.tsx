@@ -33,9 +33,24 @@ describe("ToastStack live region (Fix 30 TST-1)", () => {
     expect(region.contains(screen.getByText("تعذّر تأكيد البلاغ"))).toBe(true);
   });
 
-  it("an empty list renders nothing — no empty live region in the tree", () => {
+  it("an empty list still renders the (empty) live region (Fix 30b)", () => {
     const { container } = render(<ToastStack toasts={[]} />);
-    expect(container.innerHTML).toBe("");
-    expect(screen.queryByRole("status")).toBeNull();
+    // Fix 30b: the region must exist BEFORE any toast arrives, or screen
+    // readers can miss the first toast. Empty means no toast messages,
+    // not no region.
+    const region = screen.getByRole("status");
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("");
+    expect(container.querySelector("[role='status']")).toBe(region);
+  });
+
+  it("a toast arriving after an empty interval lands inside the already-mounted region (Fix 30b)", () => {
+    const { rerender } = render(<ToastStack toasts={[]} />);
+    const region = screen.getByRole("status");
+    rerender(<ToastStack toasts={[toast("1", "تم إرسال البلاغ", "success")]} />);
+    // Same region element (not a fresh mount in the same commit as the
+    // message) — that is what makes the announcement fire reliably.
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.contains(screen.getByText("تم إرسال البلاغ"))).toBe(true);
   });
 });
