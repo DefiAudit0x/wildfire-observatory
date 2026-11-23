@@ -520,9 +520,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     // conversion first so the take is sent whole. The 1 s race is the
     // backstop: a recorder that never fires onstop must not hold Send
     // hostage; on timeout the immediate snapshot below runs instead.
+    // Fix 27c: the wait must NOT be gated on chunks already being buffered
+    // — a stop inside the first ~100 ms (before the first timeslice) leaves
+    // the final slice as the ONLY audio, and gating on length > 0 would
+    // discard it in favour of the siren. The length check lives on the
+    // snapshot only, where it skips a pointless FileReader call.
     if ((!finalAudioBase64 || finalAudioBase64.length < 100) &&
-        mediaRecorderRef.current?.state === "inactive" &&
-        audioChunksRef.current.length > 0) {
+        mediaRecorderRef.current?.state === "inactive") {
       if (!stoppedByThisCall && recordingDoneRef.current) {
         const done = await Promise.race([
           recordingDoneRef.current.promise,
@@ -530,7 +534,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         ]);
         if (done) finalAudioBase64 = done;
       }
-      if (!finalAudioBase64 || finalAudioBase64.length < 100) {
+      if (audioChunksRef.current.length > 0 && (!finalAudioBase64 || finalAudioBase64.length < 100)) {
         finalAudioBase64 = await chunksToBase64();
       }
     }
