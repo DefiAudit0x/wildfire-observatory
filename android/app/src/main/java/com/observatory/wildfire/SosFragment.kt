@@ -144,14 +144,28 @@ class SosFragment : Fragment() {
     // ========================
 
     private fun startCountdown() {
+        // Fix 23 (NSOS-2): one countdown per gesture. A second tap while a
+        // countdown is already running is a duplicate, not a second SOS —
+        // without this guard every tap spawned its own Runnable, each fired
+        // its own sendSos (its own mesh broadcast, its own POST), and
+        // cancel could only stop the newest one. The guard is the fix; the
+        // button disable below is only the visible signal (the snapshot
+        // collector re-sets isEnabled from `sending` on every emission and
+        // can re-enable the button mid-countdown — the guard still blocks
+        // the second countdown).
+        if (countdownRunnable != null) return
         persistProfile()
         var remaining = COUNTDOWN_SECONDS
         countdownOverlay?.visibility = View.VISIBLE
+        sosButton?.isEnabled = false
         val runnable = object : Runnable {
             override fun run() {
                 if (remaining <= 0) {
                     countdownOverlay?.visibility = View.GONE
-                    countdownRunnable = null
+                    // Clear only if this runnable is still the live one — a
+                    // finishing stale runnable must never orphan a live countdown.
+                    if (countdownRunnable == this) countdownRunnable = null
+                    sosButton?.isEnabled = true
                     sendSos()
                     return
                 }
@@ -168,6 +182,7 @@ class SosFragment : Fragment() {
         countdownRunnable?.let { handler.removeCallbacks(it) }
         countdownRunnable = null
         countdownOverlay?.visibility = View.GONE
+        sosButton?.isEnabled = true
     }
 
     private fun sendSos() {
