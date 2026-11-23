@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { MapPin, Plus, Trash2, RefreshCw, ShieldCheck, AlertTriangle, Save, Search } from "lucide-react";
 import { Language } from "../../types";
 import { apiFetch } from "../../utils/adminApi"; // ARC-L21: one shared admin/staff fetch helper
+import { useLiveEvents } from "../../utils/live";
 import ConfirmDialog from "../ui/ConfirmDialog";
 import ToastStack from "../ui/ToastStack";
 import useToasts from "../../hooks/useToasts";
@@ -42,13 +43,32 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   const [busyZoneIds, setBusyZoneIds] = useState<Set<string>>(new Set());
   const { toasts, push } = useToasts();
 
+  // Fix 26 review (Minor m1 — ARC-M27): onAuthError is an inline prop
+  // recreated on every parent render, so its identity in the fetchZones
+  // dependency array re-ran the mount effect on EVERY keystroke typed
+  // anywhere in the admin panel. The latest callback lives in a ref (the
+  // BadgeManager pattern); the effect fires on mount only.
+  const onAuthErrorRef = useRef(onAuthError);
+  useEffect(() => {
+    onAuthErrorRef.current = onAuthError;
+  });
+
+  // Fix 26 (SZM-1): the manager loads from the admin endpoint, which
+  // returns inactive records too — the public GET hides them by design,
+  // so the "inactive" filter and the reactivation toggle were dead code
+  // until now. apiFetch adds the 15 s timeout and routes a non-OK
+  // response through onAuthError, so an expired admin session surfaces
+  // through the panel's session flow instead of silently keeping a stale
+  // list (the old fetchZones ignored non-OK responses entirely).
   const fetchZones = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/safezones");
+      const res = await apiFetch("/api/safezones/admin", "GET");
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) setZones(data);
+      } else {
+        onAuthErrorRef.current(res);
       }
     } catch (err) {
       console.error("Failed to load safe zones", err);
@@ -60,6 +80,12 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   useEffect(() => {
     fetchZones();
   }, [fetchZones]);
+
+  // Fix 26 (SZM-1, D5): a second admin's toggle/delete shows up without
+  // a manual refresh — the same 4-line pattern as the citizen page.
+  useLiveEvents((event) => {
+    if (event.type === "safezones:changed") fetchZones();
+  });
 
   const handleAddZone = async (e: React.FormEvent) => {
     e.preventDefault();
