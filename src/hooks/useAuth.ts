@@ -1,13 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
-import { subscribeSessionPoll } from "../lib/session";
+import {
+  fetchSharedSession,
+  getStaffSessionSnapshot,
+  isStaffSessionLoading,
+  subscribeStaffSession,
+} from "../lib/session";
+import type { StaffSession } from "../lib/session";
 
-export interface StaffSession {
-  authenticated: boolean;
-  role: string | null;
-  unitId: string | null;
-  name: string | null;
-  agentId: string | null;
-}
+export type { StaffSession } from "../lib/session";
 
 /**
  * Probes the staff/auth session on the single shared session poller
@@ -17,43 +17,29 @@ export interface StaffSession {
  * session checks against the same endpoint — two truths that could disagree
  * with this one. They now read THIS hook; `loading` covers the first probe
  * so login surfaces don't flash before the initial check resolves.
+ *
+ * Fix 29 (AUTH-1): the session state itself lives in the shared module
+ * (src/lib/session.ts) — this hook is a thin subscriber, so every instance
+ * in the app (App, RosterBoard, StaffManager) reads the same session and
+ * one post-login refetch broadcasts to all of them. Return shape unchanged.
  */
 export function useStaffSession(): { session: StaffSession; refetch: () => void; loading: boolean } {
-  const [session, setSession] = useState<StaffSession>({
-    authenticated: false,
-    role: null,
-    unitId: null,
-    name: null,
-    agentId: null,
-  });
-  const [loading, setLoading] = useState(true);
-
-  const refetch = useCallback(async () => {
-    try {
-      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
-      if (res.ok) {
-        const data = await res.json();
-        setSession({
-          authenticated: true,
-          role: data.user?.role || null,
-          unitId: data.user?.unitId || null,
-          name: data.user?.name || null,
-          agentId: data.user?.agentId || null,
-        });
-      } else {
-        setSession({ authenticated: false, role: null, unitId: null, name: null, agentId: null });
-      }
-    } catch {
-      setSession({ authenticated: false, role: null, unitId: null, name: null, agentId: null });
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const [session, setSession] = useState<StaffSession>(getStaffSessionSnapshot());
+  const [loading, setLoading] = useState(isStaffSessionLoading());
 
   useEffect(() => {
-    const unsubscribe = subscribeSessionPoll(refetch);
-    return unsubscribe;
-  }, [refetch]);
+    return subscribeStaffSession((nextSession, nextLoading) => {
+      setSession(nextSession);
+      setLoading(nextLoading);
+    });
+  }, []);
+
+  // Fix 29b (CodeRabbit Minor 1): refetch is a forced read — it must not
+  // reuse a tick probe that started before the caller (a post-login
+  // refetch sharing a pre-login probe would settle with its 401).
+  const refetch = useCallback(() => {
+    void fetchSharedSession(true);
+  }, []);
 
   return { session, refetch, loading };
 }

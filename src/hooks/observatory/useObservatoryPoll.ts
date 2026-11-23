@@ -300,10 +300,18 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     return outcome;
   }, [deviceId, enrollDevice]);
 
-  useEffect(() => () => {
-    mountedRef.current = false;
-    cycleAbortRef.current?.abort();
-    cycleAbortRef.current = null;
+  // Fix 29 (POLL-1): the setup arm restores the mount flag — under
+  // StrictMode React runs setup → cleanup → setup, and the old
+  // cleanup-only effect left the flag false after the replay, so every
+  // later dataset/health/spinner write was discarded while the poll kept
+  // fetching. A real unmount still ends false with no re-setup.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      cycleAbortRef.current?.abort();
+      cycleAbortRef.current = null;
+    };
   }, []);
 
   // Stable self-rescheduling poll: the timer re-arms itself inside its own
