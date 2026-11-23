@@ -565,11 +565,11 @@ class AppRepository(
             hotspots = hotspots,
             safezones = safezones,
             wilayas = wilayas,
-            weather = prev.weather,
-            // Fix 21 (NOBS-2): carry the fetch timestamp across — without
-            // this line every 30 s poll would reset the weather age to 0
-            // and defeat the display gate.
-            weatherFetchedAtMs = prev.weatherFetchedAtMs,
+            // Fix 21c: the weather fields are deliberately NOT copied
+            // from prev — the copy keeps the receiver's current values,
+            // so a fetchWeatherAt that lands mid-refresh survives (the
+            // old copy reverted it to prev). With no overlap current ==
+            // prev, so the Fix 21 R7 carry still holds.
             lastSyncMs = if (allSucceeded) System.currentTimeMillis() else prev.lastSyncMs
         )
         if (allSucceeded) persistSnapshot()
