@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { Compass, Wind, AlertTriangle, ShieldCheck, HelpCircle } from "lucide-react";
 import { Report, SatelliteHotspot } from "../types";
 import { haversineKm } from "../utils/geo";
@@ -33,12 +33,31 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
   // The state carries its observation time; every consumer below keys off
   // `windFresh`, never off the mere presence of a reading.
   const WIND_MAX_AGE_MS = 10 * 60 * 1000;
+  // Fix 25b (CodeRabbit Major 4665366918): the Open-Meteo fetch has a
+  // timeout so a stalled request cannot pile up silently, and a successful
+  // reading schedules its own expiry timer — the component guarantees its
+  // own 10-minute boundary instead of leaning on the parent poll cadence
+  // (which re-renders at most every 60 s) or on a render happening to land
+  // past the boundary.
+  const FETCH_TIMEOUT_MS = 30 * 1000;
+  const windExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [wind, setWind] = useState<{
     direction: number;
     speed: number;
     temperature: number;
     fetchedAtMs: number;
   } | null>(null);
+
+  // Fix 25b (CodeRabbit Minor 4665366914): a ticking clock, so time-derived
+  // memos recompute as time advances even when no prop changes — the blips
+  // memo reads Date.now() through isFreshThreatTimestamp, and without a
+  // clock dep a threat that ages past 30 min would stay on the radar until
+  // the next poll cycle (or forever, if polling has failed).
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const clock = setInterval(() => setNowMs(Date.now()), 60 * 1000);
+    return () => clearInterval(clock);
+  }, []);
 
   // Live wind from Open-Meteo (free, no API key) at the user's location
   useEffect(() => {
@@ -59,7 +78,8 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
         setWind((prev) => (prev && Date.now() - prev.fetchedAtMs > WIND_MAX_AGE_MS ? null : prev));
       try {
         const res = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${activeLoc.lat.toFixed(2)}&longitude=${activeLoc.lng.toFixed(2)}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh`
+          `https://api.open-meteo.com/v1/forecast?latitude=${activeLoc.lat.toFixed(2)}&longitude=${activeLoc.lng.toFixed(2)}&current=temperature_2m,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh`,
+          { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) }
         );
         if (!res.ok) {
           ageOutStaleWind();
@@ -78,6 +98,13 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
           temperature: Math.round(cur.temperature_2m * 10) / 10,
           fetchedAtMs: Date.now(),
         });
+        // Fix 25b (Major 4665366918): this reading expires at its own
+        // boundary whether or not a render or a refresh happens first.
+        // The age-out guard makes a stale timer harmless: it clears only
+        // a reading that is actually past the window, so an older timer
+        // firing after a newer fetch cannot clear the newer reading.
+        if (windExpiryRef.current !== null) clearTimeout(windExpiryRef.current);
+        windExpiryRef.current = setTimeout(ageOutStaleWind, WIND_MAX_AGE_MS);
       } catch {
         // No live weather means no spread-direction guidance — and a
         // reading past its window is no longer live either.
@@ -90,6 +117,7 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
     return () => {
       cancelled = true;
       clearInterval(timer);
+      if (windExpiryRef.current !== null) clearTimeout(windExpiryRef.current);
     };
   }, [userLocation?.lat, userLocation?.lng]);
 
@@ -201,7 +229,7 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
       .filter((b) => b.distance <= RANGE_KM)
       .sort((a, b) => a.distance - b.distance);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports, satellites, userLocation]);
+  }, [reports, satellites, userLocation, nowMs]);
 
   const closestFire = blips[0];
   const oppositeFireHeading = closestFire ? (closestFire.bearing + 180) % 360 : null;
@@ -210,7 +238,9 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
   // the value line and the Live badge. A reading past its window is not
   // live, even if no refresh has failed yet (backgrounded tabs throttle
   // the interval, so the failure-path clearing alone is not enough).
-  const windFresh = wind !== null && Date.now() - wind.fetchedAtMs <= WIND_MAX_AGE_MS;
+  // Fix 25b: the derivation reads the ticking `nowMs` clock, not a bare
+  // Date.now() — the memo and the badge then agree on the same clock.
+  const windFresh = wind !== null && nowMs - wind.fetchedAtMs <= WIND_MAX_AGE_MS;
   const driftHeading = wind !== null && windFresh ? (wind.direction + 180) % 360 : null;
 
   // Spread sector path: a ±22° cone from the center toward driftHeading.
