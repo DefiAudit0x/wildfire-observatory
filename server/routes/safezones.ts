@@ -60,6 +60,25 @@ router.get("/", async (_req: Request, res: Response) => {
   }
 });
 
+// Fix 26 (SZM-1): the manager needs the records the public GET hides —
+// inactive centres must be listed to be reactivated. Same loadZones(),
+// same stale headers and 503 as the public route, but unfiltered and
+// admin-only (the /api/sos/full + /api/reports/:id/identity precedent).
+// The public route above stays exactly as it is: citizens never see
+// inactive centres.
+router.get("/admin", requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const zones = await loadZones();
+    if (zones.stale) {
+      res.setHeader("X-Data-Stale", "true");
+      res.setHeader("X-Data-Updated-At", new Date(zones.loadedAt).toISOString());
+    }
+    res.json(zones.data);
+  } catch {
+    res.status(503).json({ error: "Safe-zone data is currently unavailable" });
+  }
+});
+
 router.post("/", requireAdmin, async (req: Request, res: Response) => {
   const parsed = zoneSchema.safeParse(req.body);
   if (!parsed.success) {
