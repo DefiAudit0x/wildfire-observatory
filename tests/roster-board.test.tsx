@@ -354,3 +354,112 @@ describe("RosterBoard overlapping requests (Fix 24)", () => {
     expect(screen.getByText("منصب أ")).toBeTruthy();
   });
 });
+
+describe("RosterBoard overlapping requests (Fix 24b)", () => {
+  function shiftISO(iso: string, days: number): string {
+    const d = new Date(`${iso}T00:00:00`);
+    d.setDate(d.getDate() + days);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  }
+
+  it("the Add button is disabled while the day is loading (Minor 4663970060)", async () => {
+    const dayA = todayISO();
+    const dayB = shiftISO(dayA, 1);
+    let releaseB!: (v: Response) => void;
+    const getBGate = new Promise<Response>((resolve) => {
+      releaseB = resolve;
+    });
+    const savedDayA = {
+      unitId: "unit-dz16",
+      date: dayA,
+      posts: [{ id: "p1", labelAr: "منصب أ", status: "active", personnel: [] }],
+      saved: true,
+    };
+    const savedDayB = {
+      unitId: "unit-dz16",
+      date: dayB,
+      posts: [{ id: "p1", labelAr: "منصب أ", status: "active", personnel: [] }],
+      saved: true,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes(`/api/roster/${dayB}`)) return getBGate;
+        if (String(url).includes("/api/roster/")) {
+          return new Response(JSON.stringify(savedDayA), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    // Navigate to day B — its GET is gated, so the board is loading day B
+    // while day A's roster is still on screen. Add must not be usable for
+    // a day whose roster has not loaded (the POST would complete before
+    // the GET and its merge would be silently skipped).
+    fireEvent.click(screen.getByTitle("اليوم التالي"));
+    await waitFor(() => {
+      const addButton = screen.getByText("إضافة المنصب").closest("button");
+      expect((addButton as HTMLButtonElement).disabled).toBe(true);
+    });
+    // Once day B lands, Add is usable again.
+    releaseB(
+      new Response(JSON.stringify(savedDayB), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await waitFor(() => {
+      const addButton = screen.getByText("إضافة المنصب").closest("button");
+      expect((addButton as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it("adding a post the day GET already contains does not duplicate it (Minor 4663970069)", async () => {
+    const dayA = todayISO();
+    const postB = { id: "p2", labelAr: "منصب ب", status: "active", personnel: [] };
+    // The GET was issued before the POST but the server processed it after
+    // the POST's write, so the loaded day already contains the new post.
+    const savedDay = {
+      unitId: "unit-dz16",
+      date: dayA,
+      posts: [{ id: "p1", labelAr: "منصب أ", status: "active", personnel: [] }, postB],
+      saved: true,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        if (String(url).includes("/api/roster/")) {
+          if (method === "POST") {
+            return new Response(JSON.stringify(postB), {
+              status: 201,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(JSON.stringify(savedDay), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    fireEvent.change(screen.getByPlaceholderText(/اسم المنصب/), { target: { value: "منصب ب" } });
+    fireEvent.click(screen.getByText("إضافة المنصب"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.getAllByText("منصب ب")).toHaveLength(1);
+  });
+});
