@@ -188,4 +188,57 @@ describe("SafeZonesManager admin endpoint (Fix 26 — SZM-1)", () => {
     expect(screen.getByText("مركز أ")).toBeTruthy();
     expect(document.querySelectorAll("button[disabled]").length).toBe(0);
   });
+
+  it("a slow older response body never overwrites a newer list (watch Minor 4666879313)", async () => {
+    await renderManager();
+    expect(adminCalls()).toBe(1);
+    // The older GET's headers arrive first but its body stays pending while
+    // the newer GET completes — the 26b seq check before res.json() cannot
+    // see this interleave, so the check must also run after the parse.
+    let olderJsonResolve: (v: Zone[]) => void = () => {};
+    const olderJson = new Promise<Zone[]>((resolve) => {
+      olderJsonResolve = resolve;
+    });
+    let adminCallCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/safezones/admin") {
+          adminCallCount += 1;
+          if (adminCallCount === 1) {
+            // Older request: headers now, body deferred.
+            return { ok: true, json: () => olderJson } as unknown as Response;
+          }
+          // Newer request: body already buffered.
+          return new Response(JSON.stringify([zoneA]), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 404 });
+      })
+    );
+    const renamedA = { ...zoneA, nameAr: "مركز أ المعدّل" };
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    // Let the older request pass its pre-parse seq check (no newer request
+    // has started yet), then start the newer request and let it finish.
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      capturedLiveHandler()({ ts: Date.now(), type: "safezones:changed" });
+    });
+    await act(async () => {});
+    expect(screen.queryByText("مركز ب")).toBeNull();
+    expect(screen.getByText("مركز أ")).toBeTruthy();
+    // Now the older body finally arrives — it must not overwrite.
+    await act(async () => {
+      olderJsonResolve([renamedA, zoneB]);
+    });
+    expect(screen.queryByText("مركز أ المعدّل")).toBeNull();
+    expect(screen.queryByText("مركز ب")).toBeNull();
+    expect(screen.getByText("مركز أ")).toBeTruthy();
+  });
 });
