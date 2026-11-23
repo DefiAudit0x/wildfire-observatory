@@ -97,6 +97,13 @@ function stripStamp(record: OfflineDraftRecord): string {
  *  - records absent from the incoming list are deliberately LEFT UNTOUCHED —
  *    deletions are explicit via removeOfflineDrafts();
  *  - a tombstone newer than the incoming record wins (deletion guard).
+ * Fix 28 (DRAFT-2): the read and the write now happen in ONE readwrite
+ * transaction — the previous two-transaction shape let a tombstone written
+ * by another tab between the read and the write be overwritten, resurrecting
+ * the deleted draft. The live branch also compares freshness now: a stale
+ * write (incoming updatedAt older than the stored one, or missing — treated
+ * as epoch 0) leaves the stored record untouched instead of restamping
+ * itself as newest. Equal stamps → the incoming record wins, as before.
  */
 async function replaceOfflineDraftsUnlocked(records: OfflineDraftRecord[]): Promise<void> {
   if (!canUseIndexedDb()) {
@@ -108,35 +115,49 @@ async function replaceOfflineDraftsUnlocked(records: OfflineDraftRecord[]): Prom
   const db = await openDraftDb();
   try {
     const now = Date.now();
-    const existing = await readAllStore(db);
-    const byId = new Map(existing.map((r) => [r.id, r]));
-    const merged: OfflineDraftRecord[] = [];
-    for (const record of records) {
-      if (!record || typeof record.id !== "string" || typeof record.deletedAt === "number") continue;
-      const prev = byId.get(record.id);
-      if (prev && typeof prev.deletedAt === "number") {
-        // Deleted in this or another tab: only a genuinely NEWER write of the
-        // draft itself may resurrect it — a stale snapshot must not.
-        if (typeof record.updatedAt === "number" && record.updatedAt > prev.deletedAt) {
-          merged.push({ ...record, updatedAt: now });
-        }
-        continue;
-      }
-      if (prev && stripStamp(prev) === stripStamp(record)) {
-        merged.push(prev); // unchanged elsewhere: keep the existing stamp
-      } else {
-        merged.push({ ...record, updatedAt: now });
-      }
-    }
     await new Promise<void>((resolve, reject) => {
       const transaction = db.transaction(STORE_NAME, "readwrite");
       const store = transaction.objectStore(STORE_NAME);
-      for (const record of merged) store.put(record);
-      for (const r of existing) {
-        if (typeof r.deletedAt === "number" && now - r.deletedAt > TOMBSTONE_RETENTION_MS) {
-          store.delete(r.id);
+      const readRequest = store.getAll();
+      readRequest.onsuccess = () => {
+        try {
+          const existing = (readRequest.result as OfflineDraftRecord[]) ?? [];
+          const byId = new Map(existing.map((r) => [r.id, r]));
+          for (const record of records) {
+            if (!record || typeof record.id !== "string" || typeof record.deletedAt === "number") continue;
+            const prev = byId.get(record.id);
+            if (prev && typeof prev.deletedAt === "number") {
+              // Deleted in this or another tab: only a genuinely NEWER write of the
+              // draft itself may resurrect it — a stale snapshot must not.
+              if (typeof record.updatedAt === "number" && record.updatedAt > prev.deletedAt) {
+                store.put({ ...record, updatedAt: now });
+              }
+              continue;
+            }
+            if (prev && stripStamp(prev) === stripStamp(record)) {
+              store.put(prev); // unchanged elsewhere: keep the existing stamp
+            } else {
+              // Fix 28 (DRAFT-2): a stale incoming edit must not overwrite a
+              // newer stored one — compare stamps, missing stamp = epoch 0.
+              const incomingStamp = typeof record.updatedAt === "number" ? record.updatedAt : 0;
+              const storedStamp = prev && typeof prev.updatedAt === "number" ? prev.updatedAt : 0;
+              if (!prev || incomingStamp >= storedStamp) {
+                store.put({ ...record, updatedAt: now });
+              }
+              // else: stale — leave the stored record untouched (no put, no restamp).
+            }
+          }
+          for (const r of existing) {
+            if (typeof r.deletedAt === "number" && now - r.deletedAt > TOMBSTONE_RETENTION_MS) {
+              store.delete(r.id);
+            }
+          }
+        } catch (err) {
+          reject(err as Error);
+          return;
         }
-      }
+      };
+      readRequest.onerror = () => reject(readRequest.error ?? new Error("Unable to read offline drafts"));
       transaction.oncomplete = () => resolve();
       transaction.onerror = () => reject(transaction.error ?? new Error("Unable to persist offline drafts"));
       transaction.onabort = () => reject(transaction.error ?? new Error("Offline draft transaction aborted"));
