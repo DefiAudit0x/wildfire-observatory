@@ -103,9 +103,10 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
       // ARC-L15: the store is a merge now — synced drafts are removed
       // EXPLICITLY (tombstoned) instead of being dropped by full-list
       // omission, which a stale second tab could resurrect.
-      await replaceOfflineDrafts(nextDrafts);
+      // Fix 28b: hold the records AS COMMITTED — the store restamps on write
+      // and may skip a stale snapshot, so the input list is not the truth.
+      setOfflineDrafts(await replaceOfflineDrafts(nextDrafts));
       await removeOfflineDrafts([...syncedIds]);
-      setOfflineDrafts(nextDrafts);
     } catch (error: unknown) {
       persistenceError = true;
       console.error("Failed to persist the remaining offline drafts", error);
@@ -166,12 +167,14 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
   const persistDraft = async (draftReport: any): Promise<boolean> => {
     const updatedDrafts = [...offlineDrafts, draftReport];
     try {
-      await replaceOfflineDrafts(updatedDrafts);
+      // Fix 28b: hold the records AS COMMITTED — the store restamps the new
+      // draft to `now`; keeping the unstamped input would make the next
+      // sync's retry update look stale to the freshness guard.
+      setOfflineDrafts(await replaceOfflineDrafts(updatedDrafts));
     } catch (err: unknown) {
       console.error("Failed to save drafts to storage", err);
       return false;
     }
-    setOfflineDrafts(updatedDrafts);
     return true;
   };
 
