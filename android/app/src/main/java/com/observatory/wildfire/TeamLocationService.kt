@@ -120,6 +120,13 @@ class TeamLocationService : Service(), LocationListener {
     private val arrivalStreak = AtomicInteger(0)
     private val arrivalMissionKey = AtomicReference<String?>(null)
     private val arrivalFlipDone = AtomicReference<String?>(null)
+    /** Fix 23 (NTEAMSV-1): the GPS timestamp of the last fix that advanced
+     *  the arrival streak. Null = nothing counted yet for this leg. The
+     *  marker belongs to the current streak: it resets whenever the streak
+     *  resets for a mission change or a non-en_route phase (but NOT on an
+     *  out-of-range reset — a replay cannot change distance, so that branch
+     *  only fires on a genuinely new fix). */
+    private val arrivalLastFixTimeMs = AtomicReference<Long?>(null)
     private val scheduler = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "team-location-beats").apply { isDaemon = false }
     }
@@ -427,16 +434,29 @@ class TeamLocationService : Service(), LocationListener {
         if (missionKey != arrivalMissionKey.get()) {
             arrivalMissionKey.set(missionKey)
             arrivalStreak.set(0)
+            arrivalLastFixTimeMs.set(null)
         }
         if (TeamLocationLogic.parseMissionPhase(missionJson) != "en_route") {
             arrivalStreak.set(0)
+            arrivalLastFixTimeMs.set(null)
             return
         }
         if (missionKey == null || missionKey == arrivalFlipDone.get()) return
         val target = TeamLocationLogic.parseMissionCoords(missionJson) ?: return
         val distanceM = TeamLocationLogic.haversineMeters(fix.latitude, fix.longitude, target.first, target.second)
+        // Out of range always resets — even for a replayed fix (a replay
+        // cannot change distance, so this branch only fires on a genuinely
+        // new fix).
+        if (distanceM > TeamLocationLogic.ARRIVAL_RADIUS_M) {
+            arrivalStreak.set(0)
+            return
+        }
+        // Fix 23 (NTEAMSV-1): a replayed fix is the same measurement — it
+        // must not advance the streak. Only a strictly newer fix counts.
+        if (!TeamLocationLogic.isNewArrivalFix(fix.time, arrivalLastFixTimeMs.get())) return
         val streak = TeamLocationLogic.nextArrivalStreak(arrivalStreak.get(), distanceM)
         arrivalStreak.set(streak)
+        arrivalLastFixTimeMs.set(fix.time)
         if (!TeamLocationLogic.shouldAutoArrive(streak)) return
         arrivalStreak.set(0)
         val body = TeamLocationLogic.buildPhaseFlipBodyJson(
