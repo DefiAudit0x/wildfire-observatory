@@ -23,6 +23,19 @@ object HeadingLogic {
     }
 
     /**
+     * Fix 21 (NHEAD-1): should a non-forced publish notify? The first real
+     * sample after a null previous ALWAYS publishes — treating "no previous"
+     * as "previous == current" suppressed every live heading, because the
+     * delta of a value against itself is zero. A null current never
+     * publishes (nothing to show yet); afterwards the 1° gate applies.
+     */
+    fun shouldPublishHeading(prevNotified: Double?, current: Double?, minDeltaDeg: Double): Boolean {
+        val cur = current ?: return false
+        val prev = prevNotified ?: return true
+        return Math.abs(angleDeltaDeg(prev, cur)) >= minDeltaDeg
+    }
+
+    /**
      * Circular exponential smoothing: prev + α·(shortest delta toward next).
      * α=1 snaps (no smoothing), α=0 freezes. 0.25 @ ~4 Hz ≈ the 0.4 s the
      * web 360-alpha compass family feels like — responsive, not twitchy.
