@@ -79,6 +79,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   // of which request was last — the header could show day N with day N-2 content.
   // Each fetch owns an AbortController; only the current owner may touch state.
   const rosterReqRef = useRef<AbortController | null>(null);
+  // Fix 24 (RSTR-1/RSTR-2): the `date` state a mutation closes over is
+  // the date AT CALL TIME. After the await, comparing against that closed
+  // value proves nothing (it always equals the requested date). This ref
+  // is the live date — the only honest post-await comparison.
+  const dateRef = useRef(date);
+  dateRef.current = date;
   const fetchRoster = useCallback(async () => {
     rosterReqRef.current?.abort();
     const controller = new AbortController();
@@ -160,6 +166,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     try {
       const res = await apiFetch(`/api/roster/${rosterDate}`, "PUT", { posts: roster.posts });
       const data = await res.json();
+      // Fix 24 (RSTR-1): the operator may have navigated while the PUT
+      // was in flight. The response belongs to rosterDate — if the board
+      // is showing another day now, discard it: the new day's GET (fired
+      // by the date change) is already loading or loaded, and installing
+      // day A's roster under day B's header is the finding.
+      if (rosterDate !== dateRef.current) return;
       if (res.ok) {
         setRoster(data);
         setMsg(isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré.");
@@ -168,6 +180,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         await fetchRoster();
       }
     } catch {
+      // Same guard on the failure path — the closure's fetchRoster would
+      // target the OLD date and abort the new day's in-flight GET, then
+      // load day A under day B's header.
+      if (rosterDate !== dateRef.current) return;
       setMsg(isArabic ? "تعذر حفظ الجدول." : "Erreur d'enregistrement.");
       await fetchRoster();
     } finally {
@@ -204,6 +220,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       setMsg(isArabic ? "أدخل اسم المنصب." : "Entrez le nom du poste.");
       return;
     }
+    const requestedDate = date;
     setSaving(true);
     setMsg(null);
     try {
@@ -216,7 +233,24 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       const data = await res.json();
       if (res.ok || res.status === 201) {
         setNewPost({ labelAr: "", vehicle: "" });
-        await fetchRoster();
+        // Fix 24 (RSTR-2): the POST returns the created post (201 + the
+        // post object, server-assigned id). Append it to the LOCAL roster
+        // — the old fetchRoster() here reloaded the whole day and silently
+        // restored every unsaved personnel/status/removal edit to its last
+        // saved version. Only refetch when there is no local roster to
+        // merge into, and never when the operator has moved to another day
+        // (that day's GET is already in flight — the stale closure's
+        // fetchRoster would fetch the OLD day and abort the new load).
+        if (requestedDate !== dateRef.current) return;
+        if (!roster) {
+          await fetchRoster();
+          return;
+        }
+        setRoster((r) =>
+          r && r.date === requestedDate
+            ? { ...r, posts: [...r.posts, data] }
+            : r
+        );
       } else {
         setMsg(isArabic ? (data.error || "فشل إضافة المنصب") : (data.error || "Échec d'ajout"));
       }
