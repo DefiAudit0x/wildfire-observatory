@@ -189,6 +189,7 @@
     <string name="ai_card_title">إحاطة السلامة — الذكاء الاصطناعي</string>
     <string name="ai_loading">جارٍ توليد الإحاطة…</string>
     <string name="ai_failed">تعذر جلب الإحاطة — تحقق من الشبكة وحاول مجددًا</string>
+    <string name="ai_moved">تغيّر موقعك أثناء التحميل — أعد طلب الإحاطة لموقعك الحالي</string>
     <string name="ai_wait">طلبات متقاربة — انتظر لحظات ثم أعد المحاولة</string>
     <string name="ai_close">إغلاق</string>
     <string name="mission_chip_fmt">مهمة نشطة — المرحلة: %1$s</string>

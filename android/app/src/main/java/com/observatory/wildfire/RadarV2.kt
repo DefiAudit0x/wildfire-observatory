@@ -188,4 +188,38 @@ object RadarV2 {
      */
     fun aiCacheKey(lat: Double?, lng: Double?, lang: String, hourBucket: Long): String =
         "ai_guidance_${lang}_${lat ?: "none"}_${lng ?: "none"}_$hourBucket"
+
+    /**
+     * Fix 22 (NMAP-2): a cached briefing is a hit only when it was fetched
+     * for the SAME key (same coordinates, same hour bucket, same language)
+     * AND is still within TTL. Either condition alone is wrong: key-only
+     * would serve an hour-old briefing across the TTL, age-only is the
+     * original bug (a briefing at A served at B).
+     */
+    fun aiBriefingCacheHit(
+        cachedKey: String?, currentKey: String, cachedAtMs: Long, nowMs: Long
+    ): Boolean = cachedKey != null && cachedKey == currentKey && aiCacheFresh(cachedAtMs, nowMs)
+
+    /** Fix 22c: two fixes are "the same place" for guidance purposes when
+     * they are within 1 km. The server builds guidance from live reports
+     * within 25 km of the observer, so guidance fetched < 1 km away is
+     * effectively the same guidance; GPS jitter is tens of metres, well
+     * under the threshold; a real relocation exceeds it. An exact-key
+     * recomparison would NOT work here — LocationEngine publishes a fresh
+     * fix continuously, so the doubles at completion time almost always
+     * differ slightly from request time even when the user never moved,
+     * and nearly every slow response would be suppressed. Both null means
+     * a no-location request still awaiting GPS — same place; one null
+     * means the location appeared or vanished mid-flight — not the same.
+     */
+    const val GUIDANCE_SAME_PLACE_MAX_M = 1_000.0
+
+    fun samePlaceForGuidance(
+        aLat: Double?, aLng: Double?, bLat: Double?, bLng: Double?
+    ): Boolean {
+        if (aLat == null || aLng == null || bLat == null || bLng == null) {
+            return aLat == null && aLng == null && bLat == null && bLng == null
+        }
+        return TeamLocationLogic.haversineMeters(aLat, aLng, bLat, bLng) <= GUIDANCE_SAME_PLACE_MAX_M
+    }
 }

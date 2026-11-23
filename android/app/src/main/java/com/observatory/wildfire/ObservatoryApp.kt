@@ -46,6 +46,11 @@ class ObservatoryApp : Application() {
     @Volatile var aiBriefingText: String? = null
     @Volatile var aiBriefingAt: Long = 0L
     @Volatile var aiLastRequestMs: Long = 0L
+    /** Fix 22 (NMAP-2): the cache key the briefing was fetched under
+     * (coordinates + hour bucket, via RadarV2.aiCacheKey). A briefing is
+     * only a hit when the key still matches — text + age alone served a
+     * briefing fetched at A to a user now at B. */
+    @Volatile var aiBriefingKey: String? = null
 
     override fun onCreate() {
         super.onCreate()

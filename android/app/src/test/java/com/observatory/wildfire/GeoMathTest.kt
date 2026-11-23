@@ -70,4 +70,41 @@ class GeoMathTest {
         val d = GeoMath.minDistanceToPolylineM(nearMiddleLeg.first, nearMiddleLeg.second, route)
         assertTrue("expected < 10km, got $d", d < 10_000.0)
     }
+
+    // Fix 22 (NMAP-1): the clearance is the min distance between the ROAD
+    // polyline and the FIRE points. Fail-without-fix: the old call shape
+    // (each road vertex measured against the fires-as-polyline) returns
+    // ~8,926 m for the missed-fire case ("safe") and 0.0 for the
+    // straddling-fires case (false "crosses") — both assertions fail
+    // against it.
+    @Test
+    fun `route clearance finds fire on the road between vertices`() {
+        val road = listOf(36.70 to 3.00, 36.70 to 3.20)
+        val fireOnRoad = listOf(36.70 to 3.10)
+        val d = GeoMath.minDistanceBetweenPolylineAndPointsM(road, fireOnRoad)
+        assertTrue("expected < 1m, got $d", d < 1.0)
+    }
+
+    @Test
+    fun `route clearance does not invent fire to fire segments`() {
+        val road = listOf(36.70 to 3.00, 36.70 to 3.10, 36.70 to 3.20)
+        val fires = listOf(36.80 to 3.05, 36.60 to 3.15)
+        val d = GeoMath.minDistanceBetweenPolylineAndPointsM(road, fires)
+        assertTrue("expected > 10km, got $d", d > 10_000.0)
+    }
+
+    @Test
+    fun `route clearance edge cases`() {
+        assertTrue(GeoMath.minDistanceBetweenPolylineAndPointsM(emptyList(), listOf(36.70 to 3.10)).isNaN())
+        assertEquals(
+            Double.MAX_VALUE,
+            GeoMath.minDistanceBetweenPolylineAndPointsM(listOf(36.70 to 3.00, 36.70 to 3.20), emptyList()),
+            0.0
+        )
+        // Single-point road → haversine to that point; single fire → its distance to the road.
+        val singlePoint = GeoMath.minDistanceBetweenPolylineAndPointsM(listOf(36.70 to 3.00), listOf(36.70 to 3.10))
+        assertEquals(TeamLocationLogic.haversineMeters(36.70, 3.00, 36.70, 3.10), singlePoint, 1.0)
+        val singleFire = GeoMath.minDistanceBetweenPolylineAndPointsM(listOf(36.70 to 3.00, 36.70 to 3.20), listOf(36.71 to 3.10))
+        assertTrue("expected < 10km, got $singleFire", singleFire < 10_000.0)
+    }
 }

@@ -220,6 +220,48 @@ class RadarV2Test {
         )
     }
 
+    // Fix 22 (NMAP-2): a cached briefing is a hit only for the SAME key
+    // (same coordinates, same hour bucket) AND within TTL.
+    @Test
+    fun ai_briefing_cache_hit_needs_same_key_and_fresh_age() {
+        val t = 1_000_000L
+        val bucket = t / RadarV2.AI_CACHE_TTL_MS
+        val key = RadarV2.aiCacheKey(36.75, 3.06, "ar", bucket)
+        assertTrue(RadarV2.aiBriefingCacheHit(key, key, t, t + 59L * 60L * 1000L))
+        // Moved coordinates, same hour → miss (the finding's core case).
+        val moved = RadarV2.aiCacheKey(36.80, 3.10, "ar", bucket)
+        assertFalse(RadarV2.aiBriefingCacheHit(key, moved, t, t + 59L * 60L * 1000L))
+        // Same key, stale (≥ 1 h) → miss.
+        assertFalse(RadarV2.aiBriefingCacheHit(key, key, t, t + RadarV2.AI_CACHE_TTL_MS))
+        // Pre-fix cache has no key → miss (first request after the update refetches once).
+        assertFalse(RadarV2.aiBriefingCacheHit(null, key, t, t))
+        // Hour boundary: key built with bucket H, current with H+1, age 2 min → miss.
+        val nextBucketKey = RadarV2.aiCacheKey(36.75, 3.06, "ar", bucket + 1)
+        assertFalse(RadarV2.aiBriefingCacheHit(key, nextBucketKey, t, t + 2L * 60L * 1000L))
+        // No-location key vs located key → miss (GPS appearing invalidates the no-location briefing).
+        val noneKey = RadarV2.aiCacheKey(null, null, "ar", bucket)
+        assertFalse(RadarV2.aiBriefingCacheHit(noneKey, key, t, t))
+    }
+
+    // Fix 22c: the display re-check is distance-based, not an exact-key
+    // recomparison — LocationEngine publishes fresh fixes continuously,
+    // so the doubles at completion time almost always differ slightly
+    // from request time even when the user never moved.
+    @Test
+    fun guidance_same_place_is_one_kilometre() {
+        // Same fix → same place.
+        assertTrue(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.70, 3.00))
+        // ~555 m away (0.005° latitude ≈ 555 m) → same place.
+        assertTrue(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.705, 3.00))
+        // ~2.2 km away (0.02° latitude) → a different place.
+        assertFalse(RadarV2.samePlaceForGuidance(36.70, 3.00, 36.72, 3.00))
+        // Location appeared or vanished mid-flight → not the same place.
+        assertFalse(RadarV2.samePlaceForGuidance(null, null, 36.70, 3.00))
+        assertFalse(RadarV2.samePlaceForGuidance(36.70, 3.00, null, null))
+        // Both without a location → same (no-location briefing for a no-location request).
+        assertTrue(RadarV2.samePlaceForGuidance(null, null, null, null))
+    }
+
     // v2.15.0: Kotlin Double ordering ranks NaN ABOVE every finite value —
     // an unknown-clearance route used to win the "Safest" slot. It must sink.
     @Test
