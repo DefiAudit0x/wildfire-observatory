@@ -126,12 +126,16 @@ class SosFragment : Fragment() {
         val fix = state.fix
         locationLine?.text = when {
             state.status == LocationLogic.Status.NO_PERMISSION -> getString(R.string.gps_no_permission)
-            state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
-            fix == null -> getString(R.string.gps_searching)
-            else -> {
+            // Fix 20 (NSOS-1): a nonnull fix is ALWAYS shown with its age,
+            // whatever the status — PROVIDERS_OFF used to hide the fix and
+            // its age while the SOS still sent those coordinates. The card
+            // says the age, as the header policy promises.
+            fix != null -> {
                 val ageS = ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt()
                 getString(R.string.sos_location_fmt, fix.lat, fix.lng, fix.accuracyM.toInt(), ageS)
             }
+            state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
+            else -> getString(R.string.gps_searching)
         }
     }
 
@@ -196,7 +200,21 @@ class SosFragment : Fragment() {
         // coords AND an explicit marker so dispatchers never chase a phantom
         // location believing it was measured.
         val userText = messageInput?.text?.toString()?.trim().orEmpty()
-        val markedText = if (hasFix) userText else "⚠ بدون تحديد GPS — $userText"
+        // Fix 20 (NSOS-1): a stale fix travels with the same honesty — a
+        // marker with its age, parallel to the no-fix marker. The SOS is
+        // still sent (the header policy: honesty beats a silent null).
+        val nowMs = System.currentTimeMillis()
+        val stale = fix != null && !LocationLogic.isUsableFix(fix, nowMs)
+        val markedText = when {
+            !hasFix -> "⚠ بدون تحديد GPS — $userText"
+            stale -> {
+                // Review Nit 2: clamped at 0 — a far-future (hostile-clock)
+                // fix would otherwise print a negative age.
+                val ageS = maxOf(0, ((nowMs - fix!!.timeMs) / 1000).toInt())
+                getString(R.string.sos_stale_fix_fmt, ageS, userText)
+            }
+            else -> userText
+        }
         resultCard?.text = ""
         app.repository.sendSos(
             deviceId = app.deviceId,
