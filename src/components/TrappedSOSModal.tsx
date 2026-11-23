@@ -88,6 +88,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   const capturedAudioRef = useRef<string>("");
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
+  // Fix 27b: per-recording completion promise, resolved by the onstop
+  // handler with the converted audio. stop() flips state to "inactive"
+  // synchronously while the final dataavailable slice is still a queued
+  // task — a Send landing in that window must wait for this promise
+  // instead of snapshotting the chunks immediately, or the very take
+  // SOSM-2 exists to preserve whole goes out missing its last ~100 ms.
+  const recordingDoneRef = useRef<{ promise: Promise<string>; resolve: (audio: string) => void } | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   // F4 mirror: mint the SOS idempotency key ONCE per modal session and reuse
   // it across retries — the server replays the FIRST stored SOS for the same
@@ -285,6 +292,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         const mediaRecorder = new MediaRecorder(stream, options);
         mediaRecorderRef.current = mediaRecorder;
 
+        // Fix 27b: mint the per-recording completion promise here — the
+        // onstop handler below resolves it with the converted audio once
+        // the final dataavailable slice has landed.
+        let resolveRecordingDone!: (audio: string) => void;
+        const recordingDone = new Promise<string>((resolve) => { resolveRecordingDone = resolve; });
+        recordingDoneRef.current = { promise: recordingDone, resolve: resolveRecordingDone };
+
         mediaRecorder.ondataavailable = (event) => {
           if (event.data && event.data.size > 0) {
             audioChunksRef.current.push(event.data);
@@ -299,6 +313,9 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         mediaRecorder.onstop = async () => {
           const base64 = await chunksToBase64();
           if (base64 && base64.length >= 100) capturedAudioRef.current = base64;
+          // Fix 27b: resolve with the converted audio even when it is
+          // empty/short — a waiter must never hang on a failed take.
+          recordingDoneRef.current?.resolve(base64);
         };
 
         // Real-time audio analyzer for visualizer meter
@@ -459,7 +476,13 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     let finalAudioBase64 = "";
 
     // Stop MediaRecorder if active and await chunks
+    // Fix 27b: remember whether THIS call stopped the recorder — the
+    // inactive branch below must only await the onstop completion promise
+    // when the recorder was stopped elsewhere (timer/browser); the manual
+    // path overwrites onstop, so its promise would never resolve.
+    let stoppedByThisCall = false;
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      stoppedByThisCall = true;
       await new Promise<void>((resolve) => {
         if (!mediaRecorderRef.current) return resolve();
         mediaRecorderRef.current.onstop = () => {
@@ -491,13 +514,25 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     // Fix 27 (SOSM-2): the recorder is already inactive after the timer's
     // auto-stop, but the chunks are still in memory — convert them here
     // instead of falling through to the synthetic siren. This also covers
-    // any browser-initiated stop that bypassed both handlers, and the
-    // millisecond race where the user taps Send before the onstop
-    // FileReader resolves.
+    // any browser-initiated stop that bypassed both handlers.
+    // Fix 27b: when the recorder was stopped outside this call, its final
+    // dataavailable slice may still be a queued task — await the onstop
+    // conversion first so the take is sent whole. The 1 s race is the
+    // backstop: a recorder that never fires onstop must not hold Send
+    // hostage; on timeout the immediate snapshot below runs instead.
     if ((!finalAudioBase64 || finalAudioBase64.length < 100) &&
         mediaRecorderRef.current?.state === "inactive" &&
         audioChunksRef.current.length > 0) {
-      finalAudioBase64 = await chunksToBase64();
+      if (!stoppedByThisCall && recordingDoneRef.current) {
+        const done = await Promise.race([
+          recordingDoneRef.current.promise,
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000)),
+        ]);
+        if (done) finalAudioBase64 = done;
+      }
+      if (!finalAudioBase64 || finalAudioBase64.length < 100) {
+        finalAudioBase64 = await chunksToBase64();
+      }
     }
 
     // Stop mic stream tracks
