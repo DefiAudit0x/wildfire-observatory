@@ -22,6 +22,7 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     if (!("speechSynthesis" in window)) return;
     if (speaking) {
       window.speechSynthesis.cancel();
+      currentUtteranceRef.current = null;
       setSpeaking(false);
       return;
     }
@@ -30,9 +31,26 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = isArabic ? "ar-DZ" : "fr-FR";
     utterance.rate = 0.95;
-    utterance.onend = () => setSpeaking(false);
-    utterance.onerror = () => setSpeaking(false);
+    // Fix 31b (CodeRabbit review 6030686627, Minor 2): a cancelled
+    // utterance's onend/onerror can fire late, after a later speak() — so
+    // each handler resets `speaking` only while its own utterance is still
+    // the current one. Without this, the old utterance's late error flips
+    // `speaking` false mid-utterance and the next click queues another
+    // utterance instead of stopping the active one.
+    utterance.onend = () => {
+      if (currentUtteranceRef.current === utterance) {
+        currentUtteranceRef.current = null;
+        setSpeaking(false);
+      }
+    };
+    utterance.onerror = () => {
+      if (currentUtteranceRef.current === utterance) {
+        currentUtteranceRef.current = null;
+        setSpeaking(false);
+      }
+    };
     window.speechSynthesis.speak(utterance);
+    currentUtteranceRef.current = utterance;
     setSpeaking(true);
   };
 
@@ -61,10 +79,22 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
     tabRefs.current[nextIndex]?.focus();
   };
 
+  // Fix 31b (CodeRabbit review 6030686627, Minors 1–2): one ref names the
+  // utterance this guide currently owns. The GDE-2 cancels must touch only
+  // that utterance: a bare cancel() stops any speech — including another
+  // component's (StrictMode's simulated unmount runs the cleanup on mount;
+  // TrappedSOSModal's speakEmergency has no unmount cancel) — and `speaking`
+  // is true exactly while this ref is non-null, so the ref is also the
+  // guard for both cancels below.
+  const currentUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
   // Fix 31 (GDE-2): leaving the guides app tab unmounts this component and
   // takes the stop button with it — the utterance must stop with the view.
   useEffect(() => () => {
-    window.speechSynthesis?.cancel();
+    if (currentUtteranceRef.current !== null) {
+      currentUtteranceRef.current = null;
+      window.speechSynthesis?.cancel();
+    }
   }, []);
 
   // Fix 31 (GDE-2): the utterance captured the panel text at click time. A
@@ -79,8 +109,12 @@ export default function SafetyGuides({ lang }: SafetyGuidesProps) {
   useEffect(() => {
     if (prevContentRef.current.tab !== activeTab || prevContentRef.current.lang !== lang) {
       prevContentRef.current = { tab: activeTab, lang };
-      window.speechSynthesis?.cancel();
-      setSpeaking(false);
+      // Fix 31b: cancel only this guide's own utterance (see the ref above).
+      if (currentUtteranceRef.current !== null) {
+        currentUtteranceRef.current = null;
+        window.speechSynthesis?.cancel();
+        setSpeaking(false);
+      }
     }
   }, [activeTab, lang]);
 
