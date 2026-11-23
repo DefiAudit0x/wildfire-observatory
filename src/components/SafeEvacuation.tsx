@@ -3,7 +3,8 @@ import { getCartoKey, cartoUrl } from "../lib/basemap";
 import L from "leaflet";
 import { Map as MapIcon, Navigation2, ShieldCheck, AlertTriangle, Car, Compass, Activity, Flame } from "lucide-react";
 import { Report, SatelliteHotspot } from "../types";
-import { haversineKm } from "../utils/geo";
+import { haversineKm, minDistanceToPolylineKm } from "../utils/geo";
+import { isFreshThreatTimestamp } from "../utils/threats";
 
 interface SafeEvacuationProps {
   lang: "ar" | "fr";
@@ -34,7 +35,7 @@ type LngLat = [number, number];
  *  - OSRM returns the REAL road geometry (overview=full, geojson) which is
  *    drawn as a Leaflet polyline on a proper base map, with the user, the
  *    chosen center and nearby fire sources as markers
- *  - every decoded route point is checked against fused fire sources
+ *  - every road *segment* is checked against fused fire sources
  *    (verified/pending reports + FIRMS hotspots >= 70%): if the road passes
  *    within FIRE_PROXIMITY_ALERT_KM of a fire, a loud warning is shown
  *  - offline/failure fallback stays an honestly-labelled straight-line
@@ -123,27 +124,30 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
     for (const r of reports) {
       if (!Number.isFinite(r.lat) || !Number.isFinite(r.lng)) continue;
       if (r.status !== "verified" && r.status !== "pending") continue;
+      // Fix 25 (D3): same freshness gate as the radar (RAD-3) — a stale
+      // report must not trigger a false red warning for a fire long gone.
+      if (!isFreshThreatTimestamp(r.timestamp)) continue;
       list.push({ lat: r.lat, lng: r.lng, label: r.locationName || (isArabic ? "بلاغ حريق" : "Signalement") });
     }
     for (const s of satellites) {
       if (s.confidence < 70 || !Number.isFinite(s.lat) || !Number.isFinite(s.lng)) continue;
+      // Fix 25 (D3): same freshness gate as the radar (RAD-3).
+      if (!isFreshThreatTimestamp(s.scanTime)) continue;
       list.push({ lat: s.lat, lng: s.lng, label: isArabic ? `نقطة ساخنة (${s.satellite})` : `Point chaud (${s.satellite})` });
     }
     return list;
   }, [reports, satellites, isArabic]);
 
   // How close does the active route pass to any fire? Null = no route.
+  // Fix 25 (EVAC-1): every road SEGMENT is measured, not every 4th vertex —
+  // the old stride skipped the destination (and any fire between sampled
+  // vertices), reporting ~2.7 km for a fire sitting exactly on the road.
   const routeFireProximityKm = useMemo<number | null>(() => {
     if (!routeGeometry || routeGeometry.length === 0 || fireSources.length === 0) return null;
     let min = Infinity;
-    // Decode every 4th vertex — OSRM full geometry is dense; a 4-point stride
-    // keeps the check well under any real-world error while staying cheap.
-    for (let i = 0; i < routeGeometry.length; i += 4) {
-      const [lng, lat] = routeGeometry[i];
-      for (const f of fireSources) {
-        const d = haversineKm(lat, lng, f.lat, f.lng);
-        if (d < min) min = d;
-      }
+    for (const f of fireSources) {
+      const d = minDistanceToPolylineKm(routeGeometry, f.lat, f.lng);
+      if (d < min) min = d;
     }
     return Number.isFinite(min) ? min : null;
   }, [routeGeometry, fireSources]);

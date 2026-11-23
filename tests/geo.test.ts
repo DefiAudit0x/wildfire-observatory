@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { getHaversineDistance, determineWilayaByCoords, runClustering, wilayaContainsCoords, canonicalizeWilaya, WILAYA_NAMES } from "../server/geo.js";
+import { haversineKm, minDistanceToPolylineKm } from "../src/utils/geo.js";
 import type { Report } from "../src/types";
 
 describe("getHaversineDistance", () => {
@@ -139,5 +140,48 @@ describe("canonicalizeWilaya (Fix 8c — legacy stored region aliases)", () => {
     expect(canonicalizeWilaya("Atlantis")).toBe("Atlantis");
     expect(canonicalizeWilaya("Algiers")).toBe("Algiers");
     expect(canonicalizeWilaya("")).toBe("");
+  });
+});
+
+describe("minDistanceToPolylineKm (Fix 25 — EVAC-1)", () => {
+  it("returns 0 for the report's repro: a fire exactly at the destination the old stride skipped", () => {
+    // The old every-4th-vertex stride checked only [5,36] and reported
+    // 2.69875754966081 km for a fire sitting exactly on the road.
+    const route: [number, number][] = [[5, 36], [5.01, 36], [5.02, 36], [5.03, 36]];
+    expect(minDistanceToPolylineKm(route, 36, 5.03)).toBe(0);
+    expect(haversineKm(36, 5, 36, 5.03)).toBeCloseTo(2.69875754966081, 5);
+  });
+
+  it("returns 0 for a fire at the midpoint of a long segment", () => {
+    const route: [number, number][] = [[5, 36], [5.1, 36]];
+    expect(minDistanceToPolylineKm(route, 36, 5.05)).toBeCloseTo(0, 9);
+  });
+
+  it("returns a large distance for a far fire", () => {
+    const route: [number, number][] = [[5, 36], [5.01, 36], [5.02, 36], [5.03, 36]];
+    expect(minDistanceToPolylineKm(route, 37, 5.03)).toBeGreaterThan(100);
+  });
+
+  it("measures a fire beside the road, not just its endpoints", () => {
+    // 1 km north of the midpoint of a ~9 km east-west road.
+    const route: [number, number][] = [[5, 36], [5.1, 36]];
+    const d = minDistanceToPolylineKm(route, 36.009, 5.05);
+    expect(d).toBeGreaterThan(0.9);
+    expect(d).toBeLessThan(1.1);
+  });
+
+  it("reduces to point distance for a single-point geometry", () => {
+    expect(minDistanceToPolylineKm([[5, 36]], 36, 5.03)).toBeCloseTo(haversineKm(36, 5, 36, 5.03), 3);
+  });
+
+  it("treats duplicate consecutive vertices as that point, without NaN or Infinity", () => {
+    const route: [number, number][] = [[5, 36], [5, 36], [5.03, 36]];
+    const d = minDistanceToPolylineKm(route, 36, 5.03);
+    expect(Number.isFinite(d)).toBe(true);
+    expect(d).toBe(0);
+  });
+
+  it("returns Infinity for an empty geometry", () => {
+    expect(minDistanceToPolylineKm([], 36, 5.03)).toBe(Infinity);
   });
 });

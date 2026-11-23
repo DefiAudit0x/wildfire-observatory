@@ -131,12 +131,15 @@ export default function WilayaList({ wilayas, lang }: WilayaListProps) {
                 {w.evacuationRecommended ? (
                   <div className="bg-red-500/10 text-red-500 text-[10px] py-1 px-2.5 rounded font-bold border border-red-500/20 animate-pulse flex items-center gap-1">
                     <AlertTriangle className="h-3 w-3" />
-                    <span>{isArabic ? "توجيهات إخلاء نشطة" : "Évacuation Recommandée"}</span>
+                    {/* Fix 25 (WIL-1): the flag means "a fresh critical
+                        citizen report", not an official evacuation order —
+                        say so, and never assert "no orders" when it is off. */}
+                    <span>{isArabic ? "بلاغات حرجة حديثة — يُنصح بالإخلاء" : "Évacuation conseillée (signalements récents)"}</span>
                   </div>
                 ) : (
                   <div className="bg-black/50 text-gray-400 text-[10px] py-1 px-2.5 rounded font-semibold border border-white/5 flex items-center gap-1">
                     <CheckCircle className="h-3 w-3 text-emerald-500" />
-                    <span>{isArabic ? "لا توجد أوامر إخلاء" : "Pas d'alerte d'évacuation"}</span>
+                    <span>{isArabic ? "لا بلاغات حرجة حديثة" : "Aucun signalement critique récent"}</span>
                   </div>
                 )}
 

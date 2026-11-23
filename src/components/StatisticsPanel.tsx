@@ -95,12 +95,25 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
       : isArabic
         ? "لا توجد ولايات مهددة"
         : "Aucune wilaya menacée";
+  // Fix 25 (WIL-1): all three branches describe REPORTS, never official
+  // orders, team readiness, or "control" — this component has seen none of
+  // those. The flag means a fresh critical citizen report exists.
+  // Fix 25b (CodeRabbit Minor 4665366923): the non-critical branch must
+  // not claim citizen reports when the threat is satellite-only —
+  // deriveWilayaStatuses sets severity "low" from a fresh hotspot
+  // (confidence >= 80) while activeFires stays 0, so a satellite-only
+  // wilaya reaches this branch with no report behind it. The critical
+  // branch needs no such split: evacuationRecommended is set only from a
+  // critical report (server/routes/wilayas.ts:74).
+  const threatenedHasReports = mostThreatenedWilayas.some((w) => w.activeFires > 0);
   const threatenedWilayasDesc =
     mostThreatenedWilayas.length > 0
       ? mostThreatenedWilayas.some((w) => w.evacuationRecommended)
-        ? (isArabic ? "إجراءات إخلاء نشطة في هذه المناطق" : "Évacuations en cours dans ces zones")
-        : (isArabic ? "مراقبة مكثفة وفرق تدخل جاهزة" : "Surveillance intensive, équipes en alerte")
-      : (isArabic ? "جميع المناطق تحت السيطرة" : "Toutes les zones sous contrôle");
+        ? (isArabic ? "بلاغات حرجة حديثة في هذه المناطق" : "Signalements critiques récents dans ces zones")
+        : threatenedHasReports
+          ? (isArabic ? "بلاغات حديثة دون مستوى حرج — تابع المستجدات" : "Signalements récents non critiques — restez vigilants")
+          : (isArabic ? "رصد أقمار اصطناعية حديث دون بلاغات حرجة" : "Détections satellites récentes sans signalement critique")
+      : (isArabic ? "لا بلاغات حديثة في هذه المناطق" : "Aucun signalement récent dans ces zones");
 
   const stats = [
     {
