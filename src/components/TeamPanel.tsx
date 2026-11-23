@@ -398,6 +398,13 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     const seq = ++missionSeqRef.current; // F7: the flip is now the newest mission source
     const result = await flipMissionOnScene(current.token);
     setFlipBusy(false);
+    // Fix 24 (TEAM-1): F5 doctrine for the manual flip — this verdict
+    // belongs to the session that was current at press time. If the
+    // session changed mid-flight (native revocation + fresh join, or a
+    // leave), applying it would clear the NEW membership (fatal branch)
+    // or commit a mission with no session at all (ok branch — the F7
+    // seq check cannot see a leave, which takes no sequence number).
+    if (sessionRef.current !== current) return;
     if (result.ok) {
       // F7 (P6): a heartbeat launched BEFORE the flip still carries the older
       // en_route verdict — it must not flash over the on_scene answer the
@@ -433,6 +440,23 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     setLeaveError(false);
     const result = await leaveTeam(current.token);
     setLeaving(false);
+    // Fix 24 (TEAM-1): same guard — an old leave must not tear down a
+    // replacement session. In particular its stopTeamTracking() would
+    // kill a native FGS the NEW session just started.
+    // Fix 24b (CodeRabbit Major 4663970078, PR #155): the guard must not
+    // swallow the FGS stop when the session is gone ENTIRELY. A flip's
+    // fatal verdict can clear the session while this leave is in flight;
+    // the leave then succeeds, but the guard returns before the stop —
+    // and the flip's fatal branch never stopped tracking either, so the
+    // orphaned service keeps collecting GPS after consent was withdrawn
+    // (no GPS fix → no beat → the window is indefinite, F6). A
+    // replacement session (non-null) keeps its own FGS — stop only when
+    // nothing remains. The stop also runs when the leave itself failed:
+    // the session is dead regardless of this POST's network result.
+    if (sessionRef.current !== current) {
+      if (sessionRef.current === null) getTeamTrackingBridge()?.stopTeamTracking();
+      return;
+    }
     if (result.ok) {
       // F6 (P5): leaving the team must also kill the native FGS — the stop
       // control is about to vanish with the session card, and an orphaned

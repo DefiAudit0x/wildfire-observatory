@@ -79,6 +79,18 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   // of which request was last — the header could show day N with day N-2 content.
   // Each fetch owns an AbortController; only the current owner may touch state.
   const rosterReqRef = useRef<AbortController | null>(null);
+  // Fix 24 (RSTR-1/RSTR-2): the `date` state a mutation closes over is
+  // the date AT CALL TIME. After the await, comparing against that closed
+  // value proves nothing (it always equals the requested date). This ref
+  // is the live date — the only honest post-await comparison.
+  const dateRef = useRef(date);
+  dateRef.current = date;
+  // Fix 24d (CodeRabbit Major 4664428918, PR #155): the closure's `roster`
+  // is the render at click time — by the time the POST lands the board may
+  // be showing another day's roster. This ref is the LIVE roster — the
+  // only honest post-await comparison for it, mirroring dateRef above.
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
   const fetchRoster = useCallback(async () => {
     rosterReqRef.current?.abort();
     const controller = new AbortController();
@@ -160,6 +172,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     try {
       const res = await apiFetch(`/api/roster/${rosterDate}`, "PUT", { posts: roster.posts });
       const data = await res.json();
+      // Fix 24 (RSTR-1): the operator may have navigated while the PUT
+      // was in flight. The response belongs to rosterDate — if the board
+      // is showing another day now, discard it: the new day's GET (fired
+      // by the date change) is already loading or loaded, and installing
+      // day A's roster under day B's header is the finding.
+      if (rosterDate !== dateRef.current) return;
       if (res.ok) {
         setRoster(data);
         setMsg(isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré.");
@@ -168,6 +186,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         await fetchRoster();
       }
     } catch {
+      // Same guard on the failure path — the closure's fetchRoster would
+      // target the OLD date and abort the new day's in-flight GET, then
+      // load day A under day B's header.
+      if (rosterDate !== dateRef.current) return;
       setMsg(isArabic ? "تعذر حفظ الجدول." : "Erreur d'enregistrement.");
       await fetchRoster();
     } finally {
@@ -204,6 +226,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       setMsg(isArabic ? "أدخل اسم المنصب." : "Entrez le nom du poste.");
       return;
     }
+    const requestedDate = date;
     setSaving(true);
     setMsg(null);
     try {
@@ -216,7 +239,68 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       const data = await res.json();
       if (res.ok || res.status === 201) {
         setNewPost({ labelAr: "", vehicle: "" });
-        await fetchRoster();
+        // Fix 24 (RSTR-2): the POST returns the created post (201 + the
+        // post object, server-assigned id). Append it to the LOCAL roster
+        // — the old fetchRoster() here reloaded the whole day and silently
+        // restored every unsaved personnel/status/removal edit to its last
+        // saved version. Only refetch when there is no local roster to
+        // merge into, and never when the operator has moved to another day
+        // (that day's GET is already in flight — the stale closure's
+        // fetchRoster would fetch the OLD day and abort the new load).
+        if (requestedDate !== dateRef.current) return;
+        if (!roster) {
+          await fetchRoster();
+          return;
+        }
+        // Fix 24d (CodeRabbit Major 4664428918, PR #155): the 24c
+        // invalidation ran unconditionally, but the merge updater rejects
+        // a live roster from another day — add on A → navigate to B (B
+        // loads) → back to A (A's GET in flight) → POST completes: the
+        // guard passes and the captured roster is A's, yet the LIVE roster
+        // is B's, so the merge is a no-op while the invalidation killed
+        // A's GET — the board is stuck showing B's roster under A's header
+        // with loading false and no fetch in flight. (Same shape when the
+        // live roster is null after a failed B load: an empty board, no
+        // error.) Gate the invalidation on the live roster actually being
+        // the requested day; otherwise refetch the selected day — the
+        // fresh GET reads post-commit and includes the new post, and
+        // fetchRoster aborts the stale GET itself. The check must use the
+        // live roster ref, NOT the closure's roster: the closure holds the
+        // click-time render and would say "matches" even when the live
+        // roster is B's.
+        if (rosterRef.current?.date !== requestedDate) {
+          await fetchRoster();
+          return;
+        }
+        // Fix 24c (CodeRabbit Major 4664210880, PR #155): a same-day GET
+        // issued while this POST was in flight (navigate away and back
+        // during the POST) can land AFTER the merge and reinstall the day
+        // WITHOUT the new post — the server read it before the POST
+        // committed — and a later save would then delete the post
+        // server-side. Invalidate that read the way fetchRoster does:
+        // abort + replace the ref so its isCurrent() goes false. Merely
+        // aborting is NOT enough — the ref would still point at the
+        // aborted controller, its catch branch would setRoster(null) +
+        // show a load error, wiping the merge. And clear loading here:
+        // the discarded read's finally only clears it when it is current.
+        // (Pre-Fix-24 the trailing fetchRoster() did this invalidation as
+        // a side effect; the Fix 24 merge removed it.)
+        rosterReqRef.current?.abort();
+        rosterReqRef.current = null;
+        setLoading(false);
+        setRoster((r) =>
+          r && r.date === requestedDate
+            ? {
+                ...r,
+                // Fix 24b (CodeRabbit Minor 4663970069, PR #155): a GET
+                // issued before the POST can be processed by the server
+                // after the POST's write and land first, already containing
+                // the new post — appending the POST's copy again would
+                // duplicate the row until reload.
+                posts: r.posts.some((p) => p.id === data.id) ? r.posts : [...r.posts, data],
+              }
+            : r
+        );
       } else {
         setMsg(isArabic ? (data.error || "فشل إضافة المنصب") : (data.error || "Échec d'ajout"));
       }
@@ -568,7 +652,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
             </div>
             <button
               onClick={addPost}
-              disabled={saving}
+              disabled={saving || loading}
               className="px-4 py-2 bg-sky-700 hover:bg-sky-600 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-colors"
             >
               {saving ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}

@@ -677,3 +677,164 @@ describe("TeamPanel — Phase 3 auto-arrival discipline", () => {
     expect(phaseCalls).toBe(2);
   });
 });
+
+describe("TeamPanel — stale manual actions (Fix 24 / TEAM-1)", () => {
+  it("a stale flip's fatal verdict does not clear a freshly joined session", async () => {
+    let releaseFlip!: (v: unknown) => void;
+    const flipGate = new Promise((resolve) => {
+      releaseFlip = resolve;
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/join") {
+        return jsonRes(200, { ...SESSION, token: "tok-2", memberId: "tm-2", mission: null, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/mission/phase") {
+        return flipGate;
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /وصلت إلى الموقع/ }));
+    // While the flip is in flight, the native service reports revocation.
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "revoked" } }));
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    // The member re-joins with a fresh (valid) code.
+    fireEvent.change(screen.getByLabelText(/رمز الفريق/), { target: { value: "A2B4C6D8" } });
+    fireEvent.change(screen.getByLabelText(/الاسم الظاهر/), { target: { value: "عارة 1" } });
+    fireEvent.click(screen.getByRole("button", { name: /انضمام إلى الفريق/ }));
+    await waitFor(() =>
+      expect(JSON.parse(sessionStorage.getItem("observatory_team_session") || "{}").token).toBe("tok-2")
+    );
+
+    // NOW the stale flip for the OLD session lands with a fatal verdict.
+    releaseFlip(jsonRes(403, { code: "MEMBER_REVOKED", error: "revoked" }));
+    await new Promise((r) => setTimeout(r, 25));
+    // The FRESH session survives: no wipe, no false "revoked", no join form.
+    expect(JSON.parse(sessionStorage.getItem("observatory_team_session") || "{}").token).toBe("tok-2");
+    expect(screen.queryByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeNull();
+    expect(screen.queryByLabelText(/رمز الفريق/)).toBeNull();
+  });
+
+  it("a stale leave's success does not tear down a freshly joined session", async () => {
+    let releaseLeave!: (v: unknown) => void;
+    const leaveGate = new Promise((resolve) => {
+      releaseLeave = resolve;
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/join") {
+        return jsonRes(200, { ...SESSION, token: "tok-2", memberId: "tm-2", mission: null, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/leave") {
+        return leaveGate;
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /الانسحاب من الفريق/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /نعم، انسحاب/ }));
+    // While the leave is in flight, the native service reports revocation.
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "revoked" } }));
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/رمز الفريق/), { target: { value: "A2B4C6D8" } });
+    fireEvent.change(screen.getByLabelText(/الاسم الظاهر/), { target: { value: "عارة 1" } });
+    fireEvent.click(screen.getByRole("button", { name: /انضمام إلى الفريق/ }));
+    await waitFor(() =>
+      expect(JSON.parse(sessionStorage.getItem("observatory_team_session") || "{}").token).toBe("tok-2")
+    );
+
+    // NOW the stale leave for the OLD session lands with success.
+    releaseLeave(jsonRes(200, { ok: true }));
+    await new Promise((r) => setTimeout(r, 25));
+    // The FRESH session survives: storage intact, team card still shown.
+    expect(JSON.parse(sessionStorage.getItem("observatory_team_session") || "{}").token).toBe("tok-2");
+    expect(screen.getByText("وحدة بجاية")).toBeTruthy();
+    expect(screen.queryByLabelText(/رمز الفريق/)).toBeNull();
+  });
+
+  it("a flip fatal on an UNCHANGED session still clears it (control)", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/mission/phase") {
+        return jsonRes(403, { code: "MEMBER_REVOKED", error: "revoked" });
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    fireEvent.click(await screen.findByRole("button", { name: /وصلت إلى الموقع/ }));
+    await waitFor(() => expect(screen.getByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeTruthy());
+    expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+  });
+});
+
+describe("TeamPanel — leave after a cleared session still stops native tracking (Fix 24b / CodeRabbit Major 4663970078)", () => {
+  it("a leave that lands after a flip's fatal verdict still stops the native service", async () => {
+    const stopTeamTracking = vi.fn();
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking,
+    };
+    let releaseFlip!: (v: unknown) => void;
+    const flipGate = new Promise((resolve) => {
+      releaseFlip = resolve;
+    });
+    let releaseLeave!: (v: unknown) => void;
+    const leaveGate = new Promise((resolve) => {
+      releaseLeave = resolve;
+    });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === "/api/teams/session") {
+        return jsonRes(200, { ...SESSION, mission: { sosId: "sos-77", phase: "en_route", since: 1000 }, heartbeatIntervalMs: 15000 });
+      }
+      if (url === "/api/teams/mission/phase") {
+        return flipGate;
+      }
+      if (url === "/api/teams/leave") {
+        return leaveGate;
+      }
+      if (url === "/api/teams/heartbeat") {
+        return jsonRes(200, { ok: true, serverTime: Date.now(), heartbeatIntervalMs: 15000, mission: { sosId: "sos-77", phase: "en_route", since: 1000 } });
+      }
+      return jsonRes(404, { error: "no route" });
+    });
+
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    // Flip in flight, then leave confirmed while it is still in flight.
+    fireEvent.click(await screen.findByRole("button", { name: /وصلت إلى الموقع/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /الانسحاب من الفريق/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /نعم، انسحاب/ }));
+    // The flip lands first with a fatal verdict: the session is cleared
+    // (and its fatal branch never stops native tracking).
+    releaseFlip(jsonRes(403, { code: "MEMBER_REVOKED", error: "revoked" }));
+    await waitFor(() => expect(screen.getByText(/أُلغيت عضويتك من قِبل قيادة الحملة/)).toBeTruthy());
+    expect(sessionStorage.getItem("observatory_team_session")).toBeNull();
+    // The leave then succeeds — Fix 24's TEAM-1 guard must not swallow
+    // the FGS stop: with no session left, the leave owns it.
+    releaseLeave(jsonRes(200, { ok: true }));
+    await waitFor(() => expect(stopTeamTracking).toHaveBeenCalledTimes(1));
+  });
+});
