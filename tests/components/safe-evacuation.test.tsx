@@ -65,11 +65,13 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
   let zonesData: Zone[];
   let zonesFetchFails: boolean;
   let osrmDeferred: { resolve: (res: Response) => void } | null;
+  let osrmFails: boolean;
 
   beforeEach(() => {
     zonesData = [zoneA, zoneB];
     zonesFetchFails = false;
     osrmDeferred = null;
+    osrmFails = false;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
@@ -89,6 +91,9 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
           });
         }
         if (url.startsWith("https://router.project-osrm.org")) {
+          if (osrmFails) {
+            return new Response("{}", { status: 500 });
+          }
           if (osrmDeferred) {
             return new Promise<Response>((resolve) => {
               osrmDeferred = { resolve };
@@ -276,6 +281,59 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
     await renderPage();
     await calculateRouteForB();
     expect(screen.getByText("مسار طريق حقيقي")).toBeTruthy();
+  });
+
+  async function calculateEstimateRouteForB() {
+    const buttons = screen.getAllByText("اعرض مسار الطريق");
+    await act(async () => {
+      fireEvent.click(buttons[1]);
+    });
+    // The estimate disclosure marks the estimate path as settled.
+    await screen.findByText(/تعذر الوصول لخدمة الطرق/, {}, { timeout: 5000 });
+  }
+
+  it("EVAC-3: on OSRM failure the summary heading says estimate, not real road", async () => {
+    osrmFails = true;
+    await renderPage();
+    await calculateEstimateRouteForB();
+    expect(screen.getByText("مسار تقديري (خط مستقيم)")).toBeTruthy();
+    expect(screen.queryByText("مسار طريق حقيقي")).toBeNull();
+  });
+
+  it("EVAC-3: on OSRM failure the zone button says estimate calculated, not active on the map", async () => {
+    osrmFails = true;
+    await renderPage();
+    await calculateEstimateRouteForB();
+    expect(screen.getByText("التقدير محسوب")).toBeTruthy();
+    expect(screen.queryByText("المسار نشط على الخريطة")).toBeNull();
+  });
+
+  it("EVAC-3: on OSRM failure the voice summary opens with the estimate sentence", async () => {
+    const speakMock = vi.fn();
+    vi.stubGlobal("speechSynthesis", { speak: speakMock, cancel: vi.fn() });
+    vi.stubGlobal(
+      "SpeechSynthesisUtterance",
+      class {
+        text: string;
+        lang = "";
+        rate = 1;
+        onend: (() => void) | null = null;
+        onerror: (() => void) | null = null;
+        constructor(text: string) {
+          this.text = text;
+        }
+      }
+    );
+    osrmFails = true;
+    await renderPage();
+    await calculateEstimateRouteForB();
+    await act(async () => {
+      fireEvent.click(screen.getByText("استمع إلى ملخص المسار"));
+    });
+    expect(speakMock).toHaveBeenCalledTimes(1);
+    const spoken = String(speakMock.mock.calls[0][0].text);
+    expect(spoken.startsWith("تم حساب تقدير خط مستقيم")).toBe(true);
+    expect(spoken).not.toContain("مسار طريق حقيقي");
   });
   // Fix 26b: the whole suite runs on 1.5 shared CPUs, and the real Leaflet
   // map init can push a test past Vitest's 5 s default test timeout under
