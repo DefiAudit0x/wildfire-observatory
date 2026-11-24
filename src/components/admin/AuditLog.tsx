@@ -53,31 +53,45 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
     onAuthErrorRef.current = onAuthError;
   });
 
+  // Fix 32b (CodeRabbit review 6031586408, Minor 1): fetchEntries is
+  // recreated when isArabic changes and the mount effect re-runs it, but the
+  // earlier request was never cancelled — a late failure from the superseded
+  // request overwrote the current load's state (banner over a successfully
+  // loaded trail), and a late success overwrote entries and reset the page.
+  // Only the latest request may write entries/page/loadError/loading.
+  const requestSeq = useRef(0);
+
   const fetchEntries = useCallback(async () => {
+    const seq = ++requestSeq.current;
+    const isCurrent = () => seq === requestSeq.current;
     setLoading(true);
     setLoadError(null);
     try {
       const res = await fetch("/api/audit", { credentials: "same-origin" });
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data)) {
+        if (Array.isArray(data) && isCurrent()) {
           setEntries(data);
           setPage(1);
         }
       } else if (!onAuthErrorRef.current(res)) {
         // Fix 32 (AUD-1): a non-auth failure used to be silent, so the empty
         // list rendered "No actions recorded" for a load that never happened.
-        setLoadError(isArabic
-          ? `تعذّر تحميل سجل التدقيق (خطأ ${res.status})`
-          : `Échec du chargement du journal (erreur ${res.status})`);
+        if (isCurrent()) {
+          setLoadError(isArabic
+            ? `تعذّر تحميل سجل التدقيق (خطأ ${res.status})`
+            : `Échec du chargement du journal (erreur ${res.status})`);
+        }
       }
     } catch (err) {
       console.error("Failed to load audit log", err);
-      setLoadError(isArabic
-        ? "تعذّر تحميل سجل التدقيق — تحقق من الاتصال"
-        : "Échec du chargement du journal — vérifiez la connexion");
+      if (isCurrent()) {
+        setLoadError(isArabic
+          ? "تعذّر تحميل سجل التدقيق — تحقق من الاتصال"
+          : "Échec du chargement du journal — vérifiez la connexion");
+      }
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [isArabic]);
 
