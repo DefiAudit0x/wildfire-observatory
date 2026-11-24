@@ -166,6 +166,11 @@ export function useProximityAlerts(
   const proximityScanInFlightRef = useRef(false);
   const trustedReporterRef = useRef(isTrustedReporter);
   trustedReporterRef.current = isTrustedReporter;
+  // Fix 36 (PROX-1): mute must be readable inside async callbacks (flush,
+  // tone, siren resume) — the state value closes over the render that
+  // scheduled them, the ref always reads live.
+  const isMutedRef = useRef(isMuted);
+  isMutedRef.current = isMuted;
   const operatorFlushEpochRef = useRef(0);
   const operatorFlushInFlightRef = useRef(false);
 
@@ -192,6 +197,9 @@ export function useProximityAlerts(
       const audioCtx = operatorAudioCtxRef.current;
       if (audioCtx.state === "suspended") await audioCtx.resume();
       if (!trustedReporterRef.current) return false;
+      // Fix 36 (PROX-1): re-checked after the resume await — muting while
+      // the context was resuming must still silence the tone.
+      if (isMutedRef.current) return false;
       if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
       const t0 = audioCtx.currentTime;
       for (let i = 0; i < 3; i++) {
@@ -219,7 +227,10 @@ export function useProximityAlerts(
   // POSTPONED via a timer (never swallowed); severities that dropped below
   // high/critical meanwhile are dropped from the queue by the main effect.
   const flushOperatorPending = useCallback(async () => {
-    if (!trustedReporterRef.current || operatorFlushInFlightRef.current) return;
+    // Fix 36 (PROX-1): a flush timer scheduled before the mute must not ring
+    // after it — the effect's mute branch clears the timer, this is the
+    // defence for a timer that fires in between.
+    if (!trustedReporterRef.current || operatorFlushInFlightRef.current || isMutedRef.current) return;
     const flushEpoch = operatorFlushEpochRef.current;
     const pending = operatorPendingRef.current;
     if (pending.size === 0) return;
@@ -348,6 +359,9 @@ export function useProximityAlerts(
         }
         const audioCtx = proximityAudioCtxRef.current;
         if (audioCtx.state === "suspended") await audioCtx.resume();
+        // Fix 36 (PROX-1, D9): the mute check above ran before the await —
+        // muting during resume must still silence the siren.
+        if (isMutedRef.current) return;
         if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
         const osc1 = audioCtx.createOscillator();
         const osc2 = audioCtx.createOscillator();
@@ -400,6 +414,26 @@ export function useProximityAlerts(
       }
       return;
     }
+    // While muted the alert is NOT recorded anywhere — neither announced nor
+    // pending: unmuting re-runs this effect (isMuted is a dep) and announces
+    // it then, instead of silently dropping the alert that arrived during
+    // the mute.
+    // Fix 36 (PROX-1): the old code returned here only AFTER the newOnes
+    // computation, so an already-queued batch never reached the mute branch
+    // — newOnes is empty for reports that are already pending, and the
+    // `newOnes.length === 0` return below skipped the clear entirely. The
+    // mute branch therefore sits FIRST (like the trust-loss branch above):
+    // clear the queue, the timer and bump the epoch WITHOUT touching the
+    // announced memory — mute postpones, never swallows.
+    if (isMuted) {
+      operatorPendingRef.current.clear();
+      if (operatorFlushTimerRef.current !== null) {
+        window.clearTimeout(operatorFlushTimerRef.current);
+        operatorFlushTimerRef.current = null;
+      }
+      operatorFlushEpochRef.current += 1;
+      return;
+    }
     const critical = reports.filter(
       (r) =>
         (r.severity === "critical" || r.severity === "high") &&
@@ -420,12 +454,6 @@ export function useProximityAlerts(
       isEscalation(pending.get(a.id), a.severity)
     );
     if (newOnes.length === 0) return;
-
-    // While muted the alert is NOT recorded anywhere — neither announced nor
-    // pending: unmuting re-runs this effect (isMuted is a dep) and announces
-    // it then, instead of silently dropping the alert that arrived during
-    // the mute.
-    if (isMuted) return;
 
     for (const a of newOnes) pending.set(a.id, a.severity);
     void flushOperatorPending();
