@@ -189,7 +189,7 @@ export function useProximityAlerts(
     }, ms);
   };
 
-  const beepOperatorTone = useCallback(async (hasCritical: boolean): Promise<boolean> => {
+  const beepOperatorTone = useCallback(async (hasCritical: boolean, flushEpoch: number): Promise<boolean> => {
     try {
       if (!operatorAudioCtxRef.current) {
         operatorAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -200,6 +200,14 @@ export function useProximityAlerts(
       // Fix 36 (PROX-1): re-checked after the resume await — muting while
       // the context was resuming must still silence the tone.
       if (isMutedRef.current) return false;
+      // Fix 36b (CodeRabbit Minor, review 6033322713): the epoch was
+      // checked only in the commit helper AFTER playback — a batch muted
+      // and unmuted while resume() was pending still played its tone,
+      // then its commit was rejected and the report toned again: a double
+      // tone for one report. Reject the invalidated batch here, before
+      // any oscillator is created; the retry path re-flushes it with the
+      // current epoch and it tones exactly once, after unmute.
+      if (flushEpoch !== operatorFlushEpochRef.current) return false;
       if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
       const t0 = audioCtx.currentTime;
       for (let i = 0; i < 3; i++) {
@@ -252,7 +260,7 @@ export function useProximityAlerts(
     let committed = false;
     try {
       committed = await commitOperatorBatchAfterTone(
-        () => beepOperatorTone(hasCritical),
+        () => beepOperatorTone(hasCritical, flushEpoch),
         () => trustedReporterRef.current,
         () => operatorFlushEpochRef.current,
         flushEpoch,
