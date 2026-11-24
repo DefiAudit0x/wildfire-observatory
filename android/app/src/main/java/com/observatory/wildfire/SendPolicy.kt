@@ -10,7 +10,7 @@ package com.observatory.wildfire
  * pattern from Fix 17.
  *
  * A 429 is a time-limited refusal, not a validation/auth failure: all
- * three server limiters (SOS 2/min, reports 5/min, the shared /api/*
+ * three server limiters (SOS 2/min, reports 5/min, the shared API
  * limiter) run BEFORE the route handler, so nothing was stored
  * server-side and retrying the identical body is safe — and for SOS the
  * idempotency key makes a replay return the stored SOS, never a
