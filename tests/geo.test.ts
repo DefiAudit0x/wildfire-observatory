@@ -200,4 +200,16 @@ describe("client mirror agreement (Fix 36 — GEO-1)", () => {
     expect(clientResolve(36.8, 6.3)).toBe(determineWilayaByCoords(36.8, 6.3));
     expect(clientResolve(31.2, -8.5)).toBe(determineWilayaByCoords(31.2, -8.5));
   });
+
+  it("guards the D11 fallback band and the restored Skikda boundary (Fix 36b)", async () => {
+    const { determineWilayaByCoords: clientResolve, OUT_OF_COVERAGE } = await import("../src/utils/geo.js");
+    // The sampled grid above starts at lat 19, so it cannot catch the
+    // fallback band 18 < lat < 19 regressing to >= 19.0, nor the Skikda
+    // maxLng 7.5 restoration at (36.6, 7.45) — both are pinned here by name.
+    expect(clientResolve(18.5, 3)).toBe("الجزائر - منطقة أخرى (Algérie - Autre)");
+    expect(clientResolve(36.6, 7.45)).toBe("الجزائر - سكيكدة (Algérie - Skikda)");
+    // Excluded boundaries: exactly 18.0 and exactly 37.5 are out of the band.
+    expect(clientResolve(18, 3)).toBe(OUT_OF_COVERAGE);
+    expect(clientResolve(37.5, 3)).toBe(OUT_OF_COVERAGE);
+  });
 });
