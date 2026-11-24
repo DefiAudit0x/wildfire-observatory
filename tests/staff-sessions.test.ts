@@ -106,7 +106,7 @@ describe("SAUTH-1 staff session lifecycle", () => {
   it("honors an administrator's explicit revocation of a staff bearer", async () => {
     const application = app(); const token = generateStaffToken({ agentId: "agent-1", role: "agent", unitId: "DZ16" });
     expect((await supertest(application).get("/auth/session").set("Authorization", `Bearer ${token}`)).status).toBe(200);
-    expect(await revokeAdminSession(token, "incident-response")).toBe(true);
+    expect(await revokeAdminSession(token, "incident-response")).toBe("revoked");
     expect((await supertest(application).get("/auth/session").set("Authorization", `Bearer ${token}`)).status).toBe(401);
   });
 });

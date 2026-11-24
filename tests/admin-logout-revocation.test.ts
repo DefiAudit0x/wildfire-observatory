@@ -46,6 +46,8 @@ vi.mock("../server/routes/notifications.js", () => ({
 
 import adminRouter from "../server/routes/admin.js";
 import { generateAdminToken } from "../server/middleware.js";
+import jwt from "jsonwebtoken";
+import config from "../server/config.js";
 
 function createApp() {
   const app = express();
@@ -103,5 +105,20 @@ describe("Fix 41 (ADM-5): admin logout revocation persistence", () => {
     expect(retried.status).toBe(200);
     expect(retried.body).toEqual({ success: true });
     expect(retried.headers["set-cookie"]?.[0]).toContain("admin_token=;");
+  });
+
+  it("a legacy jti-less token logs out cleanly instead of 503ing forever (Fix 41c)", async () => {
+    // A legacy token has no jti, so there is no durable entry to write —
+    // revokeAdminSession returns "nothing-to-revoke", not "failed". On
+    // pre-41c code the route 503d with the cookie retained, and every
+    // retry 503d again: a logout dead-end for a supported token class.
+    const legacy = jwt.sign({ role: "admin" }, config.jwtSecret, { expiresIn: "24h" });
+    const res = await supertest(createApp())
+      .post("/api/admin/logout")
+      .set("Authorization", `Bearer ${legacy}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ success: true });
+    expect(res.headers["set-cookie"]?.[0]).toContain("admin_token=;");
+    expect(state.docSet).not.toHaveBeenCalled();
   });
 });
