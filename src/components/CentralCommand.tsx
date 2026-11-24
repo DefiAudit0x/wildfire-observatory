@@ -279,19 +279,28 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const applyLocalDispatch = (sosId: string, dispatchItem: any) => {
-    // Fix 43b (CodeRabbit 6039588272): upsert by teamId. An
-    // already_dispatched 200 must not append a second local copy of a
-    // dispatch the server deliberately did not append (SOS-6) — the
-    // response's dispatch replaces the stored entry, so local state stays
-    // in sync with the server. An item without a teamId (the raw
+    // Fix 43c (CodeRabbit 6040115063): reconcile by stable identity
+    // (teamId + dispatchedAt), not by teamId alone. teamId does not
+    // identify a dispatch: after clear + re-dispatch the server holds TWO
+    // entries for the same team, and the 43b teamId-only replace collapsed
+    // them — a fresh dispatch lost the earlier entry, and a replay of the
+    // second overwrote the first too. A fresh dispatch (a dispatchedAt no
+    // local entry has) appends; a replay (the same dispatchedAt) replaces
+    // only its own entry. An item without teamId or dispatchedAt (the raw
     // request-body fallback) still appends.
     setFullSos((prev) =>
       prev.map((s) => {
         if (s.id !== sosId) return s;
         const teams = s.dispatchedTeams || [];
         const teamId = dispatchItem?.teamId as string | undefined;
-        if (teamId && teams.some((t) => t.teamId === teamId)) {
-          return { ...s, dispatchedTeams: teams.map((t) => (t.teamId === teamId ? dispatchItem : t)) };
+        const dispatchedAt = dispatchItem?.dispatchedAt as string | undefined;
+        if (teamId && dispatchedAt) {
+          const idx = teams.findIndex((t) => t.teamId === teamId && t.dispatchedAt === dispatchedAt);
+          if (idx >= 0) {
+            const next = [...teams];
+            next[idx] = dispatchItem;
+            return { ...s, dispatchedTeams: next };
+          }
         }
         return { ...s, dispatchedTeams: [...teams, dispatchItem] };
       })
