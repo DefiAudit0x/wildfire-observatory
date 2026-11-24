@@ -300,7 +300,11 @@ router.get("/", requireAdmin, async (req: Request, res: Response) => {
           // from this response — never fabricated, null for legacy clients.
           // Fix 45 (D5): fall back to the durable snapshot's fix age when
           // the member has no live registry position (offline fallback).
-          fixTimeMs: position?.fixTimeMs ?? m.lastFixTimeMs ?? null,
+          // Fix 45b: a live position decides alone — a live beat without a
+          // fix time reports null, never the older durable snapshot's age
+          // (CodeRabbit Minor 4682251652: `??` treats the stored null as
+          // nullish and falls through to the stale snapshot).
+          fixTimeMs: position ? (position.fixTimeMs ?? null) : (m.lastFixTimeMs ?? null),
           trail: position?.trail ?? [],
         };
       })
