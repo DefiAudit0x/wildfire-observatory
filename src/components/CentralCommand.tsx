@@ -366,7 +366,12 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         sosFetchSeq.current++;
         setFullSos((prev) => prev.filter((s) => s.id !== sos.id));
         push(isArabic ? `تم إثبات النجدة — ${sos.name} بأمان` : `SOS résolu — ${sos.name} sain et sauf`);
-        setConfirmResolve(null);          // close only on success
+        // Fix 32b (CodeRabbit review 6031586408, Minor 2): close only when
+        // the completed SOS is still the selected one — the operator may
+        // have cancelled this dialog and opened another SOS's while the
+        // request was in flight, and an unconditional close would dismiss
+        // the other dialog even though that SOS was never resolved.
+        setConfirmResolve((current) => (current?.id === sos.id ? null : current));
       } else if (isSessionExpiry(res)) {
         setUnlocked(false);
       } else {
