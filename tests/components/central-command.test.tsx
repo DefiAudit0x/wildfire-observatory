@@ -208,3 +208,161 @@ describe("CentralCommand overlapping fetches (Fix 24 / CMD-1)", () => {
     await waitFor(() => expect(screen.getByText("مناداة أ")).toBeTruthy());
   });
 });
+
+// --- Fix 32 (CMD-2 / CMD-3) ---
+
+describe("CentralCommand manual refresh and resolve (Fix 32 / CMD-2, CMD-3)", () => {
+  let onRefresh: Mock<() => void>;
+
+  beforeEach(() => {
+    onRefresh = vi.fn(() => {});
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function baseFetchMock(overrides: (url: string, init?: RequestInit) => Response | Promise<Response> | null) {
+    return vi.fn(async (url: string, init?: RequestInit) => {
+      const hit = overrides(String(url), init);
+      if (hit) return hit;
+      if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
+      if (String(url).includes("/api/teams")) return jsonResponse(200, []);
+      if (String(url).includes("/api/sos/full")) return jsonResponse(200, []);
+      if (String(url).includes("/api/locations")) return jsonResponse(200, []);
+      return jsonResponse(404, {});
+    });
+  }
+
+  function countCalls(fetchMock: ReturnType<typeof vi.fn>, needle: string) {
+    return fetchMock.mock.calls.filter(([u]: any[]) => String(u).includes(needle)).length;
+  }
+
+  it("CMD-2: manual Refresh calls all three loaders", async () => {
+    const fetchMock = baseFetchMock(() => null);
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    // Wait for the panel to unlock and the first round to land.
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]: any[]) => String(u).includes("/api/locations"))).toBe(true));
+    const before = {
+      sos: countCalls(fetchMock, "/api/sos/full"),
+      teams: countCalls(fetchMock, "/api/teams"),
+      loc: countCalls(fetchMock, "/api/locations"),
+    };
+    fireEvent.click(screen.getByRole("button", { name: "تحديث" }));
+    await waitFor(() => expect(countCalls(fetchMock, "/api/sos/full")).toBeGreaterThan(before.sos));
+    expect(countCalls(fetchMock, "/api/teams")).toBeGreaterThan(before.teams);
+    expect(countCalls(fetchMock, "/api/locations")).toBeGreaterThan(before.loc);
+  });
+
+  it("CMD-2: the button still triggers the parent refresh exactly once (control)", async () => {
+    const fetchMock = baseFetchMock(() => null);
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "تحديث" }));
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(2));
+  });
+
+  it("CMD-3: double-confirm issues one POST and the dialog stays open while pending", async () => {
+    let releaseResolve!: (v: Response) => void;
+    const resolveGate = new Promise<Response>((resolve) => {
+      releaseResolve = resolve;
+    });
+    const fetchMock = baseFetchMock((url, init) => {
+      if (url.includes("/api/sos/full")) return jsonResponse(200, [sos("sos-a", "مناداة أ")]);
+      if (url.includes("/api/sos/sos-a/resolve") && init?.method === "POST") return resolveGate;
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand
+        reports={[]}
+        satellites={[]}
+        sosCalls={[sos("sos-a", "مناداة أ")]}
+        userLocation={null}
+        lang="ar"
+        onRefresh={onRefresh}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة أ")).toBeTruthy());
+    fireEvent.click(screen.getByText("تم الإنقاذ"));
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    const confirmButton = screen.getAllByText("تم الإنقاذ")[1].closest("button")!;
+    fireEvent.click(confirmButton);
+    // While the request is pending the dialog stays open and confirm is disabled.
+    await waitFor(() => expect(confirmButton).toBeDisabled());
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    // A second confirm attempt issues no second POST.
+    fireEvent.click(confirmButton);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(countCalls(fetchMock, "/api/sos/sos-a/resolve")).toBe(1);
+    // The resolve lands: dialog closes, SOS removed, success toast shown.
+    releaseResolve(jsonResponse(200, { ok: true }));
+    await waitFor(() => expect(screen.queryByText("تأكيد الإثبات")).toBeNull());
+    expect(screen.queryByText("مناداة أ")).toBeNull();
+    expect(screen.getByText(/تم إثبات النجدة/)).toBeTruthy();
+  });
+
+  it("CMD-3: a failed resolve keeps the dialog open for retry", async () => {
+    let resolveCalls = 0;
+    const fetchMock = baseFetchMock((url, init) => {
+      if (url.includes("/api/sos/full")) return jsonResponse(200, [sos("sos-a", "مناداة أ")]);
+      if (url.includes("/api/sos/sos-a/resolve") && init?.method === "POST") {
+        resolveCalls += 1;
+        return jsonResponse(500, {});
+      }
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand
+        reports={[]}
+        satellites={[]}
+        sosCalls={[sos("sos-a", "مناداة أ")]}
+        userLocation={null}
+        lang="ar"
+        onRefresh={onRefresh}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة أ")).toBeTruthy());
+    fireEvent.click(screen.getByText("تم الإنقاذ"));
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[1]);
+    await waitFor(() => expect(screen.getByText(/فشل حل الاستغاثة/)).toBeTruthy());
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    expect(screen.getByText("مناداة أ")).toBeTruthy();
+    // Retry in place: a second confirm issues a second POST.
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[1]);
+    await waitFor(() => expect(resolveCalls).toBe(2));
+  });
+
+  it("CMD-3: the resolve rides the bounded helper (carries an AbortSignal)", async () => {
+    const fetchMock = baseFetchMock((url, init) => {
+      if (url.includes("/api/sos/full")) return jsonResponse(200, [sos("sos-a", "مناداة أ")]);
+      if (url.includes("/api/sos/sos-a/resolve") && init?.method === "POST") return jsonResponse(200, { ok: true });
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand
+        reports={[]}
+        satellites={[]}
+        sosCalls={[sos("sos-a", "مناداة أ")]}
+        userLocation={null}
+        lang="ar"
+        onRefresh={onRefresh}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة أ")).toBeTruthy());
+    fireEvent.click(screen.getByText("تم الإنقاذ"));
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[1]);
+    await waitFor(() => expect(screen.queryByText("مناداة أ")).toBeNull());
+    const resolveCall = fetchMock.mock.calls.find(([u]: any[]) => String(u).includes("/api/sos/sos-a/resolve"));
+    expect(resolveCall).toBeTruthy();
+    expect((resolveCall![1] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
