@@ -783,7 +783,7 @@ export type TeamMemberRemovalResult =
   | { status: "missing" }
   | { status: "unavailable" };
 
-const MEMBER_GPS_FIELDS = ["lastKnownLat", "lastKnownLng", "lastSeenAt"];
+const MEMBER_GPS_FIELDS = ["lastKnownLat", "lastKnownLng", "lastSeenAt", "lastFixTimeMs"];
 
 /**
  * v2.15.0 audit fix — atomic member removal. The dispatcher's DELETE used to
