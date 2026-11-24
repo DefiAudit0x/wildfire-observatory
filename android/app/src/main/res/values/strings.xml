@@ -37,6 +37,8 @@
 
     <!-- Weather -->
     <string name="weather_fmt">الطقس: %1$d°م · رطوبة %2$d٪ · رياح %3$d كلم/س من %4$d°</string>
+    <!-- Fix 49 (NMODEL-1): temperature + humidity only, for a weather reading whose wind is unknown (null). -->
+    <string name="weather_no_wind_fmt">الطقس: %1$d°م · رطوبة %2$d٪</string>
     <string name="weather_note">اتجاه الرياح مرجعي وليس نموذج انتشار</string>
 
     <!-- Proximity banner -->
@@ -181,6 +183,8 @@
     <string name="radar_ai_button">إحاطة السلامة</string>
     <string name="wind_chip_fmt">🌬 %1$s كم/س · %2$s°C · %3$s — %4$s</string>
     <string name="wind_no_fix">حدّد موقعك لعرض الرياح والمخروط التقديري</string>
+    <!-- Fix 49 (NMODEL-1): the fix exists but the wind reading is unknown — NOT the same as wind_no_fix ("حدّد موقعك"). -->
+    <string name="wind_unknown">الرياح غير متوفرة حاليًا</string>
     <string name="radar_note">المخروط البرتقالي: اتجاه انتشار تقديري وفق الرياح — مرجع رياح وليس نموذج حريق</string>
     <string name="route_chip_fmt">%1$.1f كلم · %2$d د — %3$s</string>
     <string name="route_safe">آمن</string>
