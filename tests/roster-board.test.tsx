@@ -665,3 +665,117 @@ describe("RosterBoard overlapping requests (Fix 24b)", () => {
     expect(screen.queryByText("تعذر تحميل الجدول.")).toBeNull();
   });
 });
+
+describe("RosterBoard rank clear and assignment filter (Fix 37 — RSTR-3/RSTR-4)", () => {
+  const mixedUsers = [
+    { agentId: "a1", name: "Agent One", role: "agent", unitId: "DZ16", isActive: true },
+    { agentId: "c1", name: "Commander One", role: "commander", unitId: "DZ16", isActive: true },
+    { agentId: "a2", name: "Agent Two", role: "agent", unitId: "DZ01", isActive: true },
+    { agentId: "a3", name: "Agent Three", role: "agent", unitId: "DZ16", isActive: false },
+  ];
+  const dayWithRank = {
+    unitId: "unit-dz16",
+    date: todayISO(),
+    posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [{ agentId: "a1", name: "Agent One", rank: "سائق" }] }],
+    saved: true,
+  };
+  const emptyDay = {
+    unitId: "unit-dz16",
+    date: todayISO(),
+    posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [] }],
+    saved: true,
+  };
+
+  // The stub simulates the server's zod rank rule: a present-but-empty rank
+  // 400s, an omitted rank saves fine. PUT bodies are recorded for assertion;
+  // a successful PUT echoes the saved posts back (as the server would).
+  function installStub(roster: unknown, users: unknown[]) {
+    const putBodies: any[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).includes("/api/roster/") && init?.method === "PUT") {
+          const body = JSON.parse(String(init.body));
+          putBodies.push(body);
+          const ranks = (body.posts as any[]).flatMap((p) => p.personnel.map((x: any) => x.rank));
+          if (ranks.some((r: unknown) => r === "")) {
+            return new Response(JSON.stringify({ error: "Validation failed" }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          return new Response(
+            JSON.stringify({ unitId: "unit-dz16", date: todayISO(), posts: body.posts, saved: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } }
+          );
+        }
+        if (String(url).includes("/api/roster/")) {
+          return new Response(JSON.stringify(roster), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (String(url).includes("/api/users")) {
+          return new Response(JSON.stringify({ users }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    return { putBodies };
+  }
+
+  it("clearing a rank omits it from the save instead of 400ing and reloading the day", async () => {
+    const { putBodies } = installStub(dayWithRank, mixedUsers);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    const rankInput = screen.getByPlaceholderText(/الرتبة/) as HTMLInputElement;
+    expect(rankInput.value).toBe("سائق");
+    fireEvent.change(rankInput, { target: { value: "" } });
+    fireEvent.click(screen.getByText("حفظ جدول اليوم"));
+    await waitFor(() => expect(screen.getByText("✓ تم حفظ جدول المناوبة.")).toBeTruthy());
+    expect(putBodies.length).toBe(1);
+    const person = putBodies[0].posts[0].personnel[0];
+    expect("rank" in person).toBe(false);
+    expect((screen.getByPlaceholderText(/الرتبة/) as HTMLInputElement).value).toBe("");
+  });
+
+  it("a present rank is still saved (control)", async () => {
+    const { putBodies } = installStub(dayWithRank, mixedUsers);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    fireEvent.click(screen.getByText("حفظ جدول اليوم"));
+    await waitFor(() => expect(screen.getByText("✓ تم حفظ جدول المناوبة.")).toBeTruthy());
+    expect(putBodies[0].posts[0].personnel[0].rank).toBe("سائق");
+  });
+
+  it("the assignment selector offers only same-unit agents", async () => {
+    installStub(emptyDay, mixedUsers);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    // The staff load resolves after the roster: wait for the offered option.
+    await waitFor(() => expect(screen.queryByText("Agent One (a1)")).toBeTruthy());
+    expect(screen.queryByText("Commander One (c1)")).toBeNull();
+    expect(screen.queryByText("Agent Two (a2)")).toBeNull();
+    // Inactive accounts were already filtered by fetchStaff — pinned here too.
+    expect(screen.queryByText("Agent Three (a3)")).toBeNull();
+  });
+
+  it("the offered same-unit agent can be added and saved (control)", async () => {
+    const { putBodies } = installStub(emptyDay, mixedUsers);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText("Agent One (a1)")).toBeTruthy());
+    const select = screen.getByText("+ أضف مناوباً إلى هذا المنصب").closest("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "a1" } });
+    await waitFor(() => expect(screen.queryByText(/Agent One \(a1\) — موزع/)).toBeTruthy());
+    fireEvent.click(screen.getByText("حفظ جدول اليوم"));
+    await waitFor(() => expect(screen.getByText("✓ تم حفظ جدول المناوبة.")).toBeTruthy());
+    expect(putBodies[0].posts[0].personnel[0].agentId).toBe("a1");
+  });
+});

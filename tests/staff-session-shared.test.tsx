@@ -160,6 +160,18 @@ describe("staff session — one shared store (Fix 29 AUTH-1)", () => {
     expect(net.authCalls().length).toBe(1);
   });
 
+  it("a late poll listener probes at once instead of waiting for the next tick (Fix 37 — SES-1)", async () => {
+    const net = installFetch();
+    const probeA = renderHook(() => useSessionProbe());
+    await waitFor(() => expect(probeA.result.current).toBe(true));
+    expect(net.adminCalls().length).toBe(1);
+    // A second probe mounts without advancing any timer: the late listener
+    // must probe at once (the subscribeSessionPoll else-branch, Fix 29b).
+    const probeB = renderHook(() => useSessionProbe());
+    await waitFor(() => expect(probeB.result.current).toBe(true));
+    expect(net.adminCalls().length).toBe(2);
+  });
+
   it("one /api/auth/session fetch per tick with three instances mounted", async () => {
     vi.useFakeTimers();
     const net = installFetch();
