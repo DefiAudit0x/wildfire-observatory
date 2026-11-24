@@ -72,6 +72,23 @@ function isArchivedDate(date: string): boolean {
 
 const MAX_FUTURE_DAYS = 365;
 
+// Fix 42 (RSTR-6): a shape regex is not a calendar check — "2026-11-31"
+// and "2026-99-99" passed both isArchivedDate (lexical) and isTooFarFuture
+// (NaN → false) and persisted under nonexistent days. Round-trip through a
+// Date: setUTCFullYear normalizes overflow, so the check is the round trip
+// itself (leap years and years 0–99 included).
+function isValidCalendarDate(date: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!m) return false;
+  const d = new Date(0);
+  d.setUTCFullYear(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return (
+    d.getUTCFullYear() === Number(m[1]) &&
+    d.getUTCMonth() === Number(m[2]) - 1 &&
+    d.getUTCDate() === Number(m[3])
+  );
+}
+
 function isTooFarFuture(date: string): boolean {
   const target = new Date(`${date}T12:00:00Z`).getTime();
   return target - Date.now() > MAX_FUTURE_DAYS * 24 * 60 * 60 * 1000;
@@ -84,7 +101,7 @@ function ensurePostIds(posts: any[]): any[] {
   }));
 }
 
-async function canonicalizePersonnel(unitId: string, posts: any[]): Promise<{ posts: any[] } | { error: string }> {
+async function canonicalizePersonnel(unitId: string, posts: any[]): Promise<{ posts: any[] } | { error: string; status: 403 | 503 }> {
   const canonicalPosts: any[] = [];
   const seenAgents = new Set<string>();
   // ARC-M08 fix: validation used to fire one SEQUENTIAL server round-trip per
@@ -104,22 +121,31 @@ async function canonicalizePersonnel(unitId: string, posts: any[]): Promise<{ po
       if (!staffCache.has(person.agentId)) missingIds.add(person.agentId);
     }
   }
+  // Fix 42 (RSTR-7): a failed fresh read used to be silently dropped — the
+  // agent stayed out of the cache and the validation loop below then
+  // reported 403 "not an active staff account" for a DB outage. A fresh-read
+  // error is a 503 and it wins over every validation error below.
+  let freshReadFailed = false;
   await Promise.all(
     [...missingIds].map(async (agentId) => {
       const result = await getFreshDocResult("users", agentId);
       if (result.status === "found") staffCache.set(agentId, result.doc);
+      else if (result.status === "error") freshReadFailed = true;
     })
   );
+  if (freshReadFailed) {
+    return { error: "Database not available", status: 503 };
+  }
   for (const post of posts) {
     const personnel: any[] = [];
     for (const person of post.personnel || []) {
-      if (seenAgents.has(person.agentId)) return { error: `Agent "${person.agentId}" is assigned twice on the same day` };
+      if (seenAgents.has(person.agentId)) return { error: `Agent "${person.agentId}" is assigned twice on the same day`, status: 403 };
       const staff = staffCache.get(person.agentId);
       if (!staff || staff.role !== "agent" || staff.isActive === false) {
-        return { error: `Agent "${person.agentId}" is not an active staff account` };
+        return { error: `Agent "${person.agentId}" is not an active staff account`, status: 403 };
       }
       if (toUnitId(staff.unitId) !== unitId) {
-        return { error: `Agent "${person.agentId}" does not belong to this unit` };
+        return { error: `Agent "${person.agentId}" does not belong to this unit`, status: 403 };
       }
       seenAgents.add(person.agentId);
       personnel.push({ ...person, name: staff.name });
@@ -133,6 +159,12 @@ router.get("/:date", requireAuth, async (req: Request, res: Response) => {
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
+    return;
+  }
+  // Fix 42 (RSTR-6): the shape above admits "2026-11-31" — reject dates
+  // that are not real calendar days before any read.
+  if (!isValidCalendarDate(date)) {
+    res.status(400).json({ error: "Invalid date (not a real calendar date)" });
     return;
   }
   const admin = (req as any).admin;
@@ -179,6 +211,12 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
+  // Fix 42 (RSTR-6): the shape above admits "2026-11-31" — reject dates
+  // that are not real calendar days before any write.
+  if (!isValidCalendarDate(date)) {
+    res.status(400).json({ error: "Invalid date (not a real calendar date)" });
+    return;
+  }
   const admin = (req as any).admin;
   const { unitId, error: scopeError } = resolveUnitForWrite(admin, req.query.unit);
   if (!unitId) {
@@ -200,7 +238,9 @@ router.put("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res: 
   }
   const canonical = await canonicalizePersonnel(unitId, parsed.data.posts);
   if ("error" in canonical) {
-    res.status(403).json({ error: canonical.error });
+    // Fix 42 (RSTR-7): a fresh-read failure during canonicalization is a
+    // 503, not a 403 — canonical.status carries the distinction.
+    res.status(canonical.status).json({ error: canonical.error });
     return;
   }
   const posts = ensurePostIds(canonical.posts);
@@ -234,6 +274,12 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
+  // Fix 42 (RSTR-6): the shape above admits "2026-11-31" — reject dates
+  // that are not real calendar days before any write.
+  if (!isValidCalendarDate(date)) {
+    res.status(400).json({ error: "Invalid date (not a real calendar date)" });
+    return;
+  }
   const admin = (req as any).admin;
   const { unitId, error: scopeError } = resolveUnitForWrite(admin, req.query.unit);
   if (!unitId) {
@@ -255,7 +301,9 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
   }
   const canonical = await canonicalizePersonnel(unitId, [parsed.data]);
   if ("error" in canonical) {
-    res.status(403).json({ error: canonical.error });
+    // Fix 42 (RSTR-7): a fresh-read failure during canonicalization is a
+    // 503, not a 403 — canonical.status carries the distinction.
+    res.status(canonical.status).json({ error: canonical.error });
     return;
   }
   const newPost = ensurePostIds(canonical.posts)[0];
@@ -284,6 +332,12 @@ router.delete("/:date", requireAuth, rosterWriteLimiter, async (req: Request, re
   const date = str(req.params.date);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
+    return;
+  }
+  // Fix 42 (RSTR-6): the shape above admits "2026-11-31" — reject dates
+  // that are not real calendar days before any write.
+  if (!isValidCalendarDate(date)) {
+    res.status(400).json({ error: "Invalid date (not a real calendar date)" });
     return;
   }
   const admin = (req as any).admin;
@@ -325,6 +379,13 @@ router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (re
     res.status(400).json({ error: "Invalid date (expected YYYY-MM-DD)" });
     return;
   }
+  // Fix 42 (RSTR-6): the shape above admits "2026-11-31" — reject dates
+  // that are not real calendar days, on both the source and the target,
+  // before any read or write.
+  if (!isValidCalendarDate(date) || !isValidCalendarDate(target)) {
+    res.status(400).json({ error: "Invalid date (not a real calendar date)" });
+    return;
+  }
   const admin = (req as any).admin;
   const { unitId, error: scopeError } = resolveUnitForWrite(admin, req.query.unit);
   if (!unitId) {
@@ -347,7 +408,9 @@ router.post("/:date/copy-to/:target", requireAuth, rosterWriteLimiter, async (re
     }
     const canonical = await canonicalizePersonnel(unitId, source.posts.map((p: any) => ({ ...p })));
     if ("error" in canonical) {
-      res.status(403).json({ error: canonical.error });
+      // Fix 42 (RSTR-7): a fresh-read failure during canonicalization is a
+      // 503, not a 403 — canonical.status carries the distinction.
+      res.status(canonical.status).json({ error: canonical.error });
       return;
     }
     const posts = ensurePostIds(canonical.posts);

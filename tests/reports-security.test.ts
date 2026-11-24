@@ -207,6 +207,23 @@ describe("POST /api/reports — badge trust hardening", () => {
     expect(res.body.consensusCount).toBe(10);
   });
 
+  it("Fix 42 (RPT-2): a trusted no-image report is verified but carries NO fabricated aiVerification", async () => {
+    // The old code fabricated aiVerification { isVerified: true, confidence:
+    // 100, ... } for trusted reports with no image, and the client renders
+    // that as a green "verified by AI" badge. The badge grant (verified +
+    // consensus 10) is real and stays; the AI verdict must stay absent
+    // until the image branch sets it from a real model response.
+    mockDocs.set("badgeCodes/708", { isActive: true, type: "official" });
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...baseReport(), reporterType: "official", reporterBadgeCode: "708" });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("verified");
+    expect(res.body.consensusCount).toBe(10);
+    expect(res.body.aiVerification).toBeUndefined();
+  });
+
   it("accepts an active badge with a future expiry and wilaya match", async () => {
     mockDocs.set("badgeCodes/555", {
       isActive: true,

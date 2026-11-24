@@ -48,22 +48,17 @@ const recentReports: { lat: number; lng: number; timestamp: number }[] = [];
 // (offline draft sync, double tap, tab reopened after a crash) must return the
 // already-stored report instead of a duplicate or a false 409.
 const IDEMPOTENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
-const recentClientIds: { id: string; timestamp: number; fingerprint?: string }[] = [];
 
-function pruneClientIds(): void {
-  const cutoff = Date.now() - IDEMPOTENCY_WINDOW_MS;
-  for (let i = recentClientIds.length - 1; i >= 0; i--) {
-    if (recentClientIds[i].timestamp < cutoff) recentClientIds.splice(i, 1);
-  }
-  if (recentClientIds.length > 2000) recentClientIds.splice(0, recentClientIds.length - 2000);
-}
+// Fix 42 (RPT-3): the recentClientIds in-memory map is deleted — it was
+// maintained (pushed, pruned, released) but never read anywhere; durable
+// idempotency lives in server/db.ts (lookupReportIdempotency /
+// saveReportWithIdempotency). The L1 removal of findReportByClientId
+// (below) already removed the only reader.
 
 // L1 fix: findReportByClientId removed — it was never called, and its
 // in-memory branch only searched citizenReports (ignoring the stored
 // fingerprint) which made it a trap for future maintainers. Idempotency
 // dedup flows through lookupReportIdempotency/saveReportWithIdempotency.
-// pruneClientIds() is still invoked on the submission path to keep the
-// in-memory client-id map bounded.
 
 function isDuplicateReport(lat: number, lng: number): boolean {
   const now = Date.now();
@@ -81,11 +76,10 @@ function isDuplicateReport(lat: number, lng: number): boolean {
 }
 
 function releaseReservations(clientGeneratedId: string | undefined, lat: number, lng: number): void {
-  if (clientGeneratedId) {
-    for (let i = recentClientIds.length - 1; i >= 0; i--) {
-      if (recentClientIds[i].id === clientGeneratedId) recentClientIds.splice(i, 1);
-    }
-  }
+  // Fix 42 (RPT-3): the recentClientIds release loop is gone with the map
+  // (never read anywhere; durable idempotency lives in server/db.ts).
+  // clientGeneratedId is kept in the signature — the call sites still pass it.
+  void clientGeneratedId;
   for (let i = recentReports.length - 1; i >= 0; i--) {
     const entry = recentReports[i];
     if (entry.lat === lat && entry.lng === lng) {
@@ -385,11 +379,7 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
   // Reserve the location in the duplicate window BEFORE any await below:
   // badge lookups and AI calls are async, and two concurrent identical
   // submissions must not both pass the check before either reserves.
-  pruneClientIds();
   recentReports.push({ lat, lng, timestamp: Date.now() });
-  if (clientGeneratedId) {
-    recentClientIds.push({ id: clientGeneratedId, timestamp: Date.now(), fingerprint: requestFingerprint });
-  }
 
   let isTrusted = false;
   let transactionalBadgeCode: string | undefined;
@@ -485,32 +475,18 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
         if (!isTrusted) newReport.status = "pending";
       }
     }
-  } else if (isTrusted) {
-    newReport.aiVerification = {
-      isVerified: true,
-      confidence: 100,
-      detectedSigns: reporterType === "official" ? ["هيئة رسمية معتمدة", "سجل الدفاع المدني"] : ["متطوع ميداني مصدق"],
-      aiComments: reporterType === "official"
-        ? "بلاغ رسمي موثق ومصدق مباشرة من الحماية المدنية الجزائرية."
-        : "تم التحقق والمطابقة ميدانياً من طرف متطوع معتمد في شبكة الإغاثة.",
-      suggestedSeverity: severity.toUpperCase(),
-    };
   }
+  // Fix 42 (RPT-2): a trusted report with no image must NOT fabricate an
+  // aiVerification { isVerified: true, confidence: 100, ... } — the green
+  // "verified by AI" badge the client renders is for a real AI verdict only.
+  // The verified status + consensusCount 10 below are the real badge grant
+  // and stay; aiVerification stays absent until the image branch sets it.
 
   const trustedReport = transactionalBadgeCode
     ? {
         ...newReport,
         status: "verified",
         consensusCount: 10,
-        aiVerification: newReport.aiVerification ?? {
-          isVerified: true,
-          confidence: 100,
-          detectedSigns: reporterType === "official" ? ["هيئة رسمية معتمدة", "سجل الدفاع المدني"] : ["متطوع ميداني مصدق"],
-          aiComments: reporterType === "official"
-            ? "بلاغ رسمي موثق ومصدق مباشرة من الحماية المدنية الجزائرية."
-            : "تم التحقق والمطابقة ميدانياً من طرف متطوع معتمد في شبكة الإغاثة.",
-          suggestedSeverity: severity.toUpperCase(),
-        },
       }
     : undefined;
   const saved = await saveReportWithIdempotency(
