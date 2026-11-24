@@ -246,15 +246,21 @@ object Parsers {
         val routes = JSONObject(body).getJSONArray("routes")
         val out = ArrayList<Triple<List<Pair<Double, Double>>, Double, Double>>(routes.length().coerceAtMost(3))
         for (i in 0 until routes.length().coerceAtMost(3)) {
-            val route = routes.getJSONObject(i)
-            val coords = route.getJSONObject("geometry").getJSONArray("coordinates")
-            val pts = ArrayList<Pair<Double, Double>>(coords.length())
-            for (j in 0 until coords.length()) {
-                val c = coords.getJSONArray(j)
-                pts.add(c.getDouble(1) to c.getDouble(0))
-            }
-            if (pts.isNotEmpty()) {
-                out.add(Triple(pts, route.getDouble("distance"), route.getDouble("duration")))
+            // Fix 50 (NMODEL-2): per-item isolation (house rule :12) — a
+            // malformed alternative skips itself instead of discarding
+            // every route parsed so far. Same bare-runCatching shape as
+            // parseReports/parseHotspots/parseSafezones/parseWilayas.
+            runCatching {
+                val route = routes.getJSONObject(i)
+                val coords = route.getJSONObject("geometry").getJSONArray("coordinates")
+                val pts = ArrayList<Pair<Double, Double>>(coords.length())
+                for (j in 0 until coords.length()) {
+                    val c = coords.getJSONArray(j)
+                    pts.add(c.getDouble(1) to c.getDouble(0))
+                }
+                if (pts.isNotEmpty()) {
+                    out.add(Triple(pts, route.getDouble("distance"), route.getDouble("duration")))
+                }
             }
         }
         if (out.isEmpty()) null else out

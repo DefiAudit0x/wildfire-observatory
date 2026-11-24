@@ -159,7 +159,7 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
     /**
      * Phase 1: atomically take up to [max] DUE entries off the head
      * (nextAttemptMs <= nowMs, FIFO order). The caller owns them until
-     * commit(); they are invisible to enqueue-eviction and cannot be
+     * commit(); they are never eviction candidates and cannot be
      * reserved twice. Returns [] when nothing is due — an empty queue and
      * a fully-backed-off queue look identical to the caller: nothing to send.
      */
@@ -221,10 +221,18 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
      * shielded. If everything left was never attempted, drop the oldest
      * anyway — capacity bounds memory, the newest intel must always fit.
      * In-flight entries are not eviction candidates: they are owned by the
-     * sender and bounded by the reserve batch size, not by capacity.
+     * sender and bounded by the reserve batch size — but they DO count
+     * toward the admission total (Fix 50, NOFF-1), so a full queue cannot
+     * admit past capacity while a drain round is in flight.
      */
     private fun evictForAdmission(nowMs: Long) {
-        if (items.size < capacity) return
+        // Fix 50 (NOFF-1): count in-flight entries in the admission gate —
+        // size() and restoreAll() already count both, so the gate is the
+        // one inconsistent site. The empty-deque guard is load-bearing: a
+        // queue whose entries are ALL in flight would otherwise compute
+        // victim index 0 on an empty deque and throw on removeAt(0).
+        if (items.isEmpty()) return
+        if (items.size + inFlight.size < capacity) return
         val victim = items.withIndex()
             .filter { !it.value.neverAttempted }
             .minByOrNull { it.value.lastAttemptMs }

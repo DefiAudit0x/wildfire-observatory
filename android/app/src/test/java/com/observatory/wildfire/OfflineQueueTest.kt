@@ -189,6 +189,93 @@ class OfflineQueueTest {
     }
 
     // ------------------------
+    // Fix 50 (NOFF-1): the admission gate counts in-flight entries
+    // ------------------------
+
+    @Test
+    fun `admission counts in-flight entries (finding)`() {
+        val q = OfflineQueue<String>(capacity = 3)
+        q.enqueue("k0", "p0")
+        q.enqueue("k1", "p1")
+        q.enqueue("k2", "p2")
+        q.reserveDue(1, nowMs = 0) // k0 in flight: 2 waiting + 1 in flight
+        q.enqueue("k3", "p3") // total is 3 — must evict a waiting entry
+        assertEquals(3, q.size())
+        // Victim is k1 (oldest waiting; both waiting entries are
+        // never-attempted, so the ?: 0 fallback takes the head).
+        assertEquals(listOf("k0", "k2", "k3"), q.snapshot().map { it.key })
+    }
+
+    @Test
+    fun `failed commit cannot push waiting past capacity across drain cycles (finding)`() {
+        val q = OfflineQueue<String>(capacity = 3)
+        q.enqueue("k0", "p0")
+        q.enqueue("k1", "p1")
+        q.enqueue("k2", "p2")
+        // Cycle 1: reserve k0, admit k3 (evicts k1), commit fails at 0
+        // (k0 requeues, due again at +30s).
+        q.reserveDue(1, nowMs = 0)
+        q.enqueue("k3", "p3")
+        q.commit(nowMs = 0, deliveredKeys = emptySet())
+        assertEquals(3, q.size())
+        // Cycle 2: reserve k0 (due at 30_000), admit k4 (evicts k2),
+        // commit fails at 30_000 (k0 due again at +60s = 90_000).
+        q.reserveDue(1, nowMs = 30_000)
+        q.enqueue("k4", "p4")
+        q.commit(nowMs = 30_000, deliveredKeys = emptySet())
+        assertEquals(3, q.size())
+        // Cycle 3: reserve k0 (due at 90_000), admit k5 (evicts k3),
+        // commit fails at 90_000.
+        q.reserveDue(1, nowMs = 90_000)
+        q.enqueue("k5", "p5")
+        q.commit(nowMs = 90_000, deliveredKeys = emptySet())
+        assertEquals(3, q.size())
+        assertEquals(listOf("k0", "k4", "k5"), q.snapshot().map { it.key })
+    }
+
+    @Test
+    fun `admission below capacity with in-flight entries does not evict (control)`() {
+        val q = OfflineQueue<String>(capacity = 3)
+        q.enqueue("k0", "p0")
+        q.enqueue("k1", "p1")
+        q.reserveDue(1, nowMs = 0) // k0 in flight: 1 waiting + 1 in flight
+        q.enqueue("k2", "p2") // total 2 < 3 — no eviction
+        assertEquals(3, q.size())
+        assertEquals(listOf("k0", "k1", "k2"), q.snapshot().map { it.key })
+    }
+
+    @Test
+    fun `in-flight entries are never eviction candidates (control)`() {
+        val q = OfflineQueue<String>(capacity = 3)
+        q.enqueue("a0", "pa0")
+        // Mark a0 attempted (next attempt due at 31_000).
+        q.reserveDue(1, nowMs = 1_000)
+        q.commit(nowMs = 1_000, deliveredKeys = emptySet())
+        q.enqueue("f1", "pf1")
+        q.enqueue("f2", "pf2")
+        q.reserveDue(1, nowMs = 31_000) // a0 in flight again
+        q.enqueue("f3", "pf3") // total is 3 — must evict a WAITING entry
+        assertEquals(3, q.size())
+        // Victim is f1 (waiting, never-attempted fallback); a0 survives
+        // in flight — it was never a candidate.
+        assertEquals(listOf("a0", "f2", "f3"), q.snapshot().map { it.key })
+    }
+
+    @Test
+    fun `everything in flight admits without a crash (control)`() {
+        val q = OfflineQueue<String>(capacity = 2)
+        q.enqueue("k0", "p0")
+        q.enqueue("k1", "p1")
+        q.reserveDue(2, nowMs = 0) // both in flight, nothing waiting
+        // Pins the empty-deque guard: with nothing waiting there is
+        // nothing to evict, so admission must succeed (total 3 = 1 waiting
+        // + 2 in flight — eviction is impossible here, and no current
+        // caller can reach this state; the drain reserves at most 3 of 60).
+        assertTrue(q.enqueue("k2", "p2"))
+        assertEquals(3, q.size())
+    }
+
+    // ------------------------
     // F1: restoreAll — cold-start survival contract
     // ------------------------
 
