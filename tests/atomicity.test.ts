@@ -133,7 +133,7 @@ const {
   createVolunteerRegistrationAtomically,
   joinTeamAtomically,
 } = await import("../server/atomic.js");
-const { docMergeSet, docSet, docGet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic, updateUserAtomic } = await import("../server/fs.js");
+const { docMergeSet, docSet, docGet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic, updateUserAtomic, removeTeamMemberAtomically } = await import("../server/fs.js");
 const { clearTeamMissionAtomically, setPrincipalBlocked } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
@@ -717,6 +717,34 @@ describe("B2 — docDeleteFields: GPS purge on removal (owner decision 4)", () =
       joinedAt: 1,
       removedAt: 2,
       active: false,
+    });
+  });
+
+  it("Fix 45b: removal purges the durable fix timestamp too (CodeRabbit Minor 4682251636)", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("teamMembers/tm-purge45b", {
+      memberId: "tm-purge45b",
+      teamId: "team-p",
+      principal: "p",
+      joinedAt: 1,
+      active: true,
+      tokenGen: 0,
+      lastKnownLat: 36.7,
+      lastKnownLng: 5.0,
+      lastSeenAt: 3,
+      lastFixTimeMs: 2,
+    });
+    const r = await removeTeamMemberAtomically("tm-purge45b");
+    expect(r.status).toBe("removed");
+    expect(state.docs.get("teamMembers/tm-purge45b")).toEqual({
+      memberId: "tm-purge45b",
+      teamId: "team-p",
+      principal: "p",
+      joinedAt: 1,
+      active: false,
+      tokenGen: 1,
+      removedAt: expect.any(Number),
     });
   });
 });

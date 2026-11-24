@@ -611,6 +611,27 @@ describe("GET /api/teams — command-center roster", () => {
     expect(member.fixTimeMs).toBe(sent);
   });
 
+  it("Fix 45b: a live heartbeat without fixTimeMs reports null, never the older durable snapshot's age (CodeRabbit Minor 4682251652)", async () => {
+    heartbeatableMocks("tm-fix45b");
+    const stale = Date.now() - 120_000;
+    const hb = await supertest(createApp())
+      .post("/api/teams/heartbeat")
+      .set(memberAuth("tm-fix45b"))
+      .set(nextIp())
+      .send({ lat: 36.75, lng: 5.07 });
+    expect(hb.status).toBe(200);
+    fsMock.collectionGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams")
+        return [{ teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true }];
+      if (collection === "teamMembers")
+        return [{ memberId: "tm-fix45b", teamId: "team-a1", name: "فريق الجبل", active: true, joinedAt: 111, lastFixTimeMs: stale }];
+      return [];
+    });
+    const res = await supertest(createApp()).get("/api/teams").set(adminAuth()).set(nextIp());
+    expect(res.status).toBe(200);
+    expect(res.body[0].members[0].fixTimeMs).toBeNull();
+  });
+
   it("requires admin", async () => {
     expect((await supertest(createApp()).get("/api/teams").set(nextIp())).status).toBe(401);
   });
