@@ -296,6 +296,9 @@ router.get("/", requireAdmin, async (req: Request, res: Response) => {
           heading: position?.heading ?? null,
           speed: position?.speed ?? null,
           batteryPct: position?.batteryPct ?? null,
+          // Fix 43 (TEAM-6): fix age was accepted and stored but dropped
+          // from this response — never fabricated, null for legacy clients.
+          fixTimeMs: position?.fixTimeMs ?? null,
           trail: position?.trail ?? [],
         };
       })

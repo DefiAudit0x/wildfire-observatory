@@ -146,6 +146,9 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
     // day passed). Roster writes always validate unit membership, so an agent
     // can only ever appear in their own unit's rosterDays — sweeping that unit
     // is a complete, bounded cleanup.
+    // Fix 43 (USR-2): the sweep result is surfaced in the response — the
+    // log used to claim completion even when every write failed.
+    let rosterCleanup = { days: 0, removed: 0, failed: 0 };
     if (existing.unitId) {
       try {
         const rosterCollection = `units/${toUnitId(existing.unitId)}/rosterDays`;
@@ -155,20 +158,23 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
             Array.isArray(dayDoc?.posts) &&
             dayDoc.posts.some((p: any) => Array.isArray(p?.personnel) && p.personnel.some((x: any) => x?.agentId === agentId))
           );
-          await Promise.all(affected.map((dayDoc: any) => {
+          const results = await Promise.all(affected.map((dayDoc: any) => {
             const posts = dayDoc.posts.map((p: any) => ({
               ...p,
               personnel: Array.isArray(p.personnel) ? p.personnel.filter((x: any) => x?.agentId !== agentId) : p.personnel,
             }));
             return docSet(rosterCollection, dayDoc.id, { ...dayDoc, posts, updatedAt: new Date().toISOString() });
           }));
-          if (affected.length > 0) logger.info({ agentId, unitId: existing.unitId, days: affected.length }, "Removed deleted agent from planned rosters");
+          const removed = results.filter(Boolean).length;
+          rosterCleanup = { days: affected.length, removed, failed: affected.length - removed };
+          if (rosterCleanup.failed > 0) logger.warn({ agentId, unitId: existing.unitId, days: affected.length, failed: rosterCleanup.failed }, "Roster cleanup after user deletion partially failed — some rosters keep the historical copy");
+          else if (affected.length > 0) logger.info({ agentId, unitId: existing.unitId, days: affected.length }, "Removed deleted agent from planned rosters");
         }
       } catch (sweepErr) {
         logger.warn({ err: sweepErr, agentId }, "Roster cleanup after user deletion failed — rosters keep the historical copy");
       }
     }
-    res.json({ success: true });
+    res.json({ success: true, rosterCleanup });
   } catch (err) { logger.error({ err }, "Failed to delete user"); res.status(500).json({ error: "Internal server error" }); }
 });
 

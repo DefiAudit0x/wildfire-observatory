@@ -229,8 +229,10 @@ function anonymizeSos(sos: any) {
   const { name, phone, audioUrl, dispatchedTeams, deviceId, textMessage, clientGeneratedId, ...rest } = sos;
   return {
     ...rest,
-    lat: Math.round(sos.lat * 100) / 100,
-    lng: Math.round(sos.lng * 100) / 100,
+    // Fix 43 (SOS-5): a no-fix SOS persists null coordinates — never
+    // fabricate 0,0 for it on the public feed.
+    lat: sos.lat == null ? null : Math.round(sos.lat * 100) / 100,
+    lng: sos.lng == null ? null : Math.round(sos.lng * 100) / 100,
   };
 }
 
@@ -599,6 +601,16 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
   }
   if (outcome === "team_busy") {
     res.status(409).json({ code: "TEAM_ALREADY_DISPATCHED", error: "This team is already dispatched to an active SOS" });
+    return;
+  }
+  if (outcome === "already_dispatched") {
+    // Fix 43 (SOS-6): the durable log already holds this dispatch — do not
+    // append a duplicate to the memory fallback, and return the stored
+    // dispatch (falling back to the freshly built item when the process
+    // restarted and memorySos lacks the SOS).
+    const sos = memorySos.find((s: any) => s.id === id);
+    const existing = sos?.dispatchedTeams?.find((t: any) => t.teamId === missionTeamId);
+    res.json({ success: true, dispatch: existing ?? dispatchItem, alreadyDispatched: true });
     return;
   }
   if (outcome !== "ok") {
