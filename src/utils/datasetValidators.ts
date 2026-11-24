@@ -139,12 +139,14 @@ export const isValidSatelliteItem = (v: unknown): v is SatelliteHotspot =>
   isSatelliteType(v.satellite) &&
   isNonEmptyString(v.wilaya);
 
-/** SOS contract: status is required — a stateless SOS can never count as active. */
+/** SOS contract: status is required — a stateless SOS can never count as active.
+ * Fix 43 (SOS-5): null coordinates are valid exactly for a no-fix SOS
+ * (hasLocation === false); a located SOS with null coords is still malformed. */
 export const isValidSosItem = (v: unknown): v is TrappedSOS =>
   isRecord(v) &&
   isNonEmptyString(v.id) &&
-  isLatitude(v.lat) &&
-  isLongitude(v.lng) &&
+  ((v.lat === null && v.lng === null && v.hasLocation === false) ||
+    (isLatitude(v.lat) && isLongitude(v.lng))) &&
   isSosStatus(v.status) &&
   isIsoTimestamp(v.timestamp);
 
