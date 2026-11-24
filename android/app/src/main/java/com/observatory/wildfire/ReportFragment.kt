@@ -284,7 +284,11 @@ class ReportFragment : Fragment() {
         // policy violation. It rides the server's /api/geo/reverse proxy
         // (which caches + rate-limits on top of this discipline).
         if (geoLookupInFlight) return
-        if (!geoFailed && System.currentTimeMillis() < geoBackoffUntilMs) return
+        // Fix 51 (NREPORT-2): the guard keys on the deadline alone. The
+        // old `!geoFailed &&` conjunction could never fire after a failure
+        // (failure sets geoFailed=true), so every 5 s location publish
+        // re-fired a lookup for the whole 60 s outage.
+        if (System.currentTimeMillis() < geoBackoffUntilMs) return
         geoLookupInFlight = true
         if (!autofilledName) setGeoStatus(getString(R.string.geo_status_resolving))
         viewLifecycleOwner.lifecycleScope.launch {
@@ -312,6 +316,12 @@ class ReportFragment : Fragment() {
                     return@launch
                 }
                 geoFailed = false
+                // Fix 51 (NREPORT-2, second half): a stale deadline from
+                // an earlier failure must not block a later legitimate
+                // lookup — without this reset, a failure→success sequence
+                // with partial autofill silently delayed the wilaya lookup
+                // for up to 60 s.
+                geoBackoffUntilMs = 0L
                 val (display, stateName) = result
                 if (!autofilledName) {
                     fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
