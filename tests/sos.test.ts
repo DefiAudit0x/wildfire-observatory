@@ -276,6 +276,61 @@ describe("SOS durable lifecycle mutations", () => {
     expect(record.body.dispatchedTeams).toHaveLength(1);
   });
 
+  it("Fix 43b: a repeat dispatch after clear + re-dispatch returns the NEWEST stored dispatch, not the superseded first one", async () => {
+    const app = createApp();
+    const created = await postSos(app).send(validBody());
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true };
+    fsMock.docGet.mockResolvedValueOnce(team).mockResolvedValueOnce(team).mockResolvedValueOnce(team);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("ok").mockResolvedValueOnce("ok").mockResolvedValueOnce("already_dispatched");
+
+    const first = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "first" });
+    expect(first.status).toBe(200);
+    const second = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "second" });
+    expect(second.status).toBe(200);
+    // The memory fallback now holds two entries for the same team (clear +
+    // re-dispatch appends a second one); the repeat dispatch must return
+    // the newest, not the first.
+    const third = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "third" });
+    expect(third.status).toBe(200);
+    expect(third.body.alreadyDispatched).toBe(true);
+    expect(third.body.dispatch.notes).toBe("second");
+    expect(third.body.dispatch.dispatchedAt).toBe(second.body.dispatch.dispatchedAt);
+  });
+
+  it("Fix 43b: a repeat dispatch after a process restart returns the durable stored dispatch, not a freshly built one", async () => {
+    const app = createApp();
+    // No POST /api/sos here on purpose: the process restarted, so
+    // memorySos lacks this SOS entirely. The durable doc is the only
+    // source of the original dispatch.
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true };
+    const stored = {
+      id: "sos-restart-1",
+      dispatchedTeams: [
+        { teamId: "team-alpha", type: "protection_civile", teamNameAr: "فريق ألفا", teamNameFr: "Team Alpha", dispatchedAt: "2026-11-24T10:00:00.000Z", status: "en_route", notes: "original-notes" },
+      ],
+    };
+    fsMock.docGet.mockResolvedValueOnce(team).mockResolvedValueOnce(stored);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("already_dispatched");
+
+    const repeat = await supertest(app)
+      .post("/api/sos/sos-restart-1/dispatch")
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "retry-notes" });
+    expect(repeat.status).toBe(200);
+    expect(repeat.body.alreadyDispatched).toBe(true);
+    expect(repeat.body.dispatch.notes).toBe("original-notes");
+    expect(repeat.body.dispatch.dispatchedAt).toBe("2026-11-24T10:00:00.000Z");
+  });
+
   it("does not claim dispatch success when durable update fails", async () => {
     const app = createApp();
     const created = await postSos(app).send(validBody());
