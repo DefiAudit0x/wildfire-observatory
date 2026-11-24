@@ -11,11 +11,16 @@ import type { UserLocationData } from "../../src/components/command/StatCards";
 // SOS names the tests assert on.
 // Fix 43 (SOS-5): the mocked map records the focus prop it receives, so
 // the focus-guard tests can prove a no-fix SOS never sets a focus target.
+// Fix 43b: it also records the sosCalls prop, so the dispatch-upsert test
+// can prove a re-dispatch response replaces the local entry instead of
+// appending a duplicate.
 const recordedFocus = vi.hoisted(() => [] as unknown[]);
+const recordedSosCalls = vi.hoisted(() => [] as unknown[]);
 
 vi.mock("../../src/components/command/CommandMap", () => ({
-  default: (props: { focus?: unknown }) => {
+  default: (props: { focus?: unknown; sosCalls?: unknown }) => {
     recordedFocus.push(props.focus);
+    recordedSosCalls.push(props.sosCalls);
     return null;
   },
 }));
@@ -465,5 +470,77 @@ describe("CentralCommand SOS focus (Fix 43 — SOS-5)", () => {
     await waitFor(() =>
       expect(recordedFocus.some((f: any) => f && f.lat === 36.75 && f.lng === 3.06)).toBe(true)
     );
+  });
+});
+
+describe("CentralCommand dispatch upsert (Fix 43b)", () => {
+  let onRefresh: Mock<() => void>;
+
+  beforeEach(() => {
+    onRefresh = vi.fn(() => {});
+    recordedFocus.length = 0;
+    recordedSosCalls.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a re-dispatch response replaces the local entry instead of appending a duplicate", async () => {
+    const dispatched = {
+      teamId: "team-alpha",
+      type: "protection_civile" as const,
+      teamNameAr: "فريق ألفا",
+      teamNameFr: "Team Alpha",
+      dispatchedAt: "2026-11-24T10:00:00.000Z",
+      status: "en_route" as const,
+      notes: "",
+    };
+    const already: TrappedSOS = {
+      ...sos("sos-upsert-1", "مناداة موجهة"),
+      dispatchedTeams: [dispatched],
+    };
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true, baseLat: null, baseLng: null, blockedPrincipals: [], members: [], activeMission: null };
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
+      if (String(url).includes("/api/teams")) return jsonResponse(200, [team]);
+      if (String(url).includes("/api/sos/full")) return jsonResponse(200, [already]);
+      if (String(url).includes("/api/locations")) return jsonResponse(200, []);
+      if (String(url).includes("/dispatch")) {
+        return jsonResponse(200, {
+          success: true,
+          dispatch: { ...dispatched, dispatchedAt: "2026-11-24T11:00:00.000Z", notes: "second" },
+          alreadyDispatched: true,
+        });
+      }
+      return jsonResponse(404, {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة موجهة")).toBeTruthy());
+    // Open the dispatch form and re-dispatch the same team. (Two selects
+    // exist on the page — RegisteredTeams' always-rendered team-type
+    // select plus this SOS form's team picker — so pick the one that
+    // offers team-alpha.)
+    fireEvent.click(screen.getByRole("button", { name: "توجيه نجدة للمحاصر" }));
+    const dispatchSelect = screen
+      .getAllByRole("combobox")
+      .find((s) => s.querySelector('option[value="team-alpha"]'));
+    expect(dispatchSelect).toBeTruthy();
+    fireEvent.change(dispatchSelect!, { target: { value: "team-alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "إرسال الفرقة" }));
+    // The local entry must be REPLACED by the response dispatch (notes
+    // "second") — on old code the response is appended, so the first entry
+    // keeps notes "" and the list grows to 2.
+    await waitFor(() => {
+      const last = recordedSosCalls[recordedSosCalls.length - 1] as TrappedSOS[];
+      const target = (last || []).find((s) => s.id === "sos-upsert-1");
+      expect(target?.dispatchedTeams?.[0]?.notes).toBe("second");
+    });
+    const last = recordedSosCalls[recordedSosCalls.length - 1] as TrappedSOS[];
+    const target = (last || []).find((s) => s.id === "sos-upsert-1");
+    expect(target?.dispatchedTeams).toHaveLength(1);
   });
 });
