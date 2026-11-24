@@ -279,12 +279,31 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const applyLocalDispatch = (sosId: string, dispatchItem: any) => {
+    // Fix 43c (CodeRabbit 6040115063): reconcile by stable identity
+    // (teamId + dispatchedAt), not by teamId alone. teamId does not
+    // identify a dispatch: after clear + re-dispatch the server holds TWO
+    // entries for the same team, and the 43b teamId-only replace collapsed
+    // them — a fresh dispatch lost the earlier entry, and a replay of the
+    // second overwrote the first too. A fresh dispatch (a dispatchedAt no
+    // local entry has) appends; a replay (the same dispatchedAt) replaces
+    // only its own entry. An item without teamId or dispatchedAt (the raw
+    // request-body fallback) still appends.
     setFullSos((prev) =>
-      prev.map((s) =>
-        s.id === sosId
-          ? { ...s, dispatchedTeams: [...(s.dispatchedTeams || []), dispatchItem] }
-          : s
-      )
+      prev.map((s) => {
+        if (s.id !== sosId) return s;
+        const teams = s.dispatchedTeams || [];
+        const teamId = dispatchItem?.teamId as string | undefined;
+        const dispatchedAt = dispatchItem?.dispatchedAt as string | undefined;
+        if (teamId && dispatchedAt) {
+          const idx = teams.findIndex((t) => t.teamId === teamId && t.dispatchedAt === dispatchedAt);
+          if (idx >= 0) {
+            const next = [...teams];
+            next[idx] = dispatchItem;
+            return { ...s, dispatchedTeams: next };
+          }
+        }
+        return { ...s, dispatchedTeams: [...teams, dispatchItem] };
+      })
     );
   };
 
@@ -387,6 +406,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const handleFocusSos = (sos: TrappedSOS) => {
+    // Fix 43 (SOS-5): a no-fix SOS has no coordinates to focus on.
+    if (sos.lat == null || sos.lng == null) return;
     setFocus({
       lat: sos.lat,
       lng: sos.lng,

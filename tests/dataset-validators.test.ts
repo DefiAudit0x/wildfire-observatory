@@ -146,6 +146,13 @@ describe("validateDataset", () => {
     );
   });
 
+  it("Fix 43 (SOS-5): accepts a no-fix SOS with null coordinates, and only then", () => {
+    expect(validateDataset("sos", [{ ...validSos, lat: null, lng: null, hasLocation: false }])).toHaveLength(1);
+    // Null coordinates on a located SOS are still malformed.
+    expect(() => validateDataset("sos", [{ ...validSos, lat: null, lng: null }])).toThrow(DatasetValidationError);
+    expect(() => validateDataset("sos", [{ ...validSos, lat: null, lng: 7.6, hasLocation: false }])).toThrow(DatasetValidationError);
+  });
+
   it("rejects an SOS without a status (it could never be counted as active)", () => {
     const { status: _status, ...stateless } = validSos;
     expect(() => validateDataset("sos", [stateless])).toThrow(DatasetValidationError);

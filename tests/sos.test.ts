@@ -248,6 +248,89 @@ describe("SOS durable lifecycle mutations", () => {
     expect(resolve.body.code).toBe("SOS_STORAGE_UNAVAILABLE");
   });
 
+  it("Fix 43 (SOS-6): a re-dispatch returns the original dispatch with alreadyDispatched — no duplicate in the fallback record", async () => {
+    const app = createApp();
+    const created = await postSos(app).send(validBody());
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true };
+    fsMock.docGet.mockResolvedValueOnce(team).mockResolvedValueOnce(team);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("ok").mockResolvedValueOnce("already_dispatched");
+
+    const first = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "" });
+    expect(first.status).toBe(200);
+    expect(first.body.alreadyDispatched).toBeUndefined();
+
+    const second = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "" });
+    expect(second.status).toBe(200);
+    expect(second.body.alreadyDispatched).toBe(true);
+    expect(second.body.dispatch.teamId).toBe("team-alpha");
+    expect(second.body.dispatch.dispatchedAt).toBe(first.body.dispatch.dispatchedAt);
+
+    const record = await supertest(app).get(`/api/sos/${created.body.id}`).set(adminAuth());
+    expect(record.status).toBe(200);
+    expect(record.body.dispatchedTeams).toHaveLength(1);
+  });
+
+  it("Fix 43b: a repeat dispatch after clear + re-dispatch returns the NEWEST stored dispatch, not the superseded first one", async () => {
+    const app = createApp();
+    const created = await postSos(app).send(validBody());
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true };
+    fsMock.docGet.mockResolvedValueOnce(team).mockResolvedValueOnce(team).mockResolvedValueOnce(team);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("ok").mockResolvedValueOnce("ok").mockResolvedValueOnce("already_dispatched");
+
+    const first = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "first" });
+    expect(first.status).toBe(200);
+    const second = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "second" });
+    expect(second.status).toBe(200);
+    // The memory fallback now holds two entries for the same team (clear +
+    // re-dispatch appends a second one); the repeat dispatch must return
+    // the newest, not the first.
+    const third = await supertest(app)
+      .post(`/api/sos/${created.body.id}/dispatch`)
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "third" });
+    expect(third.status).toBe(200);
+    expect(third.body.alreadyDispatched).toBe(true);
+    expect(third.body.dispatch.notes).toBe("second");
+    expect(third.body.dispatch.dispatchedAt).toBe(second.body.dispatch.dispatchedAt);
+  });
+
+  it("Fix 43b: a repeat dispatch after a process restart returns the durable stored dispatch, not a freshly built one", async () => {
+    const app = createApp();
+    // No POST /api/sos here on purpose: the process restarted, so
+    // memorySos lacks this SOS entirely. The durable doc is the only
+    // source of the original dispatch.
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true };
+    const stored = {
+      id: "sos-restart-1",
+      dispatchedTeams: [
+        { teamId: "team-alpha", type: "protection_civile", teamNameAr: "فريق ألفا", teamNameFr: "Team Alpha", dispatchedAt: "2026-11-24T10:00:00.000Z", status: "en_route", notes: "original-notes" },
+      ],
+    };
+    fsMock.docGet.mockResolvedValueOnce(team).mockResolvedValueOnce(stored);
+    fsMock.appendSosDispatch.mockResolvedValueOnce("already_dispatched");
+
+    const repeat = await supertest(app)
+      .post("/api/sos/sos-restart-1/dispatch")
+      .set(adminAuth())
+      .send({ teamId: "team-alpha", notes: "retry-notes" });
+    expect(repeat.status).toBe(200);
+    expect(repeat.body.alreadyDispatched).toBe(true);
+    expect(repeat.body.dispatch.notes).toBe("original-notes");
+    expect(repeat.body.dispatch.dispatchedAt).toBe("2026-11-24T10:00:00.000Z");
+  });
+
   it("does not claim dispatch success when durable update fails", async () => {
     const app = createApp();
     const created = await postSos(app).send(validBody());
@@ -548,6 +631,31 @@ describe("v2.15.0 — honest no-fix SOS + NaN hardening", () => {
     expect(res.body.priority).toBe("unknown");
     expect(res.body.nearestFireDistanceKm).toBeNull();
     expect(res.body.nearbyFireCorroborated).toBe(false);
+  });
+
+  it("Fix 43 (SOS-5): the public feed preserves null coordinates for a no-fix SOS — no fabricated 0,0", async () => {
+    const app = createApp();
+    const created = await postSos(app).send({
+      deviceId: uniqueDevice(),
+      lat: null,
+      lng: null,
+      hasLocation: false,
+      textMessage: "لا يوجد GPS — أرسل بدون موقع",
+    });
+    expect(created.status).toBe(200);
+    const feed = await supertest(app).get("/api/sos");
+    expect(feed.status).toBe(200);
+    const item = feed.body.find((s: any) => s.id === created.body.id);
+    expect(item).toBeDefined();
+    expect(item.lat).toBeNull();
+    expect(item.lng).toBeNull();
+    expect(item.hasLocation).toBe(false);
+    // A located SOS on the same feed is still rounded, not nulled.
+    const located = await postSos(app).send(validBody());
+    const feed2 = await supertest(app).get("/api/sos");
+    const locatedItem = feed2.body.find((s: any) => s.id === located.body.id);
+    expect(locatedItem.lat).toBe(36.75);
+    expect(locatedItem.lng).toBe(7.6);
   });
 
   it("still geofences SOS when coordinates ARE provided", async () => {

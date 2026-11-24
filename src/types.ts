@@ -118,8 +118,9 @@ export interface Notification {
 export interface TrappedSOS {
   id: string;
   deviceId: string;
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
+  hasLocation?: boolean;
   name: string;
   phone?: string;
   audioUrl?: string;
@@ -128,6 +129,7 @@ export interface TrappedSOS {
   status: 'active' | 'resolved';
   timestamp: string;
   dispatchedTeams?: {
+    teamId?: string;
     type: 'protection_civile' | 'volunteers';
     teamNameAr: string;
     teamNameFr: string;

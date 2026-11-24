@@ -99,7 +99,10 @@ async function loadRegs(): Promise<any[]> {
   // approvals/status changes by a concurrent admin never appeared until a
   // process restart.
   const fromDb = await collectionGet("volunteerRegistrations", "createdAt", 500).catch(() => null);
-  if (fromDb !== null && fromDb.length > 0) {
+  // Fix 43 (VOL-3): refresh on ANY successful read, including an empty one —
+  // a successful [] means the registrations are gone, not that the read
+  // failed. Only a failed read (null) keeps the stale memory fallback.
+  if (fromDb !== null) {
     memoryRegs.length = 0;
     memoryRegs.push(...fromDb);
   }

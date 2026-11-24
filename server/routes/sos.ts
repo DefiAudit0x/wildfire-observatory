@@ -229,8 +229,10 @@ function anonymizeSos(sos: any) {
   const { name, phone, audioUrl, dispatchedTeams, deviceId, textMessage, clientGeneratedId, ...rest } = sos;
   return {
     ...rest,
-    lat: Math.round(sos.lat * 100) / 100,
-    lng: Math.round(sos.lng * 100) / 100,
+    // Fix 43 (SOS-5): a no-fix SOS persists null coordinates — never
+    // fabricate 0,0 for it on the public feed.
+    lat: sos.lat == null ? null : Math.round(sos.lat * 100) / 100,
+    lng: sos.lng == null ? null : Math.round(sos.lng * 100) / 100,
   };
 }
 
@@ -599,6 +601,31 @@ router.post("/:id/dispatch", requireAdmin, async (req: Request, res: Response) =
   }
   if (outcome === "team_busy") {
     res.status(409).json({ code: "TEAM_ALREADY_DISPATCHED", error: "This team is already dispatched to an active SOS" });
+    return;
+  }
+  if (outcome === "already_dispatched") {
+    // Fix 43 (SOS-6): the durable log already holds this dispatch — do not
+    // append a duplicate to the memory fallback.
+    // Fix 43b (CodeRabbit 6039588272): return the STORED dispatch, newest
+    // first. The memory list accumulates one entry per dispatch (clear +
+    // re-dispatch appends a second entry for the same team), so .find()
+    // would return the superseded one. When the process restarted and
+    // memorySos lacks the SOS, read the durable trappedSos doc instead of
+    // returning the freshly built item — its dispatchedAt/notes describe a
+    // write that never happened. The fresh item is only a last-resort
+    // fallback when no stored entry exists anywhere.
+    const sos = memorySos.find((s: any) => s.id === id);
+    let existing = [...(sos?.dispatchedTeams ?? [])].reverse().find((t: any) => t.teamId === missionTeamId);
+    if (!existing) {
+      try {
+        const stored: any = await docGet("trappedSos", id);
+        const storedTeams = Array.isArray(stored?.dispatchedTeams) ? stored.dispatchedTeams : [];
+        existing = [...storedTeams].reverse().find((t: any) => t.teamId === missionTeamId);
+      } catch {
+        // Durable read failed — fall through to the freshly built item.
+      }
+    }
+    res.json({ success: true, dispatch: existing ?? dispatchItem, alreadyDispatched: true });
     return;
   }
   if (outcome !== "ok") {

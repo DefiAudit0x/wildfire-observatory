@@ -340,7 +340,7 @@ export async function createSosWithAdmission(
   }
 }
 
-export type SosDispatchResult = "ok" | "missing" | "resolved" | "team_busy" | "unavailable";
+export type SosDispatchResult = "ok" | "already_dispatched" | "missing" | "resolved" | "team_busy" | "unavailable";
 
 /**
  * ARC-H2 + ARC-H8 fix: team dispatch used to be a read-modify-write outside
@@ -380,8 +380,10 @@ export async function appendSosDispatch(
           // ARC-R4: idempotent re-dispatch — this team is already locked on
           // THIS SOS. Re-appending would duplicate the dispatch log and
           // regress on_scene back to en_route (two 15s-stale operator tabs
-          // double-clicking the same dispatch). Return ok with zero writes.
-          return "ok" as const;
+          // double-clicking the same dispatch). Return "already_dispatched"
+          // with zero writes (Fix 43 / SOS-6) so the caller can tell a
+          // re-dispatch from a fresh one.
+          return "already_dispatched" as const;
         }
         tx.update(sosRef, { dispatchedTeams: FieldValue.arrayUnion(dispatchItem) });
         // Phase 3: the mission doc carries its TARGET coordinates so the
@@ -422,7 +424,8 @@ export async function appendSosDispatch(
       if (missionData && missionData.phase !== "cleared") {
         if (missionData.sosId !== sosId) return "team_busy" as const;
         // ARC-R4: idempotent re-dispatch — see the admin branch above.
-        return "ok" as const;
+        // Fix 43 (SOS-6): distinct outcome, zero writes.
+        return "already_dispatched" as const;
       }
       tx.update(sosRef, { dispatchedTeams: arrayUnion(dispatchItem) });
       // Phase 3: target coordinates ride the mission doc — see admin branch.

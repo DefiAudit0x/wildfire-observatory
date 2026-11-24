@@ -22,11 +22,39 @@ function snapshot(path: string) {
 function createDb() {
   return {
     collection(name: string) {
+      // Fix 43 (VOL-3): collectionGet needs a chainable query — the old
+      // stub had only doc(), so every ordered read threw and loadRegs fell
+      // back to stale memory on both old and new code.
+      const queryDocs = (field?: string) => {
+        const docs = [...state.docs.entries()]
+          .filter(([path]) => path.startsWith(`${name}/`))
+          .map(([path, data]) => ({ id: path.split("/").at(-1)!, data }));
+        if (field) docs.sort((a, b) => String(b.data[field] ?? "").localeCompare(String(a.data[field] ?? "")));
+        return docs;
+      };
+      const snapshot = (docs: Array<{ id: string; data: Doc }>) => ({
+        empty: docs.length === 0,
+        docs: docs.map((d) => ({ id: d.id, data: () => d.data })),
+      });
       return {
         doc(id: string) {
           const path = `${name}/${id}`;
           return { id, path };
         },
+        orderBy(field: string, _dir: "asc" | "desc" = "desc") {
+          const docs = queryDocs(field);
+          return {
+            limit(n: number) {
+              return { get: async () => snapshot(docs.slice(0, n)) };
+            },
+            get: async () => snapshot(docs),
+          };
+        },
+        limit(n: number) {
+          const docs = queryDocs();
+          return { get: async () => snapshot(docs.slice(0, n)) };
+        },
+        get: async () => snapshot(queryDocs()),
       };
     },
     async runTransaction<T>(callback: (tx: any) => Promise<T>): Promise<T> {
@@ -214,5 +242,42 @@ describe("POST /api/volunteer/:id/approve", () => {
       .set("Authorization", `Bearer ${adminToken}`)
       .send({ status: "approved" });
     expect([400, 404]).toContain(res.status);
+  });
+});
+
+describe("Fix 43 (VOL-3): a successful empty DB refresh clears removed registrations", () => {
+  const app = createVolunteersApp();
+  const adminToken = generateAdminToken();
+
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.available = true;
+  });
+
+  it("returns [] on /pending after the only registration is removed outside this process", async () => {
+    const created = await supertest(app).post("/api/volunteer/register").set("x-forwarded-for", nextIp()).send({
+      fullName: "مختبر حماية",
+      phone: VALID_PHONE,
+      wilaya: "الجزائر - تيبازة",
+    });
+    expect(created.status).toBe(200);
+    const regId = created.body.id as string;
+    expect(state.docs.has(`volunteerRegistrations/${regId}`)).toBe(true);
+
+    const before = await supertest(app).get("/api/volunteer/pending").set("Authorization", `Bearer ${adminToken}`);
+    expect(before.status).toBe(200);
+    expect(before.body).toHaveLength(1);
+
+    // Removed outside this process (another admin / direct DB edit).
+    state.docs.delete(`volunteerRegistrations/${regId}`);
+    // The collection cache (30 s TTL) is a separate mechanism — invalidate
+    // it so this test exercises loadRegs, not the cache.
+    fs.invalidateCollectionCache("volunteerRegistrations");
+
+    const after = await supertest(app).get("/api/volunteer/pending").set("Authorization", `Bearer ${adminToken}`);
+    expect(after.status).toBe(200);
+    expect(after.body).toHaveLength(0);
   });
 });

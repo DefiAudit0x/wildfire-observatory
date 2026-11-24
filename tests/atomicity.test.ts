@@ -379,10 +379,10 @@ describe("ARC-R4 — dispatch idempotency under same-team/same-SOS re-entry", ()
     });
   }
 
-  it("accepts a same-SOS re-dispatch as ok WITHOUT duplicating rows or regressing on_scene", async () => {
+  it("reports a same-SOS re-dispatch as already_dispatched WITHOUT duplicating rows or regressing on_scene", async () => {
     seed("on_scene");
     const result = await appendSosDispatch("sos-r4", sosRow("second"), "team-r4");
-    expect(result).toBe("ok");
+    expect(result).toBe("already_dispatched");
     const mission = state.docs.get("teamMissions/team-r4")!;
     expect(mission.phase).toBe("on_scene");
     expect(mission.since).toBe(1000);
@@ -392,7 +392,7 @@ describe("ARC-R4 — dispatch idempotency under same-team/same-SOS re-entry", ()
   it("keeps en_route en_route with a single dispatch row under an operator double-click", async () => {
     seed("en_route");
     const result = await appendSosDispatch("sos-r4", sosRow("second"), "team-r4");
-    expect(result).toBe("ok");
+    expect(result).toBe("already_dispatched");
     const mission = state.docs.get("teamMissions/team-r4")!;
     expect(mission.phase).toBe("en_route");
     expect(mission.since).toBe(1000);
