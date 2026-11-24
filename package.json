@@ -51,7 +51,6 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.62.0",
-    "@sentry/vite-plugin": "^5.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.3",
@@ -68,7 +67,6 @@
     "@types/supertest": "^7.2.1",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.1.1",
-    "autoprefixer": "^10.4.21",
     "esbuild": "^0.28.2",
     "firebase-tools": "^15.28.2",
     "husky": "^9.1.0",
