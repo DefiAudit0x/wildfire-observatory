@@ -112,15 +112,16 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
       heartbeatBadgesPerIp.set(ip, codes);
     }
     const seenAt = codes.get(badgeCode);
-    if (!seenAt) {
-      codes.set(badgeCode, now);
-      for (const [code, ts] of codes) {
-        if (now - ts > 60 * 1000) codes.delete(code);
-      }
-      if (codes.size > HEARTBEAT_MAX_BADGES_PER_IP) {
-        res.status(429).json({ error: "Too many badge codes from this address." });
-        return;
-      }
+    // Fix 41 (CMD-6): prune + ceiling on EVERY badge attempt, not only on
+    // first sight — a retry of a just-rejected 6th code previously skipped
+    // the size check entirely and got a normal 200 beat.
+    if (!seenAt) codes.set(badgeCode, now);
+    for (const [code, ts] of codes) {
+      if (now - ts > 60 * 1000) codes.delete(code);
+    }
+    if (codes.size > HEARTBEAT_MAX_BADGES_PER_IP) {
+      res.status(429).json({ error: "Too many badge codes from this address." });
+      return;
     }
   }
 

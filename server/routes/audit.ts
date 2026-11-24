@@ -114,7 +114,18 @@ router.get("/", requireAdmin, auditLimiter, async (_req: Request, res: Response)
   } catch (err) {
     logger.error({ err }, "Audit log read failed");
   }
-  res.json(entries && entries.length > 0 ? entries : memoryAudit.slice(0, 100));
+  // Fix 41 (AUD-3): merge, don't pick a side — the DB list hides recent
+  // entries that only exist in memoryAudit (a failed audit write queues
+  // them locally). Both lists are newest-first; dedupe by id (an entry
+  // that persisted sits in both), sort by timestamp desc, cap 100. The
+  // response shape is unchanged. A DB read failure still falls back to
+  // memoryAudit only (entries === null → dbEntries []).
+  const dbEntries = entries ?? [];
+  const byId = new Map<string, any>();
+  for (const e of dbEntries) if (e?.id) byId.set(e.id, e);
+  for (const e of memoryAudit) if (e?.id && !byId.has(e.id)) byId.set(e.id, e);
+  const merged = [...byId.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 100);
+  res.json(merged);
 });
 
 export default router;
