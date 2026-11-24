@@ -672,6 +672,10 @@ describe("RosterBoard rank clear and assignment filter (Fix 37 — RSTR-3/RSTR-4
     { agentId: "c1", name: "Commander One", role: "commander", unitId: "DZ16", isActive: true },
     { agentId: "a2", name: "Agent Two", role: "agent", unitId: "DZ01", isActive: true },
     { agentId: "a3", name: "Agent Three", role: "agent", unitId: "DZ16", isActive: false },
+    // Fix 37b: a raw "unit-dz16" code is REJECTED server-side
+    // (toUnitId("unit-dz16") = "unit-unit-dz16" !== "unit-dz16") — the
+    // Fix 37 strip-both-sides comparison wrongly offered this account.
+    { agentId: "a5", name: "Agent Five", role: "agent", unitId: "unit-dz16", isActive: true },
   ];
   const dayWithRank = {
     unitId: "unit-dz16",
@@ -764,6 +768,27 @@ describe("RosterBoard rank clear and assignment filter (Fix 37 — RSTR-3/RSTR-4
     expect(screen.queryByText("Agent Two (a2)")).toBeNull();
     // Inactive accounts were already filtered by fetchStaff — pinned here too.
     expect(screen.queryByText("Agent Three (a3)")).toBeNull();
+    // Fix 37b: a raw "unit-dz16" code is rejected server-side, so it must
+    // not be offered either (the Fix 37 comparison stripped the prefix on
+    // both sides and offered it).
+    expect(screen.queryByText("Agent Five (a5)")).toBeNull();
+  });
+
+  it("a raw UNIT-DZ16 code is offered when the roster is unit-unit-dz16 (Fix 37b)", async () => {
+    // The server accepts this pair: toUnitId("UNIT-DZ16") = "unit-unit-dz16".
+    // The Fix 37 comparison stripped both sides ("dz16" vs "unit-dz16")
+    // and hid the eligible agent.
+    const unitUnitDay = {
+      unitId: "unit-unit-dz16",
+      date: todayISO(),
+      posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [] }],
+      saved: true,
+    };
+    const unitUsers = [{ agentId: "a4", name: "Agent Four", role: "agent", unitId: "UNIT-DZ16", isActive: true }];
+    installStub(unitUnitDay, unitUsers);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    await waitFor(() => expect(screen.queryByText("Agent Four (a4)")).toBeTruthy());
   });
 
   it("the offered same-unit agent can be added and saved (control)", async () => {
