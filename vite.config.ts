@@ -49,11 +49,8 @@ export default defineConfig(() => {
       rollupOptions: {
         output: {
           manualChunks(id: string) {
-            if (id.includes('node_modules/leaflet') || id.includes('node_modules/react-leaflet')) {
+            if (id.includes('node_modules/leaflet')) {
               return 'leaflet';
-            }
-            if (id.includes('node_modules/firebase')) {
-              return 'firebase';
             }
             if (id.includes('node_modules/@sentry')) {
               return 'sentry';
