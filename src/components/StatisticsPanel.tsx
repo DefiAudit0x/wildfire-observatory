@@ -51,13 +51,22 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   // Fix 36 (STA-3): the chart had no loading/failure state — a dead
   // /api/history rendered exactly like a quiet month (zero bars, no message).
   const [historyStatus, setHistoryStatus] = useState<"loading" | "ready" | "error">("loading");
-  const historyCancelledRef = useRef(false);
+  // Fix 36b (CodeRabbit Minor, review 6033322713): a shared cancelled flag
+  // is reset to false on every effect setup, so under StrictMode's mount
+  // replay the first request is never cancelled — if it fails after the
+  // replayed request succeeds it overwrites good chart data with the error
+  // state. A request sequence (the AuditLog Fix 32 pattern) makes every
+  // request current only until the next one starts or the effect cleans up;
+  // the retry button supersedes any in-flight load the same way.
+  const historyRequestSeqRef = useRef(0);
   const loadHistory = useCallback(() => {
+    const seq = ++historyRequestSeqRef.current;
+    const isCurrent = () => seq === historyRequestSeqRef.current;
     setHistoryStatus("loading");
     fetch("/api/history?days=30")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (historyCancelledRef.current) return;
+        if (!isCurrent()) return;
         if (data?.buckets) {
           setHistory(data.buckets);
           setHotspotsPartial(data?.hotspotsPartial === true && data?.hotspotsUnavailable !== true);
@@ -68,14 +77,13 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
         }
       })
       .catch(() => {
-        if (!historyCancelledRef.current) setHistoryStatus("error");
+        if (isCurrent()) setHistoryStatus("error");
       });
   }, []);
   useEffect(() => {
-    historyCancelledRef.current = false;
     loadHistory();
     return () => {
-      historyCancelledRef.current = true;
+      historyRequestSeqRef.current += 1;
     };
   }, [loadHistory]);
 
