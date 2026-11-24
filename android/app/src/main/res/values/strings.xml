@@ -17,8 +17,11 @@
     <string name="gps_no_permission">لا يوجد إذن الموقع — اضغط للسماح</string>
     <string name="gps_providers_off">خدمة الموقع مغلقة في الجهاز</string>
     <string name="gps_searching">جارٍ تحديد الموقع…</string>
-    <string name="gps_fixed_fmt">موقع محدد — دقة %1$d م</string>
-    <string name="gps_stale_fmt">آخر موقع معروف — دقة %1$d م</string>
+    <string name="gps_fixed_fmt">موقع محدد — دقة %1$s</string>
+    <string name="gps_stale_fmt">آخر موقع معروف — دقة %1$s</string>
+    <!-- Fix 52 (NLOC-1): shown in place of the metres when the provider
+         reported no accuracy — "0 m" would be a lie. -->
+    <string name="accuracy_unknown">غير معروفة</string>
 
     <!-- Chips -->
     <string name="net_online">متصل بالإنترنت</string>
@@ -75,7 +78,7 @@
     <string name="sos_phone_hint">رقم الهاتف</string>
     <string name="sos_message_hint">رسالة قصيرة (اختياري)</string>
     <string name="sos_location_label">موقعك:</string>
-    <string name="sos_location_fmt">%1$.5f, %2$.5f — دقة %3$d م — منذ %4$d ث</string>
+    <string name="sos_location_fmt">%1$.5f, %2$.5f — دقة %3$s — منذ %4$d ث</string>
     <string name="sos_record">تسجيل رسالة صوتية (حتى 20 ثانية)</string>
     <string name="sos_recording">جارٍ التسجيل… اضغط للإيقاف</string>
     <string name="sos_record_done">تم حفظ التسجيل — سيرافق النداء</string>
@@ -109,7 +112,7 @@
     <string name="report_location_name_hint">اسم الموقع (يُملأ تلقائيًا)</string>
     <string name="report_wilaya_hint">الولاية (تُملأ تلقائيًا)</string>
     <string name="report_description_hint">الوصف — 10 أحرف على الأقل (دخان؟ لهب؟ اتجاه؟)</string>
-    <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$d م — منذ %4$d ث</string>
+    <string name="report_location_line_fmt">الإحداثيات: %1$.5f, %2$.5f — دقة %3$s — منذ %4$d ث</string>
     <string name="report_attach">إرفاق صورة</string>
     <string name="report_camera">تصوير</string>
     <string name="report_gallery">من المعرض</string>
@@ -217,7 +220,7 @@
     <string name="map_style_sat">أقمار صناعية</string>
     <string name="map_follow_toggle">تتبّع موقعي</string>
     <string name="map_follow_on">التتبع مفعّل</string>
-    <string name="map_status_wilaya_fmt">دقة %1$d م · ولاية %2$s</string>
+    <string name="map_status_wilaya_fmt">دقة %1$s · ولاية %2$s</string>
     <string name="geo_status_resolving">جارٍ تحديد اسم الموقع تلقائياً…</string>
     <string name="geo_status_failed">تعذر تحديد اسم الموقع — اضغط لإعادة المحاولة</string>
     <string name="geo_status_offline_fmt">خارج تغطية التسمية — الولاية (تقريبي): %1$s</string>
