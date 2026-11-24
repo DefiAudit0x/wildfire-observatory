@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, waitFor } from "@testing-library/react";
 import EvacuationRadar from "../../src/components/EvacuationRadar";
 import type { Report, SatelliteHotspot } from "../../src/types";
 
@@ -292,5 +292,50 @@ describe("EvacuationRadar wind expiry and clock-driven recompute (Fix 25b)", () 
     });
     expect(screen.getByText("لا توجد أهداف حريق ضمن نطاق 30 كم")).toBeTruthy();
     expect(screen.queryByText("بلاغ قريب ضمن نطاق الرادار")).toBeNull();
+  });
+});
+
+describe("EvacuationRadar blip labels (Fix 35 — RAD-2)", () => {
+  // Real timers: the 60 s nowMs clock tick would recompute the memo and mask
+  // the stale-label defect if fake timers were advanced; with real timers a
+  // bare language rerender cannot refresh the memo. Timestamps are real-now
+  // so the 30-minute freshness gate (RAD-3) passes.
+  beforeEach(() => {
+    vi.useRealTimers();
+    vi.stubGlobal("fetch", vi.fn(async () => windSuccessResponse()));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const titles = () => [...document.querySelectorAll("title")].map((t) => t.textContent || "");
+
+  it("satellite blip label translates on rerender ar → fr", async () => {
+    const now = new Date().toISOString();
+    const props = {
+      reports: [],
+      satellites: [mkSatellite({ scanTime: now })],
+      userLocation: { lat: 36.8, lng: 7.6 },
+    };
+    const { rerender } = render(<EvacuationRadar {...props} lang="ar" />);
+    await waitFor(() => expect(titles().some((t) => t.includes("نقطة ساخنة"))).toBe(true));
+    rerender(<EvacuationRadar {...props} lang="fr" />);
+    await waitFor(() => expect(titles().some((t) => t.includes("Point chaud"))).toBe(true));
+    expect(titles().some((t) => t.includes("نقطة ساخنة"))).toBe(false);
+  });
+
+  it("nameless-report fallback label translates on rerender ar → fr", async () => {
+    const now = new Date().toISOString();
+    const props = {
+      reports: [mkReport({ locationName: "", timestamp: now })],
+      satellites: [],
+      userLocation: { lat: 36.8, lng: 7.6 },
+    };
+    const { rerender } = render(<EvacuationRadar {...props} lang="ar" />);
+    await waitFor(() => expect(titles().some((t) => t.includes("بلاغ"))).toBe(true));
+    rerender(<EvacuationRadar {...props} lang="fr" />);
+    await waitFor(() => expect(titles().some((t) => t.includes("signalement"))).toBe(true));
+    expect(titles().some((t) => t.includes("بلاغ"))).toBe(false);
   });
 });
