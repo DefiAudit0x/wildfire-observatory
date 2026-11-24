@@ -28,6 +28,14 @@ export default function App() {
   const [showTrappedModal, setShowTrappedModal] = useState(false);
 
   const isArabic = lang === "ar";
+  // Fix 48 (NHTMLCONT-1): the shell fixes `<html lang="ar">` at build
+  // time, and switching languages never updated the document element —
+  // French UI content inherited Arabic language metadata for assistive
+  // speech/language tools. Sync the document language from the same
+  // state that drives the UI, on mount and on every toggle.
+  useEffect(() => {
+    document.documentElement.lang = lang;
+  }, [lang]);
   const privilegedTabVisible = useSessionProbe();
   const { session: staffSession } = useStaffSession();
   const rosterVisible = staffSession.authenticated;
