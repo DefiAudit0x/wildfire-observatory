@@ -1,4 +1,4 @@
-import { Radio, AlertTriangle, Shield, Users, Truck, ShieldCheck, HeartHandshake, Crown } from "lucide-react";
+import { Radio, AlertTriangle, Shield, Users, Truck, HeartHandshake } from "lucide-react";
 import { Report, SatelliteHotspot, TrappedSOS } from "../../types";
 import { RegisteredTeam } from "./registeredTeams";
 
@@ -31,7 +31,13 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
   const verifiedReports = reports.filter(r => r.status === "verified").length;
   const totalVolunteers = activeUsers.filter(u => u.role === "volunteer").length;
   const totalOfficials = activeUsers.filter(u => u.role === "official").length;
-  const totalAdmins = activeUsers.filter(u => u.role === "admin" || u.role === "superadmin").length;
+  // Fix 34 (CSTAT-1): the Admins card is removed, not relabelled. Its count
+  // filtered activeUsers for "admin"/"superadmin", but no code path ever
+  // writes those roles into the /api/locations map the prop comes from (the
+  // heartbeat writer starts at "citizen" and only ever sets "official" or
+  // "volunteer" through a bound badge), so the card permanently showed 0
+  // labelled as live admin presence. Admin sessions are stateless JWTs — a
+  // real "admins online" count needs new presence infrastructure (follow-up).
   const satelliteHotspots = satellites.length;
   const activeSosCount = sosCalls.filter(s => s.status === "active").length;
 
@@ -43,7 +49,7 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
   const volEnRoute = volTeams.filter(t => t.activeMission).length;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+    <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
       {/* SOS Alerts Card */}
       <div className={`border rounded-xl p-3 transition-all duration-300 ${
         activeSosCount > 0
@@ -150,19 +156,6 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
         </p>
       </div>
 
-      <div className="bg-zinc-900/60 border border-white/5 rounded-xl p-3">
-        <div className="flex items-center gap-2 text-purple-400 mb-1">
-          <Crown className="h-4 w-4" />
-          <span className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-            {isArabic ? "المشرفون" : "Admins"}
-          </span>
-        </div>
-        <p className="text-2xl font-black text-slate-100">{totalAdmins}</p>
-        <p className="text-[10px] text-purple-400/80 mt-1">
-          <ShieldCheck className="h-3 w-3 inline mr-0.5" />
-          {isArabic ? "متصل الآن" : "en ligne"}
-        </p>
-      </div>
     </div>
   );
 }

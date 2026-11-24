@@ -73,7 +73,19 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
         const full = await res.json();
         if (full.audioUrl) {
           setAudioUrls((prev) => ({ ...prev, [sos.id]: full.audioUrl }));
+        } else {
+          // Fix 34 (SPN-1): an OK response without an audio URL used to fall
+          // through silently — the button just went back to its idle label
+          // with no feedback. The error channel CentralCommand already wired
+          // (onAudioError → error toast) is the right signal here too.
+          onAudioError?.();
         }
+      } else {
+        // Fix 34 (SPN-1): a non-OK response (401/403/404/503) likewise fell
+        // through with no branch at all. A 401 here surfaces as the generic
+        // audio-load toast, not as a session-expiry event — routing it to
+        // the unlock state needs a new prop and is a follow-up (D3).
+        onAudioError?.();
       }
     } catch (err) {
       console.error("Failed to load SOS audio:", err);
