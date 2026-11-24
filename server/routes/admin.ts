@@ -136,11 +136,18 @@ router.post("/logout", async (req: Request, res: Response) => {
   // non-OK logout as an error toast + stay logged in, Fix 32 ADM-3).
   const token = (req as any).cookies?.admin_token || req.headers.authorization?.replace(/^Bearer /, "");
   const revoked = token ? await revokeAdminSession(token, "logout") : true;
-  res.clearCookie("admin_token");
+  // Fix 41b (CodeRabbit Minor, review 6037710493): clear the cookie ONLY
+  // after the revocation persisted. Clearing it before the 503 destroyed
+  // the retry path — the token is httpOnly, the client holds no other
+  // copy, so a retry would send no token and succeed (200) without ever
+  // re-attempting the durable write. With the cookie retained, the retry
+  // re-presents the token and revokeAdminSession re-tries the write (its
+  // in-process set is idempotent).
   if (!revoked) {
     res.status(503).json({ error: "Session revocation could not be persisted" });
     return;
   }
+  res.clearCookie("admin_token");
   res.json({ success: true });
 });
 

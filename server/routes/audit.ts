@@ -121,7 +121,12 @@ router.get("/", requireAdmin, auditLimiter, async (_req: Request, res: Response)
   // response shape is unchanged. A DB read failure still falls back to
   // memoryAudit only (entries === null → dbEntries []).
   const dbEntries = entries ?? [];
-  const byId = new Map<string, any>();
+  // Fix 41b (CodeRabbit Nitpick, review 6037710493): the merged list is
+  // typed — no new `any` (the pre-existing `entries: any[] | null` and the
+  // `memoryAudit: any[]` store are untouched). The entry shape mirrors
+  // logAdminAction's entry below.
+  type AuditEntry = { id: string; action: string; timestamp: string; [key: string]: unknown };
+  const byId = new Map<string, AuditEntry>();
   for (const e of dbEntries) if (e?.id) byId.set(e.id, e);
   for (const e of memoryAudit) if (e?.id && !byId.has(e.id)) byId.set(e.id, e);
   const merged = [...byId.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 100);
