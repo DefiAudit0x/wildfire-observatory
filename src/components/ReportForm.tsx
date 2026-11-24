@@ -279,7 +279,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           {/* Coordinates Grid */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-lat">
                 {isArabic ? "خط العرض (Latitude)" : "Latitude"}
               </label>
               <div className="relative">
@@ -293,12 +293,12 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   placeholder="36.88124"
                   className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 pl-3 pr-8 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
                   required
-                />
+                id="report-lat" />
                 <MapPin className="absolute right-2.5 top-2.5 h-3.5 w-3.5 text-gray-500" />
               </div>
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-lng">
                 {isArabic ? "خط الطول (Longitude)" : "Longitude"}
               </label>
               <div className="relative">
@@ -312,7 +312,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   placeholder="8.41125"
                   className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 pl-3 pr-8 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
                   required
-                />
+                id="report-lng" />
                 <MapPin className="absolute right-2.5 top-2.5 h-3.5 w-3.5 text-gray-500" />
               </div>
             </div>
@@ -348,7 +348,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           {/* Location Name & Wilaya */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-wilaya">
                 {isArabic ? "الولاية" : "Wilaya"}
               </label>
               <select
@@ -359,7 +359,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 }}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40 cursor-pointer"
                 required
-              >
+               id="report-wilaya">
                 <option value="">{isArabic ? "-- اختر الولاية --" : "-- Choisir Wilaya --"}</option>
                 {wilayaOptions.map((w) => (
                   <option key={`${w.nameAr}-${w.nameFr}`} value={`${w.nameAr} (${w.nameFr})`}>
@@ -392,7 +392,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               )}
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-location-name">
                 {isArabic ? "اسم التجمع السكني أو الغابة (اختياري)" : "Nom du lieu / Forêt (optionnel)"}
               </label>
               <input
@@ -402,7 +402,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                 onChange={(e) => setLocationName(e.target.value)}
                 placeholder={isArabic ? "مثال: غابة جبل الوحش، بالقرب من السد" : "Ex: Forêt de Seraïdi, près du réservoir"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-2 px-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
-              />
+              id="report-location-name" />
             </div>
           </div>
 
@@ -437,7 +437,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
           {/* Description */}
           <div>
-            <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+            <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-description">
               {isArabic ? "الوصف التفصيلي وحالة النيران" : "Description et détails du feu"}
             </label>
             <textarea
@@ -452,7 +452,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
               rows={3}
               className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg p-3 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40 leading-relaxed"
               required
-            ></textarea>
+             id="report-description"></textarea>
           </div>
 
           {/* Image upload with bandwidth simulation compression info */}
@@ -842,7 +842,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
 
             {reporterType !== "citizen" && (
               <div className="space-y-1.5 animate-fade-in">
-                <label className="block text-[10px] uppercase tracking-wider font-bold text-amber-500">
+                <label className="block text-[10px] uppercase tracking-wider font-bold text-amber-500" htmlFor="report-badge-code">
                                     {isArabic
                     ? "🔑 رمز اعتماد اختياري — يتحقق الخادم من صلاحيته"
                     : "🔑 Code d'accréditation facultatif — validé par le serveur"}
@@ -854,7 +854,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   onChange={(e) => setReporterBadgeCode(e.target.value)}
                   placeholder={isArabic ? "أدخل الرمز للتحقق الخادمي" : "Saisir le code à valider par le serveur"}
                   className="w-full bg-black/60 border border-amber-500/30 rounded-lg py-2 px-3 text-xs text-amber-300 focus:outline-none focus:ring-1 focus:ring-amber-500"
-                />
+                id="report-badge-code" />
                 <p className="text-[9px] text-amber-400/80 italic leading-snug">
                   {isArabic
                     ? "يُرسل الرمز إلى الخادم للتحقق فقط؛ لا يمنح هذا الحقل اعتمادًا أو صلاحية من الواجهة."
@@ -867,7 +867,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
           {/* Optional Reporter Info */}
           <div className="grid grid-cols-2 gap-3 border-t border-white/5 pt-3">
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-reporter-name">
                 {isArabic ? "الاسم الكامل (اختياري)" : "Nom (optionnel)"}
               </label>
               <input
@@ -877,10 +877,10 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   onChange={(e) => setReporterName(e.target.value)}
                 placeholder={isArabic ? "مثال: محمد بلخير" : "Ex: Mohamed"}
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
-              />
+              id="report-reporter-name" />
             </div>
             <div>
-              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1">
+              <label className="block text-[10px] uppercase tracking-widest font-bold text-gray-400 mb-1" htmlFor="report-reporter-phone">
                 {isArabic ? "رقم الهاتف (اختياري للطوارئ)" : "N° Téléphone (optionnel)"}
               </label>
               <input
@@ -891,7 +891,7 @@ export default function ReportForm({ mapClickedCoords, onSubmit, lang, reports =
                   onChange={(e) => setReporterPhone(e.target.value)}
                 placeholder="06XXXXXXXX"
                 className="w-full bg-black/50 border border-white/5 hover:border-white/10 rounded-lg py-1.5 px-2.5 text-xs text-slate-100 focus:outline-none focus:ring-1 focus:ring-red-500/40"
-              />
+              id="report-reporter-phone" />
             </div>
           </div>
 

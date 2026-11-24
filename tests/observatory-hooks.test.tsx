@@ -547,6 +547,63 @@ describe("report submission — transport vs rejection semantics", () => {
     expect(response.clientGeneratedId).toBeDefined();
     expect(broadcastMessage).not.toHaveBeenCalled();
   });
+
+  it("a stalled success body aborts at the 15 s ceiling and returns accepted-but-syncing (Fix 39 — RSUB-1)", async () => {
+    let bodyReject: ((e: unknown) => void) | null = null;
+    installFetch((url: string, init?: RequestInit) => {
+      if (url.includes("/api/reports") && init?.method === "POST") {
+        const bodyPromise = new Promise((_resolve, reject) => {
+          bodyReject = reject;
+        });
+        init.signal?.addEventListener(
+          "abort",
+          () => bodyReject?.(new DOMException("Aborted", "AbortError")),
+          { once: true }
+        );
+        return { ok: true, status: 200, json: () => bodyPromise } as unknown as Response;
+      }
+      return json([]);
+    });
+    const { result } = await mount();
+    vi.useFakeTimers();
+    try {
+      let response!: any;
+      const promise = act(async () => {
+        response = await result.current.handleCreateReport(payload);
+      });
+      await vi.advanceTimersByTimeAsync(15000);
+      await promise;
+      expect(response).toMatchObject({ submissionAccepted: true, responseValid: false, syncRequired: true });
+      expect(response.clientGeneratedId).toBeDefined();
+      expect(broadcastMessage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("an unparseable SUCCESS body returns accepted-but-syncing (Fix 39 — RSUB-2)", async () => {
+    installFetch((url: string, init?: RequestInit) => {
+      if (url.includes("/api/reports") && init?.method === "POST") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError("Unexpected token");
+          },
+        } as unknown as Response;
+      }
+      return json([]);
+    });
+    const { result } = await mount();
+
+    let response!: any;
+    await act(async () => {
+      response = await result.current.handleCreateReport(payload);
+    });
+    expect(response).toMatchObject({ submissionAccepted: true, responseValid: false, syncRequired: true });
+    expect(response.clientGeneratedId).toBeDefined();
+    expect(broadcastMessage).not.toHaveBeenCalled();
+  });
 });
 
 describe("report confirmation — principal enrollment and error codes", () => {
@@ -646,6 +703,26 @@ describe("multipart form builder — direct unit pin", () => {
     expect((fd.get("image") as File).name).toMatch(/^report-\d+\.jpg$/);
   });
 });
+
+  it("an empty data URL is dropped, not attached as a zero-byte image (Fix 39 — UPL-1, fetch path)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { headers: { "Content-Type": "image/jpeg" } })));
+    const { fd, imageDropped } = await buildMultipartForm(
+      { lat: 1, lng: 2, locationName: "X", wilaya: "Y", description: "Z", image: "data:image/jpeg;base64," },
+      "dev-9"
+    );
+    expect(imageDropped).toBe(true);
+    expect(fd.get("image")).toBeNull();
+  });
+
+  it("an empty data URL is dropped on the atob fallback too (Fix 39 — UPL-1)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("data URLs refused"); }));
+    const { fd, imageDropped } = await buildMultipartForm(
+      { lat: 1, lng: 2, locationName: "X", wilaya: "Y", description: "Z", image: "data:image/jpeg;base64," },
+      "dev-9"
+    );
+    expect(imageDropped).toBe(true);
+    expect(fd.get("image")).toBeNull();
+  });
 
 
 describe("Fix 12e partial satellite admission", () => {

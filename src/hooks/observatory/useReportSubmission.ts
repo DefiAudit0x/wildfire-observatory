@@ -38,11 +38,15 @@ export function useReportSubmission(
       let res: Response;
       let imageNotAttached = false;
 
+      // 15s timeout for all write paths (audit B7): same ceiling as polling.
+      // Fix 39 (RSUB-1): the timer used to be cleared right after fetch
+      // resolved to headers, so a response that stalled its BODY had no
+      // remaining abort and could hang the submit spinner. The SAME timer
+      // now stays armed through body consumption and is cleared in the
+      // finally below — every path (success, rejection, throw) clears it.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
       try {
-        // 15s timeout for all write paths (audit B7): same ceiling as polling.
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
-
         try {
           if (payload.image && typeof payload.image === "string" && payload.image.startsWith("data:image/")) {
             // Multipart upload: avoids sending base64 through the JSON body parser.
@@ -57,78 +61,96 @@ export function useReportSubmission(
               signal: controller.signal,
             });
           }
-        } finally {
-          clearTimeout(timeoutId);
-        }
-      } catch (err) {
-        // TRANSPORT failure (server unreachable, request aborted): the report
-        // never reached the server, so its content fans out to the mesh for an
-        // online gateway device to relay (meshRelay). A server REJECTION (4xx,
-        // handled below) is NOT a transport failure — the server read the
-        // report and refused it, and relaying it would only re-submit the same
-        // refusal; the client keeps the visible error instead.
-        console.warn("Report transport failed; fanning out to mesh:", err);
-        broadcastFailedReportToMesh(submission);
-        throw err;
-      }
-
-      if (!res.ok) {
-        let serverMsg: string | undefined;
-        try {
-          const data = await res.json();
-          serverMsg = data?.error;
-        } catch {
-          // non-JSON error body
-        }
-        if (res.status >= 500) {
-          // Server-side failure (5xx): the server is alive but could not
-          // commit the report — an online peer may have better luck.
+        } catch (err) {
+          // TRANSPORT failure (server unreachable, request aborted): the report
+          // never reached the server, so its content fans out to the mesh for an
+          // online gateway device to relay (meshRelay). A server REJECTION (4xx,
+          // handled below) is NOT a transport failure — the server read the
+          // report and refused it, and relaying it would only re-submit the same
+          // refusal; the client keeps the visible error instead.
+          console.warn("Report transport failed; fanning out to mesh:", err);
           broadcastFailedReportToMesh(submission);
+          throw err;
         }
-        const err: any = new Error(serverMsg || "Report failed");
-        err.data = { error: serverMsg };
-        throw err;
-      }
 
-      const newReport = await res.json();
+        if (!res.ok) {
+            let serverMsg: string | undefined;
+            try {
+              const data = await res.json();
+              serverMsg = data?.error;
+            } catch {
+              // non-JSON error body — including a body-phase abort: the
+              // server already answered with an error status, so the
+              // existing error construction below (serverMsg undefined)
+              // is the right outcome.
+            }
+          if (res.status >= 500) {
+            // Server-side failure (5xx): the server is alive but could not
+            // commit the report — an online peer may have better luck.
+            broadcastFailedReportToMesh(submission);
+          }
+          const err: any = new Error(serverMsg || "Report failed");
+          err.data = { error: serverMsg };
+          throw err;
+        }
 
-      // The POST response is another state entry point: it must pass the same
-      // report contract as the GET poll. A malformed payload is kept out of
-      // state — the fetchData refresh right after re-syncs from the validated
-      // GET list anyway.
-      const reportIsValid = isValidReport(newReport);
-      if (reportIsValid) {
-        admitServerReport(newReport);
-        // On success the SERVER's normalized copy goes onto the mesh (the
-        // receivers' isValidReport gate accepts it), never the raw client
-        // payload. The mesh copy never carries PII.
-        broadcastReportToMesh(newReport);
-      } else {
-        console.warn("Server returned a malformed report payload; keeping the current list");
-      }
+        // any (not unknown): the original `const newReport = await res.json()`
+        // was implicitly any, and the contract gate below (isValidReport) is
+        // the check that matters — narrowing an unknown through the aliased
+        // reportIsValid flag does not survive the try/catch assignment.
+        let newReport: any = null;
+        try {
+          newReport = await res.json();
+        } catch {
+          // Fix 39 (RSUB-2 + RSUB-1): an unreadable accepted body — a damaged
+          // body (SyntaxError) or a stalled one (the 15 s timer aborts it) —
+          // is the malformed path, not a transport failure: the server
+          // already acknowledged the report. isValidReport returns false
+          // for null, so the existing recovery below runs (fetchData +
+          // SubmissionAccepted, no mesh broadcast).
+          newReport = null;
+        }
 
-      // Reconcile the authoritative datasets before the success flow returns;
-      // callers that navigate immediately to the map must see the accepted
-      // report in the refreshed marker list.
-      await fetchData();
-      // The server accepted the POST, but a malformed response is not safe to
-      // render as a fabricated pending report. Reconcile from the authoritative
-      // GET list and let the UI say "accepted; syncing" without inventing a
-      // status or report body.
-      if (!reportIsValid) {
+        // The POST response is another state entry point: it must pass the same
+        // report contract as the GET poll. A malformed payload is kept out of
+        // state — the fetchData refresh right after re-syncs from the validated
+        // GET list anyway.
+        const reportIsValid = isValidReport(newReport);
+        if (reportIsValid) {
+          admitServerReport(newReport);
+          // On success the SERVER's normalized copy goes onto the mesh (the
+          // receivers' isValidReport gate accepts it), never the raw client
+          // payload. The mesh copy never carries PII.
+          broadcastReportToMesh(newReport);
+        } else {
+          console.warn("Server returned a malformed report payload; keeping the current list");
+        }
+
+        // Reconcile the authoritative datasets before the success flow returns;
+        // callers that navigate immediately to the map must see the accepted
+        // report in the refreshed marker list.
+        await fetchData();
+        // The server accepted the POST, but a malformed response is not safe to
+        // render as a fabricated pending report. Reconcile from the authoritative
+        // GET list and let the UI say "accepted; syncing" without inventing a
+        // status or report body.
+        if (!reportIsValid) {
+          return {
+            submissionAccepted: true,
+            responseValid: false,
+            syncRequired: true,
+            clientGeneratedId: submission.clientGeneratedId,
+            imageNotAttached,
+          };
+        }
         return {
-          submissionAccepted: true,
-          responseValid: false,
-          syncRequired: true,
-          clientGeneratedId: submission.clientGeneratedId,
-          imageNotAttached,
+          ...newReport,
+          responseValid: true,
+          ...(imageNotAttached ? { imageNotAttached: true } : {}),
         };
+      } finally {
+        clearTimeout(timeoutId);
       }
-      return {
-        ...newReport,
-        responseValid: true,
-        ...(imageNotAttached ? { imageNotAttached: true } : {}),
-      };
     },
     [deviceId, fetchData, admitServerReport]
   );

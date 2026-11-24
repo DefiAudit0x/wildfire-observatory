@@ -31,15 +31,22 @@ export function isValidMaghrebPhone(value: string): boolean {
  * the input unchanged when it matches no national pattern (validation
  * rejects it). `00`-prefixed input matches no client regex today and is
  * rejected before normalization matters — no `00` rule is added.
+ *
+ * Fix 39 (Fix 29 follow-up): DZ, MA and LY all accept `0[567]XXXXXXXX`,
+ * so a bare 05/06/07 number is ambiguous. An optional country hint from
+ * the selected wilaya resolves ONLY that collision (hint MA → +212, hint
+ * LY → +218); without a hint the table keeps its DZ-first order. The hint
+ * never touches prefixed numbers (they pass through before the table) or
+ * the Tunisian 8-digit shape (it collides with nothing).
  */
-export function normalizeMaghrebPhone(value: string): string {
+export function normalizeMaghrebPhone(value: string, countryHint?: "DZ" | "TN" | "MA" | "LY"): string {
   const v = value.replace(/[\s\-]/g, "");
-  // The national shapes collide: DZ, MA and LY all accept 0[567]XXXXXXXX,
-  // so no digit can tell them apart. First match wins in the table order
-  // below, DZ first — this is an Algerian observatory, and a prefixed
-  // +212/+218 number still passes through unchanged (see the end).
-  const dz = /^0([567])(\d{8})$/.exec(v);
-  if (dz) return `+213${dz[1]}${dz[2]}`;
+  const collision = /^0([567])(\d{8})$/.exec(v);
+  if (collision) {
+    if (countryHint === "MA") return `+212${collision[1]}${collision[2]}`;
+    if (countryHint === "LY") return `+218${collision[1]}${collision[2]}`;
+    return `+213${collision[1]}${collision[2]}`;
+  }
   const tn = /^([2-9])(\d{7})$/.exec(v);
   if (tn) return `+216${tn[1]}${tn[2]}`;
   const ly = /^0([2-9])(\d{8})$/.exec(v);
