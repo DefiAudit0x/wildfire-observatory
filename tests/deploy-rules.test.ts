@@ -32,11 +32,14 @@ describe("deploy-rules credential loading (Fix 47 — DRULES-1/2)", () => {
 
   afterEach(() => {
     process.chdir(savedCwd);
+    // Fix 47b (CodeRabbit 4685534460): unstub BEFORE restoring the saved
+    // environment — otherwise unstubAllEnvs() removes a restored value
+    // that stubEnv had recorded as absent.
+    vi.unstubAllEnvs();
     for (const [key, value] of Object.entries(savedEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    vi.unstubAllEnvs();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -107,5 +110,31 @@ describe("deploy-rules credential loading (Fix 47 — DRULES-1/2)", () => {
     const env = loadDotEnv();
     expect(env.FIREBASE_SERVICE_ACCOUNT).toBe(multiLine);
     expect(loadServiceAccountJson(env).project_id).toBe("demo");
+  });
+
+  it("parses a single-quoted multi-line value followed by a blank line (Fix 47b — CodeRabbit 4685534436)", () => {
+    const multiLine = "{\n\"project_id\":\"demo\",\n\"private_key\":\"k\",\n\"client_email\":\"a@b.c\"\n}";
+    writeEnv(`FIREBASE_SERVICE_ACCOUNT='${multiLine}'\n\nSA_KEY_FILE=account.json\n`);
+    const env = loadDotEnv();
+    expect(env.FIREBASE_SERVICE_ACCOUNT).toBe(multiLine);
+    expect(loadServiceAccountJson(env).project_id).toBe("demo");
+    expect(loadServiceAccountFile(env)).toBe("account.json");
+  });
+
+  it("parses a double-quoted multi-line value followed by a comment line (Fix 47b — CodeRabbit 4685534436)", () => {
+    const multiLine = "{\n\"project_id\":\"demo\",\n\"private_key\":\"k\",\n\"client_email\":\"a@b.c\"\n}";
+    writeEnv(`FIREBASE_SERVICE_ACCOUNT="${multiLine}"\n# service account for the deploy\nSA_KEY_FILE=account.json\n`);
+    const env = loadDotEnv();
+    expect(env.FIREBASE_SERVICE_ACCOUNT).toBe(multiLine);
+    expect(loadServiceAccountJson(env).project_id).toBe("demo");
+    expect(loadServiceAccountFile(env)).toBe("account.json");
+  });
+
+  it("parses a CRLF multi-line value followed by a blank line (Fix 47b — CodeRabbit 4685534436)", () => {
+    const multiLine = "{\r\n\"project_id\":\"demo\",\r\n\"private_key\":\"k\",\r\n\"client_email\":\"a@b.c\"\r\n}";
+    writeEnv(`FIREBASE_SERVICE_ACCOUNT="${multiLine}"\r\n\r\nSA_KEY_FILE=account.json\r\n`);
+    const env = loadDotEnv();
+    expect(loadServiceAccountJson(env).project_id).toBe("demo");
+    expect(loadServiceAccountFile(env)).toBe("account.json");
   });
 });

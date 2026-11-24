@@ -8,6 +8,17 @@ import os from "node:os";
 import path from "node:path";
 import { captureScreenshots } from "../scripts/screenshot.mjs";
 
+// Fix 47b (CodeRabbit 4685534445): the Playwright import must reject before
+// any server is spawned. The mock's `chromium` getter throws on access, so
+// the dynamic import resolves but resolving the dependency fails — at the
+// import line, before the spawn. The other tests in this file pass a
+// chromium dep, so they never touch the mock.
+vi.mock("@playwright/test", () => ({
+  get chromium() {
+    throw new Error("playwright load boom");
+  },
+}));
+
 function makePage(overrides: Record<string, unknown> = {}) {
   return {
     goto: vi.fn(async () => {}),
@@ -136,5 +147,23 @@ describe("screenshot capture (Fix 47 — SHOT-1/2)", () => {
     expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3000/api/health");
     expect(browser._page.goto).toHaveBeenCalledWith("http://127.0.0.1:3000/", expect.anything());
     expect(browser._mobile.goto).toHaveBeenCalledWith("http://127.0.0.1:3000/", expect.anything());
+  });
+
+  it("never spawns a server when the browser dependency fails to load (Fix 47b — CodeRabbit 4685534445)", async () => {
+    const child = makeChild();
+    const spawnFn = vi.fn(() => child);
+    const fetchFn = vi.fn(async () => ({ ok: true }));
+    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "shot-test-"));
+    // No chromium dep: captureScreenshots must dynamically import
+    // @playwright/test — the mocked import rejects.
+    await expect(
+      captureScreenshots({
+        spawnFn,
+        fetchFn,
+        env: {},
+        outDir,
+      }),
+    ).rejects.toThrow("playwright load boom");
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });
