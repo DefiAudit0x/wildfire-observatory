@@ -49,26 +49,43 @@ function isAdminSessionPayload(decoded: AuthPayload): boolean {
 
 /**
  * Revoke an admin or staff session server-side (cookie or bearer).
- * Verify before recording a revocation. Returns true when a revocation was durably
- * written, false when there was nothing to revoke or the register is down.
+ * Verify before recording a revocation. Fix 41c (CodeRabbit Minor, review
+ * 6037976723): a boolean conflated "nothing to revoke" with "the write
+ * failed", and the Fix 41 503 x 41b cookie-retention interaction turned a
+ * legacy jti-less (or invalid/expired) token's logout into a permanent
+ * 503 dead-end — the cookie was retained, the retry could never succeed.
+ * The tri-state separates them: "revoked" (durably written), "failed"
+ * (a jti was present but the register write did not persist — the caller
+ * must keep the cookie and 503 so the retry re-presents the token), and
+ * "nothing-to-revoke" (no token, or a token with no valid jti — legacy
+ * jti-less tokens stay un-revocable by design, invalid/expired tokens
+ * are already dead; both log out cleanly with the cookie cleared).
  */
-export async function revokeAdminSession(token: string | undefined | null, reason: string): Promise<boolean> {
-  if (!token) return false;
+export type RevokeSessionResult = "revoked" | "nothing-to-revoke" | "failed";
+
+export async function revokeAdminSession(token: string | undefined | null, reason: string): Promise<RevokeSessionResult> {
+  if (!token) return "nothing-to-revoke";
+  let decoded: (AuthPayload & { jti?: string; exp?: number }) | null;
   try {
-    const decoded = jwt.verify(token, config.jwtSecret) as (AuthPayload & { jti?: string; exp?: number }) | null;
-    if (!decoded || typeof decoded.jti !== "string" || !decoded.jti) return false;
-    const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now() + 24 * 60 * 60 * 1000;
-    revocationSeen.set(decoded.jti, expMs);
+    decoded = jwt.verify(token, config.jwtSecret) as (AuthPayload & { jti?: string; exp?: number }) | null;
+  } catch {
+    // Invalid or expired — nothing to revoke.
+    return "nothing-to-revoke";
+  }
+  if (!decoded || typeof decoded.jti !== "string" || !decoded.jti) return "nothing-to-revoke";
+  const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now() + 24 * 60 * 60 * 1000;
+  revocationSeen.set(decoded.jti, expMs);
+  try {
     const ok = await docSet(ADMIN_REVOCATION_COLLECTION, decoded.jti, {
       revokedAt: new Date().toISOString(),
       exp: expMs,
       reason,
     });
     if (!ok) logger.warn({ jti: decoded.jti }, "Session revocation not durable — retained in this process until expiry");
-    return ok;
+    return ok ? "revoked" : "failed";
   } catch (err) {
     logger.warn({ err }, "Admin revocation write failed");
-    return false;
+    return "failed";
   }
 }
 
