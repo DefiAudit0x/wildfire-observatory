@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
       status: "verified",
     },
   ]),
-  deleteReportFromFirestore: vi.fn(async (..._a: any[]) => "missing" as any),
   purgeReportWithIdempotency: vi.fn(async (..._a: any[]) => "deleted" as any),
   createNotification: vi.fn(async () => undefined),
   logAdminAction: vi.fn(async () => undefined),
@@ -22,7 +21,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../server/db.js", () => ({
   updateReportInFirestore: mocks.updateReportInFirestore,
   getReportsFromFirestore: mocks.getReportsFromFirestore,
-  deleteReportFromFirestore: mocks.deleteReportFromFirestore,
   purgeReportWithIdempotency: mocks.purgeReportWithIdempotency,
   // S-H1: after the privacy split the route recovers the notification
   // addressee from the reportPrivate shard — the default mock returns no

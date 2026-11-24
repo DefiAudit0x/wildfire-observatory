@@ -45,7 +45,6 @@ vi.mock("../server/db.js", () => ({
     if (safe.hasImage === undefined && typeof report.image === "string" && report.image.length > 0) safe.hasImage = true;
     return safe;
   },
-  saveReportToFirestore: vi.fn(async () => "saved"),
   saveReportWithIdempotency: vi.fn(async (report: any) => report.clientGeneratedId === "cg-durable-0001"
     ? { status: "existing", report: { ...report, id: "rep-durable-1" } }
     : { status: "saved", report }),

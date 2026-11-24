@@ -42,7 +42,6 @@ vi.mock("../server/db.js", () => ({
   }),
   confirmReportInFirestore: vi.fn(async () => ({ status: "no_db" })),
   updateReportInFirestore: vi.fn(async () => true),
-  deleteReportFromFirestore: vi.fn(async () => true),
 }));
 
 function createTestApp() {

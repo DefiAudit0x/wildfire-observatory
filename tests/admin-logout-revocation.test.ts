@@ -26,7 +26,6 @@ vi.mock("../server/fs.js", () => ({
 
 vi.mock("../server/db.js", () => ({
   updateReportInFirestore: vi.fn(),
-  deleteReportFromFirestore: vi.fn(),
   purgeReportWithIdempotency: vi.fn(),
   getReportsFromFirestore: vi.fn(),
   getReportPrivate: vi.fn(),
