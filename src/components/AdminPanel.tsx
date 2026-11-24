@@ -128,10 +128,11 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
   // Flipping isAuthenticated first and fire-and-forgetting the POST left a
   // valid HTTP-only cookie behind on any failure — the next remount re-probed
   // it and silently re-authenticated a workstation the operator believed
-  // logged out. Boundary: a 200 here does not guarantee server-side
-  // revocation — the route discards the revokeAdminSession boolean
-  // (server/routes/admin.ts:134–137). That is ADM-5, triaged to Fix 41
-  // (server); ADM-3 closes the client half only.
+  // logged out. Boundary: a 200 means the revocation persisted, OR the
+  // token was a legacy jti-less token with nothing to revoke (Fix 41c —
+  // it stays valid until its 24h expiry, the pre-existing legacy
+  // behaviour). A 503 means the write failed and the cookie was kept, so
+  // the operator retries with the same token.
   const handleLogout = async () => {
     if (loggingOut) return;
     setLoggingOut(true);
