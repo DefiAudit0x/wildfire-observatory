@@ -139,6 +139,36 @@ describe("PUT /api/badges/:code", () => {
       .send({ password: "admin-secret", maxUses: 3 });
     expect(res.status).toBe(404);
   });
+
+  it("clears the usage cap with maxUses: null (Fix 33 — BDG-1 D1)", async () => {
+    seedBadge({ maxUses: 5 });
+    const app = createApp();
+    const res = await supertest(app)
+      .put("/api/badges/VOL-001")
+      .set("Authorization", "Bearer fake-token")
+      .send({ maxUses: null });
+    expect(res.status).toBe(200);
+    expect(res.body.maxUses).toBeNull();
+    expect(mockDocs.get("badgeCodes/VOL-001").maxUses).toBeNull();
+    // A string is still rejected — the schema accepts null, not "".
+    const bad = await supertest(app)
+      .put("/api/badges/VOL-001")
+      .set("Authorization", "Bearer fake-token")
+      .send({ maxUses: "" });
+    expect(bad.status).toBe(400);
+  });
+
+  it("clears the expiry with expiresAt: '' (Fix 33 — BDG-1)", async () => {
+    seedBadge({ expiresAt: "2030-01-01T00:00:00" });
+    const app = createApp();
+    const res = await supertest(app)
+      .put("/api/badges/VOL-001")
+      .set("Authorization", "Bearer fake-token")
+      .send({ expiresAt: "" });
+    expect(res.status).toBe(200);
+    expect(res.body.expiresAt).toBeNull();
+    expect(mockDocs.get("badgeCodes/VOL-001").expiresAt).toBeNull();
+  });
 });
 
 describe("POST /api/badges/:code/toggle", () => {
