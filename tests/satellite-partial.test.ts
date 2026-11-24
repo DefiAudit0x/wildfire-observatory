@@ -55,6 +55,47 @@ describe("partial satellite outages", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
   });
 
+  it("Fix 42 (SAT-2): concurrent callers share one in-flight fetch", async () => {
+    // Old code: each of the 3 callers did its own 2 upstream FIRMS calls —
+    // two concurrent calls cost 4 fetches. The shared in-flight promise
+    // costs 2, and both callers get the same (deduplicated) data.
+    const fetch = vi.fn().mockImplementation(async () => detection());
+    vi.stubGlobal("fetch", fetch);
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    const [a, b] = await Promise.all([getLiveSatelliteData(), getLiveSatelliteData()]);
+    expect(a).toEqual(b);
+    expect(a.hotspots).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("Fix 42 (SAT-2): concurrent callers share one in-flight outage, and the next call re-fetches", async () => {
+    // The in-flight promise is cleared in `finally`, so a failed fetch
+    // never wedges the next call — it re-fetches instead of re-throwing a
+    // stale rejection. Old code: 4 fetches for the pair, 6 after the third.
+    const fetch = vi.fn().mockImplementation(async () => unavailable());
+    vi.stubGlobal("fetch", fetch);
+    const { getLiveSatelliteData, SatelliteUnavailableError } = await import("../server/routes/satellite");
+    const p1 = getLiveSatelliteData();
+    const p2 = getLiveSatelliteData();
+    await expect(p1).rejects.toBeInstanceOf(SatelliteUnavailableError);
+    await expect(p2).rejects.toBeInstanceOf(SatelliteUnavailableError);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await expect(getLiveSatelliteData()).rejects.toBeInstanceOf(SatelliteUnavailableError);
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it("Fix 42 (SAT-2): a sequential empty result is served from the 60 s slot without re-fetching", async () => {
+    // Old code: the second call re-fetched upstream (4 fetches total).
+    // The empty result is cached in its own slot — never overwriting the
+    // healthy cache — so the second call costs no new fetches.
+    const fetch = vi.fn().mockImplementation(async () => empty());
+    vi.stubGlobal("fetch", fetch);
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    expect(await getLiveSatelliteData()).toEqual({ hotspots: [], sources: { VIIRS_SNPP_NRT: "ok", MODIS_NRT: "ok" } });
+    expect(await getLiveSatelliteData()).toEqual({ hotspots: [], sources: { VIIRS_SNPP_NRT: "ok", MODIS_NRT: "ok" } });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("raises a satellite-only wilaya and marks fresh and cached responses as partial", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(detection());
     vi.stubGlobal("fetch", fetch);
@@ -134,13 +175,22 @@ describe("Fix 12f FIRMS wire columns", () => {
   });
 
   it("accepts header-only CSV as empty and fetches subsequent detections", async () => {
-    const fetch = vi.fn().mockResolvedValueOnce(empty()).mockResolvedValueOnce(empty())
-      .mockResolvedValueOnce(empty()).mockResolvedValueOnce(detection());
-    vi.stubGlobal("fetch", fetch);
-    const { getLiveSatelliteData } = await import("../server/routes/satellite");
-    expect(await getLiveSatelliteData()).toEqual({ hotspots: [], sources: { VIIRS_SNPP_NRT: "ok", MODIS_NRT: "ok" } });
-    expect((await getLiveSatelliteData()).hotspots).toHaveLength(1);
-    expect(fetch).toHaveBeenCalledTimes(4);
+    // Fix 42 (SAT-2): the empty result is now cached for 60 s, so the
+    // subsequent detection is fetched only after the slot expires — the
+    // fake clock is advanced past the TTL between the two calls.
+    vi.useFakeTimers();
+    try {
+      const fetch = vi.fn().mockResolvedValueOnce(empty()).mockResolvedValueOnce(empty())
+        .mockResolvedValueOnce(empty()).mockResolvedValueOnce(detection());
+      vi.stubGlobal("fetch", fetch);
+      const { getLiveSatelliteData } = await import("../server/routes/satellite");
+      expect(await getLiveSatelliteData()).toEqual({ hotspots: [], sources: { VIIRS_SNPP_NRT: "ok", MODIS_NRT: "ok" } });
+      await vi.advanceTimersByTimeAsync(61_000);
+      expect((await getLiveSatelliteData()).hotspots).toHaveLength(1);
+      expect(fetch).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

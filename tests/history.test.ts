@@ -65,8 +65,17 @@ describe("GET /api/history", () => {
 
   it("returns the buckets with hotspots marked unavailable when FIRMS fails", async () => {
     // Fix 12b: both satellite sources failing must not fail the whole endpoint.
+    // Fix 42 (SAT-2): the earlier tests in this file populate the satellite
+    // module's 60 s empty-result cache (their fetch returns header-only CSV),
+    // so this outage test needs a FRESH satellite module — otherwise the
+    // cached empty observation masks the outage for the rest of the window.
+    // (The same staleness already exists for the 10-min healthy cache.)
+    vi.resetModules();
     vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("error", { status: 500 })));
-    const res = await supertest(createTestApp()).get("/api/history?days=7");
+    const { default: freshHistoryRouter } = await import("../server/routes/history");
+    const app = express();
+    app.use("/api/history", freshHistoryRouter);
+    const res = await supertest(app).get("/api/history?days=7");
     expect(res.status).toBe(200);
     expect(res.body.buckets).toHaveLength(7);
     expect(res.body.hotspotsUnavailable).toBe(true);

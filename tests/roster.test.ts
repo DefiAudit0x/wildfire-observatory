@@ -31,6 +31,9 @@ vi.mock("../server/atomic.js", () => ({
       return { status: "missing" };
     }
     if (id === "unknown-agent") return { status: "missing" };
+    // Fix 42 (RSTR-7): simulate a failed fresh read — the route must answer
+    // 503 "Database not available", not 403 "not an active staff account".
+    if (id === "error-agent") return { status: "error" };
     return {
       status: "found",
       doc: { id, role: "agent", isActive: true, unitId: "unit-dz16", name: id === "a1" ? "علي" : id },
@@ -103,4 +106,68 @@ describe("POST /api/roster/:date/copy-to/:target", () => {
   it("forbids agents", async () => { const res = await supertest(createApp()).post(`/api/roster/${pastDateISO(1)}/copy-to/${futureDateISO(1)}`).set("Authorization", `Bearer ${token("agent", "DZ16")}`); expect(res.status).toBe(403); });
   it("rejects copying into a past (archived) date", async () => { const res = await supertest(createApp()).post(`/api/roster/${futureDateISO(1)}/copy-to/${pastDateISO(1)}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`); expect(res.status).toBe(409); });
   it("returns 404 when source has no saved roster", async () => { const res = await supertest(createApp()).post(`/api/roster/${futureDateISO(1)}/copy-to/${futureDateISO(2)}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`); expect(res.status).toBe(404); });
+});
+describe("Fix 42 (RSTR-6): impossible calendar dates", () => {
+  // A shape regex admits "2026-11-31" and "2026-99-99": isArchivedDate is
+  // lexical and isTooFarFuture sees NaN as "not too far", so the old code
+  // persisted rosters under nonexistent days. Each finding test expects 400
+  // with the distinct calendar-date message; the old code answers something
+  // else (noted per test).
+  it("GET rejects 2026-02-30 (old: 200 with an empty roster)", async () => {
+    const res = await supertest(createApp()).get("/api/roster/2026-02-30").set("Authorization", `Bearer ${token("agent", "DZ16")}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+  it("PUT rejects 2026-11-31 (old: 503 via the docSet mock)", async () => {
+    const res = await supertest(createApp()).put("/api/roster/2026-11-31").set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+  it("POST rejects 2026-11-31 (old: 201)", async () => {
+    const res = await supertest(createApp()).post("/api/roster/2026-11-31").set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ labelAr: "منصب", personnel: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+  it("DELETE rejects 2026-13-01 (old: 404)", async () => {
+    const res = await supertest(createApp()).delete("/api/roster/2026-13-01").set("Authorization", `Bearer ${token("commander", "DZ16")}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+  it("copy-to rejects a nonexistent target (old: 404 for a missing source)", async () => {
+    // Fix 42 correction to the prep: the prep's target 2026-02-30 is PAST,
+    // so the old code answered 409 (archived target), not 404. 2027-02-30
+    // is future and nonexistent: the old code passes the date guards and
+    // 404s on the missing source; the new code 400s on the calendar check.
+    const res = await supertest(createApp()).post(`/api/roster/${todayISO()}/copy-to/2027-02-30`).set("Authorization", `Bearer ${token("commander", "DZ16")}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+  it("control: GET accepts 2028-02-29 (a real leap day)", async () => {
+    const res = await supertest(createApp()).get("/api/roster/2028-02-29").set("Authorization", `Bearer ${token("agent", "DZ16")}`);
+    expect(res.status).toBe(200);
+  });
+  it("control: GET rejects 2026-02-29 (2026 is not a leap year)", async () => {
+    const res = await supertest(createApp()).get("/api/roster/2026-02-29").set("Authorization", `Bearer ${token("agent", "DZ16")}`);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Invalid date (not a real calendar date)");
+  });
+});
+
+describe("Fix 42 (RSTR-7): a failed fresh read is a 503, not a 403", () => {
+  // canonicalizePersonnel used to drop getFreshDocResult's "error" outcome,
+  // so a DB outage during a roster write reported 403 "not an active staff
+  // account". The "error-agent" fixture makes the fresh read fail; the
+  // route must answer 503 with the file's existing "Database not available"
+  // body. The third call site (copy-to) shares the identical shape and is
+  // verified by code reading — proving it would need a fixture change.
+  it("PUT returns 503 when the personnel fresh read fails", async () => {
+    const res = await supertest(createApp()).put(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ posts: [{ labelAr: "منصب", personnel: [{ agentId: "error-agent", name: "Outage Agent" }] }] });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("Database not available");
+  });
+  it("POST returns 503 when the personnel fresh read fails", async () => {
+    const res = await supertest(createApp()).post(`/api/roster/${todayISO()}`).set("Authorization", `Bearer ${token("commander", "DZ16")}`).send({ labelAr: "منصب", personnel: [{ agentId: "error-agent", name: "Outage Agent" }] });
+    expect(res.status).toBe(503);
+    expect(res.body.error).toBe("Database not available");
+  });
 });
