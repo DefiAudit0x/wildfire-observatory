@@ -29,7 +29,12 @@ export function loadDotEnv() {
   // value before its closing `}`. The value only ends at a quote followed
   // by a new KEY= assignment or end of input. (Single quotes need no such
   // guard: valid JSON never has `'` as a line's last character.)
-  const saMatch = raw.match(/^FIREBASE_SERVICE_ACCOUNT=(?:'([\s\S]*?)'|"([\s\S]*?)")(?=\n[A-Z0-9_]+=|\n*(?![\s\S]))/m);
+  // Fix 47b (CodeRabbit 4685534436): the separators between the closing
+  // quote and the next KEY= line may be blank lines, full-line comments,
+  // or CRLF line endings — the first lookahead required the very next
+  // line to be a KEY= assignment, so a blank line (or CRLF) after the
+  // value made the whole match fail and the line parser stored only `'{'`.
+  const saMatch = raw.match(/^FIREBASE_SERVICE_ACCOUNT=(?:'([\s\S]*?)'|"([\s\S]*?)")(?=(?:[ \t]*\r?\n(?:[ \t]*\r?\n|[ \t]*#[^\n]*\r?\n)*[ \t]*(?:[A-Z0-9_]+=|(?![\s\S]))|[ \t]*(?![\s\S])))/m);
   if (saMatch && !(process.env.FIREBASE_SERVICE_ACCOUNT)) out.FIREBASE_SERVICE_ACCOUNT = saMatch[1] ?? saMatch[2];
   for (const m of raw.matchAll(/^([A-Z0-9_]+)=(.*)$/gm)) {
     let v = m[2].trim();

@@ -37,6 +37,13 @@ export async function captureScreenshots(deps = {}) {
   const baseUrl = `http://127.0.0.1:${port}`;
   const out = outDirOverride ?? outDir;
 
+  // Fix 47b (CodeRabbit 4685534445): resolve the browser dependency BEFORE
+  // spawning the server — the Playwright import used to sit between the
+  // spawn and the try, so a failed import left the spawned child running
+  // with nothing to kill it. If the import rejects now, nothing has
+  // started yet.
+  const chromiumImpl = chromiumDep ?? (await import("@playwright/test")).chromium;
+
   const server = spawnFn(process.execPath, [join(dist, "server.cjs")], {
     cwd: root,
     env: {
@@ -80,8 +87,6 @@ export async function captureScreenshots(deps = {}) {
     }
     throw new Error("Server did not start: " + serverOutput.slice(0, 500));
   };
-
-  const chromiumImpl = chromiumDep ?? (await import("@playwright/test")).chromium;
 
   let browser;
   try {
