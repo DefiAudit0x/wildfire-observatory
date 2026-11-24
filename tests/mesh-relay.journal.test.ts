@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { RELAY_MAX_QUEUE_AGE_MS } from "../src/lib/meshRelay.js";
 
 const storage = new Map<string, string>();
 Object.defineProperty(globalThis, "localStorage", {
@@ -290,5 +291,152 @@ describe("mesh relay durable reconciliation journal", () => {
       .toBe("replica-divergence-a");
     expect(storedState().pending).toEqual([]);
     expect(storedState().journal[0]?.state).toBe("committed");
+  });
+});
+
+describe("mesh relay journal garbage collection (Fix 46 — MREL-1)", () => {
+  function reportFor(id: string) {
+    return {
+      clientGeneratedId: id,
+      lat: 36.75,
+      lng: 3.06,
+      locationName: "Test location",
+      wilaya: "Alger",
+      description: `GC marker ${id}`,
+      severity: "medium",
+      status: "pending",
+      timestamp: new Date().toISOString(),
+    };
+  }
+  function pendingItem(id: string, overrides: Record<string, unknown> = {}) {
+    return {
+      id,
+      report: reportFor(id),
+      ts: Date.now(),
+      attempts: 0,
+      nextAttemptAt: 0,
+      ...overrides,
+    };
+  }
+  function journalEntry(id: string, state: "prepared" | "delivered" | "committed", overrides: Record<string, unknown> = {}) {
+    const t = Date.now();
+    return {
+      journalId: `journal-${id}`,
+      queueItemId: id,
+      storageReplica: "co_located",
+      baseQueueRevision: 1,
+      clientGeneratedId: id,
+      reportFingerprint: `fp-${id}`,
+      report: reportFor(id),
+      state,
+      createdAt: t,
+      updatedAt: t,
+      ...overrides,
+    };
+  }
+  function seedState(pending: unknown[], deadLetters: unknown[], journal: unknown[]) {
+    storage.set("mesh_relay_queue", JSON.stringify({ revision: 1, pending, deadLetters, journal }));
+  }
+  function storedRaw(): { pending: any[]; deadLetters: any[]; journal: any[] } {
+    return JSON.parse(storage.get("mesh_relay_queue") || '{"pending":[],"deadLetters":[],"journal":[]}');
+  }
+  function fail500() {
+    return vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response("boom", { status: 500 })),
+    );
+  }
+
+  it("drops the prepared journal when retries are exhausted (finding)", async () => {
+    const id = "journal-gc-exhausted-1";
+    seedState(
+      [pendingItem(id, { attempts: 7, nextAttemptAt: 0 })],
+      [],
+      [journalEntry(id, "prepared")],
+    );
+    const relay = await loadRelay();
+    const fetchMock = fail500();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await relay.flushQueue();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const after = storedRaw();
+    expect(after.deadLetters).toHaveLength(1);
+    expect(after.deadLetters[0].attempts).toBe(8);
+    expect(after.journal).toEqual([]);
+    // The dead letter legitimately keeps its own report copy — the
+    // finding is the JOURNAL duplicate. So the marker must occur exactly
+    // once in storage (the dead letter), not twice (journal + dead letter).
+    const stored = storage.get("mesh_relay_queue") ?? "";
+    expect(stored.split(`GC marker ${id}`).length - 1).toBe(1);
+  });
+
+  it("drops the prepared journal when the item expires (finding)", async () => {
+    const id = "journal-gc-expired-1";
+    seedState(
+      [pendingItem(id, { ts: Date.now() - RELAY_MAX_QUEUE_AGE_MS - 1, nextAttemptAt: 0 })],
+      [],
+      [journalEntry(id, "prepared")],
+    );
+    const relay = await loadRelay();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await relay.flushQueue();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const after = storedRaw();
+    expect(after.deadLetters).toHaveLength(1);
+    expect(after.deadLetters[0].lastError).toBe("expired");
+    expect(after.journal).toEqual([]);
+  });
+
+  it("drops prepared journals of cap-dropped dead letters (finding)", async () => {
+    const letters = Array.from({ length: 100 }, (_, i) => {
+      const id = `journal-gc-cap-${String(i).padStart(3, "0")}`;
+      return pendingItem(id, {
+        deadLetter: true,
+        deadLetteredAt: Date.now() - (100 - i) * 1000,
+        attempts: 8,
+      });
+    });
+    const journals = letters.map((item) => journalEntry(item.id, "prepared"));
+    const freshId = "journal-gc-cap-fresh";
+    seedState(
+      [pendingItem(freshId, { attempts: 7, nextAttemptAt: 0 })],
+      letters,
+      [...journals, journalEntry(freshId, "prepared")],
+    );
+    const relay = await loadRelay();
+    const fetchMock = fail500();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await relay.flushQueue();
+
+    const after = storedRaw();
+    expect(after.deadLetters).toHaveLength(100);
+    expect(after.deadLetters.map((d: any) => d.id)).not.toContain("journal-gc-cap-000");
+    expect(after.deadLetters.map((d: any) => d.id)).toContain(freshId);
+    // The orphan rule (D1) drops every retained letter's prepared journal too.
+    expect(after.journal.filter((e: any) => e.state === "prepared")).toEqual([]);
+  });
+
+  it("collects an idle queue's stale journals (finding, D2)", async () => {
+    const oldCommitted = journalEntry("journal-gc-idle-old", "committed", {
+      updatedAt: Date.now() - RELAY_MAX_QUEUE_AGE_MS - 1,
+      createdAt: Date.now() - RELAY_MAX_QUEUE_AGE_MS - 1,
+    });
+    const orphan = journalEntry("journal-gc-idle-orphan", "prepared");
+    const youngCommitted = journalEntry("journal-gc-idle-young", "committed");
+    seedState([], [], [oldCommitted, orphan, youngCommitted]);
+    const relay = await loadRelay();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await relay.flushQueue();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const after = storedRaw();
+    expect(after.journal.map((e: any) => e.queueItemId)).toEqual(["journal-gc-idle-young"]);
   });
 });
