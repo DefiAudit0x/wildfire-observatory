@@ -83,4 +83,25 @@ describe("Fix 41 (ADM-5): admin logout revocation persistence", () => {
     expect(res.body).toEqual({ success: true });
     expect(state.docSet).not.toHaveBeenCalled();
   });
+
+  it("a failed logout keeps the cookie, and a retry after recovery succeeds (Fix 41b)", async () => {
+    // The token is httpOnly — the client holds no other copy. If the 503
+    // cleared the cookie, the retry would send no token and succeed (200)
+    // without ever re-attempting the durable write.
+    const token = generateAdminToken("admin");
+    state.docSet.mockResolvedValue(false); // durable write failed
+    const failed = await supertest(createApp())
+      .post("/api/admin/logout")
+      .set("Authorization", `Bearer ${token}`);
+    expect(failed.status).toBe(503);
+    expect(failed.headers["set-cookie"]).toBeUndefined();
+
+    state.docSet.mockResolvedValue(true); // the write recovers
+    const retried = await supertest(createApp())
+      .post("/api/admin/logout")
+      .set("Authorization", `Bearer ${token}`);
+    expect(retried.status).toBe(200);
+    expect(retried.body).toEqual({ success: true });
+    expect(retried.headers["set-cookie"]?.[0]).toContain("admin_token=;");
+  });
 });

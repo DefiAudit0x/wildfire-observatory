@@ -78,5 +78,10 @@ describe("POST /api/location/heartbeat", () => {
     const retry = await beat(uniqueDevice(), codes[5]);
     expect(retry.status).toBe(429);
     expect(retry.body.error).toBe("Too many badge codes from this address.");
+    // (e) Fix 41b — retrying an ACCEPTED code after the rejection must
+    // still 200. Fix 41 inserted the rejected code before the check, so it
+    // stayed in the map at size 6 and poisoned every accepted code's retry
+    // until the window expired.
+    expect((await beat(uniqueDevice(), codes[0])).status).toBe(200);
   });
 });
