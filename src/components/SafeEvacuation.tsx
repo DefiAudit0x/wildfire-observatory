@@ -470,14 +470,21 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
         : "";
     const steps = isArabic
       ? [
-          "تم حساب مسار طريق حقيقي.",
+          // Fix 36 (EVAC-3): on the estimate path no road was ever drawn — the
+          // first spoken sentence must say so, because a listener never sees
+          // the small-print disclosure.
+          routeInfo?.source === "osrm"
+            ? "تم حساب مسار طريق حقيقي."
+            : "تم حساب تقدير خط مستقيم — لا توجد طريق مرسومة على الخريطة.",
           `الوجهة ${zone.nameAr} على بعد حوالي ${Math.round(dist)} كيلومتر.`,
           proximityLine,
           "هذه الصفحة لا تؤكد أن الطريق آمن من الحريق.",
           "اتبع تعليمات الحماية المدنية واللافتات الرسمية في الميدان.",
         ].filter(Boolean)
       : [
-          "Un itinéraire routier réel a été calculé.",
+          routeInfo?.source === "osrm"
+            ? "Un itinéraire routier réel a été calculé."
+            : "Une estimation à vol d'oiseau a été calculée — aucune route n'est tracée sur la carte.",
           `La destination ${zone.nameFr} est à environ ${Math.round(dist)} kilomètres.`,
           proximityLine,
           "Cette page ne confirme pas que la route est sûre face à l'incendie.",
@@ -592,7 +599,16 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
                     ) : activeRoute?.id === zone.id ? (
                       <>
                         <Navigation2 className="h-3 w-3" />
-                        {isArabic ? "المسار نشط على الخريطة" : "Itinéraire actif sur la carte"}
+                        {/* Fix 36 (EVAC-3): on estimate no polyline is drawn at
+                            all, so the button must not claim an active route
+                            "on the map". */}
+                        {routeInfo?.source === "osrm"
+                          ? isArabic
+                            ? "المسار نشط على الخريطة"
+                            : "Itinéraire actif sur la carte"
+                          : isArabic
+                            ? "التقدير محسوب"
+                            : "Estimation calculée"}
                       </>
                     ) : (
                       <>
@@ -646,7 +662,15 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
                 <div>
                   <h4 className="font-bold text-sky-100 flex items-center gap-2">
                     <Navigation2 className="h-4 w-4 text-sky-400" />
-                    {isArabic ? "مسار طريق حقيقي" : "Itinéraire routier réel"}
+                    {/* Fix 36 (EVAC-3): the summary heading is the outcome, not
+                        the feature — on estimate it must say estimate. */}
+                    {routeInfo?.source === "osrm"
+                      ? isArabic
+                        ? "مسار طريق حقيقي"
+                        : "Itinéraire routier réel"
+                      : isArabic
+                        ? "مسار تقديري (خط مستقيم)"
+                        : "Itinéraire estimé (à vol d'oiseau)"}
                   </h4>
                   <p className="text-xs text-slate-400 mt-1 flex items-center gap-2">
                     <Car className="h-3 w-3" />

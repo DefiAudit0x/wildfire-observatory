@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Flame, ShieldAlert, Users, Radio, Gauge, History } from "lucide-react";
 import { Report, SatelliteHotspot, WilayaStatus } from "../types";
 import { computeFireRisk, RiskLevel } from "../utils/fireRisk";
@@ -48,22 +48,36 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   const [history, setHistory] = useState<HistoryBucket[] | null>(null);
   const [hotspotsPartial, setHotspotsPartial] = useState(false);
   const [hotspotsUnavailable, setHotspotsUnavailable] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
+  // Fix 36 (STA-3): the chart had no loading/failure state — a dead
+  // /api/history rendered exactly like a quiet month (zero bars, no message).
+  const [historyStatus, setHistoryStatus] = useState<"loading" | "ready" | "error">("loading");
+  const historyCancelledRef = useRef(false);
+  const loadHistory = useCallback(() => {
+    setHistoryStatus("loading");
     fetch("/api/history?days=30")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (!cancelled && data?.buckets) {
+        if (historyCancelledRef.current) return;
+        if (data?.buckets) {
           setHistory(data.buckets);
           setHotspotsPartial(data?.hotspotsPartial === true && data?.hotspotsUnavailable !== true);
           setHotspotsUnavailable(data?.hotspotsUnavailable === true);
+          setHistoryStatus("ready");
+        } else {
+          setHistoryStatus("error");
         }
       })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
+      .catch(() => {
+        if (!historyCancelledRef.current) setHistoryStatus("error");
+      });
   }, []);
+  useEffect(() => {
+    historyCancelledRef.current = false;
+    loadHistory();
+    return () => {
+      historyCancelledRef.current = true;
+    };
+  }, [loadHistory]);
 
   // Fix 12c: when the satellite feed is unavailable the history endpoint
   // reports hotspots as 0 with hotspotsUnavailable: true. Those zeros are
@@ -247,10 +261,32 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
               <History className="h-4 w-4 text-amber-500" />
               {isArabic ? "نشاط آخر 30 يوماً (بلاغات + نداءات + أقمار)" : "Activité 30 derniers jours"}
             </p>
-            <span className="text-[10px] text-gray-500">{isArabic ? "اليوم في أقصى اليسار" : "Aujourd'hui à gauche"}</span>
+            {/* Fix 36 (STA-2): the server sends buckets oldest→newest, so today
+                is at the RIGHT — the old legend claimed the left. */}
+            <span className="text-[10px] text-gray-500">{isArabic ? "اليوم في أقصى اليمين" : "Aujourd'hui à droite"}</span>
           </div>
           <div className="flex items-end gap-[3px] h-16" dir="ltr">
-            {(history || []).map((bucket) => {
+            {historyStatus === "loading" && (
+              <p className="text-xs text-gray-400">{isArabic ? "جاري تحميل السجل…" : "Chargement de l'historique…"}</p>
+            )}
+            {historyStatus === "error" && (
+              <div role="alert" className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-amber-300">
+                  {isArabic
+                    ? "تعذّر تحميل سجل الأيام الثلاثين — تحقق من الاتصال وحاول مجدداً."
+                    : "Impossible de charger l'historique des 30 derniers jours — vérifiez la connexion et réessayez."}
+                </p>
+                <button
+                  type="button"
+                  onClick={loadHistory}
+                  className="text-xs font-bold px-2 py-1 rounded border border-amber-500/40 text-amber-300 hover:border-amber-400"
+                >
+                  {isArabic ? "إعادة المحاولة" : "Réessayer"}
+                </button>
+              </div>
+            )}
+            {historyStatus === "ready" &&
+              (history || []).map((bucket) => {
               const total = bucket.reports + bucket.sos + (hotspotsUnavailable ? 0 : bucket.hotspots);
               const height = Math.max(2, Math.round((total / historyMax) * 100));
               return (
