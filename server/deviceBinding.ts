@@ -34,7 +34,11 @@ export function issueDeviceCookie(res: Response, id: string, maxAgeMs = DEVICE_S
 export function boundDeviceId(req: Request): string | null {
   const bound = (req as any).cookies?.[DEVICE_SIG_COOKIE] as string | undefined;
   if (!bound) return null;
-  const idx = bound.indexOf(".");
+  // Fix 44 (DVC-1): split at the LAST dot, not the first — the base64url
+  // signature provably contains no dots, but the device id may (the SOS
+  // schema accepts any 1–128-char string), so a first-dot split truncated
+  // dotted ids and the signature length check then failed every time.
+  const idx = bound.lastIndexOf(".");
   if (idx <= 0) return null;
   const id = bound.slice(0, idx);
   const sig = bound.slice(idx + 1);

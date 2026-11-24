@@ -6,7 +6,6 @@ import { requireAdmin, generateAdminToken, revokeAdminSession } from "../middlew
 import { str } from "../params.js";
 import {
   updateReportInFirestore,
-  deleteReportFromFirestore,
   purgeReportWithIdempotency,
   getReportsFromFirestore,
   getReportPrivate,

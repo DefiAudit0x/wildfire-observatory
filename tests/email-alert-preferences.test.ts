@@ -35,7 +35,7 @@ vi.mock("firebase/firestore", () => ({
 }));
 
 vi.stubEnv("RESEND_API_KEY", "test-resend-key");
-const { sendFireAlert } = await import("../server/email.js");
+const { sendFireAlert, sendVerificationEmail } = await import("../server/email.js");
 
 describe("sendFireAlert subscriber preferences", () => {
   const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response("{}", { status: 200 }));
@@ -104,5 +104,49 @@ describe("sendFireAlert subscriber preferences", () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).to).toEqual(["low@example.test"]);
+  });
+});
+
+describe("sendEmail provider timeout (Fix 44, MAIL-2)", () => {
+  const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response("{}", { status: 200 }));
+
+  beforeEach(() => {
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a stalled provider fetch rejects with a timeout error within ~11 s (real timers)", { timeout: 15_000 }, async () => {
+    // Lesson (z): vitest fake timers do NOT fire Node's AbortSignal.timeout,
+    // so this test MUST use real timers — a fake-timer version would hang to
+    // the test timeout and prove nothing. The 30 s suite timeout covers the
+    // 10 s provider deadline with room to spare.
+    // The stub must honor the abort signal exactly like real fetch does:
+    // a never-resolving promise that ignores the signal would hang forever
+    // on BOTH old and new code and prove nothing about the timeout.
+    vi.stubGlobal("fetch", vi.fn((_input: any, init?: any) => new Promise((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal | undefined;
+      if (!signal) return;
+      if (signal.aborted) reject(signal.reason);
+      else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })));
+    let caught: any;
+    try {
+      await sendVerificationEmail("timeout@example.test", "tok-timeout-1");
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeDefined();
+    expect(String(caught?.name ?? caught)).toContain("Timeout");
+  });
+
+  it("attaches an AbortSignal to the provider fetch (fast, Fix 33 pattern)", async () => {
+    await sendVerificationEmail("signal@example.test", "tok-signal-1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0][1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 });

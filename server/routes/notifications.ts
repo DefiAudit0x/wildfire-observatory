@@ -399,7 +399,14 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           unsubscribeToken,
           updatedAt: new Date().toISOString(),
         });
-        await sendVerificationEmail(email, verificationToken);
+        // Fix 44 (MAIL-3): when mail is unconfigured the record is still
+        // persisted (unverified), but the response must not promise a
+        // verification email that can never arrive.
+        const emailDelivery = await sendVerificationEmail(email, verificationToken);
+        if (emailDelivery === "not-configured") {
+          res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
+          return;
+        }
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
@@ -437,7 +444,12 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
           verified: existingDoc.data()?.verified === true,
           verificationToken, verificationExpiresAt, unsubscribeToken, updatedAt: new Date().toISOString(),
         });
-        await sendVerificationEmail(email, verificationToken);
+        // Fix 44 (MAIL-3): same unconfigured-mail branch as the Admin SDK site above.
+        const emailDelivery = await sendVerificationEmail(email, verificationToken);
+        if (emailDelivery === "not-configured") {
+          res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
+          return;
+        }
         res.json({ success: true, message: "Subscription updated. Check email to verify." });
         return;
       }
@@ -447,8 +459,13 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       });
     }
 
-    await sendVerificationEmail(email, verificationToken);
+    // Fix 44 (MAIL-3): same unconfigured-mail branch as the verified-update sites above.
+    const emailDelivery = await sendVerificationEmail(email, verificationToken);
     logger.info({ emailFingerprint: secretFingerprint(email) }, "New subscriber registered");
+    if (emailDelivery === "not-configured") {
+      res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
+      return;
+    }
     res.json({ success: true, message: "Subscription created. Check email to verify." });
   } catch (err) {
     logger.error({ err }, "Failed to subscribe");

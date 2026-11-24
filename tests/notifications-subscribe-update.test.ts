@@ -12,17 +12,21 @@ const state = vi.hoisted(() => ({
     unsubscribeToken: "u".repeat(64),
   } as Record<string, unknown>,
   updateCalls: [] as Array<Record<string, unknown>>,
+  subscriberExists: true,
+  setCalls: [] as Array<Record<string, unknown>>,
 }));
 
 vi.mock("../server/firebase.js", () => ({
   getDb: () => ({
     collection: () => ({
       doc: () => ({
-        get: async () => ({ exists: true, data: () => state.existing }),
+        get: async () => ({ exists: state.subscriberExists, data: () => state.existing }),
         update: async (update: Record<string, unknown>) => {
           state.updateCalls.push(update);
         },
-        set: async () => {},
+        set: async (data: Record<string, unknown>) => {
+          state.setCalls.push(data);
+        },
       }),
     }),
   }),
@@ -31,11 +35,13 @@ vi.mock("../server/firebase.js", () => ({
 
 vi.mock("firebase/firestore", () => ({
   doc: () => ({}),
-  getDoc: async () => ({ exists: () => true, data: () => state.existing }),
+  getDoc: async () => ({ exists: () => state.subscriberExists, data: () => state.existing }),
   updateDoc: async (_ref: unknown, update: Record<string, unknown>) => {
     state.updateCalls.push(update);
   },
-  setDoc: async () => {},
+  setDoc: async (_ref: unknown, data: Record<string, unknown>) => {
+    state.setCalls.push(data);
+  },
   collection: vi.fn(),
   query: vi.fn(),
   where: vi.fn(),
@@ -48,6 +54,10 @@ function createApp() {
   const app = express();
   app.use(express.json());
   app.use(cookieParser());
+  // Fix 44 (MAIL-3): trust one proxy hop so X-Forwarded-For drives req.ip —
+  // the subscribe limiter (10/min) is shared across this file's tests, and
+  // the MAIL-3 tests need fresh buckets (sos-ip-flood.test.ts precedent).
+  app.set("trust proxy", 1);
   app.use("/api/notifications", notificationsRouter);
   return app;
 }
@@ -171,10 +181,12 @@ describe("notification subscribe — verified updates require mailbox control (F
       // No token is needed here: mailbox control is proven by the fresh
       // verification this path issues — the update re-issues a verification
       // token + expiry + unsubscribe token and keeps verified false, instead
-      // of applying the preferences directly. (sendVerificationEmail itself
-      // no-ops in this env: no email provider is configured.)
+      // of applying the preferences directly. (Fix 44 MAIL-3: no email
+      // provider is configured in this env, so the response says so instead
+      // of promising a verification email.)
       expect(res.status).toBe(200);
-      expect(res.body.message).toBe("Subscription updated. Check email to verify.");
+      expect(res.body.message).toBe("Subscription saved, but email delivery is not configured — you will not receive a verification email.");
+      expect(res.body.emailDelivery).toBe("disabled");
       expect(state.updateCalls).toHaveLength(1);
       const update = state.updateCalls[0];
       expect(update.verified).toBe(false);
@@ -185,4 +197,67 @@ describe("notification subscribe — verified updates require mailbox control (F
       expect(update.unsubscribeToken).toHaveLength(64);
     },
   );
+});
+
+describe("notification subscribe — unconfigured mail (Fix 44, MAIL-3)", () => {
+  const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+
+  beforeEach(() => {
+    state.adminSdk = true;
+    state.subscriberExists = false;
+    state.setCalls = [];
+    state.updateCalls = [];
+    fetchMock.mockClear();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a fresh subscription with no mail provider says so instead of promising a verification email", async () => {
+    // No provider keys are set in this file's env, so sendVerificationEmail
+    // returns "not-configured" — the default here.
+    const res = await supertest(createApp())
+      .post("/api/notifications/subscribe")
+      .set("X-Forwarded-For", "10.44.0.1")
+      .send({ email: "new-subscriber@example.com", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "medium" });
+
+    expect(res.status).toBe(200);
+    expect(res.body.emailDelivery).toBe("disabled");
+    expect(res.body.message).toBe("Subscription saved, but email delivery is not configured — you will not receive a verification email.");
+    // The record is still persisted, unverified.
+    expect(state.setCalls).toHaveLength(1);
+    expect(state.setCalls[0].verified).toBe(false);
+    expect(typeof state.setCalls[0].verificationToken).toBe("string");
+    // And no verification email was attempted.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("with a provider configured the original verification message returns and no emailDelivery field appears", async () => {
+    // config reads process.env at import time (server/config.ts:91-93), so
+    // the control needs a fresh router import AFTER stubbing the key.
+    vi.stubEnv("RESEND_API_KEY", "test-key");
+    try {
+      vi.resetModules();
+      const { default: freshRouter } = await import("../server/routes/notifications.js");
+      const freshApp = express();
+      freshApp.use(express.json());
+      freshApp.use(cookieParser());
+      freshApp.set("trust proxy", 1);
+      freshApp.use("/api/notifications", freshRouter);
+
+      const res = await supertest(freshApp)
+        .post("/api/notifications/subscribe")
+        .set("X-Forwarded-For", "10.44.0.2")
+        .send({ email: "configured@example.com", wilayas: ["الجزائر - عنابة (Algérie - Annaba)"], minSeverity: "medium" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toBe("Subscription created. Check email to verify.");
+      expect(res.body).not.toHaveProperty("emailDelivery");
+      expect(fetchMock).toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

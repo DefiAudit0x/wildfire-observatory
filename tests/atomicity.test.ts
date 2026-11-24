@@ -133,7 +133,7 @@ const {
   createVolunteerRegistrationAtomically,
   joinTeamAtomically,
 } = await import("../server/atomic.js");
-const { docMergeSet, docSet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic, updateUserAtomic } = await import("../server/fs.js");
+const { docMergeSet, docSet, docGet, appendSosDispatch, resolveSosAtomically, docDeleteFields, bindBadgeDeviceAtomic, updateUserAtomic } = await import("../server/fs.js");
 const { clearTeamMissionAtomically, setPrincipalBlocked } = await import("../server/atomic.js");
 
 const post = (id: string) => ({ id, labelAr: id, personnel: [] });
@@ -614,6 +614,39 @@ describe("B4 — resolveSosAtomically: resolve + mission clear in ONE transactio
     const late = state.docs.get("teamMissions/team-b4c");
     if (late) expect(late.phase).toBe("cleared");
     else expect(dispatchResult).toBe("resolved");
+  });
+
+  function seedResolveFs3() {
+    // Fresh mission ids: the module-level docCache persists across tests in
+    // this file, so reusing team-b4a risks a leaked cache entry (prep §6.5).
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.docs.set("trappedSos/sos-fs3", { id: "sos-fs3", status: "active", name: "مختبر" });
+    state.docs.set("teamMissions/team-fs3a", { teamId: "team-fs3a", sosId: "sos-fs3", phase: "en_route", since: 1 });
+    state.docs.set("teamMissions/team-fs3b", { teamId: "team-fs3b", sosId: "sos-fs3", phase: "on_scene", since: 2 });
+    state.docs.set("teamMissions/team-fs3other", { teamId: "team-fs3other", sosId: "sos-OTHER", phase: "en_route", since: 3 });
+  }
+
+  it("Fix 44 (FS-3): a resolve invalidates the cleared missions' doc cache", async () => {
+    seedResolveFs3();
+    // Prime the 60 s doc cache with the pre-resolve phase.
+    expect((await docGet("teamMissions", "team-fs3a"))?.phase).toBe("en_route");
+    const r = await resolveSosAtomically("sos-fs3");
+    expect(r).toEqual({ status: "resolved", missionsCleared: 2 });
+    // The write landed in the store — and the READ is fresh too, not the
+    // cached en_route copy (fail-without-fix: old code returns en_route).
+    expect(state.docs.get("teamMissions/team-fs3a")!.phase).toBe("cleared");
+    expect((await docGet("teamMissions", "team-fs3a"))?.phase).toBe("cleared");
+    expect((await docGet("teamMissions", "team-fs3b"))?.phase).toBe("cleared");
+  });
+
+  it("Fix 44 (FS-3): a mission on another SOS keeps its cached copy (precision control)", async () => {
+    seedResolveFs3();
+    expect((await docGet("teamMissions", "team-fs3other"))?.phase).toBe("en_route");
+    await resolveSosAtomically("sos-fs3");
+    // Per-doc invalidation only — the unrelated mission's cached copy is untouched.
+    expect((await docGet("teamMissions", "team-fs3other"))?.phase).toBe("en_route");
+    expect(state.docs.get("teamMissions/team-fs3other")!.phase).toBe("en_route");
   });
 });
 

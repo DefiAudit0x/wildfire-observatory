@@ -12,6 +12,12 @@ function getProvider(): "resend" | "brevo" | "sendgrid" | null {
   return null;
 }
 
+// Fix 44 (MAIL-2): bound every provider fetch — a stalled provider used to
+// hold subscribe HTTP responses and every later alert batch indefinitely
+// (a pending fetch never rejects, so no catch ever fired). 10 s is generous
+// against typical provider latency (<2 s) and bounded against a hang.
+const EMAIL_PROVIDER_TIMEOUT_MS = 10_000;
+
 async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
   const provider = getProvider();
   if (!provider) {
@@ -23,6 +29,7 @@ async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
     if (provider === "resend") {
       const res = await fetch("https://api.resend.com/emails", {
         method: "POST",
+        signal: AbortSignal.timeout(EMAIL_PROVIDER_TIMEOUT_MS),
         headers: {
           Authorization: `Bearer ${config.resendApiKey}`,
           "Content-Type": "application/json",
@@ -33,6 +40,7 @@ async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
     } else if (provider === "brevo") {
       const res = await fetch("https://api.brevo.com/v3/smtp/email", {
         method: "POST",
+        signal: AbortSignal.timeout(EMAIL_PROVIDER_TIMEOUT_MS),
         headers: {
           "api-key": config.brevoApiKey,
           "Content-Type": "application/json",
@@ -49,6 +57,7 @@ async function sendEmail({ to, subject, html }: EmailPayload): Promise<void> {
     } else {
       const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
         method: "POST",
+        signal: AbortSignal.timeout(EMAIL_PROVIDER_TIMEOUT_MS),
         headers: {
           Authorization: `Bearer ${config.sendgridApiKey}`,
           "Content-Type": "application/json",
@@ -184,9 +193,12 @@ async function getVerifiedSubscribers(): Promise<VerifiedSubscriber[]> {
   }
 }
 
-export async function sendVerificationEmail(email: string, token: string): Promise<void> {
+export async function sendVerificationEmail(email: string, token: string): Promise<"sent" | "not-configured"> {
   const provider = getProvider();
-  if (!provider) return;
+  // Fix 44 (MAIL-3): report the unconfigured state instead of silently
+  // no-opping — the subscribe sites answer "Check email to verify" and the
+  // caller must be able to tell the user no verification email can arrive.
+  if (!provider) return "not-configured";
 
   const verifyUrl = `${config.appUrl}/api/notifications/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
 
@@ -210,6 +222,7 @@ export async function sendVerificationEmail(email: string, token: string): Promi
 </html>`.trim();
 
   await sendEmail({ to: email, subject: "تأكيد اشتراكك في تنبيهات حرائق الغابات 🔥", html });
+  return "sent";
 }
 
 export async function sendFireAlert(report: {

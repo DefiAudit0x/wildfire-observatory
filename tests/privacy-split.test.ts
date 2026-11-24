@@ -89,14 +89,48 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
     }),
   };
 
-  return { db, deleted, written };
+  return { db, deleted, written, docs: existing };
 }
 
-const state = vi.hoisted(() => ({ fake: null as any }));
+const state = vi.hoisted(() => ({ fake: null as any, clientMode: false }));
 
 vi.mock("../server/firebase.js", () => ({
   getDb: () => state.fake?.db ?? null,
-  isAdminDb: () => state.fake !== null,
+  isAdminDb: () => state.fake !== null && !state.clientMode,
+}));
+
+// Fix 44 (DB-2 scope expansion): the client-SDK surface the purge client
+// branch rides — reads/writes the same fake store as the admin fake above,
+// so the client-branch purge test asserts against one shared store.
+vi.mock("firebase/firestore", () => ({
+  doc: (_db: unknown, collection: string, id: string) => ({ id, __path: `${collection}/${id}`, path: `${collection}/${id}` }),
+  collection: (_db: unknown, name: string) => ({ __col: name }),
+  where: (field: string, _op: string, value: any) => ({ field, value }),
+  query: (col: { __col: string }, filter?: { field: string; value: any }) => ({ __col: col.__col, __filter: filter }),
+  getDoc: async (ref: { __path: string }) => ({
+    exists: () => state.fake?.docs[ref.__path] !== undefined,
+    data: () => state.fake?.docs[ref.__path],
+    id: ref.__path.split("/")[1],
+  }),
+  getDocs: async (q: { __col: string; __filter?: { field: string; value: any } }) => {
+    const docs = Object.entries(state.fake?.docs ?? {})
+      .filter(([path, data]: [string, any]) => path.startsWith(`${q.__col}/`) &&
+        (!q.__filter || data[q.__filter.field] === q.__filter.value))
+      .map(([path, data]: [string, any]) => ({ id: path.split("/")[1], data: () => data }));
+    return { docs, empty: docs.length === 0, forEach: (cb: (d: any) => void) => docs.forEach(cb) };
+  },
+  writeBatch: () => {
+    const ops: string[] = [];
+    return {
+      delete: (ref: { __path: string }) => ops.push(ref.__path),
+      commit: async () => {
+        for (const path of ops) {
+          state.fake.deleted.push(path);
+          delete state.fake.docs[path];
+        }
+      },
+    };
+  },
 }));
 
 import {
@@ -134,6 +168,7 @@ const PII_REPORT = {
 beforeEach(() => {
   invalidateReportsCache();
   state.fake = null;
+  state.clientMode = false;
 });
 
 describe("splitReportForPrivacy — S-H1 shard split", () => {
@@ -221,6 +256,24 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
       "reportIdempotency/cg-privacy-1": { reportId: "rep-privacy-1" },
     });
     state.fake = fake;
+
+    const outcome = await purgeReportWithIdempotency("rep-privacy-1");
+    expect(outcome).toBe("deleted");
+    expect(fake.deleted).toContain("reports/rep-privacy-1");
+    expect(fake.deleted).toContain("reportPrivate/rep-privacy-1");
+    expect(fake.deleted).toContain("reportImages/rep-privacy-1");
+    expect(fake.deleted).toContain("reportIdempotency/cg-privacy-1");
+  });
+
+  it("client-branch purge deletes the shards too (Fix 44, DB-2 scope expansion)", async () => {
+    const fake = makeFakeAdminDb({
+      "reports/rep-privacy-1": { lat: 36.75, lng: 7.6, clientGeneratedId: "cg-privacy-1" },
+      "reportPrivate/rep-privacy-1": { deviceId: "device-abc" },
+      "reportImages/rep-privacy-1": { image: "data:image/jpeg;base64,AAAA" },
+      "reportIdempotency/cg-privacy-1": { reportId: "rep-privacy-1" },
+    });
+    state.fake = fake;
+    state.clientMode = true;
 
     const outcome = await purgeReportWithIdempotency("rep-privacy-1");
     expect(outcome).toBe("deleted");

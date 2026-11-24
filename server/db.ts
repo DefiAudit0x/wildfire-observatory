@@ -512,24 +512,9 @@ export async function saveReportWithIdempotency(
   }
 }
 
-export async function saveReportToFirestore(report: any): Promise<ReportSaveResult> {
-  const db = getDb();
-  if (!db) return "no-db";
-  try {
-    if (isAdminDb(db)) {
-      await db.collection("reports").doc(report.id).set(report);
-    } else {
-      const { setDoc, doc } = await loadClientSdk();
-      await setDoc(doc(db, "reports", report.id), report);
-    }
-    invalidateReportsCache();
-    return "saved";
-  } catch (err) {
-    logger.error({ err }, "[Firestore] Failed to save report");
-    return "error";
-  }
-}
-
+// Fix 44 (DB-2): the legacy saveReportToFirestore helper was deleted here —
+// it wrote the whole report into the public doc with no privacy split.
+// Use saveReportWithIdempotency instead.
 export type ReportMutationResult = "updated" | "deleted" | "no-db" | "missing" | "error";
 
 /**
@@ -565,35 +550,9 @@ export async function updateReportInFirestore(
   }
 }
 
-export async function deleteReportFromFirestore(id: string): Promise<ReportMutationResult> {
-  const db = getDb();
-  if (!db) return "no-db";
-  try {
-    if (isAdminDb(db)) {
-      const docRef = db.collection("reports").doc(id);
-      const snap = await docRef.get();
-      if (!snap.exists) return "missing";
-      // S-H1: the privacy-split shards must die with the report — leaving
-      // reportPrivate (identity) or reportImages (photo) behind keeps PII
-      // alive after the reporter (or an admin) believes the report is gone.
-      await db.collection(REPORT_PRIVATE_COLLECTION).doc(id).delete().catch(() => {});
-      await db.collection(REPORT_IMAGES_COLLECTION).doc(id).delete().catch(() => {});
-      await docRef.delete();
-    } else {
-      const { doc, getDoc, deleteDoc } = await loadClientSdk();
-      const docRef = doc(db, "reports", id);
-      const snap = await getDoc(docRef);
-      if (!snap.exists()) return "missing";
-      await deleteDoc(docRef);
-    }
-    invalidateReportsCache();
-    return "deleted";
-  } catch (err) {
-    logger.error({ err }, "[Firestore] Failed to delete report");
-    return "error";
-  }
-}
-
+// Fix 44 (DB-2): the legacy deleteReportFromFirestore helper was deleted
+// here — its admin branch swallowed shard failures and its client branch
+// omitted the shard deletes entirely. Use purgeReportWithIdempotency instead.
 export type ReportPurgeResult = "deleted" | "missing" | "no-db" | "error";
 
 /**
@@ -648,6 +607,11 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
     legacy.forEach((d) => keys.add(d.id));
     const batch = writeBatch(db);
     batch.delete(reportRef);
+    // Fix 44 (DB-2 scope expansion): the client branch used to omit the
+    // shard deletes the admin branch has — S-H1 says the split shards are
+    // part of the report's lifecycle and die in the same batch.
+    batch.delete(doc(db, REPORT_PRIVATE_COLLECTION, id));
+    batch.delete(doc(db, REPORT_IMAGES_COLLECTION, id));
     for (const key of keys) {
       batch.delete(doc(db, REPORT_IDEMPOTENCY_COLLECTION, key));
     }

@@ -63,7 +63,6 @@ vi.mock("../server/db.js", () => ({
   }),
   confirmReportInFirestore: vi.fn(async () => ({ status: "no_db" })),
   updateReportInFirestore: vi.fn(async () => true),
-  deleteReportFromFirestore: vi.fn(async () => true),
 }));
 
 const mockDocs = vi.hoisted(() => new Map<string, any>());
