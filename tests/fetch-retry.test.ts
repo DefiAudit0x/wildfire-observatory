@@ -67,3 +67,21 @@ describe("fetchWithRetry retry policy", () => {
     vi.useRealTimers();
   });
 });
+describe("fetchWithRetry terminal error (Fix 38 — API-1)", () => {
+  it("an exhausted all-503 run names the HTTP status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("boom", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchWithRetry("/api/x", {}, 1)).rejects.toThrow("Failed after 1 retries: HTTP 503");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("mixed failures report the LAST error, not the older transport error", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("boom"))
+      .mockResolvedValueOnce(new Response("boom", { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchWithRetry("/api/x", {}, 2, 10)).rejects.toThrow("Failed after 2 retries: HTTP 503");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
