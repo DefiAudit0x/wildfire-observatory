@@ -1,6 +1,11 @@
+// @vitest-environment jsdom
+// (Fix 46 — MBR-1: the native-handler test touches `window` directly;
+// without this the file fails under the node-based server config.)
 /**
- * Round-8: meshBridge anti-replay caches must expire by TIME (real 5-minute
- * TTL), not by set size; and the peer poller must notify the empty list.
+ * Round-8: meshBridge anti-replay caches must expire by TIME (real 12-minute
+ * retention: 10-minute TTL plus 2 minutes of clock skew), not by set size;
+ * and the peer poller must notify the empty list. (Fix 46 — MBR-2: the
+ * "5-minute" claim was stale.)
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
@@ -60,15 +65,15 @@ describe("meshBridge anti-replay TTL", () => {
     expect(checkAndRecordMessageNonce("negative-native-nonce", -123456)).toBe(false);
   });
 
-  it("bounds the message replay cache by evicting the oldest entries", async () => {
+  it("does not evict the oldest entries under a burst of traffic (Fix 46 — MBR-2)", async () => {
     const { checkAndRecordMessageNonce } = await import("../src/utils/meshBridge");
     const first = "cache-bound-first";
     expect(checkAndRecordMessageNonce(first, 1)).toBe(true);
     for (let i = 0; i < 5000; i++) {
       expect(checkAndRecordMessageNonce(`cache-bound-${i}`, i + 2)).toBe(true);
     }
-    // The cache is bounded at 4096, so the oldest entry is admitted again.
-    expect(checkAndRecordMessageNonce(first, 1)).toBe(true);
+    // Age-only purge: the burst must not wipe the replay window.
+    expect(checkAndRecordMessageNonce(first, 1)).toBe(false);
   });
 
   it("rejects timestamps older than the native ten-minute freshness window", async () => {
@@ -77,5 +82,42 @@ describe("meshBridge anti-replay TTL", () => {
     expect(isFreshMeshTimestamp(now - 10 * 60 * 1000 - 1, now)).toBe(false);
     expect(isFreshMeshTimestamp(now + 2 * 60 * 1000 + 1, now)).toBe(false);
     expect(isFreshMeshTimestamp(now - 60_000, now)).toBe(true);
+  });
+});
+
+describe("meshBridge native message handler (Fix 46 — MBR-1)", () => {
+  afterEach(() => {
+    // The installed-flag is module-level: clean it so a later test can
+    // reinstall the handler (the unsubscribe below also clears it, this
+    // covers a test that fails before reaching it).
+    delete (window as any).onMeshMessage;
+    delete (window as any).__meshNativeHandlerInstalled;
+    delete (window as any).AndroidBridge;
+  });
+
+  it("drops a null JSON payload instead of throwing, and never forwards raw text", async () => {
+    const { onMeshMessage } = await import("../src/utils/meshBridge");
+    const listener = vi.fn();
+    // The handler installs only when a bridge exists — set it BEFORE
+    // registering, or installNativeMessageHandler returns early.
+    (window as any).AndroidBridge = { getPeerReputation: () => 0 };
+    const unsubscribe = onMeshMessage(listener);
+
+    expect(() => (window as any).onMeshMessage("null")).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    expect(() => (window as any).onMeshMessage('"bare string"')).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    expect(() => (window as any).onMeshMessage("42")).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    expect(() => (window as any).onMeshMessage("[1,2]")).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    // Controls (pass on old code too): malformed JSON is dropped by the
+    // existing catch, and a valid envelope is delivered.
+    expect(() => (window as any).onMeshMessage("not json{")).not.toThrow();
+    expect(listener).not.toHaveBeenCalled();
+    (window as any).onMeshMessage('{"peerId":"peer-1","payload":"hello"}');
+    expect(listener).toHaveBeenCalledWith("hello", "peer-1", 0);
+
+    unsubscribe();
   });
 });

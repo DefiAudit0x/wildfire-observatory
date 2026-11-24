@@ -25,9 +25,10 @@ export interface PeerInfo {
 }
 
 // Anti-replay cache with a REAL time-to-live: entries are purged by age
-// (5 minutes, matching the native service), never "when the set got big" —
-// a burst of traffic must not wipe the whole replay window at once.
-const MAX_REPLAY_ENTRIES = 4096;
+// (12 minutes: 10-minute TTL plus 2 minutes of clock skew), never "when
+// the set got big" — a burst of traffic must not wipe the whole replay
+// window at once. (Fix 46 — MBR-2: the "5 minutes" claim was stale, and
+// the capacity-eviction loop below contradicted this comment; both fixed.)
 export const NETWORK_POW_DIFFICULTY = 8;
 export const MESH_MESSAGE_TTL_MS = 10 * 60 * 1000;
 export const MESH_MESSAGE_CLOCK_SKEW_MS = 2 * 60 * 1000;
@@ -620,6 +621,13 @@ function installNativeMessageHandler(): void {
       // of forwarding raw text to application listeners that expect envelopes.
       return;
     }
+    // Fix 46 (MBR-1): JSON.parse('null') succeeds, so a null payload
+    // reached `parsed.peerId` below and threw before `??` could apply.
+    // The handler's contract is envelopes — drop any non-object payload
+    // (null, bare strings/numbers/booleans, arrays) the same way malformed
+    // JSON is dropped. (The prep's predicate did not cover arrays; this
+    // adds the Array.isArray clause its own text requires.)
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return;
     const peerId = parsed.peerId ?? "unknown";
     const validPeerId = typeof peerId === "string" ? peerId : "unknown";
     let reputation = 0;
@@ -934,18 +942,11 @@ function pruneReplayCache(cache: Map<unknown, number>, now: number): void {
   for (const [key, timestamp] of cache) {
     if (timestamp <= cutoff) cache.delete(key);
   }
-  while (cache.size > MAX_REPLAY_ENTRIES) {
-    let oldestKey: unknown;
-    let oldestTimestamp = Infinity;
-    for (const [key, timestamp] of cache) {
-      if (timestamp < oldestTimestamp) {
-        oldestKey = key;
-        oldestTimestamp = timestamp;
-      }
-    }
-    if (oldestKey === undefined) break;
-    cache.delete(oldestKey);
-  }
+  // Fix 46 (MBR-2): the capacity-eviction loop that used to follow this
+  // age purge is deleted — it evicted the oldest entry past 4096
+  // regardless of age, exactly what the header comment says never
+  // happens. Age-only purge now; entries are recorded only for
+  // validated/authenticated traffic, and the map is per-page-lifetime.
 }
 
 export function checkAndRecordNonce(nonce: number): boolean {
