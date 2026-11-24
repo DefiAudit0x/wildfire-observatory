@@ -298,7 +298,9 @@ router.get("/", requireAdmin, async (req: Request, res: Response) => {
           batteryPct: position?.batteryPct ?? null,
           // Fix 43 (TEAM-6): fix age was accepted and stored but dropped
           // from this response — never fabricated, null for legacy clients.
-          fixTimeMs: position?.fixTimeMs ?? null,
+          // Fix 45 (D5): fall back to the durable snapshot's fix age when
+          // the member has no live registry position (offline fallback).
+          fixTimeMs: position?.fixTimeMs ?? m.lastFixTimeMs ?? null,
           trail: position?.trail ?? [],
         };
       })
