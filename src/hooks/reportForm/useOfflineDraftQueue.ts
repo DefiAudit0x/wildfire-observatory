@@ -30,6 +30,14 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
   const allowOfflineSimulation = import.meta.env.DEV;
   const [isOfflineSimulation, setIsOfflineSimulation] = useState(false);
   const [offlineDrafts, setOfflineDrafts] = useState<any[]>([]);
+  // Fix 40b (CodeRabbit Minor, review 6036731667): syncOfflineDrafts closes
+  // over the state snapshot from the last length-change render — a failed
+  // sync keeps the draft (no length change), so the next event re-synced the
+  // SAME snapshot and the retry count never advanced past the first failure.
+  // The ref always holds the latest list (same render-time pattern as
+  // isMutedRef in useProximityAlerts), so every sync starts from current data.
+  const offlineDraftsRef = useRef<any[]>([]);
+  offlineDraftsRef.current = offlineDrafts;
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(null);
   const syncingDrafts = useRef(false);
 
@@ -50,13 +58,16 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
   }, []);
 
   const syncOfflineDrafts = async () => {
-    if (offlineDrafts.length === 0 || syncingDrafts.current) return;
+    // Fix 40b: read the latest drafts through the ref, not the closed-over
+    // state — see the ref note above.
+    const currentDrafts = offlineDraftsRef.current;
+    if (currentDrafts.length === 0 || syncingDrafts.current) return;
     syncingDrafts.current = true;
     setSubmitting(true);
     setSyncStatusMsg(isArabic ? "جاري مزامنة المسودات والتحقق من قبول الخادم..." : "Synchronisation des brouillons et vérification de l'acceptation serveur...");
 
     let successCount = 0;
-    const draftSnapshot = [...offlineDrafts];
+    const draftSnapshot = [...currentDrafts];
     const syncedIds = new Set<string>();
     let failedDraftId: string | null = null;
     let failedMessage: string | null = null;
@@ -150,6 +161,16 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
     window.addEventListener("online", handleConnectivityReturn);
     window.addEventListener("mesh:online", handleConnectivityReturn);
     window.addEventListener("offline", handleOfflineStatus);
+    // Fix 40 (DRAFT-1): the listeners only fire on FUTURE connectivity
+    // changes — a form that mounts while already online with queued drafts
+    // would otherwise never sync. Sync on (re)subscription as well, under
+    // the same guard as the event handler, and respecting the DEV offline
+    // simulation (a simulated-offline queue must not sync for real). The
+    // mount run is a no-op (length 0); the re-run after the load commits
+    // (length N) fires the sync.
+    if (typeof navigator !== "undefined" && navigator.onLine && !isOfflineSimulation && offlineDrafts.length > 0 && !syncingDrafts.current) {
+      void syncOfflineDrafts();
+    }
     return () => {
       window.removeEventListener("online", handleConnectivityReturn);
       window.removeEventListener("mesh:online", handleConnectivityReturn);

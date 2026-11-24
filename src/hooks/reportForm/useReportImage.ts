@@ -191,6 +191,10 @@ export function useReportImage({ isArabic, setErrorMsg }: UseReportImageParams) 
   // Reset applied after an accepted submission (ported verbatim from the
   // original success path: image + sizes + AI status).
   const resetImage = () => {
+    // Fix 40 (RIMG-1): invalidate any in-flight pre-scan, as a new scan
+    // does — otherwise a late onload repopulates edgeAiStatus for an image
+    // that is no longer attached (e.g. after an accepted submit).
+    prescanCounter.current++;
     setImage(null);
     setOriginalSize(null);
     setCompressedSize(null);
