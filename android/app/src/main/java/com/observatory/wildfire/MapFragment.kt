@@ -451,7 +451,14 @@ class MapFragment : Fragment() {
             radarNote?.visibility = View.GONE
             return
         }
-        val drift = RadarV2.driftHeading(weather.windFromDeg.roundToInt())
+        // Fix 49 (NMODEL-1): no wind reading → no cone. A null wind is
+        // unknown weather, never a fabricated 0° (north) drift.
+        val windFromDeg = weather.windFromDeg
+        if (windFromDeg == null || !RadarV2.hasWindReading(weather.windKph, windFromDeg)) {
+            radarNote?.visibility = View.GONE
+            return
+        }
+        val drift = RadarV2.driftHeading(windFromDeg.roundToInt())
         val pts = RadarV2.coneGeoPoints(c.first, c.second, drift)
         if (pts.isEmpty()) {
             radarNote?.visibility = View.GONE
@@ -474,13 +481,23 @@ class MapFragment : Fragment() {
             chip.text = getString(R.string.wind_no_fix)
             return
         }
-        val dirAr = TelemetryCamera.bearingDirectionAr(weather.windFromDeg)
+        // Fix 49 (NMODEL-1): a null wind is unknown, not calm — show the
+        // wind-unknown state instead of fabricating a calm north wind
+        // ("رياح هادئة" from 0.0). Do NOT reuse wind_no_fix here: it says
+        // "حدّد موقعك", wrong when the fix exists but the wind is unknown.
+        val windKph = weather.windKph
+        val windFromDeg = weather.windFromDeg
+        if (windKph == null || windFromDeg == null || !RadarV2.hasWindReading(windKph, windFromDeg)) {
+            chip.text = getString(R.string.wind_unknown)
+            return
+        }
+        val dirAr = TelemetryCamera.bearingDirectionAr(windFromDeg)
         chip.text = getString(
             R.string.wind_chip_fmt,
-            RadarV2.speedLabel(weather.windKph),
+            RadarV2.speedLabel(windKph),
             RadarV2.tempLabel(weather.tempC),
             dirAr,
-            RadarV2.windBrief(weather.windKph)
+            RadarV2.windBrief(windKph)
         )
     }
 

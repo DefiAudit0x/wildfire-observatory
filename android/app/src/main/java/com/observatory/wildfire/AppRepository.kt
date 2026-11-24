@@ -267,10 +267,16 @@ class AppRepository(
             val result = io { api.post("/api/reports", body) }
             when {
                 result.is2xx -> {
+                    // Fix 49 (NREP-7): a successful submission rides the
+                    // mesh too — the module contract promises "always
+                    // meshed", and only the queue branch broadcast before
+                    // this. broadcastMeshIntel is a no-op with no mesh
+                    // service attached, so this is safe offline.
+                    broadcastMeshIntel("report", "$locationName — $description", lat, lng)
                     bumpQueueSize(); persistSnapshot()
                     onDone(true, null)
                 }
-                result is ObservatoryApi.Result.HttpError && result.status in 400..499 -> {
+                result is ObservatoryApi.Result.HttpError && SendPolicy.isPermanentRejection(result.status) -> {
                     // Validation/auth rejection: retrying changes nothing —
                     // surface the reason instead of queueing garbage.
                     onDone(false, extractServerError(result.body) ?: "تم رفض البلاغ (خطأ ${result.status})")
@@ -347,7 +353,7 @@ class AppRepository(
                     sos = SosUiState(sending = false, lastOutcome = outcome)
                 )
                 onDone(true, outcome, null)
-            } else if (result is ObservatoryApi.Result.HttpError && result.status in 400..499) {
+            } else if (result is ObservatoryApi.Result.HttpError && SendPolicy.isPermanentRejection(result.status)) {
                 _state.value = _state.value.copy(
                     sos = SosUiState(sending = false, lastError = extractServerError(result.body))
                 )

@@ -18,7 +18,7 @@ object ApiPayloads {
     val SEVERITIES = setOf("low", "medium", "high", "critical")
     private val REPORTER_TYPES = setOf("citizen", "volunteer", "official")
     private const val MAX_IMAGE_DATAURI_CHARS = 500_000   // server: image ≤500KB
-    private const val MAX_AUDIO_DATAURI_CHARS = 700_000   // server: audioUrl ≤700KB
+    private const val MAX_AUDIO_DATAURI_CHARS = 700 * 1024   // server: audioUrl ≤700KB (716800)
 
     fun newClientGeneratedId(): String =
         java.util.UUID.randomUUID().toString().replace("-", "") // 32 chars, within 8..64
@@ -126,6 +126,11 @@ object ApiPayloads {
         if (audioDataUri != null && audioDataUri.length > MAX_AUDIO_DATAURI_CHARS) {
             return null to "التسجيل الصوتي أكبر من الحد المسموح"
         }
+        // Fix 49 (APAY-1): the server gate is 8..64 chars (sos.ts) — a
+        // shorter/longer key builds a body guaranteed to 400. Checked
+        // here, before the append, mirroring buildReportJson's :73 check
+        // with the same error string.
+        if (clientGeneratedId != null && clientGeneratedId.length !in 8..64) return null to "مفتاح الإرسال غير صالح"
         val sb = StringBuilder(160)
         sb.append("{\"deviceId\":\"").append(jsonEscape(deviceId)).append('"')
         clientGeneratedId?.let {

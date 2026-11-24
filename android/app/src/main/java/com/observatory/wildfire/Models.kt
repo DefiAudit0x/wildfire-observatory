@@ -57,9 +57,12 @@ data class WilayaStatus(
 data class WeatherNow(
     val tempC: Double,
     val humidityPct: Int,
-    val windKph: Double,
+    // Fix 49 (NMODEL-1): wind is nullable — a missing/malformed wind
+    // reading is UNKNOWN, not a measured calm north wind (0.0). Presence
+    // (null), never zero, is the signal: a measured 0.0/0.0 is real data.
+    val windKph: Double?,
     /** Meteorological convention: the direction the wind COMES FROM (0=N). */
-    val windFromDeg: Double
+    val windFromDeg: Double?
 )
 
 data class SosOutcome(
@@ -211,8 +214,12 @@ object Parsers {
         WeatherNow(
             tempC = current.getDouble("temperature_2m"),
             humidityPct = current.optInt("relative_humidity_2m", 0),
-            windKph = current.optDouble("wind_speed_10m", 0.0),
-            windFromDeg = current.optDouble("wind_direction_10m", 0.0)
+            // Fix 49 (NMODEL-1): safeDouble already yields null for
+            // missing/malformed wind; the finite filter drops non-finite
+            // values too, so a temperature-only payload carries null wind
+            // instead of a fabricated 0.0/0.0 calm north wind.
+            windKph = safeDouble(current, "wind_speed_10m")?.takeIf { it.isFinite() },
+            windFromDeg = safeDouble(current, "wind_direction_10m")?.takeIf { it.isFinite() }
         )
     }.getOrNull()
 
