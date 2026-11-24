@@ -39,17 +39,20 @@ interface RosterBoardProps {
   lang: Language;
 }
 
-// Fix 37 (RSTR-4): the assignment selector offered commanders and
-// wrong-unit agents the server's canonicalizePersonnel rejects. Assignable
-// = an active agent of this roster's unit. Unit ids occur in two shapes
-// (raw "DZ16" on users, canonical "unit-dz16" on rosters) — compare
-// normalized (lowercased, optional "unit-" prefix stripped).
-function normalizeUnitId(unitId: string): string {
-  return unitId.toLowerCase().replace(/^unit-/, "");
+// Fix 37b (CodeRabbit Major, review 6034317206): mirror the server's
+// toUnitId EXACTLY — `unit-${code.toLowerCase()}`, NO stripping. The Fix 37
+// version stripped a leading "unit-" from both sides, which diverges from
+// the server in both directions: a raw "UNIT-DZ16" code is accepted
+// server-side (unit-unit-dz16) but was hidden client-side, and a raw
+// "unit-dz16" code is rejected server-side but was offered. The roster's
+// unitId is already canonical (server-canonicalized on GET), so the
+// comparison is direct: toUnitId(user code) === roster unitId.
+function toCanonicalUnitId(code: string): string {
+  return `unit-${String(code ?? "").toLowerCase()}`;
 }
 
 function isAssignableToRoster(user: StaffUser, rosterUnitId: string): boolean {
-  return user.isActive && user.role === "agent" && normalizeUnitId(user.unitId) === normalizeUnitId(rosterUnitId);
+  return user.isActive && user.role === "agent" && toCanonicalUnitId(user.unitId) === rosterUnitId;
 }
 
 function todayISO(): string {

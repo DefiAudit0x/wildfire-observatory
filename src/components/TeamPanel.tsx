@@ -114,10 +114,6 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
   // Overlap guard: one in-flight beat at a time — a slow 15s request must not
   // stack with the next tick (same single-flight lesson as the relay queue).
   const beatBusyRef = useRef(false);
-  // Fix 37 (TEAM-2): set in the heartbeat effect's cleanup — a GPS fix
-  // requested before the effect was disposed (native took over, or the
-  // effect re-ran) must not send a beat afterwards.
-  const heartbeatDisposedRef = useRef(false);
   const sessionRef = useRef<TeamSessionState | null>(session);
   sessionRef.current = session;
 
@@ -186,7 +182,14 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       setBeat((prev) => (prev === "idle" || prev === "waiting-gps" ? prev : "idle"));
       return;
     }
-    heartbeatDisposedRef.current = false;
+    // Fix 37b (CodeRabbit Minor, review 6034317206): the disposed flag is
+    // LOCAL to this effect run, closed over by this run's callbacks. The
+    // Fix 37 version kept it in a shared ref that the next run's setup
+    // reset to false — a GPS request from the previous run completing after
+    // a session/intervalMs re-run then sent a beat with the previous
+    // session's token (the session check runs after the await, so it
+    // prevented the state commit but not the send).
+    let disposed = false;
     const tick = async () => {
       const current = sessionRef.current;
       if (!current || beatBusyRef.current) return;
@@ -198,12 +201,12 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       setBeat((prev) => (prev === "live" ? "live" : "waiting-gps"));
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
-          // Fix 37 (TEAM-2): this fix was requested before the effect was
+          // Fix 37 (TEAM-2): this fix was requested before this run was
           // disposed — native tracking took over, or the effect re-ran —
           // while it was pending. A late beat must not send beside the
           // native stream. Release the busy flag FIRST or the loop wedges
           // forever (tick() returns early while busy).
-          if (heartbeatDisposedRef.current) {
+          if (disposed) {
             beatBusyRef.current = false;
             return;
           }
@@ -284,7 +287,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
           // Fix 37 (TEAM-2): a late error must not flip the beat indicator
           // after the native flip already set it idle.
           beatBusyRef.current = false;
-          if (heartbeatDisposedRef.current) return;
+          if (disposed) return;
           setBeat("waiting-gps");
         },
         { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 }
@@ -293,7 +296,7 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     tick();
     const timer = window.setInterval(tick, intervalMs);
     return () => {
-      heartbeatDisposedRef.current = true;
+      disposed = true;
       window.clearInterval(timer);
     };
   }, [session, nativeActive, intervalMs]);
