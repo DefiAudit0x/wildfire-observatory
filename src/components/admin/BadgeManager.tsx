@@ -12,7 +12,7 @@ interface Badge {
   phone?: string;
   isActive?: boolean;
   usedCount?: number;
-  maxUses?: number;
+  maxUses?: number | null;
   expiresAt?: string;
   createdAt?: string;
 }
@@ -77,6 +77,12 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingCode, setEditingCode] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<EditState>({ ownerName: "", type: "", wilaya: "", maxUses: "", expiresAt: "" });
+  // Fix 33b (CodeRabbit review 6032151179, Major): the clear decision must be
+  // snapshotted when the edit opens. The old code read the live `badges`
+  // array at save time, but `loadAll` replaces it on every refresh while the
+  // edit form stays open — a limit added mid-edit made an unrelated save
+  // with an empty field send a clear for a limit the operator never touched.
+  const editSnapshotRef = useRef<{ hadMaxUses: boolean; hadExpiresAt: boolean } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<Badge | null>(null);
 
   // ARC-M27 fix: onAuthError is an inline prop recreated on every parent
@@ -182,11 +188,19 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
 
   const startEdit = (badge: Badge) => {
     setEditingCode(badge.code);
+    // Fix 33b (CodeRabbit review 6032151179, Minor): a stored `null` cap is
+    // the normal uncapped state (POST writes `?? null`), but the old code
+    // seeded it as the string "null" — the field displayed `null`, and an
+    // untouched save sent `maxUses: null`. Only a real number seeds the field.
+    editSnapshotRef.current = {
+      hadMaxUses: typeof badge.maxUses === "number",
+      hadExpiresAt: Boolean(badge.expiresAt),
+    };
     setEditForm({
       ownerName: badge.ownerName || "",
       type: badge.type || "",
       wilaya: badge.wilaya || "",
-      maxUses: badge.maxUses !== undefined ? String(badge.maxUses) : "",
+      maxUses: typeof badge.maxUses === "number" ? String(badge.maxUses) : "",
       expiresAt: toDatetimeLocalValue(badge.expiresAt || undefined),
     });
   };
@@ -203,14 +217,16 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     // badge had a value there (an untouched empty field stays omitted, so
     // the audit trail does not log limits the operator never touched).
     // Expiry "" → the server nulls it; cap `null` → the schema now accepts
-    // it (Fix 33 D1) and the update line writes it through.
-    const editingBadge = badges.find((b) => b.code === editingCode);
+    // it (Fix 33 D1) and the update line writes it through. The "had a
+    // value" decision comes from the edit-start snapshot (see above), never
+    // from the live `badges` array.
+    const snapshot = editSnapshotRef.current;
     const maxUses = editForm.maxUses
       ? parseInt(editForm.maxUses, 10)
-      : (editingBadge?.maxUses !== undefined ? null : undefined);
+      : (snapshot?.hadMaxUses ? null : undefined);
     const expiresAt = editForm.expiresAt
       ? toUtcIso(editForm.expiresAt)
-      : (editingBadge?.expiresAt ? "" : undefined);
+      : (snapshot?.hadExpiresAt ? "" : undefined);
     try {
       const res = await apiFetch(`/api/badges/${encodeURIComponent(editingCode)}`, "PUT", {
         ownerName: editForm.ownerName.trim(),
