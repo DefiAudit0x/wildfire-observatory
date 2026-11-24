@@ -233,10 +233,7 @@ class ObservatoryFragment : Fragment() {
                 activity?.runOnUiThread {
                     weatherText?.visibility = if (w == null) View.GONE else View.VISIBLE
                     w?.let {
-                        weatherText?.text = getString(
-                            R.string.weather_fmt,
-                            it.tempC.toInt(), it.humidityPct, it.windKph.toInt(), it.windFromDeg.toInt()
-                        )
+                        weatherText?.text = formatWeatherText(it)
                     }
                 }
             }
@@ -257,6 +254,22 @@ class ObservatoryFragment : Fragment() {
         updateRadar()
     }
 
+    // Fix 49 (NMODEL-1): one formatting point for the weather line. A
+    // null wind is unknown weather — the line shows temperature + humidity
+    // only (weather_no_wind_fmt) instead of fabricating a wind from 0.0.
+    private fun formatWeatherText(w: WeatherNow): String {
+        val windKph = w.windKph
+        val windFromDeg = w.windFromDeg
+        return if (windKph != null && windFromDeg != null && RadarV2.hasWindReading(windKph, windFromDeg)) {
+            getString(
+                R.string.weather_fmt,
+                w.tempC.toInt(), w.humidityPct, windKph.toInt(), windFromDeg.toInt()
+            )
+        } else {
+            getString(R.string.weather_no_wind_fmt, w.tempC.toInt(), w.humidityPct)
+        }
+    }
+
     // Fix 21b/21c: render the fresh snapshot weather into the line (text
     // + VISIBLE when weatherFresh, else GONE). Called from renderGps and
     // from the 10 s freshness tick, so the line expires on time even when
@@ -264,10 +277,7 @@ class ObservatoryFragment : Fragment() {
     private fun updateWeatherLine(snap: AppRepository.Snapshot, now: Long) {
         val w = snap.weather
         if (w != null && RadarV2.weatherFresh(snap.weatherFetchedAtMs, now)) {
-            weatherText?.text = getString(
-                R.string.weather_fmt,
-                w.tempC.toInt(), w.humidityPct, w.windKph.toInt(), w.windFromDeg.toInt()
-            )
+            weatherText?.text = formatWeatherText(w)
             weatherText?.visibility = View.VISIBLE
         } else {
             weatherText?.visibility = View.GONE

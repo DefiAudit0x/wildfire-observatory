@@ -177,6 +177,16 @@ object RadarV2 {
     fun weatherFresh(fetchedAtMs: Long, nowMs: Long): Boolean =
         fetchedAtMs > 0 && nowMs >= fetchedAtMs && (nowMs - fetchedAtMs) < WEATHER_MAX_AGE_MS
 
+    /**
+     * Fix 49 (NMODEL-1): true only when BOTH wind fields are present and
+     * finite. Presence — not zero — is the signal: a measured 0.0/0.0 is
+     * a real calm north wind (true), while a missing wind reading (null)
+     * or a non-finite one (NaN/Infinity) is no reading at all (false).
+     * The cone, the wind chip and the weather line all gate on this.
+     */
+    fun hasWindReading(windKph: Double?, windFromDeg: Double?): Boolean =
+        windKph?.isFinite() == true && windFromDeg?.isFinite() == true
+
     /** May a new guidance request go out (5s spacing since the last)? */
     fun aiRequestAllowed(lastRequestMs: Long, nowMs: Long): Boolean =
         lastRequestMs <= 0 || (nowMs >= lastRequestMs && (nowMs - lastRequestMs) >= AI_MIN_REQUEST_INTERVAL_MS)

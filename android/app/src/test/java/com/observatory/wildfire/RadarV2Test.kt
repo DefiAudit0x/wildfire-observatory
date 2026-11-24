@@ -279,4 +279,38 @@ class RadarV2Test {
         org.junit.Assert.assertSame(unknown, ranked.last())
         org.junit.Assert.assertSame(known, RadarV2.pickSafest(listOf(unknown, known)))
     }
+
+    // ---------- Fix 49 (NMODEL-1): hasWindReading — presence, not zero ----------
+
+    @Test
+    fun hasWindReading_bothNull_isFalse() {
+        assertFalse(RadarV2.hasWindReading(null, null))
+    }
+
+    @Test
+    fun hasWindReading_speedOnly_isFalse() {
+        assertFalse(RadarV2.hasWindReading(5.0, null))
+    }
+
+    @Test
+    fun hasWindReading_directionOnly_isFalse() {
+        assertFalse(RadarV2.hasWindReading(null, 90.0))
+    }
+
+    @Test
+    fun hasWindReading_measuredZero_isTrue() {
+        // A measured 0.0/0.0 is a real calm north wind — presence, not
+        // zero, is the signal.
+        assertTrue(RadarV2.hasWindReading(0.0, 0.0))
+    }
+
+    @Test
+    fun hasWindReading_nanSpeed_isFalse() {
+        assertFalse(RadarV2.hasWindReading(Double.NaN, 90.0))
+    }
+
+    @Test
+    fun hasWindReading_infiniteDirection_isFalse() {
+        assertFalse(RadarV2.hasWindReading(5.0, Double.POSITIVE_INFINITY))
+    }
 }
