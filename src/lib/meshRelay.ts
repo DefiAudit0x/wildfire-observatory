@@ -857,11 +857,51 @@ export function enqueueRelay(report: Record<string, unknown>): Promise<RelayEnqu
   });
 }
 
+// Fix 46 (MREL-1): journal garbage collection. Committed entries past the
+// queue age are dead weight (ARC-H6); prepared entries whose item is no
+// longer pending are dead too — a prepared entry only protects its pending
+// item from capacity eviction, and only delivered/committed entries drive
+// recovery. Delivered entries keep the existing machinery untouched.
+function collectJournalGarbage(
+  journal: RelayJournalEntry[],
+  pendingIds: Set<string>,
+  now: number,
+): RelayJournalEntry[] {
+  return journal.filter((entry) =>
+    entry.state === "committed"
+      ? now - entry.updatedAt < RELAY_MAX_QUEUE_AGE_MS
+      : entry.state === "prepared"
+        ? pendingIds.has(entry.queueItemId)
+        : true,
+  );
+}
+
 async function flushQueueInternal(): Promise<void> {
   await recoverDeliveredJournal();
   const now = Date.now();
   const state = await readRelayQueueState();
-  if (state.pending.length === 0) return;
+  if (state.pending.length === 0) {
+    // Fix 46 (MREL-1, D2): an idle queue never reached the GC block below
+    // (this early return fired first), so committed entries past the age
+    // and prepared orphans accumulated forever. Run the same journal GC
+    // and write only when something was actually removed, so the 60 s
+    // interval flush stays a no-op on a clean idle queue.
+    const gcJournal = collectJournalGarbage(state.journal, new Set(), now);
+    if (gcJournal.length !== state.journal.length) {
+      await serializeQueueMutation(async () => {
+        const latestState = await readRelayQueueState();
+        if (latestState.pending.length !== 0) return;
+        const regc = collectJournalGarbage(latestState.journal, new Set(), now);
+        if (regc.length === latestState.journal.length) return;
+        await writeRelayQueueState({
+          pending: latestState.pending,
+          deadLetters: latestState.deadLetters,
+          journal: regc,
+        });
+      });
+    }
+    return;
+  }
   const processedIds = new Set<string>();
   const updatedItems = new Map<string, QueuedRelay>();
   let changed = false;
@@ -911,10 +951,15 @@ async function flushQueueInternal(): Promise<void> {
     // (their recovery purpose is complete; each entry duplicates the report
     // body) and cap dead letters — otherwise localStorage fills after a fire
     // season and persistence silently degrades to volatile memory.
-    const gcJournal = latestState.journal.filter((entry) =>
-      entry.state === "committed"
-        ? now - entry.updatedAt < RELAY_MAX_QUEUE_AGE_MS
-        : true
+    // Fix 46 (MREL-1, D1): also drop prepared entries whose item is no
+    // longer pending — dead-lettered this flush, dropped from the 100-cap,
+    // or a legacy orphan. A prepared entry only protects its pending item
+    // (makeCapacityTransition) and only delivered/committed entries drive
+    // recovery, so it has no live role once the item leaves pending.
+    const gcJournal = collectJournalGarbage(
+      latestState.journal,
+      new Set(nextPending.map((item) => item.id)),
+      now,
     );
     const deadLettersCapped = [...latestState.deadLetters, ...deadLetterMoves]
       .sort((a, b) => (a.deadLetteredAt ?? 0) - (b.deadLetteredAt ?? 0))
