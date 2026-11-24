@@ -10,6 +10,18 @@ const NORTH_AFRICA_BBOX = { minLat: 18, maxLat: 38, minLng: -17, maxLng: 25 };
 const CACHE_TTL_MS = 10 * 60 * 1000;
 let cachedHotspots: SatelliteData | null = null;
 let cacheTimestamp = 0;
+// Fix 42 (SAT-2): empty results were never cached and there was no in-flight
+// promise, so every poll cycle x 3 callers (GET /api/satellite, wilayas,
+// history) did 2 upstream FIRMS calls each. An empty result is now cached
+// for 60 s in a SEPARATE slot — never overwriting the healthy cache, so
+// SAT-1's contract (only all-ok observations populate it; partial results
+// are served as 503, never cached) is untouched. Concurrent callers share
+// one in-flight fetch; the promise is cleared in `finally`, never stuck on
+// rejection.
+const EMPTY_CACHE_TTL_MS = 60 * 1000;
+let cachedEmptyResult: SatelliteData | null = null;
+let emptyCacheTimestamp = 0;
+let inFlightFetch: Promise<SatelliteData> | null = null;
 
 type SourceStatus = "ok" | "unavailable";
 type SatelliteData = { hotspots: SatelliteHotspot[]; sources: Record<string, SourceStatus> };
@@ -115,45 +127,63 @@ export async function getLiveSatelliteData(): Promise<SatelliteData> {
   if (cachedHotspots && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedHotspots;
   }
-
-  const sources = ["VIIRS_SNPP_NRT", "MODIS_NRT"];
-  let hotspots: SatelliteHotspot[] = [];
-
-  const sourceStatuses: Record<string, SourceStatus> = {};
-  for (const source of sources) {
-    const result = await fetchFirmsData(source);
-    sourceStatuses[source] = result.status;
-    if (result.status === "ok") hotspots = hotspots.concat(result.data);
+  // Fix 42 (SAT-2): a fresh empty result is served from its own 60 s slot
+  // instead of re-fetching upstream on every poll cycle.
+  if (cachedEmptyResult && now - emptyCacheTimestamp < EMPTY_CACHE_TTL_MS) {
+    return cachedEmptyResult;
   }
-  if (Object.values(sourceStatuses).every((status) => status === "unavailable")) {
-    throw new SatelliteUnavailableError(sourceStatuses);
-  }
+  // Fix 42 (SAT-2): concurrent callers share one in-flight fetch.
+  if (inFlightFetch) return inFlightFetch;
+  inFlightFetch = (async (): Promise<SatelliteData> => {
+    const sources = ["VIIRS_SNPP_NRT", "MODIS_NRT"];
+    let hotspots: SatelliteHotspot[] = [];
 
-  if (hotspots.length > 0) {
-    // Deduplicate: the same burning area often appears in both VIIRS and MODIS
-    const unique: SatelliteHotspot[] = [];
-    for (const h of hotspots) {
-      const existing = unique.find(
-        (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
-      );
-      if (!existing) {
-        unique.push(h);
-      } else if (h.confidence > existing.confidence) {
-        existing.confidence = h.confidence;
-        existing.brightness = h.brightness;
-        existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+    const sourceStatuses: Record<string, SourceStatus> = {};
+    for (const source of sources) {
+      const result = await fetchFirmsData(source);
+      sourceStatuses[source] = result.status;
+      if (result.status === "ok") hotspots = hotspots.concat(result.data);
+    }
+    if (Object.values(sourceStatuses).every((status) => status === "unavailable")) {
+      throw new SatelliteUnavailableError(sourceStatuses);
+    }
+
+    if (hotspots.length > 0) {
+      // Deduplicate: the same burning area often appears in both VIIRS and MODIS
+      const unique: SatelliteHotspot[] = [];
+      for (const h of hotspots) {
+        const existing = unique.find(
+          (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
+        );
+        if (!existing) {
+          unique.push(h);
+        } else if (h.confidence > existing.confidence) {
+          existing.confidence = h.confidence;
+          existing.brightness = h.brightness;
+          existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+        }
       }
+      const data = { hotspots: unique, sources: sourceStatuses };
+      // An incomplete observation must not replace a previously healthy dataset.
+      if (Object.values(sourceStatuses).every((status) => status === "ok")) {
+        cachedHotspots = data;
+        cacheTimestamp = now;
+      }
+      return data;
     }
-    const data = { hotspots: unique, sources: sourceStatuses };
-    // An incomplete observation must not replace a previously healthy dataset.
-    if (Object.values(sourceStatuses).every((status) => status === "ok")) {
-      cachedHotspots = data;
-      cacheTimestamp = now;
-    }
-    return data;
-  }
 
-  return { hotspots: [], sources: sourceStatuses };
+    const emptyData = { hotspots: [], sources: sourceStatuses };
+    cachedEmptyResult = emptyData;
+    emptyCacheTimestamp = now;
+    return emptyData;
+  })();
+  try {
+    return await inFlightFetch;
+  } finally {
+    // Cleared on success AND on rejection, so a failed fetch never wedges
+    // the next call — it re-fetches.
+    inFlightFetch = null;
+  }
 }
 
 router.get("/", async (_req: Request, res: Response) => {
