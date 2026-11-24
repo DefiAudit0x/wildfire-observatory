@@ -3,6 +3,7 @@ import { Download, Flame, ShieldAlert, Users, Radio, Gauge, History } from "luci
 import { Report, SatelliteHotspot, WilayaStatus } from "../types";
 import { computeFireRisk, RiskLevel } from "../utils/fireRisk";
 import { reportsToCsv, hotspotsToGeoJson } from "../utils/export";
+import { apiFetch } from "../utils/adminApi";
 
 interface HistoryBucket {
   date: string;
@@ -63,7 +64,11 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
     const seq = ++historyRequestSeqRef.current;
     const isCurrent = () => seq === historyRequestSeqRef.current;
     setHistoryStatus("loading");
-    fetch("/api/history?days=30")
+    // Fix 38 (STA-3 residual): the raw fetch had no ceiling — a hung load
+    // sat in "loading" forever. apiFetch adds the 15 s house ceiling; the
+    // sequence guard wraps the promise chain, not the fetch call, so it
+    // survives the switch untouched.
+    apiFetch("/api/history?days=30", "GET")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (!isCurrent()) return;
