@@ -140,8 +140,8 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
     },
     {
       id: "stat-3",
-      titleAr: "معدل المصادقة الفورية للذكاء الاصطناعي",
-      titleFr: "Taux de Validation par l'IA",
+      titleAr: "معدل توثيق البلاغات",
+      titleFr: "Taux de vérification des signalements",
       value: `${verificationRate}%`,
       descAr: "من إجمالي بلاغات النظام (النشطة والمحلولة)",
       descFr: "Sur tous les signalements (actifs et traités)",
