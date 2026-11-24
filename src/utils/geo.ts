@@ -55,20 +55,21 @@ export function minDistanceToPolylineKm(route: [number, number][], lat: number, 
  * The server remains the authority (it rejects mismatched wilaya/coords),
  * this copy only powers early suggestions and pre-submit warnings in the UI.
  */
+
+// Fix 36 (GEO-1): this file used to claim to mirror the server while doing
+// neither half of what the server does — it narrowed Jijel/Skikda to remove
+// overlaps AND resolved by first match, while the server keeps the overlaps
+// and resolves by smallest containing rectangle (v2.15.0 audit fix). The two
+// resolvers disagreed on real coordinates (e.g. (36.8, 6.3) → Skikda here,
+// Jijel on the server). Bounds AND rule are now copied verbatim from
+// server/geo.ts; any bounds change must land in both files.
 export const OUT_OF_COVERAGE = "خارج التغطية (Hors zone)";
 
-// ARC-L12: the arrays below previously overlapped on purpose-but-silently:
-// Skikda∩Annaba (lng 7.4–7.5), Skikda∩Jijel (lng 6.2–6.5) — the FIRST match in
-// this array silently won (find()). The lower-priority bounds were narrowed to
-// remove every overlap while keeping the RESOLVED wilaya byte-identical for
-// any coordinate (Annaba already won 7.4–7.5 because it precedes Skikda;
-// Skikda already won 6.2–6.5 because it precedes Jijel). Resolution contract:
-// scan order = priority; the server (server/geo.ts) remains the authority.
 const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = [
   { name: "الجزائر - الطارف (Algérie - El Tarf)", minLat: 36.5, maxLat: 37.0, minLng: 8.0, maxLng: 8.6 },
   { name: "الجزائر - عنابة (Algérie - Annaba)", minLat: 36.7, maxLat: 37.0, minLng: 7.4, maxLng: 7.95 },
-  { name: "الجزائر - سكيكدة (Algérie - Skikda)", minLat: 36.6, maxLat: 37.0, minLng: 6.2, maxLng: 7.4 },
-  { name: "الجزائر - جيجل (Algérie - Jijel)", minLat: 36.5, maxLat: 36.9, minLng: 5.8, maxLng: 6.2 },
+  { name: "الجزائر - سكيكدة (Algérie - Skikda)", minLat: 36.6, maxLat: 37.0, minLng: 6.2, maxLng: 7.5 },
+  { name: "الجزائر - جيجل (Algérie - Jijel)", minLat: 36.5, maxLat: 36.9, minLng: 5.8, maxLng: 6.5 },
   { name: "الجزائر - بجاية (Algérie - Béjaïa)", minLat: 36.5, maxLat: 36.9, minLng: 4.6, maxLng: 5.4 },
   { name: "الجزائر - تيزي وزو (Algérie - Tizi Ouzou)", minLat: 36.4, maxLat: 36.8, minLng: 3.8, maxLng: 4.55 },
   { name: "الجزائر - سوق أهراس (Algérie - Souk Ahras)", minLat: 36.0, maxLat: 36.5, minLng: 7.5, maxLng: 8.5 },
@@ -94,15 +95,23 @@ function pointInBounds(lat: number, lng: number, bounds: (typeof WILAYA_BOUNDS)[
 }
 
 export function determineWilayaByCoords(lat: number, lng: number): string {
-  const matched = WILAYA_BOUNDS.find((b) => pointInBounds(lat, lng, b));
-  if (matched) return matched.name;
+  // Fix 36 (GEO-1): smallest containing rectangle wins — copied verbatim
+  // from server/geo.ts (strict < keeps the earlier entry on equal area).
+  const containing = WILAYA_BOUNDS.filter((b) => pointInBounds(lat, lng, b));
+  if (containing.length > 0) {
+    const smallest = containing.reduce((best, b) => {
+      const area = (b.maxLat - b.minLat) * (b.maxLng - b.minLng);
+      const bestArea = (best.maxLat - best.minLat) * (best.maxLng - best.minLng);
+      return area < bestArea ? b : best;
+    });
+    return smallest.name;
+  }
 
   if (lng < -1.0 && lat > 27.0 && lat < 36.5) return "المغرب - منطقة أخرى (Maroc - Autre)";
-  // ARC-M25 fix: this mirror accepted lat > 18.0 while BOTH the report form
-  // gate and the server geofence require lat >= 19 — a GPS fix in [18,19) was
-  // told "covered" then rejected on submit. The envelope is aligned to the
-  // server bounds (19..38 / -18..25) so no layer promises what another rejects.
-  if (lng >= -1.0 && lng <= 8.5 && lat >= 19.0 && lat < 37.5) return "الجزائر - منطقة أخرى (Algérie - Autre)";
+  // Fix 36 (GEO-1): the server's Algeria band starts at lat > 18.0, not
+  // >= 19.0 — the old threshold told lat 18–19 "out of coverage" while the
+  // server would have called it "Algérie - Autre".
+  if (lng >= -1.0 && lng <= 8.5 && lat > 18.0 && lat < 37.5) return "الجزائر - منطقة أخرى (Algérie - Autre)";
   if (lng > 8.5 && lng < 11.5 && lat > 30.0 && lat < 37.5) return "تونس - منطقة أخرى (Tunisie - Autre)";
   if (lng >= 11.5 && lat > 20.0 && lat < 33.5) return "ليبيا - منطقة أخرى (Libye - Autre)";
 
