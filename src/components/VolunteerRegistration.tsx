@@ -3,6 +3,7 @@ import { Shield, User, Phone, Mail, MapPin, Send, CheckCircle, Loader2, BadgeChe
 import { Language } from "../types";
 import { MAGHREB_REGIONS } from "../data/maghrebRegions";
 import { isValidMaghrebPhone, normalizeMaghrebPhone } from "../utils/phone";
+import { apiFetch } from "../utils/adminApi";
 
 interface VolunteerRegistrationProps {
   lang: Language;
@@ -36,7 +37,10 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
     // server schema judges the raw string, so validating a cleaned string
     // and sending the raw one let spaced numbers and 8-digit Tunisian
     // numbers pass the client and die on the server.
-    const normalizedPhone = normalizeMaghrebPhone(phone);
+    // Fix 39 (Fix 29 follow-up): the wilaya is a required field, so its
+    // country resolves the 0[567] DZ/MA/LY collision for free — no new UI.
+    const wilayaCountry = MAGHREB_REGIONS.find((w) => `${w.nameAr} (${w.nameFr})` === wilaya)?.country;
+    const normalizedPhone = normalizeMaghrebPhone(phone, wilayaCountry);
     if (!isValidMaghrebPhone(normalizedPhone)) {
       setErrorMsg(isArabic
         ? "رقم الهاتف غير صحيح. يرجى إدخال رقم مغاربي صالح (مثال: 0550123456 أو +213550123456)."
@@ -48,14 +52,13 @@ export default function VolunteerRegistration({ lang }: VolunteerRegistrationPro
 
     setErrorMsg("");
     setIsSubmitting(true);
-    setErrorMsg("");
 
     try {
-      const res = await fetch("/api/volunteer/register", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fullName, phone: normalizedPhone, email: email || undefined, wilaya, type }),
-      });
+      // Fix 39 (VOL-2): the raw fetch had no ceiling — a stalled request
+      // left the form disabled forever. apiFetch adds the 15 s house
+      // ceiling; the abort surfaces as a network error in the existing
+      // catch and finally re-enables the button.
+      const res = await apiFetch("/api/volunteer/register", "POST", { fullName, phone: normalizedPhone, email: email || undefined, wilaya, type });
       if (res.ok) {
         setSuccess(true);
         setFullName(""); setPhone(""); setEmail(""); setWilaya(""); setType("volunteer");
