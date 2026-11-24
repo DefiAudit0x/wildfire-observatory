@@ -83,7 +83,9 @@ class LocationEngine(private val context: Context) : LocationListener {
     fun addListener(listener: (State) -> Unit) {
         listeners.add(listener)
         // Late joiners get the current state immediately (fragment re-entry).
-        listener(State(compute(), currentFix()))
+        // Fix 52 (NLOC-2): replay the real permission tier — the default
+        // NONE lied to every late listener even with a valid grant.
+        listener(State(compute(), currentFix(), permissionTier()))
     }
 
     fun removeListener(listener: (State) -> Unit) {
@@ -202,6 +204,10 @@ class LocationEngine(private val context: Context) : LocationListener {
     override fun onLocationChanged(location: Location) {
         if (!location.latitude.isFinite() || !location.longitude.isFinite()) return
         val snapshot = toSnapshot(location, permissionTier())
+        // Fix 52 (NLOC-3): reject a fix dated beyond the shared skew window —
+        // accepting it would poison selection, since every later timestamp is
+        // lower and could never replace it (same bound chooseBest uses).
+        if ((System.currentTimeMillis() - snapshot.timeMs) < -LocationLogic.CLOCK_SKEW_MS) return
         val current = lastFix
         // Accept if fresher, or if the current fix is old and this one exists.
         if (current == null || snapshot.timeMs >= current.timeMs) {
@@ -226,6 +232,9 @@ class LocationEngine(private val context: Context) : LocationListener {
         lat = loc.latitude,
         lng = loc.longitude,
         accuracyM = if (loc.hasAccuracy()) loc.accuracy else 0f,
+        // Fix 52 (NLOC-1): the flag travels with the stored 0f, so the UI
+        // can tell "no accuracy reported" from a perfect 0 m fix.
+        hasAccuracy = loc.hasAccuracy(),
         timeMs = loc.time,
         provider = loc.provider ?: "unknown",
         approximate = tier == LocationLogic.Tier.COARSE,

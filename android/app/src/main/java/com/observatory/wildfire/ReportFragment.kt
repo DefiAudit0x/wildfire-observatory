@@ -250,6 +250,9 @@ class ReportFragment : Fragment() {
     private fun onLocation(state: LocationEngine.State) {
         val fix = state.fix
         lastStatus = state.status
+        // Fix 52 (NLOC-1): a fix without reported accuracy shows
+        // "unknown", never "0 m".
+        val accText = if (fix?.hasAccuracy == true) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
         locationLine?.text = when {
             state.status == LocationLogic.Status.NO_PERMISSION -> getString(R.string.gps_no_permission)
             state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
@@ -258,14 +261,14 @@ class ReportFragment : Fragment() {
             // stale — the user sees WHY submit refuses, instead of a
             // coordinate line that looks submittable.
             !LocationLogic.isUsableFix(fix, System.currentTimeMillis()) ->
-                getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+                getString(R.string.gps_stale_fmt, accText)
             else -> {
                 // Review Nit 3: D1 promises age disclosure whenever a fix
                 // is shown — the age rides the line even for usable fixes.
                 // Clamped at 0: a far-future (hostile-clock) fix would
                 // otherwise print a negative age.
                 val ageS = maxOf(0, ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt())
-                getString(R.string.report_location_line_fmt, fix.lat, fix.lng, fix.accuracyM.toInt(), ageS)
+                getString(R.string.report_location_line_fmt, fix.lat, fix.lng, accText, ageS)
             }
         }
         // Autofill place name + wilaya once a fix EXISTS — fresh or stale

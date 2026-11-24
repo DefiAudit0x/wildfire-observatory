@@ -298,7 +298,9 @@ class CameraCaptureFragment : Fragment() {
             fix == null -> getString(R.string.camera_gps_not_set)
             LocationLogic.isFreshFix(fix, nowMs) ->
                 String.format(java.util.Locale.US, "%.5f, %.5f", fix.lat, fix.lng)
-            else -> getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+            // Fix 52 (NLOC-1): a fix without reported accuracy shows
+            // "unknown", never "0 m".
+            else -> getString(R.string.gps_stale_fmt, if (fix.hasAccuracy) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown))
         }
         statusText?.text = getString(
             R.string.camera_status_fmt,

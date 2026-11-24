@@ -59,7 +59,11 @@ object LocationLogic {
         /** v2.19.0: GPS course-over-ground (0..360) while moving — the map's
          *  user arrow prefers this over the compass (motion truth beats
          *  magnetometer). Null when stationary/no bearing. */
-        val bearingDeg: Double? = null
+        val bearingDeg: Double? = null,
+        /** Fix 52 (NLOC-1): true only when the provider reported an accuracy.
+         *  A snapshot without one stores 0f in accuracyM, which must never be
+         *  displayed as "0 m" — the UI shows "unknown" instead. */
+        val hasAccuracy: Boolean = false
     )
 
     /**
@@ -77,9 +81,19 @@ object LocationLogic {
         lastFixAgeMs: Long?
     ): Status {
         if (permissionTier == Tier.NONE) return Status.NO_PERMISSION
-        if (!gpsEnabled && !networkEnabled) return Status.PROVIDERS_OFF
+        // Fix 52 (NLOGL-1): COARSE has exactly one usable provider (NETWORK) —
+        // a coarse user with GPS on but network off has NO provider to listen
+        // to, so the verdict is PROVIDERS_OFF, not SEARCHING.
+        val providersOff = when (permissionTier) {
+            Tier.COARSE -> !networkEnabled
+            else -> !gpsEnabled && !networkEnabled
+        }
+        if (providersOff) return Status.PROVIDERS_OFF
         val age = lastFixAgeMs ?: return Status.SEARCHING
-        return if (age in 0..FIX_STALE_DROP_MS) Status.FIXED else Status.SEARCHING
+        // Fix 52 (NLOGL-2): the status machine accepts the same 60 s skew
+        // window chooseBest and isFreshFix already allow — a fix seconds
+        // ahead is FIXED, not SEARCHING until the wall clock catches up.
+        return if (age in -CLOCK_SKEW_MS..FIX_STALE_DROP_MS) Status.FIXED else Status.SEARCHING
     }
 
     /** Legacy boolean form — a `true` here always meant FINE. Kept for the
@@ -110,7 +124,14 @@ object LocationLogic {
         if (usable.isEmpty()) return null
         return usable.minByOrNull { fix ->
             val ageScore = (nowMs - fix.timeMs).toDouble()          // fresher first
-            val accScore = fix.accuracyM.coerceAtLeast(0f).toDouble() * 1_000.0
+            // Fix 52 (NLOC-1): a missing accuracy used to score as PERFECT
+            // (0f wins ties). Unknown accuracy now scores the maximum
+            // tie-break penalty instead, so a measured fix beats it.
+            val accScore = if (fix.hasAccuracy) {
+                fix.accuracyM.coerceAtLeast(0f).toDouble() * 1_000.0
+            } else {
+                15_000.0
+            }
             // Accuracy acts only as a tie-breaker below 15s of freshness gap.
             ageScore + accScore.coerceAtMost(15_000.0)
         }

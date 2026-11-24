@@ -353,10 +353,13 @@ class MapFragment : Fragment() {
         // Fix 20 (NMAP-3): a stale fix is labelled stale, never presented
         // as the current position.
         val wilayaAr = Wilayas.nearest(fix.lat, fix.lng).nameAr
+        // Fix 52 (NLOC-1): a fix without reported accuracy shows
+        // "unknown", never "0 m".
+        val accText = if (fix.hasAccuracy) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
         statusText?.text = if (fresh) {
-            getString(R.string.map_status_wilaya_fmt, fix.accuracyM.toInt(), wilayaAr)
+            getString(R.string.map_status_wilaya_fmt, accText, wilayaAr)
         } else {
-            getString(R.string.gps_stale_fmt, fix.accuracyM.toInt())
+            getString(R.string.gps_stale_fmt, accText)
         }
         // S4: rings ride the user's position; wind refreshes on web parity's
         // 10-minute cadence (the cone itself redraws via the snapshot flow).

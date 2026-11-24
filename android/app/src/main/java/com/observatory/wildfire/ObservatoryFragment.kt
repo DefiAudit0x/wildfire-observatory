@@ -207,7 +207,9 @@ class ObservatoryFragment : Fragment() {
             LocationLogic.Status.FIXED -> {
                 val fix = state.fix
                 val fresh = fix != null && LocationLogic.isFreshFix(fix, System.currentTimeMillis())
-                val acc = fix?.accuracyM?.toInt() ?: 0
+                // Fix 52 (NLOC-1): a fix without reported accuracy shows
+                // "unknown", never "0 m".
+                val acc = if (fix?.hasAccuracy == true) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
                 val label = if (fresh) {
                     getString(R.string.gps_fixed_fmt, acc)
                 } else {
