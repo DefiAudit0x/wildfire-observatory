@@ -185,8 +185,11 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       trackPopup(layer.getLayers().at(-1) as L.Layer, `report:${rep.id}`);
     });
 
-    // Active SOS Calls
-    sosCalls.filter(s => s.status === "active").forEach((sos) => {
+    // Active SOS Calls — Fix 43 (SOS-5): a no-fix SOS has null coordinates;
+    // it still appears in SosPanel, but no marker is placed (Leaflet throws
+    // on null coords, and 0,0 would be a fabricated location). The type
+    // predicate narrows lat/lng to number for the marker below.
+    sosCalls.filter((s): s is TrappedSOS & { lat: number; lng: number } => s.status === "active" && s.lat != null && s.lng != null).forEach((sos) => {
       L.marker([sos.lat, sos.lng], {
         icon: L.divIcon({
           className: "",
