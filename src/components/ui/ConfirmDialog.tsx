@@ -9,6 +9,10 @@ interface ConfirmDialogProps {
   confirmLabel: string;
   cancelLabel?: string;
   danger?: boolean;
+  // Fix 32 (CMD-3): optional busy flag for the confirm button — callers
+  // that run an async action on confirm pass true while it is in flight.
+  // Default false; all existing callers pass nothing and are unaffected.
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
   lang: Language;
@@ -21,6 +25,7 @@ export default function ConfirmDialog({
   confirmLabel,
   cancelLabel,
   danger = true,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
   lang,
@@ -70,7 +75,8 @@ export default function ConfirmDialog({
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-colors ${
+            disabled={confirmDisabled}
+            className={`px-4 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               danger
                 ? "bg-red-600 hover:bg-red-700 text-white"
                 : "bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400"
