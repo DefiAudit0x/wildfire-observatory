@@ -59,3 +59,21 @@ describe("normalizeMaghrebPhone (Fix 29 VOL-1)", () => {
     }
   });
 });
+
+describe("normalizeMaghrebPhone country hint (Fix 39 — Fix 29 follow-up)", () => {
+  it("a Moroccan hint resolves the 0[567] collision to +212", () => {
+    expect(normalizeMaghrebPhone("0612345678", "MA")).toBe("+212612345678");
+  });
+
+  it("a Libyan hint resolves the 0[567] collision to +218", () => {
+    expect(normalizeMaghrebPhone("0550123456", "LY")).toBe("+218550123456");
+  });
+
+  it("an explicit DZ hint is the same as the default DZ-first reading", () => {
+    expect(normalizeMaghrebPhone("0550123456", "DZ")).toBe("+213550123456");
+  });
+
+  it("an already-prefixed number ignores the hint (control)", () => {
+    expect(normalizeMaghrebPhone("+212612345678", "DZ")).toBe("+212612345678");
+  });
+});
