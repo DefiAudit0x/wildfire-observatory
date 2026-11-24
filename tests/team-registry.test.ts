@@ -13,6 +13,17 @@ const fsMock = vi.hoisted(() => ({
 
 vi.mock("../server/fs.js", () => fsMock);
 
+// Fix 45 (TRG-2): teamRegistry imports the real pino logger; the warn
+// assertion needs the mock (same hoisted pattern as fsMock).
+const loggerMock = vi.hoisted(() => ({
+  warn: vi.fn(),
+  error: vi.fn(),
+  info: vi.fn(),
+  debug: vi.fn(),
+}));
+
+vi.mock("../server/logger.js", () => ({ default: loggerMock }));
+
 import {
   clearRegistry,
   isOnline,
@@ -25,6 +36,10 @@ import {
 beforeEach(() => {
   clearRegistry();
   fsMock.docMergeTeamPositionIfActive.mockReset().mockResolvedValue(true);
+  loggerMock.warn.mockClear();
+  loggerMock.error.mockClear();
+  loggerMock.info.mockClear();
+  loggerMock.debug.mockClear();
 });
 
 const ping = (memberId: string, lat: number, lng: number, now: number) =>
@@ -103,12 +118,82 @@ describe("teamRegistry — snapshot throttle (durable layer)", () => {
     const payload = fsMock.docMergeTeamPositionIfActive.mock.calls[1][3] as Record<string, unknown>;
     expect(payload.lastKnownLat).toBeCloseTo(36.72);
     // B1/R1 contract: display fields ONLY — never authority fields.
-    expect(Object.keys(payload).sort()).toEqual(["lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
+    // Fix 45 (D5): the payload also carries the fix age (null for legacy).
+    expect(Object.keys(payload).sort()).toEqual(["lastFixTimeMs", "lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
   });
 
   it("does not snapshot a member that never heartbeated", () => {
     snapshotIfDue("tm-unknown", "team-t5", 1_000);
     expect(fsMock.docMergeTeamPositionIfActive).not.toHaveBeenCalled();
+  });
+
+  it("Fix 45 (TRG-2): a failed snapshot retries on the next heartbeat", async () => {
+    const base = Date.now();
+    fsMock.docMergeTeamPositionIfActive.mockResolvedValueOnce(false);
+    ping("tm-retry", 36.7, 5.0, base);
+    snapshotIfDue("tm-retry", "team-t5", base);
+    // snapshotIfDue is fire-and-forget: flush the promise chain BEFORE the
+    // second attempt, or the .then reset has not run yet and the test fails
+    // on NEW code too (prep §4 harness trap).
+    await new Promise((r) => setTimeout(r, 0));
+    ping("tm-retry", 36.71, 5.0, base + 60_000);
+    snapshotIfDue("tm-retry", "team-t5", base + 60_000);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(2);
+  });
+
+  it("Fix 45 (TRG-2): a failed snapshot warns at the registry level", async () => {
+    const base = Date.now();
+    fsMock.docMergeTeamPositionIfActive.mockResolvedValueOnce(false);
+    ping("tm-warn", 36.7, 5.0, base);
+    snapshotIfDue("tm-warn", "team-t5", base);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: "tm-warn" }),
+      "Team position snapshot failed"
+    );
+  });
+
+  it("Fix 45 (TRG-2): the retry still happens when a heartbeat replaced the entry mid-flight", async () => {
+    const base = Date.now();
+    let resolveGate!: (v: boolean) => void;
+    const gate = new Promise<boolean>((res) => {
+      resolveGate = res;
+    });
+    fsMock.docMergeTeamPositionIfActive.mockResolvedValueOnce(gate);
+    ping("tm-stale", 36.7, 5.0, base);
+    snapshotIfDue("tm-stale", "team-t5", base);
+    // A heartbeat lands while the write is in flight — recordHeartbeat
+    // replaces the registry entry object (copying lastSnapshotAt). The
+    // reset must land on the LIVE entry (registry.get), not the stale one
+    // snapshotIfDue closed over — that is the §1.2 trap this test pins.
+    ping("tm-stale", 36.71, 5.0, base + 15_000);
+    resolveGate(false);
+    await new Promise((r) => setTimeout(r, 0));
+    snapshotIfDue("tm-stale", "team-t5", base + 60_000);
+    expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(2);
+  });
+
+  it("Fix 45 (D5): the snapshot payload carries the fix age, null for legacy clients", async () => {
+    const base = Date.now();
+    recordHeartbeat({
+      memberId: "tm-fixage",
+      teamId: "team-t5",
+      name: "عضو",
+      lat: 36.7,
+      lng: 5.0,
+      fixTimeMs: base - 2_000,
+      now: base,
+    });
+    snapshotIfDue("tm-fixage", "team-t5", base);
+    await new Promise((r) => setTimeout(r, 0));
+    const payload = fsMock.docMergeTeamPositionIfActive.mock.calls[0][3] as Record<string, unknown>;
+    expect(payload.lastFixTimeMs).toBe(base - 2_000);
+    // Control: a legacy client without fixTimeMs → null, never fabricated.
+    recordHeartbeat({ memberId: "tm-fixage-legacy", teamId: "team-t5", name: "عضو قديم", lat: 36.7, lng: 5.0, now: base });
+    snapshotIfDue("tm-fixage-legacy", "team-t5", base);
+    await new Promise((r) => setTimeout(r, 0));
+    const legacyPayload = fsMock.docMergeTeamPositionIfActive.mock.calls[1][3] as Record<string, unknown>;
+    expect(legacyPayload.lastFixTimeMs).toBeNull();
   });
 });
 

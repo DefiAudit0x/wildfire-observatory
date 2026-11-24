@@ -209,7 +209,8 @@ describe("POST /api/teams/heartbeat", () => {
     expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledTimes(1);
     expect(fsMock.docMergeTeamPositionIfActive).toHaveBeenCalledWith("tm-snap", "team-a1", 0, expect.objectContaining({ lastKnownLat: 36.71, teamId: "team-a1" }));
     const payload = fsMock.docMergeTeamPositionIfActive.mock.calls[0][3] as Record<string, unknown>;
-    expect(Object.keys(payload).sort()).toEqual(["lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
+    // Fix 45 (D5): the payload also carries the fix age (null for legacy).
+    expect(Object.keys(payload).sort()).toEqual(["lastFixTimeMs", "lastKnownLat", "lastKnownLng", "lastSeenAt", "memberId", "name", "teamId"]);
     // the old docSet path must be gone from the snapshot entirely
     expect(fsMock.docSet).not.toHaveBeenCalledWith("teamMembers", expect.anything(), expect.anything());
 
@@ -591,6 +592,23 @@ describe("GET /api/teams — command-center roster", () => {
     // Control in intent, finding test in behavior (prep §6 note 5): on old
     // code the field is missing (undefined), not null.
     expect(res.body[0].members[0].fixTimeMs).toBeNull();
+  });
+
+  it("Fix 45 (D5): the roster falls back to the durable snapshot's fix age when the member has no live position", async () => {
+    const sent = Date.now() - 120_000;
+    fsMock.collectionGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams") return [{ teamId: "team-a1", name: "U", nameAr: "و", type: "volunteers", active: true }];
+      if (collection === "teamMembers")
+        return [{ memberId: "tm-durable", teamId: "team-a1", name: "دائم", active: true, lastKnownLat: 36.5, lastKnownLng: 5.0, lastSeenAt: Date.now() - 3_600_000, lastFixTimeMs: sent }];
+      return [];
+    });
+    fsMock.docGet.mockResolvedValue(null);
+    const res = await supertest(createApp()).get("/api/teams").set(adminAuth()).set(nextIp());
+    expect(res.status).toBe(200);
+    const member = res.body[0].members[0];
+    expect(member.online).toBe(false);
+    expect(member.lat).toBeCloseTo(36.5);
+    expect(member.fixTimeMs).toBe(sent);
   });
 
   it("requires admin", async () => {
