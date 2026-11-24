@@ -129,6 +129,7 @@ export interface TrappedSOS {
   status: 'active' | 'resolved';
   timestamp: string;
   dispatchedTeams?: {
+    teamId?: string;
     type: 'protection_civile' | 'volunteers';
     teamNameAr: string;
     teamNameFr: string;
