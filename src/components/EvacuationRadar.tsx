@@ -234,7 +234,7 @@ export default function EvacuationRadar({ reports, satellites = [], userLocation
       .filter((b) => b.distance <= RANGE_KM)
       .sort((a, b) => a.distance - b.distance);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reports, satellites, userLocation, nowMs]);
+  }, [reports, satellites, userLocation, nowMs, isArabic]);
 
   const closestFire = blips[0];
   const oppositeFireHeading = closestFire ? (closestFire.bearing + 180) % 360 : null;

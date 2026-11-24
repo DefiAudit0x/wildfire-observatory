@@ -48,6 +48,10 @@ export default function InteractiveMap({
   // v2.1.1: bumped when the keyed CARTO basemap swap lands, so the layers
   // control rebuilds with the new layer references.
   const [cartoTick, setCartoTick] = useState(0);
+  // Fix 35 (MAP-3): bumped when the viewport crosses the 640 px breakpoint,
+  // so the layers control rebuilds with the right collapsed state — the
+  // width below is otherwise sampled only when the effect runs.
+  const [narrowTick, setNarrowTick] = useState(0);
 
   useEffect(() => {
     onMapClickRef.current = onMapClick;
@@ -169,6 +173,17 @@ export default function InteractiveMap({
   }, []);
 
   // Rebuild only the control when language changes; tile layers stay intact.
+  // Fix 35 (MAP-3): matchMedia fires only on breakpoint crossing (no resize
+  // storm), and re-creating the control is already the effect's job. Guarded
+  // like the ResizeObserver below — jsdom has no matchMedia.
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(max-width: 639px)");
+    const onChange = () => setNarrowTick((t) => t + 1);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
   useEffect(() => {
     const map = mapRef.current;
     const layers = basemapsRef.current;
@@ -180,6 +195,8 @@ export default function InteractiveMap({
 
     // The expanded layers control ate the bottom-right corner on phones and
     // collided with the hint chip; collapse it below the sm breakpoint.
+    // Fix 35 (MAP-3): the old condition was exactly backwards — it expanded
+    // on phones and collapsed on wider screens.
     layerControlRef.current = L.control.layers(
       {
         [isArabic ? "فاتحة" : "Clair"]: layers.light,
@@ -187,10 +204,10 @@ export default function InteractiveMap({
         [isArabic ? "داكنة" : "Sombre"]: layers.dark,
       },
       undefined,
-      { position: "bottomright", collapsed: window.innerWidth >= 640 }
+      { position: "bottomright", collapsed: window.innerWidth < 640 }
     ).addTo(map);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isArabic, mapReady, cartoTick]);
+  }, [isArabic, mapReady, cartoTick, narrowTick]);
 
   // Single delegated listener for all popup confirm buttons (no per-popup DOM listeners)
   useEffect(() => {
@@ -279,7 +296,7 @@ export default function InteractiveMap({
 
     const markerSig = [
       satellites
-        .map((s) => `${s.id}|${s.lat}|${s.lng}|${s.brightness}|${s.confidence}|${s.scanTime}|${s.wilaya}|${s.satellite}`)
+        .map((s) => `${s.id}|${s.lat}|${s.lng}|${s.brightness}|${s.confidence}|${s.scanTime}|${s.wilaya}|${s.satellite}|${isArabic ? 1 : 0}`)
         .join(";"),
       visibleReports
         .map((r) =>
@@ -463,7 +480,7 @@ export default function InteractiveMap({
         .bindPopup(popupContent, { maxWidth: 300 })
         .addTo(markerGroup);
     });
-  }, [reports, satellites, lang, isArabic, severityFilter, statusFilter, mapReady]);
+  }, [reports, satellites, lang, isArabic, severityFilter, statusFilter, mapReady, heatEnabled]);
 
   // Handle flyTo when a selected report is clicked in list
   // ARC-H10 fix: this effect depended on the `reports` array identity, which is
