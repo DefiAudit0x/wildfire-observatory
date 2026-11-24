@@ -182,6 +182,14 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       setBeat((prev) => (prev === "idle" || prev === "waiting-gps" ? prev : "idle"));
       return;
     }
+    // Fix 37b (CodeRabbit Minor, review 6034317206): the disposed flag is
+    // LOCAL to this effect run, closed over by this run's callbacks. The
+    // Fix 37 version kept it in a shared ref that the next run's setup
+    // reset to false — a GPS request from the previous run completing after
+    // a session/intervalMs re-run then sent a beat with the previous
+    // session's token (the session check runs after the await, so it
+    // prevented the state commit but not the send).
+    let disposed = false;
     const tick = async () => {
       const current = sessionRef.current;
       if (!current || beatBusyRef.current) return;
@@ -193,6 +201,15 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
       setBeat((prev) => (prev === "live" ? "live" : "waiting-gps"));
       navigator.geolocation.getCurrentPosition(
         async (pos) => {
+          // Fix 37 (TEAM-2): this fix was requested before this run was
+          // disposed — native tracking took over, or the effect re-ran —
+          // while it was pending. A late beat must not send beside the
+          // native stream. Release the busy flag FIRST or the loop wedges
+          // forever (tick() returns early while busy).
+          if (disposed) {
+            beatBusyRef.current = false;
+            return;
+          }
           const lat = pos.coords.latitude;
           const lng = pos.coords.longitude;
           if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
@@ -267,7 +284,10 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
         },
         () => {
           // GPS loss is NOT a verdict: keep the session, flag the state.
+          // Fix 37 (TEAM-2): a late error must not flip the beat indicator
+          // after the native flip already set it idle.
           beatBusyRef.current = false;
+          if (disposed) return;
           setBeat("waiting-gps");
         },
         { enableHighAccuracy: true, maximumAge: 10_000, timeout: 12_000 }
@@ -275,7 +295,10 @@ export default function TeamPanel({ lang }: TeamPanelProps) {
     };
     tick();
     const timer = window.setInterval(tick, intervalMs);
-    return () => window.clearInterval(timer);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
   }, [session, nativeActive, intervalMs]);
 
   // ======================

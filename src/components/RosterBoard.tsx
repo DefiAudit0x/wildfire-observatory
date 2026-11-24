@@ -39,6 +39,22 @@ interface RosterBoardProps {
   lang: Language;
 }
 
+// Fix 37b (CodeRabbit Major, review 6034317206): mirror the server's
+// toUnitId EXACTLY — `unit-${code.toLowerCase()}`, NO stripping. The Fix 37
+// version stripped a leading "unit-" from both sides, which diverges from
+// the server in both directions: a raw "UNIT-DZ16" code is accepted
+// server-side (unit-unit-dz16) but was hidden client-side, and a raw
+// "unit-dz16" code is rejected server-side but was offered. The roster's
+// unitId is already canonical (server-canonicalized on GET), so the
+// comparison is direct: toUnitId(user code) === roster unitId.
+function toCanonicalUnitId(code: string): string {
+  return `unit-${String(code ?? "").toLowerCase()}`;
+}
+
+function isAssignableToRoster(user: StaffUser, rosterUnitId: string): boolean {
+  return user.isActive && user.role === "agent" && toCanonicalUnitId(user.unitId) === rosterUnitId;
+}
+
 function todayISO(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -74,6 +90,13 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const [confirmAction, setConfirmAction] = useState<null | { kind: "copy"; target: string } | { kind: "removePost"; postId: string }>(null);
 
   const isWritable = staffSession.authenticated && (staffSession.role === "commander" || staffSession.role === "superadmin" || staffSession.role === "admin");
+
+  // Fix 37 (RSTR-4): only assignable accounts are offered. The selector is
+  // the only consumer of `staff`; `roster.unitId` is the authority for the
+  // unit (server-canonicalized), not the session's unitId (null for a
+  // global admin). The selector renders only inside post rows, where the
+  // roster is non-null.
+  const assignableStaff = roster ? staff.filter((s) => isAssignableToRoster(s, roster.unitId)) : [];
 
   // ARC-M28: fast date navigation used to let the last *response* win regardless
   // of which request was last — the header could show day N with day N-2 content.
@@ -326,6 +349,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     if (!roster) return;
     const agent = staff.find((s) => s.agentId === agentId);
     if (!agent) return;
+    // Fix 37 (RSTR-4): the selector filters, but the mutation site must not
+    // trust it — a non-agent / wrong-unit id appended here would fail the
+    // server's canonicalizePersonnel at save time, and the failure reload
+    // would then discard every unsaved edit.
+    if (!isAssignableToRoster(agent, roster.unitId)) {
+      setMsg(isArabic ? "لا يمكن توزيع هذا الحساب في هذا المنصب." : "Ce compte ne peut pas être affecté à ce poste.");
+      return;
+    }
     // ARC-M29: the check used to exclude the current post (`p.id !== postId`),
     // so the same agent could be added twice inside one post — a duplicate key
     // render discovered only as a server rejection that wiped unsaved edits.
@@ -366,7 +397,20 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         p.id === postId
           ? {
               ...p,
-              personnel: p.personnel.map((x) => (x.agentId === agentId ? { ...x, [field]: value } : x)),
+              personnel: p.personnel.map((x) => {
+                if (x.agentId !== agentId) return x;
+                // Fix 37 (RSTR-3): clearing a rank sent "" and the server's
+                // z.string().min(1) 400d the whole save — and the failure
+                // path reloaded the day, discarding every unsaved edit. An
+                // empty rank drops the key entirely (omitted from the PUT),
+                // which the server accepts as absent. The input still shows
+                // "" (person.rank || ""), so the UI is unchanged.
+                if (field === "rank" && value.trim() === "") {
+                  const { rank: _dropped, ...rest } = x;
+                  return rest;
+                }
+                return { ...x, [field]: value };
+              }),
             }
           : p
       ),
@@ -607,12 +651,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
                     className="flex-1 bg-black/50 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-slate-300 focus:outline-none cursor-pointer"
                   >
                     <option value="">{isArabic ? "+ أضف مناوباً إلى هذا المنصب" : "+ Ajouter un agent à ce poste"}</option>
-                    {staff.length === 0 ? (
+                    {assignableStaff.length === 0 ? (
                       <option value="" disabled>
                         {isArabic ? "لا يوجد موظفون متاحون" : "Aucun agent disponible"}
                       </option>
                     ) : (
-                      staff.map((s) => {
+                      assignableStaff.map((s) => {
                         const alreadyAssigned = roster.posts.some((p) => p.personnel.some((x) => x.agentId === s.agentId));
                         return (
                           <option key={s.agentId} value={s.agentId} disabled={alreadyAssigned}>

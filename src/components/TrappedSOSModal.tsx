@@ -101,6 +101,21 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   // key, so a retry after a timeout can never become a second emergency call.
   const sosClientGeneratedIdRef = useRef<string | null>(null);
 
+  // Fix 37 (SOSM-4): a late profile load must not overwrite identity the
+  // user already typed. The []-deps effect below closes over mount-time ""
+  // forever, so an "only fill when empty" guard would be vacuous — per-field
+  // dirty refs are the only correct mechanism.
+  const nameTouchedRef = useRef(false);
+  const phoneTouchedRef = useRef(false);
+  const handleNameChange = (value: string) => {
+    nameTouchedRef.current = true;
+    setName(value);
+  };
+  const handlePhoneChange = (value: string) => {
+    phoneTouchedRef.current = true;
+    setPhone(value);
+  };
+
   // Load the user's saved (server-encrypted) identity once.
   useEffect(() => {
     let cancelled = false;
@@ -110,8 +125,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         if (!res.ok) return;
         const data = await res.json();
         if (cancelled) return;
-        setName(data.name || "");
-        setPhone(data.phone || "");
+        if (!nameTouchedRef.current) setName(data.name || "");
+        if (!phoneTouchedRef.current) setPhone(data.phone || "");
       } catch {
         // fall back to empty identity (session-only) if profile is unavailable
       }
@@ -763,7 +778,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                   <input
                     type="text"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => handleNameChange(e.target.value)}
                     placeholder={isArabic ? "مثال: أحمد بوعلام" : "Ex: Ahmed Boualam"}
                     className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-start"
                   />
@@ -775,7 +790,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                   <input
                     type="tel"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => handlePhoneChange(e.target.value)}
                     placeholder={isArabic ? "مثال: 0661234567" : "Ex: 0661234567"}
                     className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-left font-mono"
                   />
@@ -831,7 +846,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                   <input
                     type="text"
                     value={name}
-                    onChange={(e) => setName(e.target.value)}
+                    onChange={(e) => handleNameChange(e.target.value)}
                     placeholder={isArabic ? "مثال: أحمد بوعلام" : "Ex: Ahmed Boualam"}
                     className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-start"
                   />
@@ -843,7 +858,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                   <input
                     type="tel"
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => handlePhoneChange(e.target.value)}
                     placeholder={isArabic ? "مثال: 0661234567" : "Ex: 0661234567"}
                     className="w-full px-3 py-2 text-xs bg-zinc-900 border border-white/10 rounded-lg text-slate-100 placeholder-gray-600 focus:outline-none focus:border-red-500/50 text-left font-mono"
                   />

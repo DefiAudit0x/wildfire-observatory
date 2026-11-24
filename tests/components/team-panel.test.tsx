@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import TeamPanel from "../../src/components/TeamPanel";
 
 /**
@@ -88,6 +88,42 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+// Deferred geolocation: parks the success callback instead of calling it,
+// so the test controls exactly when the browser fix lands. Installed
+// per-test, overriding the synchronous stub from beforeEach.
+function stubDeferredGeolocation() {
+  let parkedOk: ((p: GeolocationPosition) => void) | null = null;
+  Object.defineProperty(window.navigator, "geolocation", {
+    configurable: true,
+    value: {
+      getCurrentPosition: (ok: (p: GeolocationPosition) => void) => {
+        parkedOk = ok;
+      },
+      watchPosition: () => 1,
+      clearWatch: () => {},
+    },
+  });
+  return {
+    get parkedOk() {
+      return parkedOk;
+    },
+    release() {
+      parkedOk?.({
+        coords: {
+          latitude: 36.75,
+          longitude: 5.07,
+          accuracy: 8,
+          heading: 90,
+          speed: 4,
+          altitude: null,
+          altitudeAccuracy: null,
+        } as unknown as GeolocationCoordinates,
+        timestamp: Date.now(),
+      } as GeolocationPosition);
+    },
+  };
+}
 
 describe("TeamPanel — guest view", () => {
   it("renders the join form and joins by code, then shows the team identity and mission", async () => {
@@ -836,5 +872,87 @@ describe("TeamPanel — leave after a cleared session still stops native trackin
     // the FGS stop: with no session left, the leave owns it.
     releaseLeave(jsonRes(200, { ok: true }));
     await waitFor(() => expect(stopTeamTracking).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("TeamPanel — browser heartbeat disposal (Fix 37 — TEAM-2)", () => {
+  function installBridge() {
+    (globalThis as any).AndroidBridge = {
+      isTeamTrackingSupported: () => true,
+      startTeamTracking: vi.fn(() => true),
+      stopTeamTracking: vi.fn(),
+    };
+  }
+
+  it("a pending browser GPS fix does not send a beat after native takes over", async () => {
+    const geo = stubDeferredGeolocation();
+    installBridge();
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    // The browser tick fired on mount and parked its GPS callback.
+    await waitFor(() => expect(geo.parkedOk).not.toBeNull());
+    fireEvent.click(await screen.findByRole("button", { name: /تشغيل التتبع الخلفي/ }));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "started" } }));
+    await act(async () => {});
+    // Clear the ledger: anything after this point is a late beat.
+    fetchMock.mockClear();
+    await act(async () => {
+      geo.release();
+    });
+    // Let any late fetch land.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(false);
+  });
+
+  it("releasing a parked GPS fix without flipping still sends the beat (control)", async () => {
+    const geo = stubDeferredGeolocation();
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(geo.parkedOk).not.toBeNull());
+    await act(async () => {
+      geo.release();
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(true)
+    );
+  });
+});
+
+describe("TeamPanel — heartbeat disposal per effect run (Fix 37b — TEAM-2)", () => {
+  it("a GPS fix from the previous session does not send after leave + re-join", async () => {
+    // The Fix 37 shared disposed ref was reset by the new run's setup, so
+    // a fix requested under the old session sent a beat with the old token
+    // after the re-join. The per-run flag closes over its own run only.
+    const geo = stubDeferredGeolocation();
+    seedSession();
+    render(<TeamPanel lang="ar" />);
+    await waitFor(() => expect(geo.parkedOk).not.toBeNull());
+    const oldOk = geo.parkedOk!;
+    // Leave (session -> null), then re-join (a new session, a new run).
+    fireEvent.click(await screen.findByRole("button", { name: /الانسحاب من الفريق/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /نعم، انسحاب/ }));
+    await waitFor(() => expect(screen.getByLabelText(/رمز الفريق/)).toBeTruthy());
+    fireEvent.change(screen.getByLabelText(/رمز الفريق/), { target: { value: "a2b4c6d8" } });
+    fireEvent.change(screen.getByLabelText(/الاسم الظاهر/), { target: { value: "عارة 1" } });
+    fireEvent.click(screen.getByRole("button", { name: /انضمام إلى الفريق/ }));
+    await waitFor(() => expect(screen.getByText("وحدة بجاية")).toBeTruthy());
+    // The new run parked its own fix; the old one is still outstanding.
+    fetchMock.mockClear();
+    await act(async () => {
+      oldOk({
+        coords: {
+          latitude: 36.75,
+          longitude: 5.07,
+          accuracy: 8,
+          heading: 90,
+          speed: 4,
+          altitude: null,
+          altitudeAccuracy: null,
+        } as unknown as GeolocationCoordinates,
+        timestamp: Date.now(),
+      } as GeolocationPosition);
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(false);
   });
 });

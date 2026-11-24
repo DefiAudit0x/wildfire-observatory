@@ -313,3 +313,69 @@ describe("Fix 27 SOSM-3 — close during the permission await leaks nothing", ()
     expect(screen.getByText("00:01")).toBeTruthy();
   });
 });
+
+describe("Fix 37 SOSM-4 — late profile load must not overwrite typed identity", () => {
+  function installDeferredProfile() {
+    const profile = deferred<{ name: string; phone: string }>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url === "/api/sos/profile/current") {
+          return { ok: true, status: 200, json: async () => profile.promise } as Response;
+        }
+        if (url === "/api/sos/profile") {
+          return { ok: true, status: 200, json: async () => ({}) } as Response;
+        }
+        if (url === "/api/sos") {
+          sosBodies.push(JSON.parse(init?.body as string));
+          return { ok: true, status: 200, json: async () => ({}) } as Response;
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response;
+      }),
+    );
+    return profile;
+  }
+
+  const nameInput = () => screen.getByPlaceholderText(/أحمد بوعلام/) as HTMLInputElement;
+  const phoneInput = () => screen.getByPlaceholderText(/0661234567/) as HTMLInputElement;
+
+  it("typed name and phone survive the late profile load", async () => {
+    const profile = installDeferredProfile();
+    renderModal();
+    expect(screen.getByText("تم تأكيد حالة الخطر المحدق")).toBeTruthy();
+    fireEvent.change(nameInput(), { target: { value: "Typed Name" } });
+    fireEvent.change(phoneInput(), { target: { value: "0669999999" } });
+    await act(async () => {
+      profile.resolve({ name: "Saved Name", phone: "0550111222" });
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(nameInput().value).toBe("Typed Name");
+    expect(phoneInput().value).toBe("0669999999");
+  });
+
+  it("a field left untouched still fills from the profile (per-field guard)", async () => {
+    const profile = installDeferredProfile();
+    renderModal();
+    fireEvent.change(nameInput(), { target: { value: "Typed Name" } });
+    await act(async () => {
+      profile.resolve({ name: "Saved Name", phone: "0550111222" });
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(nameInput().value).toBe("Typed Name");
+    expect(phoneInput().value).toBe("0550111222");
+  });
+
+  it("typing nothing fills both fields from the profile (control)", async () => {
+    const profile = installDeferredProfile();
+    renderModal();
+    await act(async () => {
+      profile.resolve({ name: "Saved Name", phone: "0550111222" });
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(nameInput().value).toBe("Saved Name");
+    expect(phoneInput().value).toBe("0550111222");
+  });
+});
