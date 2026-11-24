@@ -138,7 +138,7 @@ describe("S-M1: admin token jti + revocation register", () => {
     const token = generateAdminToken("admin");
     const decoded = jwt.decode(token) as any;
     const ok = await revokeAdminSession(token, "incident-response");
-    expect(ok).toBe(true);
+    expect(ok).toBe("revoked");
     expect(state.docSet).toHaveBeenCalledWith(
       "adminRevocations",
       decoded.jti,
@@ -149,7 +149,7 @@ describe("S-M1: admin token jti + revocation register", () => {
   it("revokeAdminSession is a harmless no-op for legacy jti-less tokens", async () => {
     const legacy = jwt.sign({ role: "admin" }, config.jwtSecret, { expiresIn: "24h" });
     const ok = await revokeAdminSession(legacy, "logout");
-    expect(ok).toBe(false);
+    expect(ok).toBe("nothing-to-revoke");
     expect(state.docSet).not.toHaveBeenCalled();
   });
 

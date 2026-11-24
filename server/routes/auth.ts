@@ -95,12 +95,15 @@ router.get("/session", requireAuth, (req: Request, res: Response) => {
 router.post("/logout", async (req: Request, res: Response) => {
   const bearer = req.headers.authorization;
   const token = bearer?.startsWith("Bearer ") ? bearer.slice(7) : (req as Request & { cookies?: { staff_token?: string } }).cookies?.staff_token;
-  const revoked = token ? await revokeAdminSession(token, "staff.logout") : true;
-  res.clearCookie("staff_token");
-  if (!revoked) {
+  const result = token ? await revokeAdminSession(token, "staff.logout") : "nothing-to-revoke";
+  // Fix 41c: the same tri-state as admin logout, and the same cookie
+  // order — the old code cleared the cookie BEFORE the 503, destroying
+  // the retry path exactly as Fix 41b found on the admin side.
+  if (result === "failed") {
     res.status(503).json({ error: "Session revocation could not be persisted" });
     return;
   }
+  res.clearCookie("staff_token");
   res.json({ success: true });
 });
 

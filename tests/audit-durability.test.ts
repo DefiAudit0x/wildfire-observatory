@@ -138,4 +138,68 @@ describe("S-M8: durable audit queue", () => {
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.some((e: any) => e.action === "test.fallback")).toBe(true);
   });
+
+  it("GET /api/audit merges queued memory entries with durable rows (Fix 41 — AUD-3)", async () => {
+    const oldRows = [1, 2].map((n) => ({
+      id: `durable-${n}`,
+      action: `test.durable-${n}`,
+      timestamp: new Date(Date.now() - 3600_000 - n * 1000).toISOString(),
+      actorId: "a1",
+      ip: "1.2.3.4",
+    }));
+    state.collectionGet.mockResolvedValue(oldRows);
+    state.docSetImpl.mockResolvedValue(false); // the next write queues
+    await logAdminAction("test.queued-recent", { marker: true }, { ip: null });
+
+    const res = await supertest(createApp())
+      .get("/api/audit")
+      .set("Authorization", `Bearer ${generateAdminToken()}`);
+    expect(res.status).toBe(200);
+    const actions = res.body.map((e: any) => e.action);
+    expect(actions).toContain("test.durable-1");
+    expect(actions).toContain("test.durable-2");
+    expect(actions).toContain("test.queued-recent");
+    // Newest first: the queued entry (logged just now) precedes the hour-old rows.
+    expect(actions.indexOf("test.queued-recent")).toBeLessThan(actions.indexOf("test.durable-1"));
+  });
+
+  it("returns an entry that sits in both lists exactly once (Fix 41 — AUD-3)", async () => {
+    // Log with a healthy write, then make the DB return that same entry.
+    await logAdminAction("test.dedupe", { marker: true }, { ip: null });
+    const logged = state.docSetCalls.find((c) => c.data.action === "test.dedupe");
+    expect(logged).toBeDefined();
+    state.collectionGet.mockResolvedValue([{ ...logged!.data }]);
+
+    const res = await supertest(createApp())
+      .get("/api/audit")
+      .set("Authorization", `Bearer ${generateAdminToken()}`);
+    expect(res.status).toBe(200);
+    // The merged list must not double-count the entry. This test does NOT
+    // discriminate the fix (old code returned the DB list alone, also once)
+    // — it guards the merge against double-counting.
+    expect(res.body.filter((e: any) => e.id === logged!.data.id)).toHaveLength(1);
+  });
+
+  it("caps the merged list at 100 entries, newest first (Fix 41 — AUD-3)", async () => {
+    const durable = Array.from({ length: 100 }, (_, i) => ({
+      id: `cap-durable-${i}`,
+      action: `test.cap-durable-${i}`,
+      timestamp: new Date(Date.now() - 3600_000 - i * 1000).toISOString(),
+      actorId: "a1",
+      ip: "1.2.3.4",
+    }));
+    state.collectionGet.mockResolvedValue(durable);
+    state.docSetImpl.mockResolvedValue(false); // the next 5 writes queue
+    for (let n = 0; n < 5; n++) {
+      await logAdminAction(`test.cap-memory-${n}`, { marker: true }, { ip: null });
+    }
+
+    const res = await supertest(createApp())
+      .get("/api/audit")
+      .set("Authorization", `Bearer ${generateAdminToken()}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(100);
+    const actions = res.body.map((e: any) => e.action);
+    for (let n = 0; n < 5; n++) expect(actions).toContain(`test.cap-memory-${n}`);
+  });
 });

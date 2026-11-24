@@ -111,17 +111,21 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
       codes = new Map<string, number>();
       heartbeatBadgesPerIp.set(ip, codes);
     }
-    const seenAt = codes.get(badgeCode);
-    if (!seenAt) {
-      codes.set(badgeCode, now);
-      for (const [code, ts] of codes) {
-        if (now - ts > 60 * 1000) codes.delete(code);
-      }
-      if (codes.size > HEARTBEAT_MAX_BADGES_PER_IP) {
-        res.status(429).json({ error: "Too many badge codes from this address." });
-        return;
-      }
+    // Fix 41b (CodeRabbit Minor, review 6037710493): prune FIRST, then
+    // decide — and reject an unseen code that would exceed the ceiling
+    // WITHOUT inserting it. Fix 41 inserted first and checked after, so a
+    // rejected 6th code stayed in the map at size 6 and every later retry
+    // of an ACCEPTED code 429d until the window expired. The ceiling now
+    // counts only codes that were admitted.
+    for (const [code, ts] of codes) {
+      if (now - ts > 60 * 1000) codes.delete(code);
     }
+    const seenAt = codes.get(badgeCode);
+    if (!seenAt && codes.size >= HEARTBEAT_MAX_BADGES_PER_IP) {
+      res.status(429).json({ error: "Too many badge codes from this address." });
+      return;
+    }
+    if (!seenAt) codes.set(badgeCode, now);
   }
 
   // S-H4: badge ownership is a possession proof, not a knowledge proof. The

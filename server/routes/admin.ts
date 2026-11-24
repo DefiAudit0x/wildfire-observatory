@@ -131,10 +131,20 @@ router.get("/session", requireAdmin, (req: Request, res: Response) => {
 router.post("/logout", async (req: Request, res: Response) => {
   // S-M1: logout now revokes server-side, not just the cookie — a copied
   // admin_token dies in the revocation register instead of living 24h more.
-  await revokeAdminSession(
-    (req as any).cookies?.admin_token || req.headers.authorization?.replace(/^Bearer /, ""),
-    "logout"
-  );
+  // Fix 41 (ADM-5): mirror staff logout — do not acknowledge success when
+  // the revocation write did not persist (the client already treats a
+  // non-OK logout as an error toast + stay logged in, Fix 32 ADM-3).
+  const token = (req as any).cookies?.admin_token || req.headers.authorization?.replace(/^Bearer /, "");
+  const result = token ? await revokeAdminSession(token, "logout") : "nothing-to-revoke";
+  // Fix 41c (CodeRabbit Minor, review 6037976723): the tri-state. Only a
+  // "failed" write 503s with the cookie retained (the retry re-presents
+  // the token). "nothing-to-revoke" — a legacy jti-less token, or an
+  // invalid/expired one — logs out cleanly: there is no durable entry to
+  // write, and 503ing it would be a permanent logout dead-end.
+  if (result === "failed") {
+    res.status(503).json({ error: "Session revocation could not be persisted" });
+    return;
+  }
   res.clearCookie("admin_token");
   res.json({ success: true });
 });

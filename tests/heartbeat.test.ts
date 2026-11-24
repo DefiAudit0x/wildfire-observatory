@@ -53,4 +53,35 @@ describe("POST /api/location/heartbeat", () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
+
+  it("re-checks the distinct-badge ceiling on a retry of a rejected code (Fix 41 — CMD-6)", async () => {
+    // One test, four phases: the module-level per-IP map is shared across
+    // tests in this file, so the whole ceiling sequence lives here.
+    const beat = (deviceId: string, badgeCode: string) =>
+      supertest(createApp())
+        .post("/api/location/heartbeat")
+        .send({ deviceId, lat: 36.75, lng: 7.6, badgeCode });
+    const codes = ["CMD6-1", "CMD6-2", "CMD6-3", "CMD6-4", "CMD6-5", "CMD6-6"];
+    // (a) Codes 1–5 are within the ceiling → 200 each.
+    for (let i = 0; i < 5; i++) {
+      expect((await beat(uniqueDevice(), codes[i])).status).toBe(200);
+    }
+    // (b) A retry within the ceiling still passes — the fix must not
+    // blanket-block retries.
+    expect((await beat(uniqueDevice(), codes[0])).status).toBe(200);
+    // (c) The 6th distinct code is rejected (pre-existing behavior).
+    const sixth = await beat(uniqueDevice(), codes[5]);
+    expect(sixth.status).toBe(429);
+    expect(sixth.body.error).toBe("Too many badge codes from this address.");
+    // (d) Retrying the rejected 6th code must 429 again. On pre-Fix-41 code
+    // the retry found `seenAt` and skipped the size check → 200.
+    const retry = await beat(uniqueDevice(), codes[5]);
+    expect(retry.status).toBe(429);
+    expect(retry.body.error).toBe("Too many badge codes from this address.");
+    // (e) Fix 41b — retrying an ACCEPTED code after the rejection must
+    // still 200. Fix 41 inserted the rejected code before the check, so it
+    // stayed in the map at size 6 and poisoned every accepted code's retry
+    // until the window expired.
+    expect((await beat(uniqueDevice(), codes[0])).status).toBe(200);
+  });
 });

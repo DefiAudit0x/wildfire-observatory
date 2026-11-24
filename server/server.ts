@@ -18,6 +18,7 @@ import { liveHub, LIVE_PATH } from "./live.js";
 import { createMeshToken } from "./mesh-auth.js";
 import { getPublicPrincipal, issuePublicPrincipal } from "./public-principal.js";
 import { createProductionAssetsRouter } from "./assets.js";
+import { waitForListening } from "./listen.js";
 
 import { healthHandler } from "./routes/health.js";
 import { publicConfigHandler } from "./routes/public-config.js";
@@ -198,6 +199,10 @@ async function startServer() {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
     if (!isProduction || process.env.ENABLE_SWAGGER === "true") logger.info(`Swagger docs at http://localhost:${PORT}/api-docs`);
   });
+  // Fix 41 (SRV-2): await the bind so its promise only resolves after
+  // listening and rejects on an async bind error — the existing
+  // startServer().catch below then handles it with the actionable log.
+  await waitForListening(httpServer);
   fetch("https://api.ipify.org").then((r) => r.text()).then((ip) => logger.info(`Egress IP: ${ip} — whitelist this IP on the NASA FIRMS account if FIRMS fails`)).catch((err) => logger.warn({ err }, "Could not determine egress IP"));
   meshHub.attach(httpServer);
   logger.info(`Mesh hub listening on ${MESH_PATH}`);
