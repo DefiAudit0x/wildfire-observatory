@@ -150,7 +150,11 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           ${isArabic ? "آخر ظهور" : "Dernière vue"}: ${new Date(u.lastSeen).toLocaleTimeString()}
         </div>
       `).addTo(layer);
-      trackPopup(layer.getLayers().at(-1) as L.Layer, `user:${u.role}:${u.lat},${u.lng}`);
+      // Fix 33 (CMAP-1): popup keys identified positions, not entities — a
+      // moved user lost its popup at the next rebuild (new coordinates = new
+      // key), and two reports at one location shared a key so the later
+      // marker's popup won. Both inputs carry stable IDs; the keys use them.
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `user:${u.deviceId}`);
     });
 
     // Reports
@@ -178,7 +182,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
           ${esc(rep.description.substring(0, 80))}
         </div>
       `).addTo(layer);
-      trackPopup(layer.getLayers().at(-1) as L.Layer, `report:${rep.lat},${rep.lng}`);
+      trackPopup(layer.getLayers().at(-1) as L.Layer, `report:${rep.id}`);
     });
 
     // Active SOS Calls

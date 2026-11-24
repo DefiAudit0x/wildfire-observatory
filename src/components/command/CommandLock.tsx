@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Crown, Eye } from "lucide-react";
 import { Language } from "../../types";
+import { apiFetch } from "../../utils/adminApi"; // ARC-L21: one shared admin/staff fetch helper
 
 interface CommandLockProps {
   lang: Language;
@@ -14,15 +15,21 @@ export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
   const [validating, setValidating] = useState(false);
 
   const handleUnlock = async () => {
+    // Fix 33 (CLK-1): only the button was disabled while validating — the
+    // password field stayed live and Enter fired handleUnlock unconditionally,
+    // so repeated Enters stacked overlapping verification requests and burned
+    // the 5-per-15-min login limiter. The guard lives in the function now;
+    // the input mirrors the button's disabled state.
+    if (validating) return;
     setValidating(true);
     setError("");
     try {
-      const res = await fetch("/api/auth/central-command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-        body: JSON.stringify({ password }),
-      });
+      // Fix 33 (CLK-2): the unlock rode a raw fetch with no deadline — a
+      // stalled link pinned `validating` (and the disabled button) forever,
+      // since it only clears in `finally`. It now rides the shared 15 s
+      // ceiling; the abort surfaces in the existing catch as a connection
+      // failure.
+      const res = await apiFetch("/api/auth/central-command", "POST", { password });
       const data = await res.json();
       if (data.valid) {
         onUnlocked();
@@ -59,6 +66,7 @@ export default function CommandLock({ lang, onUnlocked }: CommandLockProps) {
             onChange={(e) => setPassword(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleUnlock()}
             placeholder={isArabic ? "كلمة السر" : "Mot de passe"}
+            disabled={validating}
             className="w-full px-4 py-3 bg-black/60 border border-amber-500/30 rounded-xl text-sm text-center text-slate-200 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 transition-all"
             autoFocus
           />
