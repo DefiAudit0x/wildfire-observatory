@@ -215,4 +215,66 @@ class ApiPayloadsTest {
         )
         org.junit.Assert.assertNull(bad?.first)
     }
+
+    // ---------- Fix 49 (APAY-1): buildSosJson mirrors the server gate ----------
+    // The server requires clientGeneratedId 8..64 chars and allows audio up
+    // to 700*1024 = 716800 chars (sos.ts). Audio strings carry the 22-char
+    // "data:audio/mp4;base64," prefix, so N is computed from the TOTAL
+    // target length.
+
+    private fun sosWithIdAndAudio(id: String?, audioTotalLength: Int? = null): Pair<String?, String?>? {
+        val audio = audioTotalLength?.let { "data:audio/mp4;base64," + "A".repeat(it - 22) }
+        return ApiPayloads.buildSosJson(
+            "d", 36.0, 3.0, null, null, null, audio, 5, clientGeneratedId = id
+        )
+    }
+
+    @Test
+    fun `sos 1-char clientGeneratedId refused (finding)`() {
+        val r = sosWithIdAndAudio("x")
+        assertNull(r?.first)
+        assertNotNull(r?.second)
+    }
+
+    @Test
+    fun `sos 65-char clientGeneratedId refused (finding)`() {
+        val r = sosWithIdAndAudio("a".repeat(65))
+        assertNull(r?.first)
+        assertNotNull(r?.second)
+    }
+
+    @Test
+    fun `sos 8-char clientGeneratedId accepted (control)`() {
+        val r = sosWithIdAndAudio("12345678")
+        assertNull(r?.second)
+        assertNotNull(r?.first)
+    }
+
+    @Test
+    fun `sos 64-char clientGeneratedId accepted (control)`() {
+        val r = sosWithIdAndAudio("a".repeat(64))
+        assertNull(r?.second)
+        assertNotNull(r?.first)
+    }
+
+    @Test
+    fun `sos 710000-char audio accepted (finding)`() {
+        val r = sosWithIdAndAudio("12345678", audioTotalLength = 710_000)
+        assertNull(r?.second)
+        assertNotNull(r?.first)
+    }
+
+    @Test
+    fun `sos 716800-char audio accepted at exact server cap (finding)`() {
+        val r = sosWithIdAndAudio("12345678", audioTotalLength = 716_800)
+        assertNull(r?.second)
+        assertNotNull(r?.first)
+    }
+
+    @Test
+    fun `sos 716801-char audio refused one over the cap (control)`() {
+        val r = sosWithIdAndAudio("12345678", audioTotalLength = 716_801)
+        assertNull(r?.first)
+        assertNotNull(r?.second)
+    }
 }
