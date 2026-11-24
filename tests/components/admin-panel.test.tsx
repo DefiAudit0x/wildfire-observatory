@@ -79,7 +79,50 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "خروج" }));
     expect(await screen.findByText(/لوحة تحكم المشرفين الأمنية/i)).toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([u]: any[]) => String(u) === "/api/admin/logout")).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === "/api/admin/logout")).toHaveLength(1);
+  });
+
+  it("ADM-3 (32b Nitpick 2): the logout button is disabled while the request is pending and a second click issues no second POST", async () => {
+    let resolveLogout!: (res: Response) => void;
+    const logoutGate = new Promise<Response>((resolve) => {
+      resolveLogout = resolve;
+    });
+    const fetchMock = authFetchMock((url) => {
+      if (url === "/api/admin/logout") return logoutGate;
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminPanel reports={[makeReport(1)]} onRefresh={() => {}} lang="ar" />);
+    await waitFor(() => expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument());
+    const logoutButton = screen.getByRole("button", { name: "خروج" });
+    fireEvent.click(logoutButton);
+    await waitFor(() => expect(logoutButton).toBeDisabled());
+    expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument();
+    fireEvent.click(logoutButton);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === "/api/admin/logout")).toHaveLength(1);
+    resolveLogout(new Response("{}", { status: 200 }));
+    expect(await screen.findByText(/لوحة تحكم المشرفين الأمنية/i)).toBeInTheDocument();
+  });
+
+  it("ADM-3 (32b Nitpick 2): a rejected pending logout re-enables the button and keeps the operator logged in", async () => {
+    let rejectLogout!: (err: Error) => void;
+    const logoutGate = new Promise<Response>((_resolve, reject) => {
+      rejectLogout = reject;
+    });
+    const fetchMock = authFetchMock((url) => {
+      if (url === "/api/admin/logout") return logoutGate;
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<AdminPanel reports={[makeReport(1)]} onRefresh={() => {}} lang="ar" />);
+    await waitFor(() => expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument());
+    const logoutButton = screen.getByRole("button", { name: "خروج" });
+    fireEvent.click(logoutButton);
+    await waitFor(() => expect(logoutButton).toBeDisabled());
+    rejectLogout(new Error("network down"));
+    await waitFor(() => expect(screen.getByText(/تعذّر تسجيل الخروج/i)).toBeInTheDocument());
+    expect(logoutButton).toBeEnabled();
+    expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument();
   });
 
   it("ADM-3: a session-expiry logout fires no logout POST", async () => {
@@ -93,7 +136,7 @@ describe("AdminPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "حذف" }));
     fireEvent.click(screen.getByRole("button", { name: "حذف نهائياً" }));
     expect(await screen.findByText(/لوحة تحكم المشرفين الأمنية/i)).toBeInTheDocument();
-    expect(fetchMock.mock.calls.filter(([u]: any[]) => String(u) === "/api/admin/logout")).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([u]) => String(u) === "/api/admin/logout")).toHaveLength(0);
   });
 
   it("ADM-4: shrinking the list then Previous reaches the earlier page", async () => {

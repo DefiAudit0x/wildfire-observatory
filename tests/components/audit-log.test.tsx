@@ -78,4 +78,47 @@ describe("AuditLog load errors (Fix 32 AUD-1)", () => {
     await waitFor(() => expect(screen.getByText("custom-0")).toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
+
+  it("32b Minor 1: a late failure from a superseded request does not overwrite the current load", async () => {
+    let rejectFirst!: (err: Error) => void;
+    const firstGate = new Promise<Response>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return firstGate;
+      return new Response(JSON.stringify([entry(0)]), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<AuditLog lang="ar" onAuthError={() => false} />);
+    // A language switch supersedes the first request with a fresh one.
+    rerender(<AuditLog lang="fr" onAuthError={() => false} />);
+    await waitFor(() => expect(screen.getByText("custom-0")).toBeInTheDocument());
+    rejectFirst(new Error("network down"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByText("custom-0")).toBeInTheDocument();
+  });
+
+  it("32b Minor 1: a late success from a superseded request does not overwrite the current entries", async () => {
+    let resolveFirst!: (res: Response) => void;
+    const firstGate = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return firstGate;
+      return new Response(JSON.stringify([entry(0)]), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { rerender } = render(<AuditLog lang="ar" onAuthError={() => false} />);
+    rerender(<AuditLog lang="fr" onAuthError={() => false} />);
+    await waitFor(() => expect(screen.getByText("custom-0")).toBeInTheDocument());
+    resolveFirst(new Response(JSON.stringify([entry(99)]), { status: 200 }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("custom-99")).not.toBeInTheDocument();
+    expect(screen.getByText("custom-0")).toBeInTheDocument();
+  });
 });

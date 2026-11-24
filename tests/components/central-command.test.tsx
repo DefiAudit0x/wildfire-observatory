@@ -365,4 +365,42 @@ describe("CentralCommand manual refresh and resolve (Fix 32 / CMD-2, CMD-3)", ()
     expect(resolveCall).toBeTruthy();
     expect((resolveCall![1] as RequestInit | undefined)?.signal).toBeInstanceOf(AbortSignal);
   });
+
+  it("CMD-3 (32b Minor 2): a landing resolve does not close another SOS's dialog", async () => {
+    let releaseResolve!: (v: Response) => void;
+    const resolveGate = new Promise<Response>((resolve) => {
+      releaseResolve = resolve;
+    });
+    const fetchMock = baseFetchMock((url, init) => {
+      if (url.includes("/api/sos/full")) return jsonResponse(200, [sos("sos-a", "مناداة أ"), sos("sos-b", "مناداة ب")]);
+      if (url.includes("/api/sos/sos-a/resolve") && init?.method === "POST") return resolveGate;
+      return null;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand
+        reports={[]}
+        satellites={[]}
+        sosCalls={[sos("sos-a", "مناداة أ"), sos("sos-b", "مناداة ب")]}
+        userLocation={null}
+        lang="ar"
+        onRefresh={onRefresh}
+      />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة ب")).toBeTruthy());
+    // Open A's dialog and confirm (the resolve is gated).
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[0]);
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[2]);
+    // Cancel A's dialog and open B's instead.
+    fireEvent.click(screen.getByRole("button", { name: "إلغاء" }));
+    expect(screen.queryByText("تأكيد الإثبات")).toBeNull();
+    fireEvent.click(screen.getAllByText("تم الإنقاذ")[1]);
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    // A's resolve lands: A's row is removed, but B's dialog must stay open.
+    releaseResolve(jsonResponse(200, { ok: true }));
+    await waitFor(() => expect(screen.queryByText("مناداة أ")).toBeNull());
+    expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
+    expect(screen.getByText("مناداة ب")).toBeTruthy();
+  });
 });
