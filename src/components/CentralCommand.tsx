@@ -279,12 +279,22 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const applyLocalDispatch = (sosId: string, dispatchItem: any) => {
+    // Fix 43b (CodeRabbit 6039588272): upsert by teamId. An
+    // already_dispatched 200 must not append a second local copy of a
+    // dispatch the server deliberately did not append (SOS-6) — the
+    // response's dispatch replaces the stored entry, so local state stays
+    // in sync with the server. An item without a teamId (the raw
+    // request-body fallback) still appends.
     setFullSos((prev) =>
-      prev.map((s) =>
-        s.id === sosId
-          ? { ...s, dispatchedTeams: [...(s.dispatchedTeams || []), dispatchItem] }
-          : s
-      )
+      prev.map((s) => {
+        if (s.id !== sosId) return s;
+        const teams = s.dispatchedTeams || [];
+        const teamId = dispatchItem?.teamId as string | undefined;
+        if (teamId && teams.some((t) => t.teamId === teamId)) {
+          return { ...s, dispatchedTeams: teams.map((t) => (t.teamId === teamId ? dispatchItem : t)) };
+        }
+        return { ...s, dispatchedTeams: [...teams, dispatchItem] };
+      })
     );
   };
 
