@@ -515,6 +515,15 @@ class CameraCaptureFragment : Fragment() {
         statusText = null
         headingSlider = null
         pitchSlider = null
+        // Fix 51 (NCAM-4): reclaim the stamp worker. The executor is a
+        // lazy val with no shutdown anywhere, so every camera visit that
+        // took a photo leaked one non-daemon thread for the process
+        // lifetime. shutdown(), not shutdownNow(): an in-flight stamp
+        // must finish — its delivery rides lifecycleScope (NCAM-1).
+        // Touching the lazy val here is harmless when no photo was taken:
+        // ThreadPoolExecutor spawns its worker only on first execute, so
+        // no thread is ever created for a photo-less visit.
+        stampExecutor.shutdown()
         super.onDestroyView()
     }
 }

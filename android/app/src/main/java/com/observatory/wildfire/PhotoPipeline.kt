@@ -54,7 +54,13 @@ object PhotoPipeline {
         var bytes: ByteArray
         do {
             val out = ByteArrayOutputStream()
-            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            // Fix 51 (NPHOTO-3): a failed encode returns false and leaves
+            // the stream empty — returning those 0 bytes as success made
+            // the caller announce an empty image as attached. Fail fast:
+            // encoder failures are deterministic across qualities, so
+            // stepping down cannot rescue them.
+            val ok = bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            if (!ok) return null
             bytes = out.toByteArray()
             quality -= QUALITY_STEP
         } while (bytes.size > maxBytes && quality >= FLOOR_QUALITY)
