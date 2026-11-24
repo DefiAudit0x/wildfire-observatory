@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
 import android.text.TextWatcher
@@ -102,7 +103,7 @@ class ReportFragment : Fragment() {
     // upstream never turns the autofill into a retry storm. The call also
     // now rides the server's /api/geo/reverse proxy (cache + rate limit).
     private var geoLookupInFlight = false
-    private var geoBackoffUntilMs = 0L
+    private var geoBackoffUntilElapsedMs = 0L
 
     // F2: named listener so onDestroyView can deregister from the
     // application-scoped engine (an inline lambda leaked this view forever).
@@ -234,7 +235,7 @@ class ReportFragment : Fragment() {
             else -> {
                 val fix = app.locationEngine.currentFix()
                 if (fix != null && geoFailed) {
-                    geoBackoffUntilMs = 0L // explicit user retry beats the backoff
+                    geoBackoffUntilElapsedMs = 0L // explicit user retry beats the backoff
                     reverseGeocode(fix.lat, fix.lng)
                 }
             }
@@ -288,7 +289,17 @@ class ReportFragment : Fragment() {
         // old `!geoFailed &&` conjunction could never fire after a failure
         // (failure sets geoFailed=true), so every 5 s location publish
         // re-fired a lookup for the whole 60 s outage.
-        if (System.currentTimeMillis() < geoBackoffUntilMs) return
+        // 51b (CodeRabbit): the deadline rides the MONOTONIC clock
+        // (SystemClock.elapsedRealtime), not the wall clock — a backward
+        // device-clock jump after a failure must not stretch the 60 s
+        // window. The offline wilaya still tracks the newest fix during
+        // backoff, so a boundary crossing inside the window does not leave
+        // the previous fix's wilaya next to the new coordinates in
+        // submit(). No network request is started here.
+        if (SystemClock.elapsedRealtime() < geoBackoffUntilElapsedMs) {
+            if (!autofilledWilaya) fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
+            return
+        }
         geoLookupInFlight = true
         if (!autofilledName) setGeoStatus(getString(R.string.geo_status_resolving))
         viewLifecycleOwner.lifecycleScope.launch {
@@ -305,7 +316,7 @@ class ReportFragment : Fragment() {
                     // fills from the offline nearest-centroid table (marked
                     // "تقريبي"). No invented street names — just what we know.
                     geoFailed = true
-                    geoBackoffUntilMs = System.currentTimeMillis() + GEO_BACKOFF_MS
+                    geoBackoffUntilElapsedMs = SystemClock.elapsedRealtime() + GEO_BACKOFF_MS
                     if (!autofilledName) {
                         val fallback = Wilayas.nearest(lat, lng)
                         if (!autofilledWilaya) fillField(wilayaInput, fallback.nameAr)
@@ -321,7 +332,7 @@ class ReportFragment : Fragment() {
                 // lookup — without this reset, a failure→success sequence
                 // with partial autofill silently delayed the wilaya lookup
                 // for up to 60 s.
-                geoBackoffUntilMs = 0L
+                geoBackoffUntilElapsedMs = 0L
                 val (display, stateName) = result
                 if (!autofilledName) {
                     fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
@@ -486,7 +497,7 @@ class ReportFragment : Fragment() {
                     autofilledName = false
                     autofilledWilaya = false
                     geoFailed = false
-                    geoBackoffUntilMs = 0L
+                    geoBackoffUntilElapsedMs = 0L
                 } else if (ok && userError == AppRepository.OFFLINE_QUEUED_MSG) {
                     Toast.makeText(ctx, userError, Toast.LENGTH_LONG).show()
                 } else if (!ok) {
