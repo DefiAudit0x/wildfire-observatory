@@ -732,6 +732,30 @@ describe("useOfflineDraftQueue", () => {
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(0));
   });
 
+  it("a mount-sync failure followed by an event-sync failure advances the retry count each time (Fix 40b — stale closure)", async () => {
+    // The draft starts at retryCount 1. The mount sync fails (1 → 2); the
+    // online event then fails again and must read the CURRENT list (2 → 3).
+    // On pre-40b code the event sync re-read the mount snapshot (retryCount
+    // 1) and recorded 2 again, so the count never advanced past the first
+    // failure (CodeRabbit Minor, review 6036731667).
+    vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1", { retryCount: 1 })]);
+    const onSubmit = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+    );
+    // The mount sync runs on its own (already online, no event dispatched).
+    await waitFor(() => expect(result.current.offlineDrafts[0].retryCount).toBe(2));
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(result.current.offlineDrafts[0].retryCount).toBe(3));
+    expect(onSubmit).toHaveBeenCalledTimes(2);
+  });
+
   it("does not mount-sync while offline (Fix 40 — DRAFT-1 control)", async () => {
     Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
     try {
