@@ -196,6 +196,22 @@ describe("Fix 43 (USR-2): the roster-cleanup outcome is reported, not claimed", 
       expect.stringContaining("incomplete")
     );
   });
+
+  it("Fix 43c: a thrown roster sweep is reported as incomplete, not an all-zero success", async () => {
+    // collectionGet THROWS (a docSet inside Promise.all throwing lands in
+    // the same catch) — the catch used to log the failure but leave the
+    // default all-zero rosterCleanup, which reads as "no affected days".
+    state.collectionGet.mockRejectedValueOnce(new Error("roster read boom"));
+    const res = await supertest(createApp())
+      .delete("/api/users/agent-1")
+      .set(adminAuth());
+    expect(res.status).toBe(200);
+    expect(res.body.rosterCleanup).toEqual({ days: 0, removed: 0, failed: 0, incomplete: true });
+    expect(loggerState.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "agent-1" }),
+      expect.stringContaining("incomplete")
+    );
+  });
 });
 
 describe("S-M8: privilege shifts land in the audit trail", () => {
