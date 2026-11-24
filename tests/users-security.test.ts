@@ -46,6 +46,7 @@ vi.mock("../server/routes/audit.js", () => ({
 }));
 
 import usersRouter from "../server/routes/users.js";
+import * as fsMockModule from "../server/fs.js";
 import { generateStaffToken, generateAdminToken } from "../server/middleware.js";
 
 function createApp() {
@@ -144,6 +145,31 @@ describe("S-M2: password-admin now has a UNIFORM staff-management surface", () =
     const token = generateAdminToken("superadmin");
     expect((await supertest(createApp()).get("/api/users").set("Authorization", `Bearer ${token}`)).status).toBe(200);
     expect((await supertest(createApp()).delete("/api/users/agent-1").set("Authorization", `Bearer ${token}`)).status).toBe(200);
+  });
+});
+
+describe("Fix 43 (USR-2): the roster-cleanup outcome is reported, not claimed", () => {
+  const rosterDay = { id: "2026-11-25", posts: [{ personnel: [{ agentId: "agent-1" }] }] };
+  const adminAuth = () => ({ Authorization: `Bearer ${generateAdminToken("admin")}` });
+
+  it("reports a failed sweep in the response instead of logging a false success", async () => {
+    state.collectionGet.mockResolvedValueOnce([rosterDay]);
+    vi.mocked(fsMockModule.docSet).mockResolvedValueOnce(false);
+    const res = await supertest(createApp())
+      .delete("/api/users/agent-1")
+      .set(adminAuth());
+    expect(res.status).toBe(200);
+    expect(res.body.rosterCleanup).toEqual({ days: 1, removed: 0, failed: 1 });
+  });
+
+  it("reports a successful sweep with the removed count", async () => {
+    state.collectionGet.mockResolvedValueOnce([rosterDay]);
+    vi.mocked(fsMockModule.docSet).mockResolvedValueOnce(true);
+    const res = await supertest(createApp())
+      .delete("/api/users/agent-1")
+      .set(adminAuth());
+    expect(res.status).toBe(200);
+    expect(res.body.rosterCleanup).toEqual({ days: 1, removed: 1, failed: 0 });
   });
 });
 

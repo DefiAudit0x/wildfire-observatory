@@ -550,6 +550,49 @@ describe("GET /api/teams — command-center roster", () => {
     expect(member.trail).toEqual([]);
   });
 
+  it("Fix 43 (TEAM-6): the roster response carries the heartbeat's fixTimeMs", async () => {
+    heartbeatableMocks("tm-fix6a");
+    const sent = Date.now() - 4_000;
+    const hb = await supertest(createApp())
+      .post("/api/teams/heartbeat")
+      .set(memberAuth("tm-fix6a"))
+      .set(nextIp())
+      .send({ lat: 36.75, lng: 5.07, fixTimeMs: sent });
+    expect(hb.status).toBe(200);
+    fsMock.collectionGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams")
+        return [{ teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true }];
+      if (collection === "teamMembers")
+        return [{ memberId: "tm-fix6a", teamId: "team-a1", name: "فريق الجبل", active: true, joinedAt: 111 }];
+      return [];
+    });
+    const res = await supertest(createApp()).get("/api/teams").set(adminAuth()).set(nextIp());
+    expect(res.status).toBe(200);
+    expect(res.body[0].members[0].fixTimeMs).toBe(sent);
+  });
+
+  it("Fix 43 (TEAM-6 control): a heartbeat without fixTimeMs reports null, never a fabricated age", async () => {
+    heartbeatableMocks("tm-fix6b");
+    const hb = await supertest(createApp())
+      .post("/api/teams/heartbeat")
+      .set(memberAuth("tm-fix6b"))
+      .set(nextIp())
+      .send({ lat: 36.75, lng: 5.07 });
+    expect(hb.status).toBe(200);
+    fsMock.collectionGet.mockImplementation(async (collection: string) => {
+      if (collection === "teams")
+        return [{ teamId: "team-a1", name: "Unité 1", nameAr: "وحدة 1", type: "protection_civile", active: true }];
+      if (collection === "teamMembers")
+        return [{ memberId: "tm-fix6b", teamId: "team-a1", name: "فريق الجبل", active: true, joinedAt: 111 }];
+      return [];
+    });
+    const res = await supertest(createApp()).get("/api/teams").set(adminAuth()).set(nextIp());
+    expect(res.status).toBe(200);
+    // Control in intent, finding test in behavior (prep §6 note 5): on old
+    // code the field is missing (undefined), not null.
+    expect(res.body[0].members[0].fixTimeMs).toBeNull();
+  });
+
   it("requires admin", async () => {
     expect((await supertest(createApp()).get("/api/teams").set(nextIp())).status).toBe(401);
   });
