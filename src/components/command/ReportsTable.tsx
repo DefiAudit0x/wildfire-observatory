@@ -93,10 +93,10 @@ export default function ReportsTable({ isArabic, reports, onChanged, notify }: R
           <Filter className="h-3 w-3 text-gray-500" />
           {[
             ["all", isArabic ? "الكل" : "Tous"],
-            ["pending", STATUS_META.pending.labelAr],
-            ["verified", STATUS_META.verified.labelAr],
-            ["rejected", STATUS_META.rejected.labelAr],
-            ["resolved", STATUS_META.resolved.labelAr],
+            ["pending", isArabic ? STATUS_META.pending.labelAr : STATUS_META.pending.labelFr],
+            ["verified", isArabic ? STATUS_META.verified.labelAr : STATUS_META.verified.labelFr],
+            ["rejected", isArabic ? STATUS_META.rejected.labelAr : STATUS_META.rejected.labelFr],
+            ["resolved", isArabic ? STATUS_META.resolved.labelAr : STATUS_META.resolved.labelFr],
           ].map(([val, label]) => (
             <button
               key={val}
