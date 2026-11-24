@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { StrictMode } from "react";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import StatisticsPanel from "../../src/components/StatisticsPanel";
 
@@ -132,5 +133,39 @@ describe("StatisticsPanel history legend and load states (Fix 36 — STA-2/STA-3
     });
     await waitFor(() => expect(barTitles()).toHaveLength(2));
     expect(screen.queryByText("جاري تحميل السجل…")).toBeNull();
+  });
+
+  it("a stale StrictMode-replayed history request cannot overwrite good data (Fix 36b)", async () => {
+    let calls = 0;
+    let rejectFirst!: (err: unknown) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        if (calls === 1) {
+          // Parked: the first (replayed) request never settles until the test rejects it.
+          return new Promise<Response>((_resolve, reject) => {
+            rejectFirst = reject;
+          });
+        }
+        return new Response(JSON.stringify(twoDays), { status: 200, headers: { "Content-Type": "application/json" } });
+      })
+    );
+    // Direct JSX (not a wrapper component): StrictMode double-invokes the
+    // mount effect here, so the first request is superseded by the second.
+    render(
+      <StrictMode>
+        <StatisticsPanel reports={[]} satellites={[]} wilayas={[]} lang="ar" />
+      </StrictMode>
+    );
+    await waitFor(() => expect(barTitles()).toHaveLength(2));
+    expect(screen.queryByRole("alert")).toBeNull();
+    await act(async () => {
+      rejectFirst(new Error("stale"));
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(barTitles()).toHaveLength(2);
   });
 });

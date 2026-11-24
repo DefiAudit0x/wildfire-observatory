@@ -5,6 +5,10 @@
 // Plain renderHook (no StrictMode option): StrictMode's simulated unmount
 // bumps the epoch and clears the throttle timer, which would interfere with
 // the timer assertions.
+// Reports MUST go through initialProps (stable identity): the siren effect
+// calls setActiveAlerts unconditionally on every run, so an inline array
+// literal — a new identity on every render — spins an infinite render loop
+// (diagnosed 2026-11-24: the first Fix 36b test 4 hung vitest this way).
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useProximityAlerts, MUTE_STORAGE_KEY } from "../../src/hooks/useProximityAlerts";
@@ -121,9 +125,10 @@ describe("useProximityAlerts mute (Fix 36 — PROX-1)", () => {
     });
     expect(oscStarts).toBe(3);
     // Unmute: the postponed report was never recorded as announced, so the
-    // effect re-detects it and the tone plays. (Guard, not discriminator:
-    // on old code this passes too — the pending batch survives mute there —
-    // it exists so a fix that wrongly swallows the batch fails here.)
+    // effect re-detects it and the tone plays. (On pre-Fix-36 code this test
+    // fails at the mute-step assertion above — the queued tone rang while
+    // muted — so it is a discriminator for the mute clear, not just a guard
+    // against swallowing the batch.)
     await act(async () => {
       result.current.setIsMuted(false);
     });
@@ -131,11 +136,44 @@ describe("useProximityAlerts mute (Fix 36 — PROX-1)", () => {
     expect(oscStarts).toBe(6);
   });
 
+  it("a batch muted and unmuted while resume() is pending tones exactly once, after unmute (Fix 36b)", async () => {
+    const deferredResume: { resolve: () => void } = { resolve: () => {} };
+    installAudioStub({ suspended: true, deferredResume });
+    const { result } = renderHook(
+      ({ reports }: { reports: Report[] }) => useProximityAlerts(reports, userLocation, true),
+      { initialProps: { reports: [mkReport("r1")] } }
+    );
+    // The operator flush is parked inside resume() (the stub only resolves
+    // when the test releases it). Mute, then unmute, while it is pending.
+    await act(async () => {});
+    expect(oscStarts).toBe(0);
+    await act(async () => {
+      result.current.setIsMuted(true);
+    });
+    await act(async () => {
+      result.current.setIsMuted(false);
+    });
+    await act(async () => {
+      deferredResume.resolve();
+    });
+    await act(async () => {});
+    // The invalidated batch must NOT play: its epoch died at the mute.
+    expect(oscStarts).toBe(0);
+    // The report is still pending, so the 1 s retry re-flushes it with the
+    // current epoch and the tone plays exactly once.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_100);
+    });
+    await act(async () => {});
+    expect(oscStarts).toBe(3);
+  });
+
   it("the siren does not ring when muting during AudioContext.resume()", async () => {
     const deferredResume: { resolve: () => void } = { resolve: () => {} };
     installAudioStub({ suspended: true, deferredResume });
-    const { result } = renderHook(() =>
-      useProximityAlerts([mkReport("r1", { status: "verified" })], userLocation, false)
+    const { result } = renderHook(
+      ({ reports }: { reports: Report[] }) => useProximityAlerts(reports, userLocation, false),
+      { initialProps: { reports: [mkReport("r1", { status: "verified" })] } }
     );
     // The siren scan is parked inside resume() (the stub only resolves when
     // the test releases it). Mute while it is pending.
