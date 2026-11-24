@@ -196,14 +196,28 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     if (!editingCode) return;
     setBusy(true);
     setMsg(null);
-    const maxUses = editForm.maxUses ? parseInt(editForm.maxUses, 10) : undefined;
+    // Fix 33 (BDG-1): clearing the expiry/cap used to send `undefined`, which
+    // JSON drops — the server kept the old limit and still returned 200, so
+    // the edit reported success while the old limit stayed in force. An
+    // emptied field now sends an explicit clear sentinel, but only when the
+    // badge had a value there (an untouched empty field stays omitted, so
+    // the audit trail does not log limits the operator never touched).
+    // Expiry "" → the server nulls it; cap `null` → the schema now accepts
+    // it (Fix 33 D1) and the update line writes it through.
+    const editingBadge = badges.find((b) => b.code === editingCode);
+    const maxUses = editForm.maxUses
+      ? parseInt(editForm.maxUses, 10)
+      : (editingBadge?.maxUses !== undefined ? null : undefined);
+    const expiresAt = editForm.expiresAt
+      ? toUtcIso(editForm.expiresAt)
+      : (editingBadge?.expiresAt ? "" : undefined);
     try {
       const res = await apiFetch(`/api/badges/${encodeURIComponent(editingCode)}`, "PUT", {
         ownerName: editForm.ownerName.trim(),
         type: editForm.type.trim(),
         wilaya: editForm.wilaya.trim(),
         maxUses,
-        expiresAt: toUtcIso(editForm.expiresAt),
+        expiresAt,
       });
       if (res.ok) {
         setEditingCode(null);

@@ -332,7 +332,27 @@ export default function StaffManager({ lang }: StaffManagerProps) {
     );
   }
 
-  const isSuper = staffSession.role === "superadmin" || staffSession.role === "admin";
+  // Fix 33 (STF-1): isSuper collapsed "admin" and "superadmin" into one tier,
+  // but the server draws the line one step higher for anything touching a
+  // superadmin account (server/routes/users.ts: manageForbiddenReason +
+  // isTrueSuperadmin). "admin" manages staff globally EXCEPT superadmin
+  // accounts; only the distinct superadmin credential touches those.
+  // The row predicates mirror the server matrix — keep them in sync.
+  const isTrueSuper = staffSession.role === "superadmin";
+  const isStaffAdmin = isTrueSuper || staffSession.role === "admin";
+
+  const canModifyUser = (target: StaffUser): boolean => {
+    if (isTrueSuper) return true;
+    if (target.role === "superadmin") return false;
+    if (isStaffAdmin) return true;
+    return staffSession.role === "commander"
+      && target.role === "agent"
+      && target.unitId === staffSession.unitId;
+  };
+  const canDeleteUser = (target: StaffUser): boolean => {
+    if (staffSession.role === "commander") return false;
+    return canModifyUser(target);
+  };
 
   return (
     <div className="space-y-5 w-full animate-fade-in">
@@ -351,9 +371,11 @@ export default function StaffManager({ lang }: StaffManagerProps) {
             </div>
             <p className="text-[11px] text-gray-400 mt-0.5">
               {staffSession.agentId && <span className="font-mono">{staffSession.agentId} · </span>}
-              {isSuper
+              {isTrueSuper
                 ? (isArabic ? "صلاحيات مركزية كاملة" : "Accès central complet")
-                : (isArabic ? "مرتبط بوحدته فقط" : "Limité à son unité")}
+                : isStaffAdmin
+                  ? (isArabic ? "إدارة عامة — دون حسابات المشرف العام" : "Gestion globale — sauf comptes Super Admin")
+                  : (isArabic ? "مرتبط بوحدته فقط" : "Limité à son unité")}
             </p>
           </div>
         </div>
@@ -367,7 +389,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
       </div>
 
       {/* Units management — superadmin only */}
-      {isSuper && (
+      {isStaffAdmin && (
         <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-5 space-y-4">
           <div className="flex items-center gap-2">
             <Landmark className="h-4 w-4 text-amber-400" />
@@ -451,10 +473,10 @@ export default function StaffManager({ lang }: StaffManagerProps) {
           <h3 className="font-extrabold text-sm text-slate-200">
             {isArabic ? "حسابات الكادر" : "Comptes du personnel"}
           </h3>
-          {!isSuper && <span className="text-[10px] text-gray-500">{isArabic ? "(وحدتك فقط)" : "(votre unité)"}</span>}
+          {!isStaffAdmin && <span className="text-[10px] text-gray-500">{isArabic ? "(وحدتك فقط)" : "(votre unité)"}</span>}
         </div>
 
-        {(isSuper || staffSession.role === "commander") && (
+        {(isStaffAdmin || staffSession.role === "commander") && (
           <form onSubmit={handleAddUser} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
             <input
               value={userForm.agentId}
@@ -472,11 +494,11 @@ export default function StaffManager({ lang }: StaffManagerProps) {
               value={userForm.role}
               onChange={(e) => setUserForm((f) => ({ ...f, role: e.target.value }))}
               className="bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-300 font-bold focus:ring-1 focus:ring-emerald-500/40 focus:outline-none cursor-pointer"
-              disabled={!isSuper}
+              disabled={!isStaffAdmin}
             >
               <option value="agent">{isArabic ? "فعال / مناوب" : "Agent"}</option>
               <option value="commander">{isArabic ? "قائد وحدة" : "Commander"}</option>
-              {isSuper && <option value="superadmin">{isArabic ? "مشرف عام" : "Super Admin"}</option>}
+              {isTrueSuper && <option value="superadmin">{isArabic ? "مشرف عام" : "Super Admin"}</option>}
             </select>
             <select
               value={userForm.unitId}
@@ -540,7 +562,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  {isSuper && (
+                  {canDeleteUser(user) && (
                     <button
                       onClick={() => setConfirmState({
                         title: isArabic ? "حذف الحساب" : "Supprimer le compte",
@@ -554,16 +576,18 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   )}
-                  <button
-                    onClick={() => handleToggleUser(user)}
-                    disabled={busy}
-                    className="p-1.5 text-gray-400 hover:text-emerald-400 hover:bg-emerald-950/20 rounded-lg cursor-pointer transition-colors"
-                    title={isArabic ? "تفعيل / إيقاف" : "Activer / Bloquer"}
-                  >
-                    <Lock
-                      className={`h-3.5 w-3.5 ${!user.isActive ? "text-red-400" : ""}`}
-                    />
-                  </button>
+                  {canModifyUser(user) && (
+                    <button
+                      onClick={() => handleToggleUser(user)}
+                      disabled={busy}
+                      className="p-1.5 text-gray-400 hover:text-emerald-400 hover:bg-emerald-950/20 rounded-lg cursor-pointer transition-colors"
+                      title={isArabic ? "تفعيل / إيقاف" : "Activer / Bloquer"}
+                    >
+                      <Lock
+                        className={`h-3.5 w-3.5 ${!user.isActive ? "text-red-400" : ""}`}
+                      />
+                    </button>
+                  )}
                 </div>
               </div>
             ))
