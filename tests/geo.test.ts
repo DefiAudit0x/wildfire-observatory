@@ -185,3 +185,31 @@ describe("minDistanceToPolylineKm (Fix 25 — EVAC-1)", () => {
     expect(minDistanceToPolylineKm([], 36, 5.03)).toBe(Infinity);
   });
 });
+
+describe("client mirror agreement (Fix 36 — GEO-1)", () => {
+  it("the client resolver agrees with the server on a sampled grid over the whole envelope", async () => {
+    const { determineWilayaByCoords: clientResolve } = await import("../src/utils/geo.js");
+    // 0.5° step over lat 19–38 × lng −18–25 (~2,900 points) plus the two
+    // probe points from the dissection. Any future bounds drift fails here
+    // first — the mirror claim is a property, not a pair of examples.
+    for (let lat = 19; lat <= 38; lat += 0.5) {
+      for (let lng = -18; lng <= 25; lng += 0.5) {
+        expect(clientResolve(lat, lng)).toBe(determineWilayaByCoords(lat, lng));
+      }
+    }
+    expect(clientResolve(36.8, 6.3)).toBe(determineWilayaByCoords(36.8, 6.3));
+    expect(clientResolve(31.2, -8.5)).toBe(determineWilayaByCoords(31.2, -8.5));
+  });
+
+  it("guards the D11 fallback band and the restored Skikda boundary (Fix 36b)", async () => {
+    const { determineWilayaByCoords: clientResolve, OUT_OF_COVERAGE } = await import("../src/utils/geo.js");
+    // The sampled grid above starts at lat 19, so it cannot catch the
+    // fallback band 18 < lat < 19 regressing to >= 19.0, nor the Skikda
+    // maxLng 7.5 restoration at (36.6, 7.45) — both are pinned here by name.
+    expect(clientResolve(18.5, 3)).toBe("الجزائر - منطقة أخرى (Algérie - Autre)");
+    expect(clientResolve(36.6, 7.45)).toBe("الجزائر - سكيكدة (Algérie - Skikda)");
+    // Excluded boundaries: exactly 18.0 and exactly 37.5 are out of the band.
+    expect(clientResolve(18, 3)).toBe(OUT_OF_COVERAGE);
+    expect(clientResolve(37.5, 3)).toBe(OUT_OF_COVERAGE);
+  });
+});

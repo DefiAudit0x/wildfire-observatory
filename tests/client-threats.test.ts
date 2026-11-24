@@ -139,6 +139,17 @@ describe("determineWilayaByCoords (client mirror of server geofence)", () => {
   it("marks positions outside coverage (north of all fallback bands)", () => {
     expect(determineWilayaByCoords(38.5, 3.0)).toBe(OUT_OF_COVERAGE);
   });
+
+  // Fix 36 (GEO-1): the client used to resolve overlaps by first match with
+  // narrowed bounds, while the server resolves by smallest containing
+  // rectangle — (36.8, 6.3) was Skikda here, Jijel on the server.
+  it("resolves the Skikda/Jijel overlap like the server (smallest rectangle)", () => {
+    expect(determineWilayaByCoords(36.8, 6.3)).toContain("جيجل");
+  });
+
+  it("resolves the Marrakech/Souss overlap like the server (smallest rectangle)", () => {
+    expect(determineWilayaByCoords(31.2, -8.5)).toContain("سوس ماسة");
+  });
 });
 
 describe("isFreshThreatTimestamp (Fix 25 — RAD-3 leans on this gate)", () => {
