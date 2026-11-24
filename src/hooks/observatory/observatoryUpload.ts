@@ -39,6 +39,14 @@ export async function buildMultipartForm(
       console.warn("Image data URL is not decodable; submitting the report without the image");
     }
   }
+  // Fix 39 (UPL-1): an empty data URL yields a zero-byte Blob on BOTH
+  // decode paths — and a zero-byte Blob is truthy, so the empty image was
+  // appended with imageDropped: false, contradicting the helper's contract
+  // and tripping the server's multipart image gate. Drop it.
+  if (blob && blob.size === 0) {
+    console.warn("Image data URL decoded to zero bytes; submitting the report without the image");
+    blob = null;
+  }
   const fd = new FormData();
   if (blob) {
     const ext = mime.split("/")[1]?.replace("jpeg", "jpg") || "jpg";
