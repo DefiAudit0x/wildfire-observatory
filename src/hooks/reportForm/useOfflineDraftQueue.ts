@@ -150,6 +150,16 @@ export function useOfflineDraftQueue({ onSubmit, isArabic, setSubmitting }: UseO
     window.addEventListener("online", handleConnectivityReturn);
     window.addEventListener("mesh:online", handleConnectivityReturn);
     window.addEventListener("offline", handleOfflineStatus);
+    // Fix 40 (DRAFT-1): the listeners only fire on FUTURE connectivity
+    // changes — a form that mounts while already online with queued drafts
+    // would otherwise never sync. Sync on (re)subscription as well, under
+    // the same guard as the event handler, and respecting the DEV offline
+    // simulation (a simulated-offline queue must not sync for real). The
+    // mount run is a no-op (length 0); the re-run after the load commits
+    // (length N) fires the sync.
+    if (typeof navigator !== "undefined" && navigator.onLine && !isOfflineSimulation && offlineDrafts.length > 0 && !syncingDrafts.current) {
+      void syncOfflineDrafts();
+    }
     return () => {
       window.removeEventListener("online", handleConnectivityReturn);
       window.removeEventListener("mesh:online", handleConnectivityReturn);

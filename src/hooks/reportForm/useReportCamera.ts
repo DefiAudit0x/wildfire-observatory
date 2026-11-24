@@ -129,7 +129,11 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
     });
 
     if (bestMatch) {
-      setMatchedReport(bestMatch.report);
+      // Fix 40 (RCAM-2): the display helpers read distance/bearing off the
+      // stored report, but only the bare report was stored — both rendered
+      // "—". Carry the computed values on the report (it must stay
+      // Report-shaped: ReportForm renders matchedReport.locationName).
+      setMatchedReport({ ...bestMatch.report, distance: bestMatch.distance, bearing: bestMatch.bearing });
       const confidence = Math.round(40 + (maxScore / 100) * 55); // 40% to 95%
       setAlignmentAccuracy(confidence);
     } else {
