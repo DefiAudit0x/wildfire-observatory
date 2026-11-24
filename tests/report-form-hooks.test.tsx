@@ -166,6 +166,17 @@ describe("useReportCamera correlation", () => {
     expect(result.current.headingSource).toBe("manual");
   });
 
+  it("carries the computed distance and bearing on the matched report (Fix 40 — RCAM-2)", () => {
+    const reports = [freshReport()];
+    const { result } = renderHook(() =>
+      useReportCamera({ lat: "36.75", lng: "5.06", reports, isArabic: true, setErrorMsg: noop })
+    );
+    act(() => result.current.setManualHeading(90)); // facing due east
+    expect(result.current.matchedReport?.id).toBe("rep-east");
+    expect(result.current.safeMatchedDistance).toBe(getDistanceKm(36.75, 5.06, 36.75, 5.11).toFixed(1));
+    expect(result.current.safeMatchedBearing).toBe(calculateBearing(36.75, 5.06, 36.75, 5.11).toFixed(0));
+  });
+
   it("refuses a report outside the bearing gate even when it is close", () => {
     const reports = [freshReport()];
     const { result } = renderHook(() =>
@@ -504,6 +515,20 @@ describe("useReportImage", () => {
     });
     expect(result.current.edgeAiStatus?.success).toBe(false);
   });
+
+  it("resetting the image invalidates an in-flight pre-scan (Fix 40 — RIMG-1)", () => {
+    const { result } = renderHook(() => useReportImage({ isArabic: true, setErrorMsg: noop }));
+    canvasFill = [200, 80, 50]; // fire colors
+    act(() => result.current.runEdgeAiPreScan("data:image/jpeg;base64,FIRE", 72));
+    // Reset BEFORE the onload lands (e.g. an accepted submit while the
+    // image is still decoding) — the late onload must be dropped.
+    act(() => result.current.resetImage());
+    act(() => {
+      liveImages[liveImages.length - 1].onload?.();
+    });
+    expect(result.current.image).toBeNull();
+    expect(result.current.edgeAiStatus).toBeNull();
+  });
 });
 
 // ---- Offline drafts queue ----------------------------------------------------
@@ -530,6 +555,9 @@ describe("useOfflineDraftQueue", () => {
     vi.mocked(loadOfflineDrafts).mockReset();
     vi.mocked(replaceOfflineDrafts).mockReset();
     vi.mocked(removeOfflineDrafts).mockReset();
+    // Fix 40: the mount auto-sync reads navigator.onLine — a test that
+    // loads while offline must not leave the flag down for the next test.
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
     // Fix 28b: the store returns the records AS COMMITTED — the mock echoes
     // its input, which is the store's contract for an uncontended write.
     vi.mocked(replaceOfflineDrafts).mockImplementation(async (records) => records);
@@ -542,11 +570,17 @@ describe("useOfflineDraftQueue", () => {
     );
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
     expect(result.current.offlineDrafts[0].schemaVersion).toBe(1);
-    expect(result.current.offlineDrafts[0].retryCount).toBe(0);
+    // Fix 40 (DRAFT-1): the mount auto-sync already ran once here — the
+    // bare onSubmit mock returns nothing, so normalizeSubmissionResult
+    // marks it invalid and the retry is recorded (0 → 1).
+    expect(result.current.offlineDrafts[0].retryCount).toBe(1);
     expect(result.current.offlineDrafts[0].createdAt).toBe("2025-12-31T23:00:00.000Z");
   });
 
   it("auto-syncs on connectivity return, removing only accepted drafts", async () => {
+    // Fix 40 (DRAFT-1): load while offline so the mount auto-sync does not
+    // consume the draft first — this test proves the EVENT path.
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
     const onSubmit = vi.fn().mockResolvedValue({ responseValid: true, id: "rep-1", status: "pending" });
     vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
@@ -556,6 +590,7 @@ describe("useOfflineDraftQueue", () => {
     );
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
 
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
     await act(async () => {
       window.dispatchEvent(new Event("online"));
     });
@@ -569,6 +604,9 @@ describe("useOfflineDraftQueue", () => {
   });
 
   it("keeps a draft and records the retry when the server refuses it", async () => {
+    // Fix 40 (DRAFT-1): load while offline — otherwise the mount auto-sync
+    // would retry first and this test would measure the second sync.
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1", { retryCount: 1 })]);
     const onSubmit = vi.fn().mockRejectedValue(new Error("network down"));
     vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
@@ -578,6 +616,7 @@ describe("useOfflineDraftQueue", () => {
     );
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
 
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
     await act(async () => {
       window.dispatchEvent(new Event("online"));
     });
@@ -586,6 +625,7 @@ describe("useOfflineDraftQueue", () => {
     // The tombstone sweep runs with an EMPTY id list on refusal — nothing is
     // removed from the durable store.
     expect(removeOfflineDrafts).toHaveBeenCalledWith([]);
+    // Exactly one sync ran (the event's) — retry 1 → 2.
     await waitFor(() => {
       expect(result.current.offlineDrafts[0].retryCount).toBe(2);
       expect(result.current.offlineDrafts[0].lastError).toBe("network down");
@@ -617,6 +657,10 @@ describe("useOfflineDraftQueue", () => {
   // the pre-write snapshot. The mock returns a restamped record; if the
   // hook kept its own snapshot, the stamp would stay undefined.
   it("holds the committed records the store returns, not the pre-write snapshot", async () => {
+    // Fix 40 (DRAFT-1): load while offline — otherwise the mount auto-sync
+    // would run the failing sync first and restamp the record before the
+    // event sync this test measures.
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
     const onSubmit = vi.fn().mockRejectedValue(new Error("network down"));
     vi.mocked(replaceOfflineDrafts).mockImplementation(async (records) => [
@@ -629,11 +673,13 @@ describe("useOfflineDraftQueue", () => {
     );
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
 
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
     await act(async () => {
       window.dispatchEvent(new Event("online"));
     });
     await waitFor(() => expect(result.current.syncStatusMsg).toContain("فشلت"));
 
+    // Exactly one sync ran (the event's) — retry 0 → 1.
     await waitFor(() => {
       expect(result.current.offlineDrafts[0].updatedAt).toBe(9999999999999);
       expect(result.current.offlineDrafts[0].retryCount).toBe(1);
@@ -645,6 +691,9 @@ describe("useOfflineDraftQueue", () => {
   // it with status "resolved"; the loop must accept it and move on to the
   // newer draft behind it instead of throwing and breaking at the oldest.
   it("syncs past a moderator-resolved replay and clears the whole queue", async () => {
+    // Fix 40 (DRAFT-1): load while offline — otherwise the mount auto-sync
+    // would clear both drafts before the event this test dispatches.
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1"), draftRow("d2")]);
     const onSubmit = vi.fn(async (payload: { clientGeneratedId: string }) =>
       payload.clientGeneratedId === "d1"
@@ -658,6 +707,7 @@ describe("useOfflineDraftQueue", () => {
     );
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(2));
 
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
     await act(async () => {
       window.dispatchEvent(new Event("online"));
     });
@@ -666,6 +716,38 @@ describe("useOfflineDraftQueue", () => {
     expect(onSubmit).toHaveBeenCalledTimes(2);
     expect(removeOfflineDrafts).toHaveBeenCalledWith(["d1", "d2"]);
     await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(0));
+  });
+
+  it("syncs queued drafts on mount when already online, with no event (Fix 40 — DRAFT-1)", async () => {
+    vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
+    const onSubmit = vi.fn().mockResolvedValue({ responseValid: true, id: "rep-1", status: "pending" });
+    vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+    );
+    // No "online" event is dispatched — the mount sync alone must push it.
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    expect(removeOfflineDrafts).toHaveBeenCalledWith(["d1"]);
+    await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(0));
+  });
+
+  it("does not mount-sync while offline (Fix 40 — DRAFT-1 control)", async () => {
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
+    try {
+      vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
+      const onSubmit = vi.fn().mockResolvedValue({ responseValid: true, id: "rep-1", status: "pending" });
+      const { result } = renderHook(() =>
+        useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+      );
+      await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50));
+      });
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
+    }
   });
 });
 
