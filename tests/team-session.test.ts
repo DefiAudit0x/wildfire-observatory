@@ -440,3 +440,64 @@ describe("Phase 3 — mission navigation", () => {
     expect(openMissionNavigation({ sosLat: Number.NaN, sosLng: 5.07 })).toBe(false);
   });
 });
+
+describe("Fix 38 — TEAM-7: out-of-schema optional GPS fields are omitted, not sent", () => {
+  const mission200 = { ok: true, serverTime: 1, heartbeatIntervalMs: 15_000, mission: { sosId: "sos-1", phase: "en_route", since: 42 } };
+
+  it("omits accuracy/heading/speed outside the server schema ranges", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, mission200));
+    const result = await sendTeamHeartbeat(SESSION.token, { lat: 36.75, lng: 5.07, accuracy: 10001, heading: 400, speed: 90 });
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ lat: 36.75, lng: 5.07 });
+  });
+
+  it("sends the exact schema maxima (bounds are inclusive, control)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, mission200));
+    await sendTeamHeartbeat(SESSION.token, { lat: 36.75, lng: 5.07, accuracy: 10000, heading: 360, speed: 80 });
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ lat: 36.75, lng: 5.07, accuracy: 10000, heading: 360, speed: 80 });
+  });
+
+  it("the arrival flip omits an out-of-range accuracy", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { ok: true, mission: { sosId: "sos-1", phase: "on_scene", since: 42 } }));
+    const result = await flipMissionOnScene(SESSION.token, { lat: 36.7501, lng: 5.0702, accuracy: 15000 });
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body).toEqual({ phase: "on_scene", lat: 36.7501, lng: 5.0702 });
+  });
+});
+
+describe("Fix 38 — TEAM-8: a null/unparseable 2xx body returns a verdict, never throws", () => {
+  it("joinTeam returns join-failed on a null body (and on an unparseable one)", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, null));
+    await expect(joinTeam("A2B4C6D8", "عارة 1")).resolves.toEqual({ ok: false, message: "join-failed" });
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => { throw new Error("bad json"); } });
+    await expect(joinTeam("A2B4C6D8", "عارة 1")).resolves.toEqual({ ok: false, message: "join-failed" });
+  });
+
+  it("probeTeamSession returns the transport-style non-verdict on a null body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, null));
+    await expect(probeTeamSession(SESSION.token)).resolves.toEqual({
+      ok: false,
+      fatal: undefined,
+      heartbeatIntervalMs: 15_000,
+    });
+  });
+
+  it("sendTeamHeartbeat returns transient on a null body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, null));
+    await expect(sendTeamHeartbeat(SESSION.token, { lat: 36.75, lng: 5.07 })).resolves.toEqual({
+      ok: false,
+      transient: true,
+    });
+  });
+
+  it("flipMissionOnScene returns transient on a null body", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, null));
+    await expect(flipMissionOnScene(SESSION.token, { lat: 36.75, lng: 5.07 })).resolves.toEqual({
+      ok: false,
+      code: "transient",
+    });
+  });
+});

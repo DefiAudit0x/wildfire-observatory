@@ -226,6 +226,11 @@ export async function joinTeam(code: string, name: string): Promise<JoinResult> 
   if (!res.ok) {
     return { ok: false, message: typeof body?.error === "string" ? body.error : "join-failed" };
   }
+  // Fix 38 (TEAM-8): a 2xx with a null/unparseable body made the success
+  // path throw TypeError instead of returning a verdict — and TeamPanel's
+  // handleJoin awaited with no try/finally, so setJoining(false) never ran
+  // and the join button stayed disabled forever.
+  if (!body) return { ok: false, message: "join-failed" };
   const session: TeamSessionState = {
     token: String(body.token || ""),
     memberId: String(body.memberId || ""),
@@ -269,6 +274,10 @@ export async function probeTeamSession(token: string): Promise<ProbeResult> {
   if (!res.ok) {
     return { ok: false, fatal: fatalFromStatus(res.status, body) ?? undefined };
   }
+  // Fix 38 (TEAM-8): a null body made the success path throw instead of
+  // returning a verdict — the same non-verdict as the transport catch
+  // (keep the session, retry later via the heartbeat loop).
+  if (!body) return { ok: false, fatal: undefined, heartbeatIntervalMs: DEFAULT_HEARTBEAT_MS };
   return {
     ok: true,
     mission: normalizeMission(body.mission),
@@ -277,6 +286,18 @@ export async function probeTeamSession(token: string): Promise<ProbeResult> {
     name: String(body.name || ""),
     heartbeatIntervalMs: clampHeartbeatInterval(body.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_MS),
   };
+}
+
+/**
+ * Fix 38 (TEAM-7): the server 400s the ENTIRE beat when an optional GPS
+ * field is finite but outside its schema range (accuracy 0–10,000, heading
+ * 0–360, speed 0–80) — a coarse fix then withholds location and mission
+ * updates although omitting the unsupported optional would let the
+ * coordinates through. Omit out-of-range optionals; never clamp (clamping
+ * fabricates precision the device did not report).
+ */
+function inSchemaRange(value: number | null | undefined, min: number, max: number): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= min && value <= max;
 }
 
 /**
@@ -294,9 +315,9 @@ export async function sendTeamHeartbeat(
     res = await teamFetch("/api/teams/heartbeat", "POST", {
       lat: fix.lat,
       lng: fix.lng,
-      ...(fix.accuracy != null ? { accuracy: fix.accuracy } : {}),
-      ...(fix.heading != null ? { heading: fix.heading } : {}),
-      ...(fix.speed != null ? { speed: fix.speed } : {}),
+      ...(inSchemaRange(fix.accuracy, 0, 10_000) ? { accuracy: fix.accuracy } : {}),
+      ...(inSchemaRange(fix.heading, 0, 360) ? { heading: fix.heading } : {}),
+      ...(inSchemaRange(fix.speed, 0, 80) ? { speed: fix.speed } : {}),
     }, token);
   } catch {
     return { ok: false, transient: true };
@@ -311,6 +332,10 @@ export async function sendTeamHeartbeat(
     // will almost certainly be valid. Never a verdict.
     return { ok: false, transient: true };
   }
+  // Fix 38 (TEAM-8): a null body made the success path throw instead of
+  // returning a verdict (the TeamPanel caller maps it to transient anyway,
+  // but the helper's verdict contract must hold for every caller).
+  if (!body) return { ok: false, transient: true };
   return {
     ok: true,
     mission: normalizeMission(body.mission),
@@ -342,7 +367,10 @@ export async function flipMissionOnScene(
         phase: "on_scene",
         lat: arrival.lat,
         lng: arrival.lng,
-        ...(arrival.accuracy != null ? { accuracy: arrival.accuracy } : {}),
+        // Fix 38 (TEAM-7): same omit doctrine as the beat — a >10,000
+        // accuracy would 400 the arrival flip (missionPhaseSchema bounds
+        // accuracy 0–10,000) and lose an earned automated arrival.
+        ...(inSchemaRange(arrival.accuracy, 0, 10_000) ? { accuracy: arrival.accuracy } : {}),
       }
     : { phase: "on_scene" };
   let res: Response;
@@ -363,6 +391,11 @@ export async function flipMissionOnScene(
     if (fatal) return { ok: false, code: "fatal", fatal };
     return { ok: false, code: "transient" };
   }
+  // Fix 38 (TEAM-8): a null body made the success path throw instead of
+  // returning a verdict — and TeamPanel's handleFlipOnScene awaited with no
+  // try/finally, so setFlipBusy(false) never ran and the arrival button
+  // stayed disabled forever.
+  if (!payload) return { ok: false, code: "transient" };
   return { ok: true, mission: normalizeMission(payload.mission) };
 }
 

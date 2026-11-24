@@ -22,6 +22,11 @@ export async function fetchWithRetry(
       // catch below covers transport errors; this line makes the delay apply
       // to HTTP failures too. 4xx responses are returned immediately, by
       // contract: retrying a client error cannot change its verdict.
+      // Fix 38 (API-1): the HTTP branch never recorded anything, so an
+      // exhausted all-503 run threw a bare "Failed after N retries" and a
+      // mixed run reported the OLD transport error. Record the status so
+      // the terminal error (ARC-L14) names the last failure.
+      lastError = new Error(`HTTP ${res.status}`);
       if (i < retries - 1) {
         await sleep(delayMs * (i + 1), options.signal);
       }
@@ -66,7 +71,7 @@ function sleep(ms: number, signal?: AbortSignal | null): Promise<void> {
   });
 }
 
-export function cacheGet<T>(key: string, ttlMs = 300000): T | null {
+export function cacheGet<T>(key: string): T | null {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return null;
