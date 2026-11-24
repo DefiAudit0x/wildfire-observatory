@@ -956,3 +956,16 @@ describe("TeamPanel — heartbeat disposal per effect run (Fix 37b — TEAM-2)",
     expect(fetchMock.mock.calls.some(([u]: any[]) => u === "/api/teams/heartbeat")).toBe(false);
   });
 });
+
+describe("TeamPanel — null-bodied join verdict (Fix 38 — TEAM-8)", () => {
+  it("a null-bodied join response re-enables the join button instead of stranding it", async () => {
+    render(<TeamPanel lang="ar" />);
+    fireEvent.change(screen.getByLabelText(/رمز الفريق/), { target: { value: "a2b4c6d8" } });
+    fireEvent.change(screen.getByLabelText(/الاسم الظاهر/), { target: { value: "عارة 1" } });
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, json: async () => null });
+    fireEvent.click(screen.getByRole("button", { name: /انضمام إلى الفريق/ }));
+    await waitFor(() => expect(screen.getByText("join-failed")).toBeTruthy());
+    const joinBtn = screen.getByRole("button", { name: /انضمام إلى الفريق/ }) as HTMLButtonElement;
+    expect(joinBtn.disabled).toBe(false);
+  });
+});

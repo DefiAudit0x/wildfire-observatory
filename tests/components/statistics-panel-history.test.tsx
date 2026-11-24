@@ -169,3 +169,30 @@ describe("StatisticsPanel history legend and load states (Fix 36 — STA-2/STA-3
     expect(barTitles()).toHaveLength(2);
   });
 });
+
+describe("StatisticsPanel history load ceiling (Fix 38 — STA-3 residual)", () => {
+  it("the history load rides apiFetch's 15 s ceiling (the issued fetch carries an AbortSignal)", async () => {
+    const calls: Array<[string, RequestInit | undefined]> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push([url, init]);
+        return new Response(
+          JSON.stringify({
+            days: 1,
+            generatedAt: new Date().toISOString(),
+            buckets: [{ date: "2026-11-21", reports: 1, verified: 0, sos: 0, hotspots: 0 }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      })
+    );
+    render(<StatisticsPanel reports={[]} satellites={[]} wilayas={[]} lang="ar" />);
+    await waitFor(() => expect(barTitles().length).toBe(1));
+    const historyCall = calls.find(([url]) => url.includes("/api/history"));
+    expect(historyCall).toBeTruthy();
+    // Fix 33 precedent: fake timers do NOT fire AbortSignal.timeout, so the
+    // signal's presence — not a timed abort — is the proof of the ceiling.
+    expect(historyCall![1]?.signal).toBeInstanceOf(AbortSignal);
+  });
+});
