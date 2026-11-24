@@ -6,7 +6,7 @@
 //   GET /new-key?email=YOUR_EMAIL -> requests a fresh NASA FIRMS MAP_KEY bound to THIS worker's IP
 //                                   (NASA sends the key to your email; add it as the NASA_FIRMS_KEY secret)
 //   GET /{source}/{bbox}/{days} -> proxies FIRMS API (key stays server-side, never in URL)
-//                                   e.g. /VIIRS_SNPP_NRT/-17,18,25,38/1
+//                                   e.g. /VIIRS_SNPP_NRT/-17,18,20,38/1
 //
 // Auth (M5 fix): all routes except the health check require the header
 //   Authorization: Bearer <PROXY_SECRET>
@@ -92,7 +92,9 @@ export default {
       return json({ ok: false, error: "unknown source" }, 400);
     }
     const coords = String(bbox || "").split(",");
-    if (coords.length !== 4 || coords.some((c) => !Number.isFinite(Number(c)))) {
+    // Fix 47 (FPROXY-1): Number("") is 0, so an empty segment used to pass
+    // the finiteness check and be forwarded verbatim. Reject empties.
+    if (coords.length !== 4 || coords.some((c) => c.trim() === "" || !Number.isFinite(Number(c)))) {
       return json({ ok: false, error: "bbox must be minLng,minLat,maxLng,maxLat" }, 400);
     }
     const [minLng, minLat, maxLng, maxLat] = coords.map(Number);
@@ -114,8 +116,11 @@ export default {
       return json({ ok: false, error: "NASA_FIRMS_KEY secret missing" }, 500);
     }
 
+    // Fix 47 (FPROXY-1): build the upstream target from the validated
+    // numeric tuple, never from the raw bbox string — otherwise spellings
+    // Number() accepts ("20.0", "0x10", "1e1") reach NASA un-normalized.
     const target =
-      FIRMS_BASE + "/api/area/csv/" + apiKey + "/" + [source, bbox, days].join("/");
+      FIRMS_BASE + "/api/area/csv/" + apiKey + "/" + [source, [minLng, minLat, maxLng, maxLat].join(","), days].join("/");
 
     try {
       const upstream = await fetch(target, {
