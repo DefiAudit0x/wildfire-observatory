@@ -857,6 +857,11 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
   if (!db) return { status: "unavailable" };
   try {
     if (isAdminDb(db)) {
+      // Fix 44 (FS-3): collect the cleared mission ids so their per-doc
+      // cache entries can be invalidated after the commit — the collection
+      // invalidation below never reached docGet readers, which kept
+      // answering en_route/on_scene for up to 60 s after the resolve.
+      const clearedMissionIds: string[] = [];
       const outcome = await db.runTransaction(async (tx: AdminTransaction): Promise<SosResolveResult> => {
         const sosRef = db.collection("trappedSos").doc(sosId);
         const sosSnap = await tx.get(sosRef);
@@ -866,6 +871,7 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
         let missionsCleared = 0;
         missionsSnap.forEach((docSnap) => {
           tx.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
+          clearedMissionIds.push(docSnap.id);
           missionsCleared += 1;
         });
         return { status: "resolved", missionsCleared };
@@ -874,11 +880,14 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
         invalidateCollectionCache("trappedSos");
         invalidateDocCache("trappedSos", sosId);
         invalidateCollectionCache("teamMissions");
+        for (const id of clearedMissionIds) invalidateDocCache("teamMissions", id);
       }
       return outcome;
     }
 
     const { doc, runTransaction } = await loadClientSdk();
+    // Fix 44 (FS-3): same per-doc invalidation as the Admin SDK branch above.
+    const clearedMissionIds: string[] = [];
     const outcome = await runTransaction(db, async (tx: ClientTransaction): Promise<SosResolveResult> => {
       const sosRef = doc(db, "trappedSos", sosId);
       const sosSnap = await tx.get(sosRef);
@@ -898,6 +907,7 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
       for (const mission of missions) {
         if (mission.data()?.sosId !== sosId) continue;
         tx.update(mission.ref, { phase: "cleared", clearedAt: Date.now() });
+        clearedMissionIds.push(mission.ref.id);
         missionsCleared += 1;
       }
       return { status: "resolved", missionsCleared };
@@ -906,6 +916,7 @@ export async function resolveSosAtomically(sosId: string): Promise<SosResolveRes
       invalidateCollectionCache("trappedSos");
       invalidateDocCache("trappedSos", sosId);
       invalidateCollectionCache("teamMissions");
+      for (const id of clearedMissionIds) invalidateDocCache("teamMissions", id);
     }
     return outcome;
   } catch (err) {
