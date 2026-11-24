@@ -173,8 +173,13 @@ export async function getLiveSatelliteData(): Promise<SatelliteData> {
     }
 
     const emptyData = { hotspots: [], sources: sourceStatuses };
-    cachedEmptyResult = emptyData;
-    emptyCacheTimestamp = now;
+    // Fix 42b (CodeRabbit review 6038843615): SAT-1 contract — only an
+    // all-ok observation populates a cache. Caching a partial empty result
+    // would mask a recovered source's detections for the whole 60 s slot.
+    if (Object.values(sourceStatuses).every((status) => status === "ok")) {
+      cachedEmptyResult = emptyData;
+      emptyCacheTimestamp = now;
+    }
     return emptyData;
   })();
   try {
