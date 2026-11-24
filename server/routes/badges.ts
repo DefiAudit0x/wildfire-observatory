@@ -8,7 +8,7 @@ import { logAdminAction, actorFromRequest } from "./audit.js";
 import { secretFingerprint } from "../crypto.js";
 
 const router = Router();
-const badgeSchema = z.object({ code: z.string().min(1).max(64), ownerName: z.string().min(1).max(120), type: z.string().min(1).max(40), wilaya: z.string().min(1).max(200), phone: z.string().max(30).optional(), maxUses: z.number().int().positive().optional(), expiresAt: z.string().optional() });
+const badgeSchema = z.object({ code: z.string().min(1).max(64), ownerName: z.string().min(1).max(120), type: z.string().min(1).max(40), wilaya: z.string().min(1).max(200), phone: z.string().max(30).optional(), maxUses: z.number().int().positive().nullable().optional(), expiresAt: z.string().optional() });
 const updateBadgeSchema = badgeSchema.partial();
 const memoryBadges: any[] = [];
 async function loadBadges(): Promise<any[]> {
