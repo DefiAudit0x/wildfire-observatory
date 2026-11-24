@@ -37,6 +37,12 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
+  // Fix 32 (AUD-1): a failed load used to render exactly like an empty
+  // trail ("No actions recorded") — the operator could not tell "nothing
+  // happened" from "the log is unreachable". Follow-up (D8): fetchEntries
+  // still rides a raw fetch with no timeout; switching to apiFetch is a
+  // separate change, recorded in FIX_PLAN.md.
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // ARC-M27 fix: onAuthError is an inline prop recreated on every parent
   // render, so its identity in this dependency array re-fetched the whole log
@@ -49,6 +55,7 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
 
   const fetchEntries = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await fetch("/api/audit", { credentials: "same-origin" });
       if (res.ok) {
@@ -58,14 +65,21 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
           setPage(1);
         }
       } else if (!onAuthErrorRef.current(res)) {
-        // silent
+        // Fix 32 (AUD-1): a non-auth failure used to be silent, so the empty
+        // list rendered "No actions recorded" for a load that never happened.
+        setLoadError(isArabic
+          ? `تعذّر تحميل سجل التدقيق (خطأ ${res.status})`
+          : `Échec du chargement du journal (erreur ${res.status})`);
       }
     } catch (err) {
       console.error("Failed to load audit log", err);
+      setLoadError(isArabic
+        ? "تعذّر تحميل سجل التدقيق — تحقق من الاتصال"
+        : "Échec du chargement du journal — vérifiez la connexion");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isArabic]);
 
   useEffect(() => {
     fetchEntries();
@@ -103,26 +117,43 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
       </div>
 
       <div className="space-y-2 max-h-[480px] overflow-y-auto pr-1">
-        {entries.length === 0 ? (
-          <div className="text-center py-10 text-xs text-gray-500">
-            {isArabic ? "لا توجد إجراءات مسجلة بعد." : "Aucune action enregistrée pour l'instant."}
+        {/* Fix 32 (AUD-1): a failed load renders an error banner, never the
+            empty message. A failed refresh keeps the old entries visible
+            UNDER the banner — blanking the list would destroy information
+            the operator still needs. */}
+        {loadError && entries.length === 0 ? (
+          <div role="alert" className="text-center py-10 text-xs text-red-300">
+            {loadError}
           </div>
         ) : (
-          paginated.map((e) => (
-            <div key={e.id} className="bg-black/40 border border-white/5 rounded-lg p-3 flex items-start justify-between gap-3">
-              <div className="space-y-1 min-w-0">
-                <p className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                  <ShieldCheck className="h-3 w-3 text-amber-400 shrink-0" />
-                  {actionLabel(e.action)}
-                </p>
-                {renderDetails(e.details)}
+          <>
+            {loadError && (
+              <div role="alert" className="rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-[11px] text-red-300">
+                {loadError}
               </div>
-              <span className="text-[10px] text-gray-500 font-mono shrink-0 flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {new Date(e.timestamp).toLocaleString(isArabic ? "ar-DZ" : "fr-DZ")}
-              </span>
-            </div>
-          ))
+            )}
+            {entries.length === 0 ? (
+              <div className="text-center py-10 text-xs text-gray-500">
+                {isArabic ? "لا توجد إجراءات مسجلة بعد." : "Aucune action enregistrée pour l'instant."}
+              </div>
+            ) : (
+              paginated.map((e) => (
+                <div key={e.id} className="bg-black/40 border border-white/5 rounded-lg p-3 flex items-start justify-between gap-3">
+                  <div className="space-y-1 min-w-0">
+                    <p className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
+                      <ShieldCheck className="h-3 w-3 text-amber-400 shrink-0" />
+                      {actionLabel(e.action)}
+                    </p>
+                    {renderDetails(e.details)}
+                  </div>
+                  <span className="text-[10px] text-gray-500 font-mono shrink-0 flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    {new Date(e.timestamp).toLocaleString(isArabic ? "ar-DZ" : "fr-DZ")}
+                  </span>
+                </div>
+              ))
+            )}
+          </>
         )}
       </div>
 
