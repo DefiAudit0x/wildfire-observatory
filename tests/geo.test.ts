@@ -185,3 +185,19 @@ describe("minDistanceToPolylineKm (Fix 25 — EVAC-1)", () => {
     expect(minDistanceToPolylineKm([], 36, 5.03)).toBe(Infinity);
   });
 });
+
+describe("client mirror agreement (Fix 36 — GEO-1)", () => {
+  it("the client resolver agrees with the server on a sampled grid over the whole envelope", async () => {
+    const { determineWilayaByCoords: clientResolve } = await import("../src/utils/geo.js");
+    // 0.5° step over lat 19–38 × lng −18–25 (~2,900 points) plus the two
+    // probe points from the dissection. Any future bounds drift fails here
+    // first — the mirror claim is a property, not a pair of examples.
+    for (let lat = 19; lat <= 38; lat += 0.5) {
+      for (let lng = -18; lng <= 25; lng += 0.5) {
+        expect(clientResolve(lat, lng)).toBe(determineWilayaByCoords(lat, lng));
+      }
+    }
+    expect(clientResolve(36.8, 6.3)).toBe(determineWilayaByCoords(36.8, 6.3));
+    expect(clientResolve(31.2, -8.5)).toBe(determineWilayaByCoords(31.2, -8.5));
+  });
+});
