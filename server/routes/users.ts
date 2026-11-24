@@ -178,7 +178,12 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
           logger.warn({ agentId, unitId: existing.unitId }, "Roster cleanup after user deletion could not read rosters — sweep incomplete, rosters keep the historical copy");
         }
       } catch (sweepErr) {
-        logger.warn({ err: sweepErr, agentId }, "Roster cleanup after user deletion failed — rosters keep the historical copy");
+        // Fix 43c (CodeRabbit 6040115063): a thrown sweep (collectionGet
+        // throws, or a docSet inside Promise.all throws) must not report
+        // all-zeros either — the same misleading shape 43b fixed for the
+        // null-read branch. Mark it incomplete and say so in the warn.
+        rosterCleanup = { ...rosterCleanup, incomplete: true };
+        logger.warn({ err: sweepErr, agentId }, "Roster cleanup after user deletion failed — sweep incomplete, rosters keep the historical copy");
       }
     }
     res.json({ success: true, rosterCleanup });
