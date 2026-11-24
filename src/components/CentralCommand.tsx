@@ -387,6 +387,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const handleFocusSos = (sos: TrappedSOS) => {
+    // Fix 43 (SOS-5): a no-fix SOS has no coordinates to focus on.
+    if (sos.lat == null || sos.lng == null) return;
     setFocus({
       lat: sos.lat,
       lng: sos.lng,
