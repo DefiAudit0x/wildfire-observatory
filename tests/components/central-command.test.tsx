@@ -9,8 +9,15 @@ import type { UserLocationData } from "../../src/components/command/StatCards";
 // unmounts the whole tree. The sequence logic under test lives in
 // CentralCommand, not in the map; SosPanel (unmocked) still renders the
 // SOS names the tests assert on.
+// Fix 43 (SOS-5): the mocked map records the focus prop it receives, so
+// the focus-guard tests can prove a no-fix SOS never sets a focus target.
+const recordedFocus = vi.hoisted(() => [] as unknown[]);
+
 vi.mock("../../src/components/command/CommandMap", () => ({
-  default: () => null,
+  default: (props: { focus?: unknown }) => {
+    recordedFocus.push(props.focus);
+    return null;
+  },
 }));
 
 /**
@@ -402,5 +409,61 @@ describe("CentralCommand manual refresh and resolve (Fix 32 / CMD-2, CMD-3)", ()
     await waitFor(() => expect(screen.queryByText("مناداة أ")).toBeNull());
     expect(screen.getByText("تأكيد الإثبات")).toBeTruthy();
     expect(screen.getByText("مناداة ب")).toBeTruthy();
+  });
+});
+
+describe("CentralCommand SOS focus (Fix 43 — SOS-5)", () => {
+  let onRefresh: Mock<() => void>;
+
+  beforeEach(() => {
+    onRefresh = vi.fn(() => {});
+    recordedFocus.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function focusFetchMock(sosList: TrappedSOS[]) {
+    return vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
+      if (String(url).includes("/api/teams")) return jsonResponse(200, []);
+      if (String(url).includes("/api/sos/full")) return jsonResponse(200, sosList);
+      if (String(url).includes("/api/locations")) return jsonResponse(200, []);
+      return jsonResponse(404, {});
+    });
+  }
+
+  it("clicking focus on a no-fix SOS sets no focus target", async () => {
+    const noFix: TrappedSOS = {
+      id: "sos-nofix",
+      deviceId: "dev-nofix",
+      lat: null,
+      lng: null,
+      hasLocation: false,
+      name: "مناداة بلا موقع",
+      status: "active",
+      timestamp: new Date().toISOString(),
+    };
+    vi.stubGlobal("fetch", focusFetchMock([noFix]));
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة بلا موقع")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "تحديد" }));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(recordedFocus.every((f) => f == null)).toBe(true);
+  });
+
+  it("clicking focus on a located SOS focuses its coordinates (control)", async () => {
+    vi.stubGlobal("fetch", focusFetchMock([sos("sos-loc", "مناداة بموقع")]));
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة بموقع")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "تحديد" }));
+    await waitFor(() =>
+      expect(recordedFocus.some((f: any) => f && f.lat === 36.75 && f.lng === 3.06)).toBe(true)
+    );
   });
 });
