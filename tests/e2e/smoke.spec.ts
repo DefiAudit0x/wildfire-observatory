@@ -79,11 +79,6 @@ test.describe("Smoke tests", () => {
     await expect(page.getByText(/إرسال بلاغ عاجل عن حريق/i)).toBeVisible({ timeout: 5000 });
   });
 
-  test("swagger docs page loads", async ({ page }) => {
-    await page.goto("/api-docs");
-    await expect(page.locator(".swagger-ui").first()).toBeAttached({ timeout: 10000 });
-  });
-
   test("GET /api/units requires a staff token (401)", async ({ request }) => {
     const res = await request.get("/api/units");
     expect(res.status()).toBe(401);

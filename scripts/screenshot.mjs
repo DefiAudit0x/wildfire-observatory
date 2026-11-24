@@ -24,7 +24,6 @@ const server = spawn(process.execPath, [join(dist, "server.cjs")], {
     NODE_ENV: "production",
     COOKIE_SECURE: "false",
     GENERAL_LIMIT_MAX: "10000",
-    ENABLE_SWAGGER: "false",
     JWT_SECRET: "screenshot-secret",
   },
   stdio: ["ignore", "pipe", "pipe"],

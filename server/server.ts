@@ -8,11 +8,9 @@ import compression from "compression";
 import cookieParser from "cookie-parser";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import jwt from "jsonwebtoken";
-import swaggerUi from "swagger-ui-express";
 import config from "./config.js";
 import logger from "./logger.js";
 import { errorHandler, isTrustedOrigin, notFoundHandler } from "./middleware.js";
-import swaggerSpec from "./swagger.js";
 import { meshHub, MESH_PATH } from "./mesh.js";
 import { liveHub, LIVE_PATH } from "./live.js";
 import { createMeshToken } from "./mesh-auth.js";
@@ -133,7 +131,6 @@ app.use((req, _res, next) => {
   }
   next();
 });
-if (!isProduction || process.env.ENABLE_SWAGGER === "true") app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec, { explorer: true }));
 app.get("/api/health", healthHandler);
 app.get("/api/config", publicConfigHandler);
 
@@ -197,7 +194,6 @@ async function startServer() {
   app.use(errorHandler);
   const httpServer = app.listen(PORT, "0.0.0.0", () => {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
-    if (!isProduction || process.env.ENABLE_SWAGGER === "true") logger.info(`Swagger docs at http://localhost:${PORT}/api-docs`);
   });
   // Fix 41 (SRV-2): await the bind so its promise only resolves after
   // listening and rejects on an async bind error — the existing

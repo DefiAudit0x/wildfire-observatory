@@ -106,7 +106,6 @@
 | jsonwebtoken | JWT-based admin authentication |
 | Pino 10 | Structured logging |
 | Zod 4 | Input validation (schemas) |
-| Swagger/OpenAPI | API documentation |
 | Sentry Node | Error monitoring |
 
 ### DevOps
@@ -147,7 +146,6 @@ observatory/
 │   ├── geo.ts                 # Haversine, clustering, wilaya mapping
 │   ├── data.ts                # Static wilaya registry (names + emergency phones); v2.3.0 purged all demo reports/hotspots
 │   ├── middleware.ts          # JWT auth, error handler
-│   ├── swagger.ts             # OpenAPI 3.0 config
 │   └── routes/
 │       ├── health.ts          # GET /api/health
 │       ├── reports.ts         # GET/POST /api/reports, POST confirm
@@ -247,11 +245,7 @@ Open http://localhost:3000 in your browser.
 
 ## 📖 API Documentation / توثيق API
 
-Full interactive API documentation is available via Swagger UI:
-
-```
-http://localhost:3000/api-docs
-```
+The endpoint table below documents the API (there is no generated Swagger UI — see the Fix 45 note in FIX_PLAN.md).
 
 ### Endpoints
 
@@ -341,7 +335,6 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 | JWT admin auth, rate limiting, Helmet headers, CORS, Zod validation | ✅ Implemented |
 | Modular backend with Pino structured logging & centralized error handling | ✅ Implemented |
 | Automated tests & CI pipeline | ✅ Implemented |
-| Swagger/OpenAPI docs + bilingual README | ✅ Implemented |
 | Multi-stage Docker build + GitHub Actions + Husky | ✅ Implemented |
 | Sentry monitoring (server + React) | ✅ Implemented |
 | PWA offline (Workbox precache + API cache) | ✅ Implemented |
@@ -357,7 +350,6 @@ Husky pre-commit hook runs `tsc --noEmit` before each commit.
 - ✅ **Error Handling**: Centralized error handler middleware
 - ✅ **Testing**: Unit/API + React + Playwright E2E coverage
 - ✅ **CI/CD**: GitHub Actions pipeline + Husky pre-commit hooks
-- ✅ **API Docs**: Swagger UI at `/api-docs`
 - ✅ **Docker**: Multi-stage production build on Node 22
 - ✅ **Monitoring**: Sentry integration (server + React)
 - ✅ **PWA**: Service worker with offline API caching
