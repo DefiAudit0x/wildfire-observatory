@@ -96,6 +96,24 @@ describe("partial satellite outages", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("Fix 42b: a partial empty result is never cached — a recovered source's detection is not masked", async () => {
+    // CodeRabbit review 6038843615: Fix 42 cached the empty result
+    // unconditionally, so a VIIRS-ok/MODIS-down empty poll masked a MODIS
+    // recovery for 60 s. Old code: the second call returns the cached
+    // partial empty result (0 hotspots, 2 fetches). Fixed code: it
+    // re-fetches and returns the detection (4 fetches).
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(empty()).mockResolvedValueOnce(unavailable())
+      .mockResolvedValueOnce(empty()).mockResolvedValueOnce(detection());
+    vi.stubGlobal("fetch", fetch);
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    expect(await getLiveSatelliteData()).toEqual({ hotspots: [], sources: { VIIRS_SNPP_NRT: "ok", MODIS_NRT: "unavailable" } });
+    const recovered = await getLiveSatelliteData();
+    expect(recovered.hotspots).toHaveLength(1);
+    expect(recovered.sources).toEqual({ VIIRS_SNPP_NRT: "ok", MODIS_NRT: "ok" });
+    expect(fetch).toHaveBeenCalledTimes(4);
+  });
+
   it("raises a satellite-only wilaya and marks fresh and cached responses as partial", async () => {
     const fetch = vi.fn().mockResolvedValueOnce(unavailable()).mockResolvedValueOnce(detection());
     vi.stubGlobal("fetch", fetch);
