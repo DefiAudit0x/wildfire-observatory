@@ -131,6 +131,9 @@ export async function docMergeTeamPositionIfActive(
     lastKnownLat?: number;
     lastKnownLng?: number;
     lastSeenAt?: number;
+    // Fix 45 (D5): fix age carried into the durable snapshot (Fix 43 TEAM-6
+    // follow-up); null for legacy clients, never fabricated.
+    lastFixTimeMs?: number | null;
   }
 ): Promise<boolean> {
   const db = getDb();

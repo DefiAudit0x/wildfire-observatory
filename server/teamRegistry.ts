@@ -130,6 +130,19 @@ export function snapshotIfDue(memberId: string, teamId: string, now = Date.now()
   if (!entry) return;
   if (now - entry.lastSnapshotAt < SNAPSHOT_MIN_INTERVAL_MS) return;
   entry.lastSnapshotAt = now;
+  // Fix 45 (TRG-2): the helper never rejects (it returns false on every
+  // failure path), so the old `.catch` was dead — a failed snapshot was
+  // treated as sent for a full 5 minutes. Observe the resolved boolean
+  // instead: on false, reset the LIVE entry's throttle (resolved via
+  // registry.get at completion time — recordHeartbeat replaces the entry
+  // object on every ping, so closing over `entry` would write to a stale
+  // object) and warn at the registry level, so the next heartbeat retries.
+  const onFailure = (err?: unknown): void => {
+    const cur = registry.get(memberId);
+    if (cur) cur.lastSnapshotAt = 0;
+    if (err !== undefined) logger.warn({ err, memberId }, "Team position snapshot failed");
+    else logger.warn({ memberId }, "Team position snapshot failed");
+  };
   void docMergeTeamPositionIfActive(memberId, teamId, tokenGen, {
     memberId,
     teamId,
@@ -137,7 +150,14 @@ export function snapshotIfDue(memberId: string, teamId: string, now = Date.now()
     lastKnownLat: entry.lat,
     lastKnownLng: entry.lng,
     lastSeenAt: entry.lastSeen,
-  }).catch((err) => logger.warn({ err, memberId }, "Team position snapshot failed"));
+    // Fix 45 (D5 — Fix 43 TEAM-6 follow-up): carry the fix age into the
+    // durable snapshot so the offline fallback has it too; never fabricated.
+    lastFixTimeMs: entry.fixTimeMs ?? null,
+  })
+    .then((ok) => {
+      if (!ok) onFailure();
+    })
+    .catch((err) => onFailure(err));
 }
 
 /** Removes a member (leave/deactivation) from the live layer. */
