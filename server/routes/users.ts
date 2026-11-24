@@ -148,7 +148,7 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
     // is a complete, bounded cleanup.
     // Fix 43 (USR-2): the sweep result is surfaced in the response — the
     // log used to claim completion even when every write failed.
-    let rosterCleanup = { days: 0, removed: 0, failed: 0 };
+    let rosterCleanup: { days: number; removed: number; failed: number; incomplete?: boolean } = { days: 0, removed: 0, failed: 0 };
     if (existing.unitId) {
       try {
         const rosterCollection = `units/${toUnitId(existing.unitId)}/rosterDays`;
@@ -169,6 +169,13 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
           rosterCleanup = { days: affected.length, removed, failed: affected.length - removed };
           if (rosterCleanup.failed > 0) logger.warn({ agentId, unitId: existing.unitId, days: affected.length, failed: rosterCleanup.failed }, "Roster cleanup after user deletion partially failed — some rosters keep the historical copy");
           else if (affected.length > 0) logger.info({ agentId, unitId: existing.unitId, days: affected.length }, "Removed deleted agent from planned rosters");
+        } else {
+          // Fix 43b (CodeRabbit 6039588272): a null read means the sweep
+          // never ran — the all-zero report would otherwise be
+          // indistinguishable from "no affected days", silently leaving
+          // the deleted agent on planned rosters.
+          rosterCleanup = { days: 0, removed: 0, failed: 0, incomplete: true };
+          logger.warn({ agentId, unitId: existing.unitId }, "Roster cleanup after user deletion could not read rosters — sweep incomplete, rosters keep the historical copy");
         }
       } catch (sweepErr) {
         logger.warn({ err: sweepErr, agentId }, "Roster cleanup after user deletion failed — rosters keep the historical copy");
