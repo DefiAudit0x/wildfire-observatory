@@ -47,6 +47,10 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   const [registeredTeams, setRegisteredTeams] = useState<RegisteredTeam[]>([]);
   const isArabic = lang === "ar";
   const [confirmResolve, setConfirmResolve] = useState<TrappedSOS | null>(null);
+  // Fix 32 (CMD-3): pending SOS for the resolve — a single id suffices (the
+  // dialog is the only trigger). Cleared in `finally` on both outcomes, so
+  // a failed resolve never wedges the confirm button disabled.
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
   const { toasts, push } = useToasts();
   // ARC-M32: one error ref used to guard BOTH the SOS and the locations
   // fetchers — the first failure silenced the other's toast until any success
@@ -174,6 +178,18 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       if (seq === teamsFetchSeq.current) setTeamsRefreshing(false);
     }
   }, [unlocked, showInactiveTeams]);
+
+  // Fix 32 (CMD-2): the header Refresh called only fetchUserLocations — the
+  // SOS list and the team roster are independent local state (fullSos is a
+  // snapshot initialized once from props, never re-synced), so they stayed
+  // up to 15 s stale after a manual refresh. The 15 s poll already calls
+  // all three loaders; the button now does the same. No double parent
+  // refresh: only the locations loader calls onRefresh.
+  const refreshAll = useCallback(() => {
+    fetchFullSos();
+    fetchUserLocations();
+    fetchRegisteredTeams();
+  }, [fetchFullSos, fetchUserLocations, fetchRegisteredTeams]);
 
   useEffect(() => {
     if (unlocked) {
@@ -329,13 +345,16 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
     });
   };
 
+  // Fix 32 (CMD-3): the resolve rode a raw fetch (no timeout, no pending
+  // state) and the confirmation dialog closed before the request was even
+  // awaited — the same SOS could be confirmed again while the first resolve
+  // was stalled. It now rides the bounded helper, tracks the pending SOS,
+  // and keeps the dialog open until the request settles.
   const handleResolveSos = async (sos: TrappedSOS) => {
+    if (resolvingId === sos.id) return;
+    setResolvingId(sos.id);
     try {
-      const res = await fetch(`/api/sos/${sos.id}/resolve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "same-origin",
-      });
+      const res = await apiFetch(`/api/sos/${encodeURIComponent(sos.id)}/resolve`, "POST");
       if (res.ok) {
         if (onRefresh) onRefresh();
         // Fix 24 (CMD-1): the resolve's local removal is not enough on its
@@ -347,12 +366,23 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         sosFetchSeq.current++;
         setFullSos((prev) => prev.filter((s) => s.id !== sos.id));
         push(isArabic ? `تم إثبات النجدة — ${sos.name} بأمان` : `SOS résolu — ${sos.name} sain et sauf`);
+        // Fix 32b (CodeRabbit review 6031586408, Minor 2): close only when
+        // the completed SOS is still the selected one — the operator may
+        // have cancelled this dialog and opened another SOS's while the
+        // request was in flight, and an unconditional close would dismiss
+        // the other dialog even though that SOS was never resolved.
+        setConfirmResolve((current) => (current?.id === sos.id ? null : current));
+      } else if (isSessionExpiry(res)) {
+        setUnlocked(false);
       } else {
         push(isArabic ? "فشل حل الاستغاثة" : "Échec de résolution du SOS", "error");
+        // dialog stays open — the operator can retry in place
       }
     } catch (err) {
       console.error(err);
       push(isArabic ? "فشل حل الاستغاثة" : "Échec de résolution du SOS", "error");
+    } finally {
+      setResolvingId(null);
     }
   };
 
@@ -408,7 +438,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
             </div>
           </div>
           <button
-            onClick={fetchUserLocations}
+            onClick={refreshAll}
             disabled={loadingUsers}
             className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/20 text-amber-400 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer"
           >
@@ -495,10 +525,10 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
           : ""}
         confirmLabel={isArabic ? "تم الإنقاذ" : "Secouru"}
         danger={false}
+        confirmDisabled={resolvingId !== null}
         onConfirm={() => {
           const sos = confirmResolve;
-          setConfirmResolve(null);
-          if (sos) handleResolveSos(sos);
+          if (sos) handleResolveSos(sos);   // no longer clears first
         }}
         onCancel={() => setConfirmResolve(null)}
         lang={lang}

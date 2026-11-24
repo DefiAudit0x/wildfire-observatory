@@ -35,3 +35,28 @@ describe("ConfirmDialog accessible name (Fix 30 DLG-1)", () => {
     expect(container.innerHTML).toBe("");
   });
 });
+
+describe("ConfirmDialog busy state (Fix 32 CMD-3)", () => {
+  it("confirmDisabled disables the confirm button and leaves cancel live", () => {
+    render(
+      <ConfirmDialog
+        open={true}
+        title="تأكيد الإثبات"
+        message="هل تم إنقاذ أحمد وحل الاستغاثة؟"
+        confirmLabel="تم الإنقاذ"
+        danger={false}
+        confirmDisabled={true}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+        lang="ar"
+      />,
+    );
+    expect(screen.getByRole("button", { name: "تم الإنقاذ" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "إلغاء" })).toBeEnabled();
+  });
+
+  it("confirm defaults to enabled when the prop is omitted", () => {
+    renderDialog(true);
+    expect(screen.getByRole("button", { name: "حذف" })).toBeEnabled();
+  });
+});
