@@ -137,4 +137,19 @@ describe("deploy-rules credential loading (Fix 47 — DRULES-1/2)", () => {
     expect(loadServiceAccountJson(env).project_id).toBe("demo");
     expect(loadServiceAccountFile(env)).toBe("account.json");
   });
+
+  it("does not hang on many CRLF comment lines before a non-key line (Fix 47c — CodeQL #21 / CodeRabbit 4685825264)", () => {
+    const multiLine = "{\r\n\"project_id\":\"demo\",\r\n\"private_key\":\"k\",\r\n\"client_email\":\"a@b.c\"\r\n}";
+    const comments = Array.from({ length: 30 }, (_, i) => `# comment line ${i}`).join("\r\n");
+    writeEnv(`FIREBASE_SERVICE_ACCOUNT="${multiLine}"\r\n${comments}\r\nnot-a-key-line\r\nSA_KEY_FILE=account.json\r\n`);
+    const t0 = Date.now();
+    const env = loadDotEnv();
+    const elapsed = Date.now() - t0;
+    // The 47b regex took 6.6 s on 24 such lines (parent probe); the fixed
+    // one parses in milliseconds. The 2 s bound is generous on this VM
+    // and still catches the blowup (30 lines on old code would take
+    // minutes, and the 5 s test timeout would fire first).
+    expect(elapsed).toBeLessThan(2000);
+    expect(loadServiceAccountFile(env)).toBe("account.json");
+  });
 });
