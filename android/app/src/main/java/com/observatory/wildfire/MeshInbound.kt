@@ -204,10 +204,16 @@ class MeshInbound(
         // REPLAY (silent, no reputation hit — same as a replay). The count
         // is rolled back below when the payload check finds a true replay,
         // so replays do not consume the budget.
+        // Fix 55e: the budget map itself is capped at MAX_SEEN_HASHES —
+        // at capacity, unseen triples are rejected (compute returning null
+        // records no mapping), so an evicted triple can never re-admit a
+        // fresh budget. Triples already tracked keep their budget.
         val tripleHash = MeshWire.seenTripleHash(payload.messageId, payload.nonce)
         val tripleAdmission = seenTripleCounts.compute(tripleHash) { _, v ->
-            if (v == null) TripleAdmission(1, now) else v.copy(count = v.count + 1)
-        }!!
+            if (v == null && seenTripleCounts.size >= MAX_SEEN_HASHES) null
+            else if (v == null) TripleAdmission(1, now)
+            else v.copy(count = v.count + 1)
+        } ?: return Verdict.Rejected(RejectReason.REPLAY, null)
         if (tripleAdmission.count > MAX_VARIANTS_PER_TRIPLE) {
             return Verdict.Rejected(RejectReason.REPLAY, null)
         }

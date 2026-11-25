@@ -255,10 +255,16 @@ object CryptoEngine {
                     "Legacy stored identity unusable — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)", e
                 )
             }
-        } else if (legacyPrivB64 != null || legacyPubB64 != null) {
+        } else if (!identityCommitFailed && (legacyPrivB64 != null || legacyPubB64 != null)) {
             // Fix 55c: an incomplete legacy pair (only one half present) is
             // unusable too — flag it so the fallback preserves what exists
             // and records the regeneration.
+            // Fix 55e: the 55d guard extends here — on a same-process retry
+            // after a failed commit, the in-memory replacement pair would
+            // satisfy this branch and the fallback would overwrite the
+            // forensic snapshot with the uncommitted pair (and store the
+            // live private key under a _corrupt key when no legacy material
+            // existed).
             legacyCorrupt = true
             android.util.Log.w(
                 "CryptoEngine",
@@ -324,8 +330,11 @@ object CryptoEngine {
             // each existing legacy value to its forensic key BEFORE the
             // fresh pair overwrites the primary keys. These keys are
             // write-only retention; nothing ever reads them.
-            if (legacyPubB64 != null) edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
-            if (legacyPrivB64 != null) edit.putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
+            // Fix 55e: a _corrupt key is written only if absent — a
+            // same-process retry must not overwrite the forensic snapshot
+            // with the uncommitted replacement pair.
+            if (legacyPubB64 != null && prefs.getString(IDENTITY_PUB_KEY + "_corrupt", null) == null) edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
+            if (legacyPrivB64 != null && prefs.getString(IDENTITY_PRIV_KEY + "_corrupt", null) == null) edit.putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
         }
         val committed = edit
             .putString(IDENTITY_PUB_KEY, Base64.encodeToString(fresh.public.encoded, Base64.NO_WRAP))
