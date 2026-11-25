@@ -314,6 +314,18 @@ describe("legacy rows — scrub on read + fire-and-forget migration", () => {
     expect(priv.data().deviceId).toBe("device-abc");
     const img = await db2.collection("reportImages").doc("rep-legacy").get();
     expect(img.exists).toBe(true);
+    // The migration's final write must scrub the STORED public doc
+    // itself — the returned row is scrubbed on read regardless, so only
+    // a re-read proves the stored document no longer carries identity
+    // or the photo.
+    const migrated = await db2.collection("reports").doc("rep-legacy").get();
+    expect(migrated.exists).toBe(true);
+    expect(migrated.data().reporterPhone).toBeUndefined();
+    expect(migrated.data().reporterName).toBeUndefined();
+    expect(migrated.data().reporterBadgeCode).toBeUndefined();
+    expect(migrated.data().deviceId).toBeUndefined();
+    expect(migrated.data().image).toBeUndefined();
+    expect(migrated.data().hasImage).toBe(true);
   });
 });
 

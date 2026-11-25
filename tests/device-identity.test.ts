@@ -146,6 +146,11 @@ describe("getDeviceId — canonical identity and one-time migration", () => {
       // Strictly larger than any hex-based id ('z' > any hex digit).
       const rival = `web_${"z".repeat(36)}`;
       expect(rival > mine).toBe(true);
+      // The other tab's write REALLY landed in shared storage before its
+      // event arrived: dispatchEvent alone never touches localStorage, so
+      // without this seed the re-assert below passes vacuously (storage
+      // already holds `mine`).
+      localStorage.setItem("device_id", rival);
       window.dispatchEvent(new StorageEvent("storage", {
         key: "device_id",
         newValue: rival,
