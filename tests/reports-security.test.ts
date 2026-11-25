@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
 import { vi } from "vitest";
-import { validateImageDataUrl, hasImageMagicBytes } from "../server/imageValidate.js";
+import { validateImageDataUrl, hasImageMagicBytes, MAX_IMAGE_BYTES } from "../server/imageValidate.js";
 
 const mockReports = vi.hoisted(() => ({
   list: [{ id: "security-seed", lat: 36.75, lng: 7.6, severity: "medium", status: "pending", timestamp: new Date().toISOString(), consensusCount: 1 }] as any[],
@@ -50,7 +50,7 @@ vi.mock("../server/db.js", () => ({
       const valid = badge?.isActive === true &&
         (!badge.type || badge.type === badgeTrust.reporterType) &&
         (!badge.wilaya || badge.wilaya === badgeTrust.wilaya) &&
-        (expiresAt === null || !Number.isFinite(expiresAt) || Date.now() < expiresAt) &&
+        (expiresAt === null || (Number.isFinite(expiresAt) && Date.now() < expiresAt)) &&
         (!(typeof badge.maxUses === "number" && badge.maxUses > 0) || Number(badge.usedCount || 0) < badge.maxUses);
       if (valid) {
         reportToSave = badgeTrust.trustedReport;
@@ -101,9 +101,13 @@ function createApp() {
 let coordsCounter = 0;
 function annabaCoords() {
   coordsCounter += 1;
-  // Jitter far enough apart (step ~0.05 deg lng) to bypass the in-memory
-  // duplicate window (0.5km), while staying inside the Annaba wilaya bounds.
-  return { lat: 36.8, lng: 7.5 + coordsCounter * 0.05 };
+  // Jitter far enough apart (step ~0.03 deg lng, ~2.7 km) to bypass the
+  // in-memory duplicate window (0.5km), while staying inside the Annaba
+  // wilaya bounds (lng 7.4–7.95): the step fits 15 calls, and the badge
+  // describe makes 12 — the old 0.05 step fit only 9, so the 10th call
+  // already fell outside Annaba (Fix 66: two new badge tests pushed the
+  // RPT-2 and future-expiry tests past the boundary).
+  return { lat: 36.8, lng: 7.5 + coordsCounter * 0.03 };
 }
 
 function baseReport() {
@@ -166,6 +170,36 @@ describe("POST /api/reports — badge trust hardening", () => {
       .post("/api/reports")
       .send({ ...baseReport(), reporterType: "official", reporterBadgeCode: "193" });
     expect(res.body.status).toBe("pending");
+  });
+
+  it("rejects a badge with an unparseable expiry string — corrupt expiry never verifies", async () => {
+    mockDocs.set("badgeCodes/194", {
+      isActive: true,
+      type: "official",
+      expiresAt: "invalid-expiry",
+    });
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...baseReport(), reporterType: "official", reporterBadgeCode: "194" });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pending");
+    expect(res.body.consensusCount).toBe(1);
+  });
+
+  it("rejects a badge with a non-finite numeric expiry — Infinity never verifies", async () => {
+    mockDocs.set("badgeCodes/195", {
+      isActive: true,
+      type: "official",
+      expiresAt: Infinity,
+    });
+    const app = createApp();
+    const res = await supertest(app)
+      .post("/api/reports")
+      .send({ ...baseReport(), reporterType: "official", reporterBadgeCode: "195" });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe("pending");
+    expect(res.body.consensusCount).toBe(1);
   });
 
   it("rejects a badge past its usage cap", async () => {
@@ -409,9 +443,19 @@ describe("validateImageDataUrl — helper edge cases", () => {
     expect(validateImageDataUrl("data:image/png;base64AAA")).toBe(false);
   });
 
-  it("rejects base64 garbage larger than the decoded ceiling", () => {
-    const big = "data:image/png;base64," + "A".repeat(1_100_000); // ~825 KB decoded
+  it("rejects a signature-valid image larger than the decoded ceiling", () => {
+    // PNG magic alone makes hasImageMagicBytes true, so ONLY the
+    // 700-KiB ceiling can reject this fixture: the old fixture
+    // (1,100,000 'A's decoding to zeros) failed the magic check
+    // instead and never exercised the ceiling.
+    const pngHead = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const oversized = Buffer.concat([pngHead, Buffer.alloc(MAX_IMAGE_BYTES - pngHead.length + 1)]);
+    const big = "data:image/png;base64," + oversized.toString("base64");
     expect(validateImageDataUrl(big)).toBe(false);
+    // Positive control: the same magic at a small size passes, so the
+    // rejection above is the ceiling's doing, not the magic check's.
+    const small = "data:image/png;base64," + Buffer.concat([pngHead, Buffer.alloc(100)]).toString("base64");
+    expect(validateImageDataUrl(small)).toBe(true);
   });
 
   it("recognizes the four supported magic bytes families", () => {

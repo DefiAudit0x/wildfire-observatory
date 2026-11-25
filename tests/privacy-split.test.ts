@@ -344,6 +344,14 @@ describe("getReportImageDataUrl — shard first, legacy fallback", () => {
     expect(await getReportImageDataUrl("rep-y")).toBe("data:image/png;base64,LEGACY");
   });
 
+  it("prefers the shard image when both shard and legacy inline images exist", async () => {
+    state.fake = makeFakeAdminDb({
+      "reportImages/rep-both": { reportId: "rep-both", image: "data:image/png;base64,SHARD" },
+      "reports/rep-both": { image: "data:image/png;base64,LEGACY" },
+    });
+    expect(await getReportImageDataUrl("rep-both")).toBe("data:image/png;base64,SHARD");
+  });
+
   it("returns null when neither shard nor legacy image exists", async () => {
     state.fake = makeFakeAdminDb({ "reports/rep-z": { lat: 1 } });
     expect(await getReportImageDataUrl("rep-z")).toBeNull();
