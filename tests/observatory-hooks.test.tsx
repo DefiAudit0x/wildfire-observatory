@@ -367,6 +367,22 @@ describe("mesh sync — gossip admission and consensus protocol", () => {
     const admitted = result.current.reports.find((r) => r.id === "rep-mesh") as unknown as Record<string, unknown>;
     expect(admitted.status).toBe("pending");
     expect(admitted.origin).toBe("mesh");
+
+    // The comment above describes a frame claiming verified/999 — but no
+    // event ever sent one: both events above already carry pending/1, so
+    // removing the status clamp leaves every assertion above passing.
+    // The forged frame needs a FRESH id: admitMeshReport dedupes by id,
+    // so a second rep-mesh event would be swallowed before the clamp
+    // could ever be observed.
+    emitMessage({ type: "report:new", report: validReport("rep-mesh-999", { status: "verified", consensusCount: 999 }), ts: 3, lat: 36.7, lng: 5.05 });
+    await waitFor(() => expect(result.current.reports.map((r) => r.id)).toContain("rep-mesh-999"));
+    const forged = result.current.reports.find((r) => r.id === "rep-mesh-999") as unknown as Record<string, unknown>;
+    expect(forged.status).toBe("pending");
+    expect(forged.origin).toBe("mesh");
+    // NOTE: consensusCount is NOT clamped on the gossip path — production
+    // admits 999 as-is (admitMeshReport only dedupes by id). Do NOT assert
+    // the count here: it would fail on correct code. Clamping the gossip
+    // count is a separate production decision, not this finding.
   });
 
   it("validates the report BEFORE recording the gossip hash (audit B10) and rejects garbage", async () => {
@@ -388,6 +404,10 @@ describe("mesh sync — gossip admission and consensus protocol", () => {
     // must be ignored entirely — the next poll reconciles the truth.
     emitMessage({ type: "report:confirm", id, status: "verified", consensusCount: 999999, from: "evil-node" });
     expect(result.current.reports.find((r) => r.id === id)?.status).not.toBe("verified");
+    // The count is trust-bearing too: a node frame that copies the
+    // attacker count while keeping status pending must not leak 999999
+    // into state. The poll admitted this report with consensusCount 1.
+    expect(result.current.reports.find((r) => r.id === id)?.consensusCount).toBe(1);
 
     // Hub-authoritative frame (no `from`): a real ledger confirmation.
     emitMessage({ type: "report:confirm", id, status: "verified", consensusCount: 3 });
@@ -430,13 +450,21 @@ describe("report submission — transport vs rejection semantics", () => {
   };
 
   it("submits via JSON, admits the server copy, fans the SERVER copy out to mesh", async () => {
+    let posted = false;
     const fetchMock = installFetch((url: string, init?: RequestInit) => {
       if (url.includes("/api/reports")) {
-        // GET returns the list (including the just-committed POST report —
-        // the server is authoritative); POST returns the single normalized copy.
-        return init?.method === "POST"
-          ? json(validReport("rep-post"))
-          : json([validReport(), validReport("rep-post")]);
+        if (init?.method === "POST") {
+          posted = true;
+          return json(validReport("rep-post"));
+        }
+        // Pre-submission the server cannot list a report that was never
+        // submitted; after the POST the immediate re-read FAILS (500), so
+        // the only way rep-post can be in state is POST admission
+        // (admitServerReport) — a 200 without rep-post would WIPE it via
+        // the poll's replace semantics, and a 200 with rep-post would
+        // re-admit it via the poll. The 500 exploits the poll's
+        // state-preservation contract on a failed source.
+        return posted ? json({ error: "down" }, 500) : json([validReport()]);
       }
       if (url.includes("/api/satellite-data")) return json([validSatellite()]);
       if (url.includes("/api/wilayas")) return json([validWilaya()]);
@@ -445,6 +473,9 @@ describe("report submission — transport vs rejection semantics", () => {
       return json({}, 404);
     });
     const { result } = await mount();
+    await waitFor(() => expect(result.current.reports).toHaveLength(1));
+    // rep-post is absent before submission (the pre-GET never lists it).
+    expect(result.current.reports.some((r) => r.id === "rep-post")).toBe(false);
 
     let response!: any;
     await act(async () => {
@@ -459,6 +490,12 @@ describe("report submission — transport vs rejection semantics", () => {
     const [, postInit] = post as unknown as [string, any];
     expect(JSON.parse(postInit.body as string).reporterPhone).toBe("0555000111"); // PII to the SERVER, never to mesh
     const meshJson = JSON.parse(vi.mocked(broadcastMessage).mock.calls[0][0]);
+    // Server-only fields: the raw submission carries no id, status or
+    // consensusCount — broadcasting it instead of newReport fails all
+    // three pins, while the PII allow-list would still strip the phone.
+    expect(meshJson.id).toBe("rep-post");
+    expect(meshJson.status).toBe("pending");
+    expect(meshJson.consensusCount).toBe(1);
     expect(meshJson.reporterPhone).toBeUndefined();
     expect(meshJson.reporterName).toBeUndefined();
   });

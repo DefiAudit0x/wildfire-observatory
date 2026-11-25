@@ -26,6 +26,28 @@ describe("operator flush transition gate", () => {
     expect(committed).toBe(false);
   });
 
+  it("does not commit a batch when the trust epoch moves while access stays trusted", async () => {
+    const deferred = { resolve: undefined as ((played: boolean) => void) | undefined };
+    let epoch = 0;
+    let committed = false;
+
+    const pendingCommit = commitOperatorBatchAfterTone(
+      () => new Promise<boolean>((resolve) => { deferred.resolve = resolve; }),
+      () => true,
+      () => epoch,
+      0,
+      () => { committed = true; },
+    );
+
+    epoch = 1; // trust withdrawn and regranted: the epoch moved, access is trusted again
+    const resolveTone = deferred.resolve;
+    if (!resolveTone) throw new Error("tone resolver was not registered");
+    resolveTone(true);
+
+    expect(await pendingCommit).toBe(false);
+    expect(committed).toBe(false);
+  });
+
   it("commits when tone succeeds and the trust epoch is unchanged", async () => {
     let committed = false;
     const result = await commitOperatorBatchAfterTone(
