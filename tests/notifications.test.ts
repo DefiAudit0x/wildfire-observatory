@@ -1,8 +1,28 @@
 import express from "express";
 import supertest from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import cookieParser from "cookie-parser";
 import notificationsRouter from "../server/routes/notifications.js";
+
+const notifyDbState = vi.hoisted(() => ({
+  dbPresent: false,
+  subscribers: [{ unsubscribeToken: "u".repeat(64) }],
+  deleteCalls: [] as Array<Record<string, unknown>>,
+}));
+
+vi.mock("../server/firebase.js", () => ({
+  getDb: () => (notifyDbState.dbPresent ? {
+    collection: () => ({
+      where: () => ({
+        get: async () => ({ docs: notifyDbState.subscribers.map((s) => ({
+          data: () => s,
+          ref: { delete: async () => { notifyDbState.deleteCalls.push(s); } },
+        })) }),
+      }),
+    }),
+  } : null),
+  isAdminDb: () => true,
+}));
 
 function createApp() {
   const app = express();
@@ -15,6 +35,11 @@ function createApp() {
 }
 
 describe("notification unsubscribe contract", () => {
+  beforeEach(() => {
+    notifyDbState.dbPresent = false;
+    notifyDbState.deleteCalls.length = 0;
+  });
+
   it("rejects a one-click unsubscribe link without a token", async () => {
     const res = await supertest(createApp())
       .get("/api/notifications/unsubscribe")
@@ -33,11 +58,25 @@ describe("notification unsubscribe contract", () => {
   });
 
   it("rejects an invalid unsubscribe token on the POST action", async () => {
+    notifyDbState.dbPresent = true;
     const res = await supertest(createApp())
       .post("/api/notifications/unsubscribe")
       .send({ email: "citizen@example.com", token: "0".repeat(64) });
 
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Invalid unsubscribe token");
+    expect(notifyDbState.deleteCalls).toHaveLength(0);
+  });
+
+  it("unsubscribes with a matching token", async () => {
+    notifyDbState.dbPresent = true;
+    const res = await supertest(createApp())
+      .post("/api/notifications/unsubscribe")
+      .send({ email: "citizen@example.com", token: "u".repeat(64) });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(notifyDbState.deleteCalls).toHaveLength(1);
   });
 
   it("requires the token on the POST unsubscribe endpoint", async () => {

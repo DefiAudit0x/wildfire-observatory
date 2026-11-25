@@ -23,7 +23,26 @@ function createApp() {
 }
 
 describe("safe-zone persistence failures", () => {
+  const zoneTest = {
+    id: "zone-test", nameAr: "مركز اختبار", nameFr: "Centre Test",
+    lat: 36.8, lng: 7.5, capacity: 100, hasMedical: false,
+    isActive: true, createdAt: "2026-11-23T00:00:00.000Z",
+  };
+
+  it("deletes an existing zone when persistence succeeds", async () => {
+    fsMock.collectionGet.mockResolvedValue([zoneTest]);
+    fsMock.docDelete.mockResolvedValueOnce(true);
+    const res = await supertest(createApp())
+      .delete("/api/safezones/zone-test")
+      .set("Authorization", `Bearer ${generateAdminToken()}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(fsMock.docDelete).toHaveBeenCalledWith("safeZones", "zone-test");
+  });
+
   it("returns 503 when DELETE cannot persist", async () => {
+    fsMock.collectionGet.mockResolvedValue([zoneTest]);
     fsMock.docDelete.mockResolvedValueOnce(false);
     const res = await supertest(createApp())
       .delete("/api/safezones/zone-test")
@@ -31,5 +50,6 @@ describe("safe-zone persistence failures", () => {
 
     expect(res.status).toBe(503);
     expect(res.body.error).toContain("unavailable");
+    expect(fsMock.docDelete).toHaveBeenCalledWith("safeZones", "zone-test");
   });
 });

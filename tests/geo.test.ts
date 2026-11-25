@@ -78,6 +78,10 @@ describe("runClustering", () => {
     const clusterB = result.find((r) => r.id === "b");
     const clusterC = result.find((r) => r.id === "c");
     expect(clusterA?.clusterId).toBe(clusterB?.clusterId);
+    expect(clusterA?.clusterId).toBeDefined();
+    expect(clusterA?.clusterId).toBe("cluster-1");
+    expect(clusterC?.clusterId).toBe("cluster-2");
+    expect(clusterA?.clusterId).not.toBe(clusterC?.clusterId);
     expect(clusterA?.clusterSize).toBe(2);
     expect(clusterC?.clusterSize).toBe(1);
   });
