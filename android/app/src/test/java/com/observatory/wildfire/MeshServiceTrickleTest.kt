@@ -22,4 +22,19 @@ class MeshServiceTrickleTest {
         assertEquals(MeshService.SLEEP_INTERVAL, MeshService.nextTrickleDelayMs(true, MeshService.TRICKLE_I_MIN))
         assertEquals(MeshService.SLEEP_INTERVAL, MeshService.nextTrickleDelayMs(true, MeshService.TRICKLE_I_MAX))
     }
+
+    @Test
+    fun invalidUtf8ReencodedPlaintextExceedsTheGate() {
+        // Fix 56b: 190 KiB of 0xFF bytes passes the decoded byte gate
+        // (194560 <= MAX) but decodes to 194560 U+FFFD, which re-encode
+        // to 583680 bytes — the relay admission must reject it.
+        val invalidUtf8 = ByteArray(MeshService.MAX_PLAINTEXT_BYTES) { 0xFF.toByte() }
+        assertEquals(false, MeshService.reencodedPlaintextFits(invalidUtf8))
+    }
+
+    @Test
+    fun validUtf8AtTheCeilingFitsTheReencodedGate() {
+        val valid = ByteArray(MeshService.MAX_PLAINTEXT_BYTES) { 0x61 }
+        assertEquals(true, MeshService.reencodedPlaintextFits(valid))
+    }
 }
