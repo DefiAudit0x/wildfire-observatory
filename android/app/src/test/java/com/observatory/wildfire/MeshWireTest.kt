@@ -391,6 +391,14 @@ class MeshWireTest {
         // went unnoticed).
         assertFalse(Arrays.equals(base(36.75), base(36.80)))
 
+        val byLng = { lng: Double ->
+            MeshWire.buildSignedData(
+                byteArrayOf(1, 2, 3), byteArrayOf(4, 5), "m", "report", 0, "e", "k",
+                1000L, 7, 36.75, lng
+            )
+        }
+        assertFalse(Arrays.equals(byLng(7.45), byLng(7.50)))
+
         val byMessageId = { id: String ->
             MeshWire.buildSignedData(
                 byteArrayOf(1, 2, 3), byteArrayOf(4, 5), id, "report", 0, "e", "k",
