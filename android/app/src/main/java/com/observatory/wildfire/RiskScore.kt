@@ -57,11 +57,14 @@ object RiskScore {
         return Math.round(total).toInt().coerceIn(0, 100)
     }
 
-    /** Label buckets mirrored from the web gauge's Arabic labels. */
+    /** Label buckets aligned with the v2.16.0 five-level color bands
+     *  (Low / Moderate / High / Very High / Extreme) — Fix 53 (NOBS-4):
+     *  the old 25/50/75 thresholds disagreed with the 20-point bands. */
     fun labelAr(score: Int): String = when {
-        score >= 75 -> "خطر كارثي"
-        score >= 50 -> "خطر مرتفع"
-        score >= 25 -> "خطر متوسط"
+        score >= 80 -> "خطر كارثي"
+        score >= 60 -> "خطر مرتفع جدًا"
+        score >= 40 -> "خطر مرتفع"
+        score >= 20 -> "خطر متوسط"
         score > 0 -> "خطر منخفض"
         else -> "لا توجد مؤشرات خطر حالية"
     }

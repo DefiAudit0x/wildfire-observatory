@@ -402,7 +402,9 @@ class ObservatoryFragment : Fragment() {
         }
         val blips = ArrayList<RadarModel.Blip>()
         for (r in snap.reports) {
-            if (r.status == "rejected") continue
+            // Fix 53 (NOBS-3): resolved reports are not threats — the banner
+            // and the score already exclude them; the radar did not.
+            if (r.status == "rejected" || r.status == "resolved") continue
             if (!ProximityLogic.isFresh(r.timestampMs, now)) continue
             val kind = if (r.status == "verified") RadarModel.Kind.VERIFIED_REPORT else RadarModel.Kind.PENDING_REPORT
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, r.lat, r.lng, kind, r.locationName))
@@ -418,6 +420,9 @@ class ObservatoryFragment : Fragment() {
         for (m in snap.meshIntel) {
             val lat = m.lat ?: continue
             val lng = m.lng ?: continue
+            // Fix 53 (NOBS-3): stale mesh blips are not threats — same
+            // 30-minute window the banner uses (ProximityLogic.isFresh).
+            if (!ProximityLogic.isFresh(m.tsMs, now)) continue
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
         }
         // Fix 21 (NOBS-2): a stale wind passes null (existing path in

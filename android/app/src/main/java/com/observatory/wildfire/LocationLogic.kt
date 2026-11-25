@@ -21,6 +21,11 @@ object LocationLogic {
     // shared skew allowance now bounds how far ahead a timestamp may lie.
     const val CLOCK_SKEW_MS = 60_000L
     const val SEARCHING_AFTER_MS = 15_000L     // no fix within 15s → "searching"
+    // Fix 53 (NMAP-5): GPS speed at/above this is "moving" — the map arrow
+    // shows GPS course; below it (or with no speed) it shows the compass.
+    // A judgment call, not a measured value: GPS noise at standstill is
+    // typically below it, walking is ~1.2 m/s and up.
+    const val MIN_MOVING_SPEED_MPS = 0.5f
 
     enum class Status {
         /** Runtime permission not granted — the ONLY fix is the user granting it. */
@@ -63,7 +68,11 @@ object LocationLogic {
         /** Fix 52 (NLOC-1): true only when the provider reported an accuracy.
          *  A snapshot without one stores 0f in accuracyM, which must never be
          *  displayed as "0 m" — the UI shows "unknown" instead. */
-        val hasAccuracy: Boolean = false
+        val hasAccuracy: Boolean = false,
+        /** Fix 53 (NMAP-5): GPS speed in m/s at fix time, null when the
+         *  provider reported none. The map arrow uses it (with freshness)
+         *  to decide GPS course vs compass — see displayBearing. */
+        val speedMps: Float? = null
     )
 
     /**
@@ -146,6 +155,23 @@ object LocationLogic {
         fix != null &&
             (nowMs - fix.timeMs) >= -CLOCK_SKEW_MS && // v2.15.0: never future
             (nowMs - fix.timeMs) <= FIX_FRESH_MS
+
+    /**
+     * Fix 53 (NMAP-5): which heading the map arrow shows. GPS course wins
+     * only while the user is actually moving — a fresh fix whose speed is
+     * above MIN_MOVING_SPEED_MPS. A standing fix (speed at/below the
+     * threshold, or no speed reported) and a stale fix both fall back to
+     * the compass; with neither, there is no heading to show. The freshness
+     * half is load-bearing: a retained fix captured while moving still
+     * carries its old speed, so speed alone would keep shadowing the
+     * compass after the user stops.
+     */
+    fun displayBearing(fix: FixSnapshot?, compassDeg: Double?, nowMs: Long): Double? {
+        if (fix?.bearingDeg != null && isFreshFix(fix, nowMs) &&
+            fix.speedMps != null && fix.speedMps > MIN_MOVING_SPEED_MPS
+        ) return fix.bearingDeg
+        return compassDeg
+    }
 
     /**
      * Fix 20: true when a fix is a real recent measurement (≤ 10 min),
