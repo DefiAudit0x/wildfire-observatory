@@ -122,6 +122,25 @@ object CryptoEngine {
             else -> Action.FALLBACK_TO_SOFTWARE
         }
 
+        /** The storage outcome for the loader's OBSERVED state — the single
+         *  source of truth the loader's exits record. Pure and JVM-testable.
+         *  `legacyValid` is the decode outcome (only meaningful after the
+         *  legacy read); `keystoreUsable` is the keystore-try outcome. The
+         *  valid-legacy row ignores `keystoreUsable` — a valid legacy
+         *  identity returns before the keystore is ever tried — and ignores
+         *  `legacyCorrupt` (false on that path by construction). */
+        data class StoragePlan(val mode: StorageMode, val regenerated: Boolean)
+
+        fun planStorage(
+            legacyValid: Boolean,
+            keystoreUsable: Boolean,
+            legacyCorrupt: Boolean
+        ): StoragePlan = when {
+            legacyValid -> StoragePlan(StorageMode.LEGACY_PREFS, regenerated = false)
+            keystoreUsable -> StoragePlan(StorageMode.KEYSTORE, regenerated = legacyCorrupt)
+            else -> StoragePlan(StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
+        }
+
         /** The gate: software storage may ONLY follow a proven-unusable
          *  keystore — never a preference, never a convenience. */
         fun softwareFallbackAllowed(keystoreUsable: Boolean): Boolean = !keystoreUsable
@@ -243,7 +262,8 @@ object CryptoEngine {
                     "CryptoEngine",
                     "Identity storage: LEGACY_PREFS (upgrade continuity — v2.16.0 policy USE_LEGACY_IDENTITY)"
                 )
-                recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false)
+                val plan = IdentityKeyPolicy.planStorage(legacyValid = true, keystoreUsable = false, legacyCorrupt = false)
+                recordIdentityStorage(context, plan.mode, regenerated = plan.regenerated)
                 return KeyPair(pubKey, privKey)
             } catch (e: Exception) {
                 // v2.16.0 policy REGENERATE_AFTER_CORRUPTION: the undecodable
@@ -284,7 +304,8 @@ object CryptoEngine {
             if (ks.containsAlias(IDENTITY_KEYSTORE_ALIAS)) {
                 val priv = ks.getKey(IDENTITY_KEYSTORE_ALIAS, null) as PrivateKey
                 val pub = ks.getCertificate(IDENTITY_KEYSTORE_ALIAS).publicKey
-                recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = legacyCorrupt)
+                val plan = IdentityKeyPolicy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = legacyCorrupt)
+                recordIdentityStorage(context, plan.mode, regenerated = plan.regenerated)
                 return KeyPair(pub, priv)
             }
             val kpg = KeyPairGenerator.getInstance(EC_ALGORITHM, "AndroidKeyStore")
@@ -301,7 +322,8 @@ object CryptoEngine {
             // NOTE: some OEM/emulator keystores return null for the private
             // half of a freshly generated pair via getKeyPair(); back the
             // pair with the aliased key material directly.
-            recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = legacyCorrupt)
+            val plan = IdentityKeyPolicy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = legacyCorrupt)
+            recordIdentityStorage(context, plan.mode, regenerated = plan.regenerated)
             return KeyPair(kp.public, ks.getKey(IDENTITY_KEYSTORE_ALIAS, null) as PrivateKey)
         } catch (e: Exception) {
             android.util.Log.w("CryptoEngine", "AndroidKeyStore unavailable", e)
@@ -348,7 +370,8 @@ object CryptoEngine {
         if (!committed) identityCommitFailed = true
         check(committed) { "identity storage commit failed — refusing a memory-only identity" }
         identityCommitFailed = false
-        recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
+        val plan = IdentityKeyPolicy.planStorage(legacyValid = false, keystoreUsable = false, legacyCorrupt = legacyCorrupt)
+        recordIdentityStorage(context, plan.mode, regenerated = plan.regenerated)
         return fresh
     }
 

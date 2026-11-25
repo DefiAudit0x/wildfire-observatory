@@ -41,7 +41,23 @@ class MeshPeerRegistryTest {
         assertEquals(1000L, r.peers["ep1"]!!.lastSeen)
         r.touch("ep1", now = 2001L) // 1001ms — over the debounce
         assertEquals(2001L, r.peers["ep1"]!!.lastSeen)
+        val peersBefore = r.peers.toMap()
+        val connectingBefore = r.connectingPeers.toSet()
+        val connectedBefore = r.connectedPeers.toSet()
         r.touch("unknown-ep", now = 9_000L) // no-op, no crash
+        assertEquals(peersBefore, r.peers.toMap())
+        assertEquals(connectingBefore, r.connectingPeers.toSet())
+        assertEquals(connectedBefore, r.connectedPeers.toSet())
+    }
+
+    @Test
+    fun touchAtExactlyOneSecondDoesNotUpdate() {
+        val r = MeshPeerRegistry()
+        r.register("ep1", "KEY_A", now = 1000L)
+        // Exactly 1000 ms — the debounce is strict (`now - lastSeen > 1000`),
+        // so this touch must NOT update. An inclusive `>=` would update here.
+        r.touch("ep1", now = 2000L)
+        assertEquals(1000L, r.peers["ep1"]!!.lastSeen)
     }
 
     @Test

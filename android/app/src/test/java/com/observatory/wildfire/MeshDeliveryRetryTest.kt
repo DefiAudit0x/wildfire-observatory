@@ -35,4 +35,22 @@ class MeshDeliveryRetryTest {
             )
         )
     }
+
+    @Test
+    fun retryBlockedByForwardedMarkerAlone() {
+        val forwardedMessages = mutableMapOf("peer-1:message-1" to 123L)
+        val attemptedTargets = mutableSetOf<String>()
+        assertFalse(
+            MeshDeliveryRetry.canRetry("peer-1", "message-1", forwardedMessages, attemptedTargets)
+        )
+    }
+
+    @Test
+    fun retryBlockedByAttemptedTargetAlone() {
+        val forwardedMessages = mutableMapOf<String, Long>()
+        val attemptedTargets = mutableSetOf("peer-1")
+        assertFalse(
+            MeshDeliveryRetry.canRetry("peer-1", "message-1", forwardedMessages, attemptedTargets)
+        )
+    }
 }

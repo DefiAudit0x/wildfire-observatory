@@ -224,16 +224,35 @@ class MeshQueueTest {
     @Test
     fun admit_neverExceedsTheCap_underConcurrentAdmission() {
         val q = MeshQueue()
+        val admitted = java.util.concurrent.atomic.AtomicInteger(0)
+        val admittedIds = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
         val threads = (1..8).map { t ->
             Thread {
-                repeat(50) { i ->
-                    q.admit(msg("m-$t-$i"))
+                try {
+                    repeat(50) { i ->
+                        val id = "m-$t-$i"
+                        if (q.admit(msg(id))) {
+                            admitted.incrementAndGet()
+                            admittedIds.add(id)
+                        }
+                    }
+                } catch (e: Throwable) {
+                    failures.add(e)
                 }
             }
         }
         threads.forEach { it.start() }
         threads.forEach { it.join() }
-        org.junit.Assert.assertTrue("cap exceeded: ${q.pending.size}", q.pending.size <= 200)
+        assertTrue("admission failures: $failures", failures.isEmpty())
+        // admit() evicts-then-adds, so every call succeeds; the cap is
+        // enforced by eviction, not rejection — a drop-everything admit
+        // returns false (or adds nothing) and fails here.
+        assertEquals(400, admitted.get())
+        assertEquals(200, q.pending.size)
+        // Every survivor was admitted by some worker, and none is duplicated.
+        assertEquals(200, q.pending.map { it.messageId }.toSet().size)
+        assertTrue(q.pending.all { it.messageId in admittedIds })
     }
 
     // Fix 16 (NSVC-1): the relay-mode decision. A decrypted report must be

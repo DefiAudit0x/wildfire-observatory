@@ -21,7 +21,13 @@ class MeshInbound(
     // E2EE decryption for frames addressed to this device — wired to
     // CryptoEngine.decryptFromPeer by the service. Null = not addressed
     // to us (relayed E2EE), which must NEVER be punished.
-    private val decrypt: (CryptoEngine.SecureMessage) -> ByteArray?
+    private val decrypt: (CryptoEngine.SecureMessage) -> ByteArray?,
+    // PoW verification over the canonical challenge — wired to
+    // MeshWire.ProofOfWork.verify by the service. Injected (like
+    // verifySignature/decrypt) so tests can prove the difficulty gate
+    // runs before ANY hashing: a difficulty rejection must not call it.
+    private val verifyPow: (prefix: String, nonce: Int, difficulty: Int) -> Boolean =
+        { prefix, nonce, difficulty -> MeshWire.ProofOfWork.verify(prefix, nonce, difficulty) }
 ) {
 
     companion object {
@@ -153,7 +159,7 @@ class MeshInbound(
         // Canonical challenge framing (audit round 11): same
         // length-prefixed composition the origin used to solve.
         val powPrefix = MeshWire.ProofOfWork.wirePrefix(payload.messageId, payload.origEphemeralId, payload.nonce)
-        if (!MeshWire.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
+        if (!verifyPow(powPrefix, payload.powNonce, payload.powDifficulty)) {
             return Verdict.Rejected(RejectReason.POW, MeshReputation.REPUTATION_BAD_POW)
         }
 

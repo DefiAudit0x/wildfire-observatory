@@ -63,6 +63,45 @@ class IdentityKeyPolicyTest {
     }
 
     @Test
+    fun `storage plan covers every observed state`() {
+        // The valid-legacy row ignores both other inputs: a valid legacy
+        // identity returns before the keystore is ever tried, and
+        // legacyCorrupt is false on that path by construction.
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false),
+            policy.planStorage(legacyValid = true, keystoreUsable = true, legacyCorrupt = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false),
+            policy.planStorage(legacyValid = true, keystoreUsable = true, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false),
+            policy.planStorage(legacyValid = true, keystoreUsable = false, legacyCorrupt = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false),
+            policy.planStorage(legacyValid = true, keystoreUsable = false, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = false),
+            policy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = true),
+            policy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = false),
+            policy.planStorage(legacyValid = false, keystoreUsable = false, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = true),
+            policy.planStorage(legacyValid = false, keystoreUsable = false, legacyCorrupt = true)
+        )
+    }
+
+    @Test
     fun `storage modes map one to one from actions`() {
         assertEquals(
             CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS,
@@ -79,6 +118,58 @@ class IdentityKeyPolicyTest {
         assertEquals(
             setOf("USE_LEGACY_IDENTITY", "USE_KEYSTORE_IDENTITY", "REGENERATE_AFTER_CORRUPTION", "FALLBACK_TO_SOFTWARE"),
             CryptoEngine.IdentityKeyPolicy.Action.entries.map { it.name }.toSet()
+        )
+        // Action-to-plan correspondence: for each decide outcome, the plan
+        // the loader records for it.
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.LEGACY_PREFS, regenerated = false),
+            policy.planStorage(legacyValid = true, keystoreUsable = false, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.USE_LEGACY_IDENTITY,
+            policy.decide(legacyPresent = true, legacyValid = true, keystoreUsable = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = true),
+            policy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.REGENERATE_AFTER_CORRUPTION,
+            policy.decide(legacyPresent = true, legacyValid = false, keystoreUsable = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = true),
+            policy.planStorage(legacyValid = false, keystoreUsable = false, legacyCorrupt = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.REGENERATE_AFTER_CORRUPTION,
+            policy.decide(legacyPresent = true, legacyValid = false, keystoreUsable = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.KEYSTORE, regenerated = false),
+            policy.planStorage(legacyValid = false, keystoreUsable = true, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.USE_KEYSTORE_IDENTITY,
+            policy.decide(legacyPresent = false, legacyValid = false, keystoreUsable = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.StoragePlan(CryptoEngine.IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = false),
+            policy.planStorage(legacyValid = false, keystoreUsable = false, legacyCorrupt = false)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.FALLBACK_TO_SOFTWARE,
+            policy.decide(legacyPresent = false, legacyValid = false, keystoreUsable = false)
+        )
+        // The two missing decide combos: a stray legacyValid=true with
+        // nothing present must not change the outcome.
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.USE_KEYSTORE_IDENTITY,
+            policy.decide(legacyPresent = false, legacyValid = true, keystoreUsable = true)
+        )
+        assertEquals(
+            CryptoEngine.IdentityKeyPolicy.Action.FALLBACK_TO_SOFTWARE,
+            policy.decide(legacyPresent = false, legacyValid = true, keystoreUsable = false)
         )
     }
 }
