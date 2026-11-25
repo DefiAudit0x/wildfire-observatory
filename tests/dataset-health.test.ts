@@ -14,6 +14,7 @@ function health(over: Partial<Record<DatasetKey, Partial<DatasetHealth>>>): Reco
   for (const key of Object.keys(over) as DatasetKey[]) {
     if (over[key] && over[key]!.lastSuccess !== undefined) base[key].lastSuccess = over[key]!.lastSuccess!;
     if (over[key] && over[key]!.lastAttemptOk !== undefined) base[key].lastAttemptOk = over[key]!.lastAttemptOk!;
+    if (over[key] && over[key]!.lastFailureReason !== undefined) base[key].lastFailureReason = over[key]!.lastFailureReason!;
   }
   return base;
 }
@@ -85,11 +86,20 @@ describe("computeSyncState", () => {
   });
 
   it("reports the failure reason alongside a failed dataset", () => {
-    const { states } = computeSyncState(
-      health({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false } }),
-      NOW
-    );
+    const record = health({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false, lastFailureReason: "transport" } });
+    expect(record.satellites.lastFailureReason).toBe("transport");
+    const { states, sync } = computeSyncState(record, NOW);
     expect(states.satellites).toBe("degraded");
+    expect(sync).toBe("partial");
+    // The reason is orthogonal to derivation: every FailureReason value
+    // yields the same degraded state for the same failed input.
+    for (const reason of ["transport", "http", "parse", "schema"] as const) {
+      const { states: s } = computeSyncState(
+        health({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false, lastFailureReason: reason } }),
+        NOW
+      );
+      expect(s.satellites).toBe("degraded");
+    }
   });
 
   it("is Offline only when every dataset failed its last attempt", () => {

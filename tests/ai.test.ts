@@ -82,19 +82,25 @@ describe("POST /api/ai/guidance", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
+    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
   it("rejects requests that exceed the per-minute AI limit", async () => {
     const app = createAiApp();
-    let lastStatus = 0;
+    const statuses: number[] = [];
     for (let i = 0; i < 9; i++) {
       const res = await supertest(app)
         .post("/api/ai/guidance")
         .set("x-forwarded-for", "203.0.113.2")
         .send({ lat: 36.8, lng: 7.5, lang: "ar", wilaya: "الطارف" });
-      lastStatus = res.status;
+      statuses.push(res.status);
     }
-    expect(lastStatus).toBe(429);
+    // The configured quota is 6 requests/minute (aiLimiter max: 6): the
+    // first six succeed and the rest are rejected — a limiter that
+    // rejects everything or nothing at all must fail here.
+    expect(statuses.slice(0, 6)).toEqual([200, 200, 200, 200, 200, 200]);
+    expect(statuses.slice(6)).toEqual([429, 429, 429]);
   });
 
   it("rejects invalid location bounds", async () => {

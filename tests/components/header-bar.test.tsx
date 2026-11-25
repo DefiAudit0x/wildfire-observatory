@@ -116,4 +116,32 @@ describe("HeaderBar reachability badge (Fix 30 HDR-1)", () => {
     // The timestamp is the honest record — the fix must not remove it.
     expect(screen.getByText(/اتصال:/)).toBeTruthy();
   });
+
+  it("shows the failure reason alongside a failed dataset (transport)", () => {
+    renderHeader(
+      NOW - 30_000,
+      mkHealth({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false, lastFailureReason: "transport" } }),
+    );
+    // The reason word appears in both title surfaces (badge tooltip + breakdown span).
+    expect(screen.getAllByTitle(/فشل الشبكة/)).toHaveLength(2);
+    expect(screen.getAllByTitle(/فشل آخر محاولة/)).toHaveLength(2);
+  });
+
+  it("shows no reason word when the failed dataset carries no reason (control)", () => {
+    renderHeader(
+      NOW - 30_000,
+      mkHealth({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: false } }),
+    );
+    expect(screen.queryAllByTitle(/فشل الشبكة/)).toHaveLength(0);
+    expect(screen.getAllByTitle(/فشل آخر محاولة/)).toHaveLength(2);
+  });
+
+  it("hides a stale reason once the dataset is live again (control)", () => {
+    renderHeader(
+      NOW - 30_000,
+      mkHealth({ satellites: { lastSuccess: NOW - 30_000, lastAttemptOk: true, lastFailureReason: "transport" } }),
+    );
+    expect(screen.queryAllByTitle(/فشل الشبكة/)).toHaveLength(0);
+    expect(screen.getAllByTitle(/مباشر/)).toHaveLength(2);
+  });
 });

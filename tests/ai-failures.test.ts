@@ -36,6 +36,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("رد النموذج");
+    expect(res.body.guidance).not.toContain("لا يوجد نشاط حرائق");
   });
 
   it("falls back to local guidance when the provider throws (network error)", async () => {
@@ -49,6 +50,8 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
+    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
   it("falls back to local guidance when the provider returns a malformed response", async () => {
@@ -60,6 +63,8 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
+    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
   it("falls back to local guidance when the provider returns empty text", async () => {
@@ -71,6 +76,8 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
+    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
   it("aborts a hanging provider request and serves local guidance", async () => {
@@ -82,5 +89,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
+    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   }, 25000);
 });
