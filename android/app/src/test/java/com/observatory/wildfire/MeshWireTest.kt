@@ -463,8 +463,8 @@ class MeshWireTest {
     @Test
     fun seenMessageHashIsCanonicalAcrossSameMessage() {
         assertEquals(
-            MeshWire.seenMessageHash("m", 12),
-            MeshWire.seenMessageHash("m", 12)
+            MeshWire.seenMessageHash("m", 12, "payload"),
+            MeshWire.seenMessageHash("m", 12, "payload")
         )
     }
 
@@ -473,8 +473,14 @@ class MeshWireTest {
         // ("ab", 12) and ("ab1", 2) both concatenate to "ab12" — the naive
         // hash would collide; length-prefixing parts them (audit).
         assertNotEquals(
-            MeshWire.seenMessageHash("ab", 12),
-            MeshWire.seenMessageHash("ab1", 2)
+            MeshWire.seenMessageHash("ab", 12, "payload"),
+            MeshWire.seenMessageHash("ab1", 2, "payload")
+        )
+        // Fix 55c: per-peer copies share (messageId, nonce) with distinct
+        // payloads — the payload is part of the key, so they hash apart.
+        assertNotEquals(
+            MeshWire.seenMessageHash("ab", 12, "payload-A"),
+            MeshWire.seenMessageHash("ab", 12, "payload-B")
         )
     }
 }

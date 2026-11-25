@@ -259,6 +259,21 @@ class MeshInboundTest {
         assertEquals(2, inb.seenMessageHashes.size)
     }
 
+    // ---- Fix 55c: per-peer copies share (messageId, nonce) ----
+
+    @Test
+    fun sameNonceDifferentPayloadHashesApart() {
+        // Per-peer encrypted copies share (messageId, nonce) but carry
+        // distinct ciphertexts — an undecryptable copy must not poison the
+        // cache for the intended copy.
+        val inb = inbound()
+        val first = canonicalB64("ciphertext-for-peer-A".toByteArray())
+        val second = canonicalB64("ciphertext-for-peer-B".toByteArray())
+        assertTrue(evaluate(frame(nonce = 7, payloadB64 = first), inbound = inb) is MeshInbound.Verdict.Accepted)
+        assertTrue(evaluate(frame(nonce = 7, payloadB64 = second), inbound = inb) is MeshInbound.Verdict.Accepted)
+        assertEquals(2, inb.seenMessageHashes.size)
+    }
+
     @Test
     fun seenCapEvictsOldestEntry() {
         val inb = MeshInbound({ true }, { null })
