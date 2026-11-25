@@ -80,8 +80,10 @@ class MeshInboundTest {
 
     private fun inbound(
         verify: (CryptoEngine.SecureMessage) -> Boolean = { true },
-        decrypt: (CryptoEngine.SecureMessage) -> ByteArray? = { "decrypted-body".toByteArray() }
-    ): MeshInbound = MeshInbound(verify, decrypt)
+        decrypt: (CryptoEngine.SecureMessage) -> ByteArray? = { "decrypted-body".toByteArray() },
+        powVerify: (String, Int, Int) -> Boolean =
+            { prefix, nonce, difficulty -> MeshWire.ProofOfWork.verify(prefix, nonce, difficulty) }
+    ): MeshInbound = MeshInbound(verify, decrypt, powVerify)
 
     private fun evaluate(
         f: MeshWire.Frame,
@@ -158,17 +160,34 @@ class MeshInboundTest {
     @Test
     fun outOfBandDifficultyRejectedBeforeAnyHashing() {
         // A "difficulty 999999" frame is dropped, not computed.
-        val verdict = evaluate(frame(powDifficulty = 999999, powNonce = 0))
+        var powVerifyCalled = false
+        val verdict = evaluate(
+            frame(powDifficulty = 999999, powNonce = 0),
+            inbound = inbound(powVerify = { _, _, _ -> powVerifyCalled = true; true })
+        )
         assertEquals(MeshInbound.RejectReason.DIFFICULTY, (verdict as MeshInbound.Verdict.Rejected).reason)
         assertEquals(MeshReputation.REPUTATION_BAD_DIFFICULTY, verdict.penalty)
+        assertFalse(powVerifyCalled)
     }
 
     @Test
     fun failedProofOfWorkRejectedWithBadPowPenalty() {
         val bad = failingNonce("msg-1", "EPH_1")
-        val verdict = evaluate(frame(powNonce = bad))
+        // Positive control for the difficulty tests' recording lambdas: this
+        // lambda delegates to the real verifier, so assertTrue pins that the
+        // seam actually observes the call — without it, the assertFalse cases
+        // above could pass because the lambda was never wired.
+        var powVerifyCalled = false
+        val verdict = evaluate(
+            frame(powNonce = bad),
+            inbound = inbound(powVerify = { prefix, nonce, difficulty ->
+                powVerifyCalled = true
+                MeshWire.ProofOfWork.verify(prefix, nonce, difficulty)
+            })
+        )
         assertEquals(MeshInbound.RejectReason.POW, (verdict as MeshInbound.Verdict.Rejected).reason)
         assertEquals(MeshReputation.REPUTATION_BAD_POW, verdict.penalty)
+        assertTrue(powVerifyCalled)
     }
 
     @Test
@@ -188,8 +207,13 @@ class MeshInboundTest {
 
     @Test
     fun wrongDifficultyDiesBeforePowVerification() {
-        val verdict = evaluate(frame(powDifficulty = difficulty + 1, powNonce = 12345))
+        var powVerifyCalled = false
+        val verdict = evaluate(
+            frame(powDifficulty = difficulty + 1, powNonce = 12345),
+            inbound = inbound(powVerify = { _, _, _ -> powVerifyCalled = true; true })
+        )
         assertEquals(MeshInbound.RejectReason.DIFFICULTY, (verdict as MeshInbound.Verdict.Rejected).reason)
+        assertFalse(powVerifyCalled)
     }
 
     @Test
