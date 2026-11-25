@@ -55,6 +55,7 @@ describe("GET /api/geo/reverse (W-H6: the only geocoding egress)", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("nominatim.openstreetmap.org/reverse");
     expect(String(url)).toContain("lat=36.9");
+    expect(String(url)).toContain("lon=7.75");
     expect((init as any).headers["User-Agent"]).toContain("WildfireObservatory/");
   });
 
