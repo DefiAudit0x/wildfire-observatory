@@ -107,6 +107,20 @@ describe("deriveWilayaStatuses (W-M8 freshness)", () => {
     expect(rows.find((w) => w.nameFr.includes("Annaba"))!.severity).toBe("safe");
   });
 
+  it("a FRESH sub-80-confidence hotspot does NOT lift safe→low", () => {
+    const fresh = { wilaya: "El Tarf", confidence: 79, scanTime: "2026-08-01T09:45:00Z" };
+    const rows = deriveWilayaStatuses(BASE, [], [fresh], NOW);
+    expect(rows.find((w) => w.nameFr.includes("El Tarf"))!.severity).toBe("safe");
+  });
+
+  it("the 80-confidence boundary is exact; absent confidence never lifts", () => {
+    const atBoundary = { wilaya: "El Tarf", confidence: 80, scanTime: "2026-08-01T09:45:00Z" };
+    const noConfidence = { wilaya: "Annaba", scanTime: "2026-08-01T09:45:00Z" };
+    const rows = deriveWilayaStatuses(BASE, [], [atBoundary, noConfidence], NOW);
+    expect(rows.find((w) => w.nameFr.includes("El Tarf"))!.severity).toBe("low");
+    expect(rows.find((w) => w.nameFr.includes("Annaba"))!.severity).toBe("safe");
+  });
+
   it("unparseable timestamps are never treated as incidents", () => {
     const rows = deriveWilayaStatuses(
       BASE,
