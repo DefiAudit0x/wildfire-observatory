@@ -126,6 +126,16 @@ describe("confirmation ledger — cache consistency + Sybil-honest status", () =
     const before = await getReportsDbResult();
     expect(before).toMatchObject({ status: "ok", reports: [{ consensusCount: 1 }] });
 
+    // Make the backing value distinguishable AFTER priming the cache: if
+    // the failed transaction wrongly invalidated the cache, the next read
+    // would refetch and return 2 instead of the cached 1.
+    state.reports.set("rep-cache-failure", {
+      id: "rep-cache-failure",
+      timestamp: "2026-08-17T00:00:00.000Z",
+      consensusCount: 2,
+      status: "pending",
+    });
+
     state.failTransaction = true;
     await expect(confirmReportWithPrincipal("rep-cache-failure", "voter-failure"))
       .resolves.toEqual({ status: "error" });
