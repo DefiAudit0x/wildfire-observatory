@@ -1,8 +1,10 @@
 package com.observatory.wildfire
 
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.TypedValue
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -112,6 +114,29 @@ class ObservatoryFragment : Fragment() {
         riskDetailText = view.findViewById(R.id.risk_detail)
         riskBar = view.findViewById(R.id.risk_bar)
         riskBarMarker = view.findViewById(R.id.risk_bar_marker)
+        // Fix 57 (NRESBG-1): the track is a programmatic 5-stop gradient
+        // single-sourced from RiskScore.bandColor — drawable XML cannot
+        // express 5 stops (start/center/end only), and the old drawable
+        // defined 3 stops matching neither the bands nor the code colors.
+        // GradientDrawable has no public positions API, so the 5 band
+        // colors are evenly distributed (pure at 0/25/50/75/100%) rather
+        // than at the band centers (10/30/50/70/90%) — same colors, same
+        // order, only the stop positions differ. Corner radius matches
+        // the old drawable's 99dp.
+        val trackBackground = GradientDrawable(
+            GradientDrawable.Orientation.LEFT_TO_RIGHT,
+            intArrayOf(
+                RiskScore.bandColor(10),
+                RiskScore.bandColor(30),
+                RiskScore.bandColor(50),
+                RiskScore.bandColor(70),
+                RiskScore.bandColor(90)
+            )
+        )
+        trackBackground.cornerRadius = TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, 99f, resources.displayMetrics
+        )
+        riskBar?.background = trackBackground
         weatherText = view.findViewById(R.id.weather_line)
         banner = view.findViewById(R.id.proximity_banner)
         bannerText = view.findViewById(R.id.proximity_text)
@@ -361,15 +386,8 @@ class ObservatoryFragment : Fragment() {
         // v2.1.0: band the number's color — a calm 6/100 must never scream red.
         // v2.16.0: bands follow the brand book's 5-level fire danger scale
         // (Low / Moderate / High / Very High / Extreme).
-        riskScoreText?.setTextColor(
-            when {
-                score < 20 -> 0xFFC5D9BF.toInt() // 1 — Low (pale sage)
-                score < 40 -> 0xFF8DB63C.toInt() // 2 — Moderate (lime green)
-                score < 60 -> 0xFFFF6B35.toInt() // 3 — High (brand orange)
-                score < 80 -> 0xFFF04E1F.toInt() // 4 — Very High (burnt orange)
-                else -> 0xFFD21034.toInt()       // 5 — Extreme (brand red)
-            }
-        )
+        // Fix 57 (NRESBG-1): single-sourced from RiskScore.bandColor.
+        riskScoreText?.setTextColor(RiskScore.bandColor(score))
         riskLabelText?.text = RiskScore.labelAr(score)
         riskDetailText?.text = getString(
             R.string.risk_detail_fmt,

@@ -68,4 +68,17 @@ object RiskScore {
         score > 0 -> "خطر منخفض"
         else -> "لا توجد مؤشرات خطر حالية"
     }
+
+    /** The single source for the 5 band colors (Fix 57, NRESBG-1) —
+     *  the same bands labelAr uses. The observatory track gradient and
+     *  the score text both read from here, so the drawable and the code
+     *  can never disagree again (the old bg_risk_track.xml defined 3
+     *  stops that matched neither the bands nor the code colors). */
+    fun bandColor(score: Int): Int = when {
+        score < 20 -> 0xFFC5D9BF.toInt() // 1 — Low (pale sage)
+        score < 40 -> 0xFF8DB63C.toInt() // 2 — Moderate (lime green)
+        score < 60 -> 0xFFFF6B35.toInt() // 3 — High (brand orange)
+        score < 80 -> 0xFFF04E1F.toInt() // 4 — Very High (burnt orange)
+        else -> 0xFFD21034.toInt()       // 5 — Extreme (brand red)
+    }
 }
