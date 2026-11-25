@@ -274,6 +274,36 @@ class MeshInboundTest {
         assertEquals(2, inb.seenMessageHashes.size)
     }
 
+    // ---- Fix 55d: per-triple variant budget ----
+
+    @Test
+    fun variantBudgetRejectsBeyondMaxVariantsPerTriple() {
+        // One PoW solve must not admit unbounded payload variants — the
+        // 17th distinct payload under one triple is rejected as REPLAY
+        // and is not cached.
+        val inb = inbound()
+        repeat(MeshInbound.MAX_VARIANTS_PER_TRIPLE) { i ->
+            val payload = canonicalB64("ciphertext-variant-$i".toByteArray())
+            assertTrue(evaluate(frame(nonce = 7, payloadB64 = payload), inbound = inb) is MeshInbound.Verdict.Accepted)
+        }
+        val extra = canonicalB64("ciphertext-variant-extra".toByteArray())
+        val verdict = evaluate(frame(nonce = 7, payloadB64 = extra), inbound = inb)
+        assertTrue(verdict is MeshInbound.Verdict.Rejected)
+        assertEquals(MeshInbound.RejectReason.REPLAY, (verdict as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(MeshInbound.MAX_VARIANTS_PER_TRIPLE, inb.seenMessageHashes.size)
+    }
+
+    @Test
+    fun sweepReplayWindowExpiresTripleCounts() {
+        val inb = inbound()
+        val now = System.currentTimeMillis()
+        inb.seenTripleCounts["triple-old"] = MeshInbound.TripleAdmission(3, now - 1_000_000L)
+        inb.seenTripleCounts["triple-fresh"] = MeshInbound.TripleAdmission(2, now)
+        inb.sweepReplayWindow(now - 500_000L)
+        assertFalse(inb.seenTripleCounts.containsKey("triple-old"))
+        assertTrue(inb.seenTripleCounts.containsKey("triple-fresh"))
+    }
+
     @Test
     fun seenCapEvictsOldestEntry() {
         val inb = MeshInbound({ true }, { null })

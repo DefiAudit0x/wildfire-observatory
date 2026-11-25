@@ -483,4 +483,22 @@ class MeshWireTest {
             MeshWire.seenMessageHash("ab", 12, "payload-B")
         )
     }
+
+    // ---------- Fix 55d: per-triple hash ----------
+
+    @Test
+    fun seenTripleHashIsCanonicalAcrossSameTriple() {
+        assertEquals(
+            MeshWire.seenTripleHash("m", 12),
+            MeshWire.seenTripleHash("m", 12)
+        )
+    }
+
+    @Test
+    fun seenTripleHashIsAmbiguityFree() {
+        assertNotEquals(
+            MeshWire.seenTripleHash("ab", 12),
+            MeshWire.seenTripleHash("ab1", 2)
+        )
+    }
 }
