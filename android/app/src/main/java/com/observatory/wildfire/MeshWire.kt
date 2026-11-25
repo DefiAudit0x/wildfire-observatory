@@ -433,9 +433,14 @@ object MeshWire {
          * that concatenates identically. Length-prefixing removes the
          * ambiguity; every hop constructs the challenge with this helper so
          * solver and verifier always agree.
+         *
+         * Fix 55 (NIN-1): the anti-replay nonce is bound into the challenge
+         * too — without it one solved PoW admitted arbitrarily many signed
+         * nonce variants of the same message. The nonce is length-prefixed
+         * like the other fields (same style as [seenMessageHash]).
          */
-        fun wirePrefix(messageId: String, ephemeralId: String): String =
-            "${messageId.length}:$messageId:${ephemeralId.length}:$ephemeralId"
+        fun wirePrefix(messageId: String, ephemeralId: String, nonce: Int): String =
+            "${messageId.length}:$messageId:${ephemeralId.length}:$ephemeralId:${nonce.toString().length}:$nonce"
 
         fun target(difficulty: Int): Long {
             // Audit: previously coerced silently via coerceIn — a caller

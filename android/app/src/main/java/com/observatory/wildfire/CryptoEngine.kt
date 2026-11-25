@@ -281,8 +281,9 @@ object CryptoEngine {
         // (IdentityKeyPolicy.softwareFallbackAllowed) demands exactly that.
         // SharedPreferences with a loud warning — plaintext key material is
         // a last resort, not the production default. (Legacy keys were
-        // already consumed above; only a missing-clean install reaches this
-        // point, so a fresh pair is generated.) commit() instead of apply()
+        // already consumed above when usable; a corrupt legacy pair reaches
+        // this point too — its material is copied to forensic keys below
+        // before the fresh pair overwrites the primary keys.) commit() instead of apply()
         // (audit): a process death between the async apply() flush and the
         // write would silently drop a freshly generated identity, i.e. the
         // device would rotate its identity by accident. This write is
@@ -291,10 +292,23 @@ object CryptoEngine {
             "software identity fallback reached without a failed keystore path — policy gate violated"
         }
         val fresh = generateECKeyPair()
-        prefs.edit()
+        val edit = prefs.edit()
+        if (legacyCorrupt) {
+            // Fix 55 (NCRYPTO-1): the corrupt legacy material is KEPT for
+            // forensics (v2.16.0 policy REGENERATE_AFTER_CORRUPTION) — copy
+            // it to forensic keys BEFORE the fresh pair overwrites the
+            // primary keys. These keys are write-only retention; nothing
+            // ever reads them.
+            edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
+                .putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
+        }
+        val committed = edit
             .putString(IDENTITY_PUB_KEY, Base64.encodeToString(fresh.public.encoded, Base64.NO_WRAP))
             .putString(IDENTITY_PRIV_KEY, Base64.encodeToString(fresh.private.encoded, Base64.NO_WRAP))
             .commit()
+        // Fix 55 (NCRYPTO-2): fail closed — a failed commit must not record
+        // a memory-only identity as a stable SOFTWARE_FALLBACK.
+        check(committed) { "identity storage commit failed — refusing a memory-only identity" }
         recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
         return fresh
     }

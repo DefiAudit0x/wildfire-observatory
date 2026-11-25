@@ -34,15 +34,17 @@ class MeshInbound(
         const val TYPE_REPORT = "report"
         const val TYPE_ECHO = "echo"
 
-        // Seen-hash cache bound (audit): the 5-minute TTL limits LIFETIME but
-        // not SIZE — an attacker flooding unique garbage could grow the map
-        // unbounded in the window. The cap evicts the OLDEST entry as soon as
-        // it is exceeded (see evaluate / the tick's safety net).
+        // Seen-hash cache bound (audit): the 10-minute TTL (MESSAGE_TTL_MS;
+        // Fix 55: was "5-minute" — that figure was FORWARDED_MARKER_TTL_MS)
+        // limits LIFETIME but not SIZE — an attacker flooding unique garbage
+        // could grow the map unbounded in the window. The cap evicts the
+        // OLDEST entry as soon as it is exceeded (see evaluate / the tick's
+        // safety net).
         //
         // Threat budget (audit round 12 — why 4096): entries are only added
         // AFTER full authentication (PoW + ECDSA), so the cache grows at the
-        // rate of VALID traffic. 4096 spans ~13.6 verified messages/second
-        // across the whole 5-minute window — far beyond the capacity of a
+        // rate of VALID traffic. 4096 spans ~6.8 verified messages/second
+        // across the whole 10-minute window — far beyond the capacity of a
         // battery-powered P2P cluster — so eviction under normal operation
         // never shrinks the effective replay window. The residual trade-off:
         // an authenticated flooding sender can truncate the replay window by
@@ -128,7 +130,7 @@ class MeshInbound(
         }
         // Canonical challenge framing (audit round 11): same
         // length-prefixed composition the origin used to solve.
-        val powPrefix = MeshWire.ProofOfWork.wirePrefix(payload.messageId, payload.origEphemeralId)
+        val powPrefix = MeshWire.ProofOfWork.wirePrefix(payload.messageId, payload.origEphemeralId, payload.nonce)
         if (!MeshWire.ProofOfWork.verify(powPrefix, payload.powNonce, payload.powDifficulty)) {
             return Verdict.Rejected(RejectReason.POW, MeshReputation.REPUTATION_BAD_POW)
         }

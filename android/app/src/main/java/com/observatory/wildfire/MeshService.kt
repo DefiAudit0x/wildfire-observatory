@@ -73,6 +73,14 @@ class MeshService : Service() {
         const val TRICKLE_I_MAX = 30000L
         const val TRICKLE_K = 3       // redundancy constant
 
+        /**
+         * Fix 55 (NSVC-3): pure delay choice for the trickle timer — the
+         * backed-off interval is the delay while awake, not TRICKLE_I_MIN.
+         * Pure so it is JVM-testable (the service itself is Android-only).
+         */
+        fun nextTrickleDelayMs(isSleeping: Boolean, trickleInterval: Long): Long =
+            if (isSleeping) SLEEP_INTERVAL else trickleInterval
+
         const val EPHEMERAL_ROTATION_MS = 60 * 60 * 1000L
         const val SLEEP_IDLE_THRESHOLD = 120_000L  // 2 min no activity → sleep mode
         const val SLEEP_INTERVAL = 10_000L         // scan every 10s in sleep
@@ -396,10 +404,14 @@ class MeshService : Service() {
                     return
                 }
             // TOFU device record (audit round 12): reputation is anchored on
-            // the KEY (stable identity), so a device that re-announces under
-            // a new endpointId keeps its history, and a device that vanishes
-            // stops accumulating state. Records are evicted only by the
-            // bounded cap (MAX_DEVICE_RECORDS, least-recently-seen).
+            // the ADVERTISED (ephemeral) key — Fix 55 (NSVC-4) corrects the
+            // old "stable identity" claim: every hourly rotation
+            // (EPHEMERAL_ROTATION_MS) mints a fresh key and the score
+            // resets to the initial value. Re-keying reputation to the
+            // persistent identity key would put it on the wire, contradicting
+            // the audit-round-11 privacy design (the identity key signs
+            // nothing). Records are evicted only by the bounded cap
+            // (MAX_DEVICE_RECORDS, least-recently-seen).
             reputation.sight(advertisedKey, System.currentTimeMillis())
             if (reputation.isAdmitted(advertisedKey)) {
                 // Upsert the transport handle: a re-announcement (fresh
@@ -769,8 +781,12 @@ class MeshService : Service() {
         return try {
             val snapshot = CryptoEngine.getEphemeralSnapshot()
             val messageId = payload.messageId
+            // Fix 55 (NIN-1): the nonce is picked BEFORE solving — the PoW
+            // challenge binds (messageId, ephemeralId, nonce), so the solve
+            // must see the nonce the frame will carry.
+            val nonce = protocolRandom.nextInt()
             val powNonce = MeshWire.ProofOfWork.solve(
-                MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId),
+                MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId, nonce),
                 PO_W_DIFFICULTY
             ) ?: run {
                 Log.w(TAG, "Re-encrypted relay: PoW budget exhausted; falling back to verbatim relay")
@@ -792,7 +808,7 @@ class MeshService : Service() {
                 origPublicKey = snapshot.publicKeyB64,
                 timestamp = System.currentTimeMillis(),
                 signature = "",
-                nonce = protocolRandom.nextInt(),
+                nonce = nonce,
                 lat = payload.lat,
                 lng = payload.lng,
                 powNonce = powNonce,
@@ -839,7 +855,7 @@ class MeshService : Service() {
         // Lightweight Proof-of-Work (anti-spam) — solved here, transmitted in
         // the payload, verified at every receiving hop. Never enqueue a frame
         // that peers are guaranteed to reject if the local solve budget fails.
-        val powPrefix = MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId)
+        val powPrefix = MeshWire.ProofOfWork.wirePrefix(messageId, snapshot.ephemeralId, nonce)
         val powNonce = MeshWire.ProofOfWork.solve(powPrefix, PO_W_DIFFICULTY) ?: run {
             Log.w(TAG, "Proof-of-work budget exhausted; dropping frame locally")
             return false
@@ -897,7 +913,7 @@ class MeshService : Service() {
      */
     private fun scheduleNextTrickle() {
         val timer = trickleTimer ?: return
-        val delay = if (isSleeping) SLEEP_INTERVAL else TRICKLE_I_MIN
+        val delay = nextTrickleDelayMs(isSleeping, trickleInterval)
         val task = object : TimerTask() {
             override fun run() {
                 try {
