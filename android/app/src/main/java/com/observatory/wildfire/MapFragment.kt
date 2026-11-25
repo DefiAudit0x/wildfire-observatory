@@ -118,7 +118,7 @@ class MapFragment : Fragment() {
             (nowMs - lastUserFixMs) <= LocationLogic.FIX_FRESH_MS
     // F11: recenter discipline. The old onFix called animateTo on EVERY
     // fix, fighting the user's free pan. Recentering now happens only on
-    // the first fix or when the recenter button is pressed; follow mode
+    // the first fresh fix or when the recenter button is pressed; follow mode
     // rides every fresh fix. A manual pan is never undone by an incoming fix.
     private var firstFixSeen = false
 
@@ -340,10 +340,13 @@ class MapFragment : Fragment() {
             mv.controller.animateTo(point)
         }
         // F11 residual: no fix was ever seen (cold start) → first jump still
-        // applies even without follow; leaving follow ON afterwards.
-        if (!firstFixSeen) {
+        // applies on the first FRESH fix even without follow; leaving follow ON afterwards.
+        // Fix 53b: the one-shot must not be spent by a stale startup fix —
+        // gating on fresh keeps the initial recenter for the first fix that
+        // can actually position the map (CodeRabbit 4688548974).
+        if (!firstFixSeen && fresh) {
             firstFixSeen = true
-            if (!followMode && fresh) mv.controller.animateTo(point)
+            if (!followMode) mv.controller.animateTo(point)
         }
         // Status line now names the wilaya — offline-safe nearest-centroid.
         // Fix 20 (NMAP-3): a stale fix is labelled stale, never presented
