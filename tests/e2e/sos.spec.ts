@@ -23,7 +23,15 @@ test.describe("SOS emergency flow", () => {
     expect(created.id).toMatch(/^sos-/);
 
     const listing = await request.get(
-      "http://127.0.0.1:8080/v1/projects/demo-wildfire-observatory-e2e/databases/(default)/documents/trappedSos"
+      "http://127.0.0.1:8080/v1/projects/demo-wildfire-observatory-e2e/databases/(default)/documents/trappedSos",
+      // Fix 79b: firestore.rules denies ALL client reads of trappedSos
+      // ("allow read, write: if false" — server only, Admin SDK bypasses
+      // rules). The emulator enforces those rules on REST calls, so an
+      // unauthenticated listing is 403 PERMISSION_DENIED (proven in CI
+      // attempt 3: listing.ok() false, trace shows 403 Forbidden). The
+      // emulator's documented owner token bypasses the rules — emulator
+      // only, never production; the server path is unchanged.
+      { headers: { Authorization: "Bearer owner" } }
     );
     expect(listing.ok()).toBeTruthy();
     const docs = (await listing.json()).documents ?? [];
