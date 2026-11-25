@@ -81,4 +81,57 @@ class ProximityLogicTest {
         val km = ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(ProximityLogic.ThreatPin(Double.NaN, Double.NaN, now - 1_000)), now)
         org.junit.Assert.assertNull(km)
     }
+
+    // Fix 54 (NPROX-1): out-of-range coordinates wrap through the pure-trig
+    // haversine to ~0 km — a lat-360 pin must be rejected, not CRITICAL.
+    // Each variant below wraps to the user's own position on old code
+    // (dLat or dLng of exactly ±360°), so the test fails without the fix.
+    @Test
+    fun evaluate_rejectsOutOfRangeCoordinates() {
+        val fresh = now - 1_000
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(360.0, 0.0, fresh)), now))
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(-360.0, 0.0, fresh)), now))
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(0.0, 360.0, fresh)), now))
+        assertNull(ProximityLogic.evaluate(36.8, 7.6, listOf(ProximityLogic.ThreatPin(396.8, 7.6, fresh)), now))
+        assertNull(ProximityLogic.evaluate(36.8, 7.6, listOf(ProximityLogic.ThreatPin(36.8, 367.6, fresh)), now))
+        // Mixed list: the wrapped pin must not mask the real 8 km WATCH pin.
+        val (lat8, lng8) = GeoMath.destinationPoint(0.0, 0.0, 0.0, 8000.0)
+        val mixed = ProximityLogic.evaluate(
+            0.0, 0.0,
+            listOf(
+                ProximityLogic.ThreatPin(360.0, 0.0, fresh),
+                ProximityLogic.ThreatPin(lat8, lng8, fresh)
+            ),
+            now
+        )
+        assertEquals(ProximityLogic.Level.WATCH, mixed)
+    }
+
+    @Test
+    fun evaluateAndNearestFreshKm_agreeOnOutOfRangePins() {
+        val pins = listOf(ProximityLogic.ThreatPin(360.0, 0.0, now - 1_000))
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, pins, now))
+        assertNull(ProximityLogic.nearestFreshKm(0.0, 0.0, pins, now))
+    }
+
+    @Test
+    fun evaluate_rejectsNonFiniteCoordinates() {
+        val fresh = now - 1_000
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(Double.NaN, 0.0, fresh)), now))
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(Double.POSITIVE_INFINITY, 0.0, fresh)), now))
+        assertNull(ProximityLogic.evaluate(0.0, 0.0, listOf(ProximityLogic.ThreatPin(0.0, Double.NaN, fresh)), now))
+    }
+
+    // Fix 54 (follow-up (6)): the future-skew allowance is 2 minutes, same
+    // as the web (isFreshThreatTimestamp) and TelemetryCamera.
+    @Test
+    fun isFresh_allowsUpToTwoMinuteFutureSkew() {
+        assertEquals(true, ProximityLogic.isFresh(now + 61_000, now))
+        assertEquals(true, ProximityLogic.isFresh(now + 119_000, now))
+    }
+
+    @Test
+    fun isFresh_rejectsBeyondTwoMinuteFutureSkew() {
+        assertEquals(false, ProximityLogic.isFresh(now + 121_000, now))
+    }
 }

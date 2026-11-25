@@ -405,13 +405,16 @@ class ObservatoryFragment : Fragment() {
             // Fix 53 (NOBS-3): resolved reports are not threats — the banner
             // and the score already exclude them; the radar did not.
             if (r.status == "rejected" || r.status == "resolved") continue
-            if (!ProximityLogic.isFresh(r.timestampMs, now)) continue
+            // Fix 54b: same coordinate check as the banner — an out-of-range
+            // report must not render while the banner ignores it (CodeRabbit on PR #185).
+            if (!ProximityLogic.isFresh(r.timestampMs, now) || !ProximityLogic.isValidCoordinates(r.lat, r.lng)) continue
             val kind = if (r.status == "verified") RadarModel.Kind.VERIFIED_REPORT else RadarModel.Kind.PENDING_REPORT
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, r.lat, r.lng, kind, r.locationName))
         }
         for (h in snap.hotspots) {
             if (h.confidence < 70) continue
-            if (!ProximityLogic.isFresh(h.scanTimeMs, now)) continue
+            // Fix 54b: same coordinate check as the report loop (CodeRabbit on PR #185).
+            if (!ProximityLogic.isFresh(h.scanTimeMs, now) || !ProximityLogic.isValidCoordinates(h.lat, h.lng)) continue
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, h.lat, h.lng, RadarModel.Kind.HOTSPOT, h.satellite))
         }
         for (s in snap.safezones) {
@@ -422,7 +425,10 @@ class ObservatoryFragment : Fragment() {
             val lng = m.lng ?: continue
             // Fix 53 (NOBS-3): stale mesh blips are not threats — same
             // 30-minute window the banner uses (ProximityLogic.isFresh).
-            if (!ProximityLogic.isFresh(m.tsMs, now)) continue
+            // Fix 54 (NPROX-1): mesh pins get the same coordinate check as
+            // the banner — a lat-360 pin must not render while the banner
+            // ignores it (Fix 53 follow-up (4)).
+            if (!ProximityLogic.isFresh(m.tsMs, now) || !ProximityLogic.isValidCoordinates(lat, lng)) continue
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
         }
         // Fix 21 (NOBS-2): a stale wind passes null (existing path in
