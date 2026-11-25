@@ -198,7 +198,9 @@ class TeamFragment : Fragment() {
         } else {
             app.repository.broadcastMeshIntel("report", "⚠ بدون تحديد GPS — $text", null, null)
         }
-        chatInput?.setText("")
+        // Fix 57 (NTEAM-1): keep the typed text on failure — the only copy
+        // of it is the input, and the toast already reports the failure.
+        if (ok) chatInput?.setText("")
         Toast.makeText(
             ctx,
             if (ok) R.string.mesh_queued_local else R.string.mesh_unavailable_toast,

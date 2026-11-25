@@ -69,4 +69,35 @@ class RiskScoreTest {
         assertEquals("خطر كارثي", RiskScore.labelAr(80))
         assertEquals("خطر كارثي", RiskScore.labelAr(100))
     }
+
+    @Test
+    fun `band colors are sage below 20`() {
+        assertEquals(0xFFC5D9BF.toInt(), RiskScore.bandColor(0))
+        assertEquals(0xFFC5D9BF.toInt(), RiskScore.bandColor(10))
+        assertEquals(0xFFC5D9BF.toInt(), RiskScore.bandColor(19))
+    }
+
+    @Test
+    fun `band colors are lime from 20 to 39`() {
+        assertEquals(0xFF8DB63C.toInt(), RiskScore.bandColor(20))
+        assertEquals(0xFF8DB63C.toInt(), RiskScore.bandColor(30))
+        assertEquals(0xFF8DB63C.toInt(), RiskScore.bandColor(39))
+    }
+
+    @Test
+    fun `band colors are orange from 40 to 59`() {
+        assertEquals(0xFFFF6B35.toInt(), RiskScore.bandColor(40))
+        assertEquals(0xFFFF6B35.toInt(), RiskScore.bandColor(50))
+        assertEquals(0xFFFF6B35.toInt(), RiskScore.bandColor(59))
+    }
+
+    @Test
+    fun `band colors are burnt orange then red above 60`() {
+        assertEquals(0xFFF04E1F.toInt(), RiskScore.bandColor(60))
+        assertEquals(0xFFF04E1F.toInt(), RiskScore.bandColor(70))
+        assertEquals(0xFFF04E1F.toInt(), RiskScore.bandColor(79))
+        assertEquals(0xFFD21034.toInt(), RiskScore.bandColor(80))
+        assertEquals(0xFFD21034.toInt(), RiskScore.bandColor(90))
+        assertEquals(0xFFD21034.toInt(), RiskScore.bandColor(100))
+    }
 }

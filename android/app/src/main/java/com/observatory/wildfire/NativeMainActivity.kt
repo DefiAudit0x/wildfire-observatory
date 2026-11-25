@@ -76,6 +76,16 @@ class NativeMainActivity : AppCompatActivity() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 listOf(Manifest.permission.POST_NOTIFICATIONS)
             } else emptyList()
+
+        /** Stage 2 of the permission ladder: ALL requested mesh
+         *  permissions must be granted (Fix 57, NACT-1). The old check
+         *  read `grantResults[0]` only, so a mixed result with the first
+         *  permission granted started MeshService while another transport
+         *  (e.g. BLUETOOTH_ADVERTISE) was refused — discovery then failed
+         *  silently. A partial grant now reports the mesh unavailable. */
+        fun allGranted(results: IntArray): Boolean =
+            results.isNotEmpty() &&
+                results.all { it == PackageManager.PERMISSION_GRANTED }
     }
 
     private var meshService: MeshService? = null
@@ -228,6 +238,15 @@ class NativeMainActivity : AppCompatActivity() {
                     permissionStage = 0
                     requestMeshPermissionsIfNeeded()
                 }
+                // Fix 57 (NACT-2): back/outside cancel takes the same
+                // continuation as Later — without it the ladder stalls and
+                // mesh initialization never starts on this activity
+                // instance. onCancel (not onDismiss) fires ONLY on
+                // back/outside cancel, so button paths are not duplicated.
+                .setOnCancelListener {
+                    permissionStage = 0
+                    requestMeshPermissionsIfNeeded()
+                }
                 .show()
         } else {
             onLocationPermissionOutcome(granted = true)
@@ -244,10 +263,7 @@ class NativeMainActivity : AppCompatActivity() {
         // Stage 1 = location, stage 2 = mesh, stage 3 = notifications.
         when (permissionStage) {
             1 -> onLocationPermissionOutcome(granted = anyLocationGranted(permissions, grantResults))
-            2 -> onMeshPermissionOutcome(
-                granted = grantResults.isNotEmpty() &&
-                    grantResults[0] == PackageManager.PERMISSION_GRANTED
-            )
+            2 -> onMeshPermissionOutcome(granted = allGranted(grantResults))
             else -> Unit
         }
     }

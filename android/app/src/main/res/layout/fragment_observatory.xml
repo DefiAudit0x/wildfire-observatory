@@ -355,8 +355,7 @@
                     android:id="@+id/risk_bar"
                     android:layout_width="match_parent"
                     android:layout_height="14dp"
-                    android:layout_marginTop="12dp"
-                    android:background="@drawable/bg_risk_track">
+                    android:layout_marginTop="12dp">
 
                     <View
                         android:id="@+id/risk_bar_marker"
