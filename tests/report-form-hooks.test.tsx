@@ -638,6 +638,40 @@ describe("useOfflineDraftQueue", () => {
     });
   });
 
+  it("keeps a draft and records the retry when the server answers but does not confirm it", async () => {
+    // Fix 78 (NTESTFORMHOOKS-2): load while offline — otherwise the mount
+    // auto-sync would retry first and this test would measure the second sync.
+    Object.defineProperty(window.navigator, "onLine", { value: false, configurable: true });
+    vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1", { retryCount: 1 })]);
+    // A FULFILLED but unaccepted answer: the transport succeeded, the
+    // server simply did not confirm the draft. The acceptance guard must
+    // treat it exactly like a refusal — keep the draft, advance the retry,
+    // tombstone nothing.
+    const onSubmit = vi.fn().mockResolvedValue({ responseValid: false });
+    vi.mocked(removeOfflineDrafts).mockResolvedValue(undefined);
+
+    const { result } = renderHook(() =>
+      useOfflineDraftQueue({ onSubmit, isArabic: true, setSubmitting: noop })
+    );
+    await waitFor(() => expect(result.current.offlineDrafts).toHaveLength(1));
+
+    Object.defineProperty(window.navigator, "onLine", { value: true, configurable: true });
+    await act(async () => {
+      window.dispatchEvent(new Event("online"));
+    });
+    await waitFor(() => expect(result.current.syncStatusMsg).toContain("فشلت"));
+
+    // The tombstone sweep runs with an EMPTY id list on a non-accepted
+    // answer — nothing is removed from the durable store.
+    expect(removeOfflineDrafts).toHaveBeenCalledWith([]);
+    // Exactly one sync ran (the event's) — retry 1 → 2, and the draft stays.
+    await waitFor(() => {
+      expect(result.current.offlineDrafts).toHaveLength(1);
+      expect(result.current.offlineDrafts[0].retryCount).toBe(2);
+      expect(result.current.offlineDrafts[0].lastError).toBe("Server did not confirm the draft");
+    });
+  });
+
   it("never claims success when the durable queue fails to commit", async () => {
     vi.mocked(loadOfflineDrafts).mockResolvedValue([draftRow("d1")]);
     const onSubmit = vi.fn().mockResolvedValue({ responseValid: true, id: "rep-1", status: "pending" });
@@ -931,7 +965,7 @@ describe("useReportSubmit", () => {
   });
 
   it("keeps the form filled when the durable draft commit fails", async () => {
-    const { result, drafts, errorMsgs } = submitHarness({
+    const { result, drafts, errorMsgs, fields, image, camera } = submitHarness({
       drafts: { isOfflineSimulation: true, persistDraft: vi.fn(async () => false) },
     });
     await act(async () => {
@@ -940,5 +974,12 @@ describe("useReportSubmit", () => {
     expect(drafts.persistDraft).toHaveBeenCalledTimes(1);
     expect(result.current.successReport).toBeNull();
     expect(errorMsgs[errorMsgs.length - 1]).toContain("تعذر حفظ البلاغ محليًا");
+    // The failed-persistence branch must NOT clear anything: the form, the
+    // image and the orientation are the uncommitted report content the
+    // title promises to keep. The successful offline case asserts all three
+    // reset calls (1 each); here the absence assertion is the mirror.
+    expect(fields.resetForNextReport).not.toHaveBeenCalled();
+    expect(image.resetImage).not.toHaveBeenCalled();
+    expect(camera.resetOrientation).not.toHaveBeenCalled();
   });
 });
