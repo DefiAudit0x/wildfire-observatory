@@ -57,12 +57,12 @@ describe("S-M12: GENERAL_LIMIT_MAX validation", () => {
 });
 
 describe("v2.15.0: PORT validation (parsePort no longer prefix-parses)", () => {
-  it("falls back to 3000 for prefix-parsed garbage like 3000px", async () => {
-    expect(await loadPort("3000px")).toBe(3000);
+  it("falls back to 3000 for prefix-parsed garbage like 4000px", async () => {
+    expect(await loadPort("4000px")).toBe(3000);
   });
 
-  it("falls back to 3000 for non-integers like 3000.5", async () => {
-    expect(await loadPort("3000.5")).toBe(3000);
+  it("falls back to 3000 for non-integers like 4000.5", async () => {
+    expect(await loadPort("4000.5")).toBe(3000);
   });
 
   it("honors a valid port", async () => {
