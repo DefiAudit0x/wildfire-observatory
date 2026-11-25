@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { beforeEach, vi } from "vitest";
+import { createHash } from "node:crypto";
 import express from "express";
 import supertest from "supertest";
 import cookieParser from "cookie-parser";
@@ -474,6 +475,10 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
       .get("/api/sos/profile/current")
       .set("Cookie", `sos_profile=${"a".repeat(64)}`)
       .expect(200, contact);
+    // The lookup identity matters, not just the payload: pin that the GET
+    // read ("sosProfiles", the profile ID derived from the reader's cookie).
+    const expectedDeviceId = "profile-" + createHash("sha256").update("a".repeat(64)).digest("hex");
+    expect(fsMock.docGet).toHaveBeenCalledWith("sosProfiles", expectedDeviceId);
   });
 
   it("does not report successful profile storage when the durable write fails", async () => {
