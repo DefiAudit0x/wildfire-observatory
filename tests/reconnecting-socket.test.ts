@@ -163,7 +163,7 @@ describe("ReconnectingSocket — shared engine", () => {
     expect(sockets).toHaveLength(2);
   });
 
-  it("disconnect() cancels pending reconnects and ignores the stale close", async () => {
+  it("disconnect() closes the socket and ignores the stale close", async () => {
     const sockets: FakeWebSocket[] = [];
     const socket = new ReconnectingSocket({
       createSocket: () => {
@@ -179,6 +179,35 @@ describe("ReconnectingSocket — shared engine", () => {
     socket.disconnect();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(sockets).toHaveLength(1); // no reconnect after manual close
+  });
+
+  it("disconnect() cancels an already-scheduled reconnect", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0); // deterministic: attempt-0 delay = 500ms
+    const sockets: FakeWebSocket[] = [];
+    const downs = vi.fn();
+    const socket = new ReconnectingSocket({
+      createSocket: () => {
+        const ws = new FakeWebSocket();
+        sockets.push(ws);
+        return makeFake(ws);
+      },
+      heartbeatMs: 0,
+      onDown: downs,
+    });
+    socket.connect();
+    await vi.advanceTimersByTimeAsync(0);
+    sockets[0].simulateOpen();
+
+    // Arm the retry first: a remote close schedules the 500ms reconnect.
+    sockets[0].close();
+    expect(downs).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100); // inside the 500ms window — timer still pending
+
+    // Now disconnect while the retry is pending: the timer must be cancelled.
+    socket.disconnect();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sockets).toHaveLength(1); // the pending retry never fires
+    expect(socket.getState()).toBe("idle");
   });
 
   it("does not open twice when connect() is called while connecting or open", async () => {
