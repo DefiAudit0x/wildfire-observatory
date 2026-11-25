@@ -50,6 +50,15 @@ class MeshInbound(
         // an authenticated flooding sender can truncate the replay window by
         // outrunning the cap — the cap caps MEMORY, not the replay policy.
         const val MAX_SEEN_HASHES = 4096
+        /**
+         * Per-triple variant budget (Fix 55d): at most this many distinct
+         * payloads may be admitted under one (messageId, nonce). 16 is
+         * generous headroom over any plausible peer count (Nearby meshes
+         * are single-digit peers); it bounds the one-PoW-solve amplification
+         * to 16x. The PoW difficulty is 8 bits (~256 hashes), so this is an
+         * amplification bound, not a rate limit.
+         */
+        const val MAX_VARIANTS_PER_TRIPLE = 16
 
         // Echo messages are plaintext hop counters by design — but they are
         // SIGNED like every other frame. The original decode used
@@ -61,10 +70,23 @@ class MeshInbound(
         // which the caller's catch-all contains (frame dropped, no penalty).
     }
 
-    // Anti-replay lives in seenMessageHashes (messageId + nonce) — see
-    // evaluate. A nonce-only set would reject legitimately
-    // distinct messages from a fast sender.
+    // Anti-replay lives in seenMessageHashes (messageId, nonce, payload) —
+    // see evaluate. A nonce-only set would reject legitimately distinct
+    // messages from a fast sender; a (messageId, nonce)-only key would
+    // reject per-peer copies (Fix 55c). The per-triple variant budget lives
+    // in seenTripleCounts (Fix 55d).
     val seenMessageHashes = ConcurrentHashMap<String, Long>()
+
+    /**
+     * Per-triple variant budget (Fix 55d): how many distinct payloads one
+     * (messageId, nonce) has admitted, with the first-seen timestamp for
+     * the replay-window sweep. One PoW solve must not admit unbounded
+     * variants — each distinct payload is a cheap signature for the sender,
+     * so without a budget a single solve churns the replay cache and floods
+     * ECHO notifications.
+     */
+    data class TripleAdmission(val count: Int, val firstSeenMs: Long)
+    val seenTripleCounts = ConcurrentHashMap<String, TripleAdmission>()
 
     /** Why a frame was rejected — the service maps these to the ORIGINAL log strings + penalties. */
     enum class RejectReason { MAGIC, PARSE, STALE, DIFFICULTY, POW, SIGNATURE, REPLAY }
@@ -175,10 +197,29 @@ class MeshInbound(
         // Fix 55c: the key also covers the payload — per-peer encrypted
         // copies share (messageId, nonce) with distinct ciphertexts, so an
         // undecryptable copy must not block the intended copy.
+        // Fix 55d: per-triple variant budget — a sender solves PoW once per
+        // (messageId, ephemeralId, nonce) and can then sign arbitrarily many
+        // payloads under it, each cheap. Admit at most MAX_VARIANTS_PER_TRIPLE
+        // distinct payloads per triple; further variants are rejected as
+        // REPLAY (silent, no reputation hit — same as a replay). The count
+        // is rolled back below when the payload check finds a true replay,
+        // so replays do not consume the budget.
+        val tripleHash = MeshWire.seenTripleHash(payload.messageId, payload.nonce)
+        val tripleAdmission = seenTripleCounts.compute(tripleHash) { _, v ->
+            if (v == null) TripleAdmission(1, now) else v.copy(count = v.count + 1)
+        }!!
+        if (tripleAdmission.count > MAX_VARIANTS_PER_TRIPLE) {
+            return Verdict.Rejected(RejectReason.REPLAY, null)
+        }
         val msgHash = MeshWire.seenMessageHash(payload.messageId, payload.nonce, payload.payloadB64)
         // Atomic admission prevents two concurrent Nearby callbacks from
         // accepting the same authenticated frame at the same time.
         if (seenMessageHashes.putIfAbsent(msgHash, now) != null) {
+            // True replay of an admitted variant — roll back the triple
+            // count so replays do not consume the variant budget.
+            seenTripleCounts.compute(tripleHash) { _, v ->
+                v?.copy(count = (v.count - 1).coerceAtLeast(0))
+            }
             return Verdict.Rejected(RejectReason.REPLAY, null)
         }
         enforceSeenCap()
@@ -214,5 +255,8 @@ class MeshInbound(
      */
     fun sweepReplayWindow(replayCutoff: Long) {
         seenMessageHashes.entries.removeAll { it.value < replayCutoff }
+        // Fix 55d: the per-triple budget entries expire on the same cutoff —
+        // a triple whose frames are all stale can admit nothing new.
+        seenTripleCounts.entries.removeAll { it.value.firstSeenMs < replayCutoff }
     }
 }

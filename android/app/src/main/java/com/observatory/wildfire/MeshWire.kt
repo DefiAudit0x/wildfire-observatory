@@ -235,6 +235,14 @@ object MeshWire {
         sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce:${payloadB64.length}:$payloadB64")
 
     /**
+     * The per-triple hash over (messageId, nonce) — the same length-prefixed
+     * framing, without the payload. Fix 55d: the variant budget is keyed by
+     * the triple, so one PoW solve cannot admit unbounded payload variants.
+     */
+    fun seenTripleHash(messageId: String, nonce: Int): String =
+        sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
+
+    /**
      * Canonical coordinate serialization (audit round 12): micro-degrees,
      * i.e. round(value * 1e6) as a decimal string. This is the ONLY form the
      * native runtime (Kotlin Math.round) and the browser fallback (JS

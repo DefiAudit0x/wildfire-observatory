@@ -46,6 +46,18 @@ object CryptoEngine {
 
     private const val AES_KEY_SIZE = 256
     private val protocolRandom = SecureRandom()
+    /**
+     * Fix 55d: set when an identity commit fails in this process. Android
+     * updates the in-memory preference map BEFORE commit() reports a
+     * disk-write failure, so a same-process retry would read the unpersisted
+     * replacement pair through the legacy branch and accept the memory-only
+     * identity this change must reject. While set, the legacy branch is
+     * skipped and the keystore/fallback path mints a fresh pair and requires
+     * a successful commit. Cleared when a commit succeeds. Process-local by
+     * design — a fresh process reads from disk, where the failed pair was
+     * never persisted.
+     */
+    private var identityCommitFailed = false
     private const val GCM_IV_LENGTH = 12
     private const val GCM_TAG_LENGTH = 128
     private const val EC_ALGORITHM = "EC"
@@ -217,7 +229,11 @@ object CryptoEngine {
         val legacyPrivB64 = prefs.getString(IDENTITY_PRIV_KEY, null)
         val legacyPubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
         var legacyCorrupt = false
-        if (legacyPrivB64 != null && legacyPubB64 != null) {
+        // Fix 55d: after a failed identity commit, the legacy branch must
+        // NOT run in this process (see identityCommitFailed) — skip to the
+        // keystore/fallback path, which mints a fresh pair and requires a
+        // successful commit.
+        if (!identityCommitFailed && legacyPrivB64 != null && legacyPubB64 != null) {
             try {
                 val pubKey = KeyFactory.getInstance(EC_ALGORITHM)
                     .generatePublic(X509EncodedKeySpec(Base64.decode(legacyPubB64, Base64.NO_WRAP)))
@@ -317,7 +333,12 @@ object CryptoEngine {
             .commit()
         // Fix 55 (NCRYPTO-2): fail closed — a failed commit must not record
         // a memory-only identity as a stable SOFTWARE_FALLBACK.
+        // Fix 55d: remember the failure in this process (see
+        // identityCommitFailed) so a same-process retry cannot accept the
+        // unpersisted pair through the legacy branch.
+        if (!committed) identityCommitFailed = true
         check(committed) { "identity storage commit failed — refusing a memory-only identity" }
+        identityCommitFailed = false
         recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
         return fresh
     }
