@@ -18,10 +18,13 @@ object MeshDeliveryRetry {
 
     /**
      * ARC-L24: this predicate is the TEST-PINNED reference for "may we retry
-     * this peer for this message". MeshService evaluates the SAME two
-     * conditions inline on its hot path (guarding the actual re-send) rather
-     * than calling in here; keep the two in sync — the JVM tests fail loudly
-     * if the reference semantics drift.
+     * this peer for this message" — both retry blockers must be clear. The
+     * service's hot path gates re-sends on the forwarded marker only
+     * (`!queue.isForwarded(...)`, MeshService.kt:1046); `attemptedTargets`
+     * is eviction bookkeeping (the all-delivered rule in
+     * MeshQueue.sweepExpiredMessages), not a retry gate — and this
+     * predicate has no production caller. Keep the reference semantics
+     * pinned: the JVM tests fail loudly if they drift.
      */
     fun canRetry(
         endpointId: String,
