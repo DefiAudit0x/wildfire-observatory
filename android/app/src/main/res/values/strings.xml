@@ -53,9 +53,9 @@
     <!-- Map -->
     <string name="map_title">الخريطة الميدانية</string>
     <string name="map_you_marker">موقعك</string>
-    <string name="map_status_fix_fmt">دقة الموقع %1$d م (%2$s) — التحميل خارج الخطأ يعمل بالخرائط المخزنة</string>
+    <string name="map_status_fix_fmt">دقة الموقع %1$d م (%2$s) — التحميل خارج التغطية يعمل بالخرائط المخزنة</string>
     <string name="map_status_sync_fmt">مرصد حي: %1$d بلاغ · %2$d بقعة حرارية</string>
-    <string name="map_status_offline_fmt">خارج الخطأ — آخر بيانات: %1$d بلاغ · %2$d بقعة</string>
+    <string name="map_status_offline_fmt">خارج التغطية — آخر بيانات: %1$d بلاغ · %2$d بقعة</string>
     <string name="map_hotspot_title">بقعة حرارية — ثقة %1$d٪</string>
     <string name="map_hotspot_snippet">%1$s · ثقة %2$d٪</string>
     <string name="map_fire_verified">حريق موثق</string>
@@ -179,7 +179,7 @@
     <string name="mesh_entry_me_fmt">%1$s — أنت: %2$s</string>
     <string name="mesh_queued_local">أُدرجت الرسالة في شبكة البلوتوث</string>
     <string name="mesh_unavailable_toast">الشبكة غير متاحة حاليًا</string>
-    <string name="mesh_legend">الرسائل والبلاغات تنتقل بين الأجهزة عبر البلوتوث مع تشفير تام — بلوغت أجهزة دون إنترنت تظهر على رادارك وخرائطك</string>
+    <string name="mesh_legend">الرسائل والبلاغات تنتقل بين الأجهزة عبر البلوتوث مع تشفير تام — أجهزة بلوتوث دون إنترنت تظهر على رادارك وخرائطك</string>
 
     <!-- S4 Radar v2 — integrated operational map -->
     <string name="radar_rings_toggle">حلقات ٣٠ كم</string>
