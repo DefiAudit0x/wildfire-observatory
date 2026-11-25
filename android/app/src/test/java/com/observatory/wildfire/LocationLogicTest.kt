@@ -184,4 +184,39 @@ class LocationLogicTest {
         val slightlyFuture = LocationLogic.FixSnapshot(36.8, 7.6, 10f, now + 30_000L, "gps")
         org.junit.Assert.assertSame(slightlyFuture, LocationLogic.chooseBest(listOf(slightlyFuture), now))
     }
+
+    // Fix 53 (NMAP-5): the map arrow shows GPS course only while moving.
+    @Test
+    fun `moving fresh fix shows GPS bearing over compass`() {
+        val moving = fix(ageMs = 10_000L).copy(bearingDeg = 90.0, speedMps = 1.2f)
+        assertEquals(90.0, LocationLogic.displayBearing(moving, 180.0, now))
+        // Boundary: just above the 0.5 m/s moving threshold still counts.
+        assertEquals(90.0, LocationLogic.displayBearing(moving.copy(speedMps = 0.6f), 180.0, now))
+    }
+
+    @Test
+    fun `standing fresh fix falls back to compass`() {
+        val standing = fix(ageMs = 10_000L).copy(bearingDeg = 90.0, speedMps = 0.4f)
+        assertEquals(180.0, LocationLogic.displayBearing(standing, 180.0, now))
+        // Boundary: exactly at the 0.5 m/s threshold is still standing.
+        assertEquals(180.0, LocationLogic.displayBearing(standing.copy(speedMps = 0.5f), 180.0, now))
+    }
+
+    @Test
+    fun `stale moving fix falls back to compass`() {
+        val stale = fix(ageMs = LocationLogic.FIX_FRESH_MS + 1).copy(bearingDeg = 90.0, speedMps = 1.2f)
+        assertEquals(180.0, LocationLogic.displayBearing(stale, 180.0, now))
+    }
+
+    @Test
+    fun `no bearing falls back to compass`() {
+        val noBearing = fix(ageMs = 10_000L).copy(speedMps = 1.2f)
+        assertEquals(180.0, LocationLogic.displayBearing(noBearing, 180.0, now))
+    }
+
+    @Test
+    fun `no bearing and no compass has no heading`() {
+        val noBearing = fix(ageMs = 10_000L).copy(speedMps = 1.2f)
+        assertNull(LocationLogic.displayBearing(noBearing, null, now))
+    }
 }

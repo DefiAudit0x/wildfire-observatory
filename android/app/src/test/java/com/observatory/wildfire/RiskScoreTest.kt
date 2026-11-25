@@ -54,4 +54,19 @@ class RiskScoreTest {
         assertEquals("خطر كارثي", RiskScore.labelAr(90))
         assertEquals("خطر متوسط", RiskScore.labelAr(30))
     }
+
+    @Test
+    fun `labels match the five color bands`() {
+        assertEquals("لا توجد مؤشرات خطر حالية", RiskScore.labelAr(0))
+        assertEquals("خطر منخفض", RiskScore.labelAr(1))
+        assertEquals("خطر منخفض", RiskScore.labelAr(19))
+        assertEquals("خطر متوسط", RiskScore.labelAr(20))
+        assertEquals("خطر متوسط", RiskScore.labelAr(39))
+        assertEquals("خطر مرتفع", RiskScore.labelAr(40))
+        assertEquals("خطر مرتفع", RiskScore.labelAr(59))
+        assertEquals("خطر مرتفع جدًا", RiskScore.labelAr(60))
+        assertEquals("خطر مرتفع جدًا", RiskScore.labelAr(79))
+        assertEquals("خطر كارثي", RiskScore.labelAr(80))
+        assertEquals("خطر كارثي", RiskScore.labelAr(100))
+    }
 }
