@@ -73,6 +73,18 @@ class ObservatoryApiTargetTest {
     }
 
     @Test
+    fun `principal cookie stays home on a different scheme or port`() {
+        // Origin, not host: the same hostname over plaintext http, or on a
+        // different port, is a different origin — the identity cookie must
+        // never ride it. (The old host-only comparison leaked both ways.)
+        assertFalse(api.sendsPrincipalCookie("http://wildfire-observatory.onrender.com/api/teams/join"))
+        assertFalse(api.sendsPrincipalCookie("https://wildfire-observatory.onrender.com:8443/api/teams/join"))
+        assertFalse(api.sendsPrincipalCookie("http://wildfire-observatory.onrender.com:80/api/teams/join"))
+        // The explicit default port IS the same origin.
+        assertTrue(api.sendsPrincipalCookie("https://wildfire-observatory.onrender.com:443/api/teams/join"))
+    }
+
+    @Test
     fun `cookie is never sent when the host cannot be parsed`() {
         val broken = ObservatoryApi("https://wildfire-observatory.onrender.com")
         assertFalse(broken.sendsPrincipalCookie("https://"))

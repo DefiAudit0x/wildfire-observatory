@@ -15,7 +15,11 @@ import org.junit.Test
 class PhotoPipelineTest {
 
     @Test fun `already under the limit stays at sample 1`() {
-        assertEquals(1, PhotoPipeline.targetSample(1280, 960))
+        // Genuinely under the limit on the longest side (1279 < 1280):
+        // the old input (1280, 960) sat exactly AT the limit and duplicated
+        // the boundary test below. Boundary triplet: 1279 → 1, 1280 → 1,
+        // 1281 → 2.
+        assertEquals(1, PhotoPipeline.targetSample(1279, 960))
     }
 
     @Test fun `exactly at the limit stays at sample 1`() {
@@ -51,8 +55,12 @@ class PhotoPipelineTest {
     }
 
     @Test fun `custom maxDim is honored`() {
-        // maxDim 1024: 4032 → 2016 → 1008 fits → sample 4
-        assertEquals(4, PhotoPipeline.targetSample(4032, 3024, maxDim = 1024))
+        // The old input (4032, 3024) gave sample 4 at BOTH 1024 and the
+        // default 1280 (4032 → 2016 → 1008 fits under either), so ignoring
+        // maxDim passed. (2560, 1920) discriminates: 2560 → 1280 fits the
+        // default (sample 2) but not 1024 (sample 4).
+        assertEquals(2, PhotoPipeline.targetSample(2560, 1920))
+        assertEquals(4, PhotoPipeline.targetSample(2560, 1920, maxDim = 1024))
     }
 
     // ---------- Fix 19 (NPHOTO-1): the decoded-byte budget must fit the wire gate ----------

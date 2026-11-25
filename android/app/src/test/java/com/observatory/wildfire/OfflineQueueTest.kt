@@ -71,11 +71,18 @@ class OfflineQueueTest {
         // v2.16.0: the backoff gate is REAL — each retry round must advance
         // the clock past the previous deadline (the drain loop does exactly
         // this in production; a flat nowMs would prove nothing).
-        repeat(OfflineQueue.MAX_ATTEMPTS) { round ->
+        repeat(OfflineQueue.MAX_ATTEMPTS - 1) { round ->
             val now = round * OfflineQueue.BACKOFF_MAX_MS
             q.reserveDue(10, nowMs = now)
             q.commit(nowMs = now, deliveredKeys = emptySet())
         }
+        // Seven real failures: still queued (attempts 7), not dropped early.
+        assertEquals(1, q.size())
+        assertEquals(OfflineQueue.MAX_ATTEMPTS - 1, q.snapshot().first().attempts)
+        // The eighth failure poisons it.
+        val now = (OfflineQueue.MAX_ATTEMPTS - 1) * OfflineQueue.BACKOFF_MAX_MS
+        q.reserveDue(10, nowMs = now)
+        q.commit(nowMs = now, deliveredKeys = emptySet())
         assertEquals(0, q.size())
     }
 
@@ -174,18 +181,25 @@ class OfflineQueueTest {
     @Test
     fun `capacity eviction drops oldest attempted first and shields never-attempted`() {
         val q = OfflineQueue<String>(capacity = 3)
+        // Mark two entries attempted with different lastAttempt times:
+        // attempted-old first (lastAttempt 1_000), attempted-new second
+        // (lastAttempt 2_000). The second reserve skips attempted-old —
+        // it is backed off to 31_000 — and takes attempted-new.
         q.enqueue("attempted-old", "old")
-        // Mark it attempted (and give it an old lastAttempt timestamp).
         q.reserveDue(1, nowMs = 1_000)
         q.commit(nowMs = 1_000, deliveredKeys = emptySet())
-        q.enqueue("fresh1", "f1")
-        q.enqueue("fresh2", "f2")
-        // Queue full: [attempted-old(attempted), fresh1, fresh2]. Admitting one more
-        // must evict attempted-old, NOT the never-attempted fresh entries.
+        q.enqueue("attempted-new", "new")
+        q.reserveDue(1, nowMs = 1_000)
+        q.commit(nowMs = 2_000, deliveredKeys = emptySet())
+        q.enqueue("fresh0", "f0")
+        // Queue full: [attempted-new(attempted, 2_000), attempted-old(attempted, 1_000), fresh0(never)].
+        // Admitting one more must evict attempted-old — the OLDEST attempted
+        // entry — not the head (attempted-new), not the newest attempted
+        // entry, and not the never-attempted fresh0.
         q.enqueue("fresh3", "f3")
         val keys = q.snapshot().map { it.key }
         assertFalse(keys.contains("attempted-old"))
-        assertEquals(listOf("fresh1", "fresh2", "fresh3"), keys)
+        assertEquals(listOf("attempted-new", "fresh0", "fresh3"), keys)
     }
 
     // ------------------------
@@ -333,6 +347,10 @@ class OfflineQueueTest {
         val q = OfflineQueue<String>()
         val nearly = OfflineQueue.Entry("k", "bad", attempts = OfflineQueue.MAX_ATTEMPTS - 1)
         q.restoreAll(listOf(nearly))
+        // Restore must keep the entry AND its attempt history — a restore
+        // that discarded it would pass the final empty assertion vacuously.
+        assertEquals(1, q.size())
+        assertEquals(OfflineQueue.MAX_ATTEMPTS - 1, q.snapshot().first().attempts)
         // One more failed round must POISON it — no fresh lives after restore.
         q.reserveDue(10, nowMs = 0)
         q.commit(nowMs = 0, deliveredKeys = emptySet())
