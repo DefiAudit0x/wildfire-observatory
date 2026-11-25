@@ -36,6 +36,22 @@ class LocationEngine(private val context: Context) : LocationListener {
         private const val REQUEST_DISTANCE_M = 1f
         /** UI re-check cadence while SEARCHING (so status transitions appear). */
         private const val STATUS_POLL_MS = 3_000L
+
+        /** Pure tier → providers the engine registers for live updates. */
+        fun updateProvidersForTier(tier: LocationLogic.Tier): List<String> = when (tier) {
+            LocationLogic.Tier.FINE -> listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            LocationLogic.Tier.COARSE -> listOf(LocationManager.NETWORK_PROVIDER)
+            LocationLogic.Tier.NONE -> emptyList()
+        }
+
+        /** Pure tier → providers seeded from lastKnownLocation. FINE also seeds PASSIVE. */
+        fun seedProvidersForTier(tier: LocationLogic.Tier): List<String> = when (tier) {
+            LocationLogic.Tier.FINE -> listOf(
+                LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER
+            )
+            LocationLogic.Tier.COARSE -> listOf(LocationManager.NETWORK_PROVIDER)
+            LocationLogic.Tier.NONE -> emptyList()
+        }
     }
 
     data class State(
@@ -154,33 +170,20 @@ class LocationEngine(private val context: Context) : LocationListener {
         val tier = permissionTier()
         if (tier == LocationLogic.Tier.NONE) return
         val looper = Looper.getMainLooper()
-        if (tier == LocationLogic.Tier.FINE) {
+        for (provider in updateProvidersForTier(tier)) {
             try {
-                if (manager.allProviders.contains(LocationManager.GPS_PROVIDER)) {
+                if (manager.allProviders.contains(provider)) {
                     manager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER, REQUEST_INTERVAL_MS, REQUEST_DISTANCE_M, this, looper
+                        provider, REQUEST_INTERVAL_MS, REQUEST_DISTANCE_M, this, looper
                     )
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "GPS provider register failed", e)
+                Log.w(TAG, "Provider $provider register failed", e)
             }
-        }
-        try {
-            if (manager.allProviders.contains(LocationManager.NETWORK_PROVIDER)) {
-                manager.requestLocationUpdates(
-                    LocationManager.NETWORK_PROVIDER, REQUEST_INTERVAL_MS, REQUEST_DISTANCE_M, this, looper
-                )
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Network provider register failed", e)
         }
         // Seed from lastKnownLocation across providers so the map/SOS have
         // something honest (with its real age) within the first second.
-        val seedProviders = if (tier == LocationLogic.Tier.FINE) {
-            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
-        } else {
-            listOf(LocationManager.NETWORK_PROVIDER)
-        }
+        val seedProviders = seedProvidersForTier(tier)
         val seeds = ArrayList<LocationLogic.FixSnapshot>(seedProviders.size)
         for (provider in seedProviders) {
             try {
