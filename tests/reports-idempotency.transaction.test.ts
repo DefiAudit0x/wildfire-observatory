@@ -54,26 +54,26 @@ function createAdminDb() {
       let release!: () => void;
       state.queue = new Promise<void>((resolve) => { release = resolve; });
       await previous;
-      const writes: Array<{ kind: "create" | "update"; path: string; data: StoredDoc }> = [];
-      if (state.failNextTransaction) {
-        state.failNextTransaction = false;
-        throw new Error("simulated transaction failure before commit");
-      }
-      const tx = {
-        get: async (ref: { path?: string; kind?: string; collectionName?: string; field?: string; value?: unknown; count?: number }) => {
-          if (ref.kind === "query") {
-            const matches = [...state.docs.entries()]
-              .filter(([path, data]) => path.startsWith(`${ref.collectionName}/`) && data[ref.field!] === ref.value)
-              .slice(0, ref.count ?? 2)
-              .map(([path, data]) => ({ id: path.split("/").at(-1), data: () => data }));
-            return { size: matches.length, empty: matches.length === 0, docs: matches };
-          }
-          return snapshotFor(ref.path!);
-        },
-        create: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "create", path: ref.path, data }),
-        update: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "update", path: ref.path, data }),
-      };
       try {
+        const writes: Array<{ kind: "create" | "update"; path: string; data: StoredDoc }> = [];
+        if (state.failNextTransaction) {
+          state.failNextTransaction = false;
+          throw new Error("simulated transaction failure before commit");
+        }
+        const tx = {
+          get: async (ref: { path?: string; kind?: string; collectionName?: string; field?: string; value?: unknown; count?: number }) => {
+            if (ref.kind === "query") {
+              const matches = [...state.docs.entries()]
+                .filter(([path, data]) => path.startsWith(`${ref.collectionName}/`) && data[ref.field!] === ref.value)
+                .slice(0, ref.count ?? 2)
+                .map(([path, data]) => ({ id: path.split("/").at(-1), data: () => data }));
+              return { size: matches.length, empty: matches.length === 0, docs: matches };
+            }
+            return snapshotFor(ref.path!);
+          },
+          create: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "create", path: ref.path, data }),
+          update: (ref: { path: string }, data: StoredDoc) => writes.push({ kind: "update", path: ref.path, data }),
+        };
         const result = await callback(tx);
         for (const write of writes) {
           state.docs.set(write.path, write.kind === "update"
@@ -233,6 +233,25 @@ describe("durable report idempotency transaction", () => {
     expect(result).toEqual({ status: "error" });
     expect(state.docs.has(`reports/${newReport.id}`)).toBe(false);
     expect(state.docs.has(`reportIdempotency/${id}`)).toBe(false);
+  });
+
+  it("a failed transaction releases the queue so the next transaction runs", async () => {
+    state.docs.clear();
+    state.queue = Promise.resolve();
+    state.failNextTransaction = true;
+    const id = "cg-queue-release-0001";
+    const newReport = report(id, "rep-queue-release");
+
+    const failed = await saveReportWithIdempotency(newReport, "queue-release-fingerprint", () => "");
+    expect(failed).toEqual({ status: "error" });
+    expect(state.docs.has(`reports/${newReport.id}`)).toBe(false);
+
+    // With the old fake this second call hangs forever: the injected
+    // failure threw before try/finally, so release() was never called
+    // and the queue promise never resolved.
+    const retried = await saveReportWithIdempotency(newReport, "queue-release-fingerprint", () => "");
+    expect(retried.status).toBe("saved");
+    expect(state.docs.has(`reports/${newReport.id}`)).toBe(true);
   });
 
   it("classifies same ID with a different canonical fingerprint without overwriting", async () => {
