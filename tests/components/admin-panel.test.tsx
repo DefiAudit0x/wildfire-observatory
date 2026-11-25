@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
 import AdminPanel from "../../src/components/AdminPanel";
 
 describe("AdminPanel", () => {
@@ -194,6 +194,17 @@ describe("AdminPanel", () => {
     await waitFor(() => expect(screen.getByText(/إجمالي البلاغات/i)).toBeInTheDocument());
     expect(screen.getByText(/بلاغات قيد المراجعة/i)).toBeInTheDocument();
     expect(screen.getByText(/بلاغات موثقة/i)).toBeInTheDocument();
+    // Per-card scoping is required: two cards show "1", so a bare
+    // getByText("1") would throw on duplicates.
+    const valueFor = (label: RegExp) => {
+      const el = screen.getByText(label).parentElement;
+      if (!el) throw new Error("stat card missing");
+      return within(el);
+    };
+    expect(valueFor(/إجمالي البلاغات/i).getByText("2")).toBeInTheDocument();
+    expect(valueFor(/بلاغات قيد المراجعة/i).getByText("1")).toBeInTheDocument();
+    expect(valueFor(/بلاغات موثقة/i).getByText("1")).toBeInTheDocument();
+    expect(valueFor(/بلاغات تم إخمادها/i).getByText("0")).toBeInTheDocument();
   });
 
   it("loads private reporter identity for display, search, phone and CSV after the admin session probe", async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import RegisteredTeams from "../../src/components/command/RegisteredTeams";
 import { RegisteredTeam } from "../../src/components/command/registeredTeams";
 
@@ -48,14 +48,14 @@ function setup(teams: RegisteredTeam[] = [TEAM_A], opts: { refreshing?: boolean 
   const onDispatch = vi.fn(async () => true);
   const onTeamsChanged = vi.fn(async () => {});
   const notify = vi.fn();
-  render(
+  const jsx = (o: { refreshing?: boolean } = opts) => (
     <RegisteredTeams
       isArabic
       teams={teams}
       sosCalls={SOS}
       dispatchLoading={false}
-      refreshing={opts.refreshing ?? false}
-      lastUpdated={opts.refreshing ? null : 1_700_000_000_000}
+      refreshing={o.refreshing ?? false}
+      lastUpdated={o.refreshing ? null : 1_700_000_000_000}
       onDispatch={onDispatch}
       onTargetMember={vi.fn()}
       onTeamsChanged={onTeamsChanged}
@@ -63,7 +63,8 @@ function setup(teams: RegisteredTeam[] = [TEAM_A], opts: { refreshing?: boolean 
       notify={notify}
     />
   );
-  return { onDispatch, onTeamsChanged, notify };
+  const result = render(jsx());
+  return { onDispatch, onTeamsChanged, notify, rerender: (o: { refreshing?: boolean } = {}) => result.rerender(jsx(o)) };
 }
 
 beforeEach(() => {
@@ -131,6 +132,9 @@ describe("RegisteredTeams", () => {
     fireEvent.click(screen.getByRole("button", { name: "تسجيل" }));
     await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
     expect(fetchMock).toHaveBeenCalledWith("/api/teams", expect.objectContaining({ method: "POST" }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/teams", expect.objectContaining({ method: "POST", body: expect.stringContaining('"name":"Unité Alger"') }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/teams", expect.objectContaining({ method: "POST", body: expect.stringContaining('"nameAr":"وحدة الجزائر"') }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/teams", expect.objectContaining({ method: "POST", body: expect.stringContaining('"type":"protection_civile"') }));
   });
 
   it("shows the active mission when the team is busy (no dispatch controls)", () => {
@@ -171,6 +175,7 @@ describe("RegisteredTeams", () => {
     expect(screen.getByText(/أجهزة محجوبة \(1\)/)).toBeInTheDocument();
     fireEvent.click(screen.getByTitle("فك الحجب"));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/block-principal", expect.objectContaining({ method: "POST", body: expect.stringContaining("principal-blocked-one") })));
+    expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/block-principal", expect.objectContaining({ method: "POST", body: expect.stringContaining('"blocked":false') }));
     await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
   });
 
@@ -180,7 +185,7 @@ describe("RegisteredTeams", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { onTeamsChanged } = setup();
     fireEvent.click(screen.getAllByTitle("إزالة العضو")[0]);
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/members/tm-m1", expect.objectContaining({ method: "DELETE", body: expect.stringContaining("blockPrincipal") })));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/teams/team-a1/members/tm-m1", expect.objectContaining({ method: "DELETE", body: expect.stringContaining('"blockPrincipal":true') })));
     await waitFor(() => expect(onTeamsChanged).toHaveBeenCalled());
     confirmSpy.mockRestore();
   });
@@ -188,6 +193,19 @@ describe("RegisteredTeams", () => {
   it("W4: shows the refreshing indicator only while a roster fetch is in flight", () => {
     setup([TEAM_A], { refreshing: true });
     expect(screen.getByTestId("teams-refreshing")).toBeInTheDocument();
+  });
+
+  it("W4: no refreshing indicator once the roster fetch has landed", () => {
+    setup([TEAM_A]);
+    expect(screen.queryByTestId("teams-refreshing")).not.toBeInTheDocument();
+    expect(screen.getByText(/آخر تحديث/)).toBeInTheDocument();
+  });
+
+  it("W4: the indicator disappears when the refresh completes", () => {
+    const { rerender } = setup([TEAM_A], { refreshing: true });
+    expect(screen.getByTestId("teams-refreshing")).toBeInTheDocument();
+    rerender({ refreshing: false });
+    expect(screen.queryByTestId("teams-refreshing")).not.toBeInTheDocument();
   });
 
   it("W5: an expired join code renders the منتهي state, a live one shows the countdown", () => {
@@ -201,5 +219,34 @@ describe("RegisteredTeams", () => {
       expect(screen.getByText("EXPIRED1")).toBeInTheDocument();
       expect(screen.getByText("منتهي")).toBeInTheDocument();
     });
+  });
+
+  it("W5: a live join code shows the countdown, not منتهي", async () => {
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify({ code: "LIVE1234", teamId: "team-a1", expiresAt: Date.now() + 3 * 86_400_000, maxUses: 12 }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: /رمز انضمام/ }));
+    // Regex, never an exact countdown text: the exact text flips on a few
+    // milliseconds of mint-to-render latency (24 h reads "1ي 0س" at ε = 0
+    // but "23س 59د" at ε = 5 ms).
+    await waitFor(() => expect(screen.getByText(/ينتهي خلال \d+ي/)).toBeInTheDocument());
+    expect(screen.queryByText("منتهي")).not.toBeInTheDocument();
+  });
+
+  it("W5: a live join code flips to منتهي once its expiry passes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify({ code: "LIVE1234", teamId: "team-a1", expiresAt: Date.now() + 60_000, maxUses: 12 }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      const { rerender } = setup();
+      fireEvent.click(screen.getByRole("button", { name: /رمز انضمام/ }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByText(/ينتهي خلال/)).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+      rerender();
+      expect(screen.getByText("منتهي")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
