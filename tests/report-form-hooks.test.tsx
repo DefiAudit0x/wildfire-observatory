@@ -510,6 +510,12 @@ describe("useReportImage", () => {
     act(() => {
       liveImages[1].onload?.(); // fresh-dark
     });
+    // Restore the FIRE pixels before the stale callback runs: the stale
+    // scan captured fire pixels, so if the guard dropped it, its result
+    // would be a positive — the only way the final state stays negative
+    // is the guard discarding it. (Before this pin both callbacks read
+    // the same dark global, so a missing guard was invisible.)
+    canvasFill = [200, 80, 50];
     act(() => {
       liveImages[0].onload?.(); // stale-fire (late)
     });
