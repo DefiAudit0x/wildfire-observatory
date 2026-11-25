@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const state = vi.hoisted(() => ({
   units: new Set<string>(),
   users: new Map<string, string>(),
+  queue: Promise.resolve() as Promise<void>,
 }));
 
 const db = vi.hoisted(() => ({
@@ -15,7 +16,17 @@ const db = vi.hoisted(() => ({
       limit: (_n: number) => ({ kind: "query", collection: name, unitId: value }),
     }),
   }),
-  runTransaction: async (callback: (tx: any) => Promise<any>) => callback({
+  // Serialize transactions like Firestore does: each runTransaction
+  // waits for the previous one to finish, so a concurrent create and
+  // delete cannot interleave mid-flight. The tx object itself is
+  // unchanged — only the invocation is wrapped.
+  runTransaction: async (callback: (tx: any) => Promise<any>) => {
+    const previous = state.queue;
+    let release!: () => void;
+    state.queue = new Promise<void>((resolve) => { release = resolve; });
+    await previous;
+    try {
+      return await callback({
     get: async (target: any) => {
       if (target.kind === "doc") {
         const exists = target.collection === "units" ? state.units.has(target.id) : state.users.has(target.id);
@@ -30,7 +41,11 @@ const db = vi.hoisted(() => ({
     },
     delete: (ref: any) => state.units.delete(ref.id),
     update: () => undefined,
-  }),
+      });
+    } finally {
+      release();
+    }
+  },
 }));
 
 vi.mock("../server/firebase.js", () => ({
@@ -44,6 +59,7 @@ const { createUserIfUnitExists, deleteUnitIfUnlinked } = await import("../server
 beforeEach(() => {
   state.units.clear();
   state.users.clear();
+  state.queue = Promise.resolve();
 });
 
 describe("unit/user lifecycle atomicity", () => {
@@ -73,5 +89,19 @@ describe("unit/user lifecycle atomicity", () => {
     const result = await deleteUnitIfUnlinked("unit-a");
     expect(result).toBe("deleted");
     expect(state.units.has("unit-a")).toBe(false);
+  });
+
+  it("a user creation racing a unit deletion cannot leave a user in a deleted unit", async () => {
+    state.units.add("unit-a");
+    const [created, deleted] = await Promise.all([
+      createUserIfUnitExists("agent-1", "unit-a", { agentId: "agent-1", unitId: "unit-a" }),
+      deleteUnitIfUnlinked("unit-a"),
+    ]);
+    // Exactly one of the two wins the race; the loser sees the
+    // winner's committed state. The forbidden pair is a created
+    // user in a deleted unit.
+    expect([created, deleted]).toEqual(["created", "has-users"]);
+    expect(state.units.has("unit-a")).toBe(true);
+    expect(state.users.get("agent-1")).toBe("unit-a");
   });
 });

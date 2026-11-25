@@ -135,6 +135,9 @@ describe("S-M8: durable audit queue", () => {
       .get("/api/audit")
       .set("Authorization", `Bearer ${generateAdminToken()}`);
     expect(res.status).toBe(200);
+    // The fallback output alone does not prove the DB was consulted:
+    // a route that always served the memory copy would pass too.
+    expect(state.collectionGet).toHaveBeenCalledWith("adminAuditLog", "timestamp", 100);
     expect(Array.isArray(res.body)).toBe(true);
     expect(res.body.some((e: any) => e.action === "test.fallback")).toBe(true);
   });
