@@ -122,17 +122,46 @@ class ObservatoryApi(private val baseUrl: String) {
      * routed an absolute URL off-base must not leak it). Pure; tested.
      *
      * Relative paths are same-origin BY CONSTRUCTION (resolveTarget prefixes
-     * the base) — allowed. Absolute URLs: allowed only when the parsed host
-     * equals the base host; an unparsable absolute URL is refused.
+     * the base) — allowed. Absolute URLs: allowed only when the parsed
+     * ORIGIN (scheme + host + effective port) equals the base origin; an
+     * unparsable absolute URL is refused. Host-only comparison leaked the
+     * cookie two ways: over plaintext http to the same host, and to a
+     * different port on the same host (a different origin).
      */
     fun sendsPrincipalCookie(target: String): Boolean {
-        val base = hostOf(baseUrl) ?: return false
+        val baseUri = try {
+            java.net.URI(baseUrl)
+        } catch (e: Exception) {
+            return false
+        }
+        val baseHost = baseUri.host?.lowercase() ?: return false
         if (target.startsWith("http://") || target.startsWith("https://")) {
-            val host = hostOf(target) ?: return false
-            return host == base
+            val uri = try {
+                java.net.URI(target)
+            } catch (e: Exception) {
+                return false
+            }
+            val host = uri.host?.lowercase() ?: return false
+            return host == baseHost &&
+                uri.scheme?.lowercase() == baseUri.scheme?.lowercase() &&
+                effectivePort(uri) == effectivePort(baseUri)
         }
         return true
     }
+
+    /**
+     * The port an origin actually listens on: the explicit port when the
+     * URL carries one, else the scheme default (443 https, 80 http), so
+     * https://host and https://host:443 are the same origin. An
+     * unknown scheme with no explicit port has no default (-1).
+     */
+    private fun effectivePort(uri: java.net.URI): Int =
+        if (uri.port != -1) uri.port
+        else when (uri.scheme?.lowercase()) {
+            "https" -> 443
+            "http" -> 80
+            else -> -1
+        }
 
     private fun hostOf(url: String): String? = try {
         java.net.URI(url).host?.lowercase()
