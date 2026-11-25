@@ -121,7 +121,9 @@ describe("S-M1: admin token jti + revocation register", () => {
     state.dbPresent = true;
     const token = generateAdminToken("admin");
     state.docGet.mockResolvedValueOnce(null); // first check: not revoked
-    await supertest(appWith()).get("/protected").set("Authorization", `Bearer ${token}`);
+    const first = await supertest(appWith()).get("/protected").set("Authorization", `Bearer ${token}`);
+    expect(first.status).toBe(200);
+    expect(first.body.role).toBe("admin");
     state.docGet.mockResolvedValueOnce({ revokedAt: new Date().toISOString(), exp: Date.now() + 3_600_000 });
     await supertest(appWith())
       .get("/protected")

@@ -8,10 +8,10 @@ import authRouter from "../server/routes/auth.js";
 vi.mock("../server/firebase.js", () => ({ getDb: () => ({}) }));
 vi.mock("../server/fs.js", () => ({
   docGet: async (collection: string, id: string) => collection === "users" && ["a1", "c1"].includes(id)
-    ? { agentId: id, role: id === "c1" ? "commander" : "agent", unitId: "unit-dz16", isActive: true }
+    ? { agentId: id, role: id === "c1" ? "commander" : "agent", unitId: "unit-dz16", isActive: true, passwordHash: "$2b$10$e1bkpv84TIYiq0ggHhiisOK6ntqHcJ6M21faN1ovhADmWc7TVzjNy" }
     : null,
 }));
-vi.mock("../server/routes/audit.js", () => ({ logAdminAction: vi.fn() }));
+vi.mock("../server/routes/audit.js", () => ({ logAdminAction: vi.fn(async () => {}) }));
 
 function createAuthTestApp() {
   const app = express();
@@ -134,6 +134,29 @@ describe("POST /api/auth/login", () => {
   it("returns 401 for unknown agent (no DB in tests)", async () => {
     const app = createAuthTestApp();
     const res = await supertest(app).post("/api/auth/login").send({ agentId: "nobody", password: "whatever123" });
+    expect(res.status).toBe(401);
+    expect(res.body.error).toBe("Invalid credentials");
+  });
+
+  it("logs in a present user with the right password and sets the staff cookie", async () => {
+    const app = createAuthTestApp();
+    const res = await supertest(app).post("/api/auth/login").send({ agentId: "a1", password: "staff-pass-123" });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.user.agentId).toBe("a1");
+    expect(res.body.user.role).toBe("agent");
+    expect(res.body.user.unitId).toBe("unit-dz16");
+    // The session rides an HTTP-only cookie, 24 h — not a bearer body field.
+    const rawCookie = res.headers["set-cookie"];
+    const setCookie = Array.isArray(rawCookie) ? rawCookie.join(";") : (rawCookie ?? "");
+    expect(setCookie).toContain("staff_token=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Max-Age=86400");
+  });
+
+  it("returns 401 for a present user with the wrong password", async () => {
+    const app = createAuthTestApp();
+    const res = await supertest(app).post("/api/auth/login").send({ agentId: "a1", password: "wrong-pass" });
     expect(res.status).toBe(401);
     expect(res.body.error).toBe("Invalid credentials");
   });
