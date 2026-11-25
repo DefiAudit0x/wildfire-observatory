@@ -81,11 +81,15 @@ describe("getNearestActiveThreat — single definition of nearby danger", () => 
       lng: 7.6,
       reports: [
         mkReport({ id: "near", clusterId: "cluster-1" }),
-        mkReport({ id: "far", lat: 36.95, lng: 7.75, clusterId: "cluster-9" }),
+        mkReport({ id: "far", lat: 36.95, lng: 7.75, clusterId: "cluster-1" }),
       ],
     });
     expect(result.nearest?.reportId).toBe("near");
     expect(result.nearbyIncidents).toBe(1);
+    // The far member shares the near incident's cluster, so it must not
+    // inflate the incident count — and it must not appear among the nearby
+    // sources: only the near member represents the cluster inside the radius.
+    expect(result.nearbySources.map((s) => s.reportId)).toEqual(["near"]);
   });
 
   it("selects the closest source across reports and satellites (satellites >= 70)", () => {
