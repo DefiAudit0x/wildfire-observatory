@@ -46,6 +46,18 @@ object CryptoEngine {
 
     private const val AES_KEY_SIZE = 256
     private val protocolRandom = SecureRandom()
+    /**
+     * Fix 55d: set when an identity commit fails in this process. Android
+     * updates the in-memory preference map BEFORE commit() reports a
+     * disk-write failure, so a same-process retry would read the unpersisted
+     * replacement pair through the legacy branch and accept the memory-only
+     * identity this change must reject. While set, the legacy branch is
+     * skipped and the keystore/fallback path mints a fresh pair and requires
+     * a successful commit. Cleared when a commit succeeds. Process-local by
+     * design — a fresh process reads from disk, where the failed pair was
+     * never persisted.
+     */
+    private var identityCommitFailed = false
     private const val GCM_IV_LENGTH = 12
     private const val GCM_TAG_LENGTH = 128
     private const val EC_ALGORITHM = "EC"
@@ -217,7 +229,11 @@ object CryptoEngine {
         val legacyPrivB64 = prefs.getString(IDENTITY_PRIV_KEY, null)
         val legacyPubB64 = prefs.getString(IDENTITY_PUB_KEY, null)
         var legacyCorrupt = false
-        if (legacyPrivB64 != null && legacyPubB64 != null) {
+        // Fix 55d: after a failed identity commit, the legacy branch must
+        // NOT run in this process (see identityCommitFailed) — skip to the
+        // keystore/fallback path, which mints a fresh pair and requires a
+        // successful commit.
+        if (!identityCommitFailed && legacyPrivB64 != null && legacyPubB64 != null) {
             try {
                 val pubKey = KeyFactory.getInstance(EC_ALGORITHM)
                     .generatePublic(X509EncodedKeySpec(Base64.decode(legacyPubB64, Base64.NO_WRAP)))
@@ -239,6 +255,21 @@ object CryptoEngine {
                     "Legacy stored identity unusable — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)", e
                 )
             }
+        } else if (!identityCommitFailed && (legacyPrivB64 != null || legacyPubB64 != null)) {
+            // Fix 55c: an incomplete legacy pair (only one half present) is
+            // unusable too — flag it so the fallback preserves what exists
+            // and records the regeneration.
+            // Fix 55e: the 55d guard extends here — on a same-process retry
+            // after a failed commit, the in-memory replacement pair would
+            // satisfy this branch and the fallback would overwrite the
+            // forensic snapshot with the uncommitted pair (and store the
+            // live private key under a _corrupt key when no legacy material
+            // existed).
+            legacyCorrupt = true
+            android.util.Log.w(
+                "CryptoEngine",
+                "Legacy stored identity incomplete (only one half present) — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)"
+            )
         }
 
         // Primary path for NEW installs: Android Keystore (API 26+, minSdk
@@ -281,8 +312,9 @@ object CryptoEngine {
         // (IdentityKeyPolicy.softwareFallbackAllowed) demands exactly that.
         // SharedPreferences with a loud warning — plaintext key material is
         // a last resort, not the production default. (Legacy keys were
-        // already consumed above; only a missing-clean install reaches this
-        // point, so a fresh pair is generated.) commit() instead of apply()
+        // already consumed above when usable; a corrupt legacy pair reaches
+        // this point too — its material is copied to forensic keys below
+        // before the fresh pair overwrites the primary keys.) commit() instead of apply()
         // (audit): a process death between the async apply() flush and the
         // write would silently drop a freshly generated identity, i.e. the
         // device would rotate its identity by accident. This write is
@@ -291,10 +323,31 @@ object CryptoEngine {
             "software identity fallback reached without a failed keystore path — policy gate violated"
         }
         val fresh = generateECKeyPair()
-        prefs.edit()
+        val edit = prefs.edit()
+        if (legacyCorrupt) {
+            // Fix 55 (NCRYPTO-1): the corrupt legacy material is KEPT for
+            // forensics (v2.16.0 policy REGENERATE_AFTER_CORRUPTION) — copy
+            // each existing legacy value to its forensic key BEFORE the
+            // fresh pair overwrites the primary keys. These keys are
+            // write-only retention; nothing ever reads them.
+            // Fix 55e: a _corrupt key is written only if absent — a
+            // same-process retry must not overwrite the forensic snapshot
+            // with the uncommitted replacement pair.
+            if (legacyPubB64 != null && prefs.getString(IDENTITY_PUB_KEY + "_corrupt", null) == null) edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
+            if (legacyPrivB64 != null && prefs.getString(IDENTITY_PRIV_KEY + "_corrupt", null) == null) edit.putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
+        }
+        val committed = edit
             .putString(IDENTITY_PUB_KEY, Base64.encodeToString(fresh.public.encoded, Base64.NO_WRAP))
             .putString(IDENTITY_PRIV_KEY, Base64.encodeToString(fresh.private.encoded, Base64.NO_WRAP))
             .commit()
+        // Fix 55 (NCRYPTO-2): fail closed — a failed commit must not record
+        // a memory-only identity as a stable SOFTWARE_FALLBACK.
+        // Fix 55d: remember the failure in this process (see
+        // identityCommitFailed) so a same-process retry cannot accept the
+        // unpersisted pair through the legacy branch.
+        if (!committed) identityCommitFailed = true
+        check(committed) { "identity storage commit failed — refusing a memory-only identity" }
+        identityCommitFailed = false
         recordIdentityStorage(context, IdentityKeyPolicy.StorageMode.SOFTWARE_FALLBACK, regenerated = legacyCorrupt)
         return fresh
     }
@@ -467,6 +520,12 @@ object CryptoEngine {
      * border-line rotation would yield an id/key mismatch that every peer
      * would reject. All of these are consistent because they derive from one
      * snapshot object.
+     *
+     * Fix 55b: the nonce is a caller-supplied parameter (default: a fresh
+     * draw) — the PoW challenge binds (messageId, ephemeralId, nonce), so
+     * the encryption MUST use the nonce the PoW was solved over. Drawing a
+     * fresh nonce here made every encrypted frame fail PoW at the receiver
+     * (sendToTarget transmits encrypted.nonce with msg.powNonce).
      */
     @Synchronized
     fun encryptForPeerWithSnapshot(
@@ -477,7 +536,8 @@ object CryptoEngine {
         lng: Double,
         messageId: String = "",
         type: String = "",
-        hopCount: Int = 0
+        hopCount: Int = 0,
+        nonce: Int = protocolRandom.nextInt()
     ): SecureMessage {
         // Wire-contract enforcement at the API boundary (audit round 12):
         // MeshWire.parseFrame rejects blank messageId/type and any non-zero
@@ -496,7 +556,6 @@ object CryptoEngine {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
         val ciphertext = cipher.doFinal(payload)
-        val nonce = protocolRandom.nextInt()
 
         // ONE timestamp for both the signature and the message (audit): a
         // second now-call between the two would desync the signed value from

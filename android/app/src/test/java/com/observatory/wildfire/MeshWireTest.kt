@@ -299,12 +299,18 @@ class MeshWireTest {
         // length-prefixed form keeps them apart, so a nonce solved for one
         // (messageId, origin) pair cannot be replayed against a colliding one.
         assertNotEquals(
-            MeshWire.ProofOfWork.wirePrefix("ab", "12"),
-            MeshWire.ProofOfWork.wirePrefix("ab1", "2")
+            MeshWire.ProofOfWork.wirePrefix("ab", "12", 7),
+            MeshWire.ProofOfWork.wirePrefix("ab1", "2", 7)
         )
         assertEquals(
-            MeshWire.ProofOfWork.wirePrefix("ab", "12"),
-            MeshWire.ProofOfWork.wirePrefix("ab", "12")
+            MeshWire.ProofOfWork.wirePrefix("ab", "12", 7),
+            MeshWire.ProofOfWork.wirePrefix("ab", "12", 7)
+        )
+        // Fix 55 (NIN-1): the nonce is part of the challenge — the same
+        // (messageId, origin) with a different nonce hashes apart.
+        assertNotEquals(
+            MeshWire.ProofOfWork.wirePrefix("ab", "12", 7),
+            MeshWire.ProofOfWork.wirePrefix("ab", "12", 8)
         )
     }
 
@@ -314,8 +320,8 @@ class MeshWireTest {
         // colliding ("ab1", "2") challenge. Framing makes these hash apart;
         // with the old naive concatenation both prefixes were "ab12" and the
         // nonce verified for both.
-        val prefixA = MeshWire.ProofOfWork.wirePrefix("ab", "12")
-        val prefixB = MeshWire.ProofOfWork.wirePrefix("ab1", "2")
+        val prefixA = MeshWire.ProofOfWork.wirePrefix("ab", "12", 7)
+        val prefixB = MeshWire.ProofOfWork.wirePrefix("ab1", "2", 7)
         val nonce = MeshWire.ProofOfWork.solve(prefixA, 8)
         assertNotNull(nonce)
         assertTrue(MeshWire.ProofOfWork.verify(prefixA, nonce!!, 8))
@@ -457,8 +463,8 @@ class MeshWireTest {
     @Test
     fun seenMessageHashIsCanonicalAcrossSameMessage() {
         assertEquals(
-            MeshWire.seenMessageHash("m", 12),
-            MeshWire.seenMessageHash("m", 12)
+            MeshWire.seenMessageHash("m", 12, "payload"),
+            MeshWire.seenMessageHash("m", 12, "payload")
         )
     }
 
@@ -467,8 +473,32 @@ class MeshWireTest {
         // ("ab", 12) and ("ab1", 2) both concatenate to "ab12" — the naive
         // hash would collide; length-prefixing parts them (audit).
         assertNotEquals(
-            MeshWire.seenMessageHash("ab", 12),
-            MeshWire.seenMessageHash("ab1", 2)
+            MeshWire.seenMessageHash("ab", 12, "payload"),
+            MeshWire.seenMessageHash("ab1", 2, "payload")
+        )
+        // Fix 55c: per-peer copies share (messageId, nonce) with distinct
+        // payloads — the payload is part of the key, so they hash apart.
+        assertNotEquals(
+            MeshWire.seenMessageHash("ab", 12, "payload-A"),
+            MeshWire.seenMessageHash("ab", 12, "payload-B")
+        )
+    }
+
+    // ---------- Fix 55d: per-triple hash ----------
+
+    @Test
+    fun seenTripleHashIsCanonicalAcrossSameTriple() {
+        assertEquals(
+            MeshWire.seenTripleHash("m", 12),
+            MeshWire.seenTripleHash("m", 12)
+        )
+    }
+
+    @Test
+    fun seenTripleHashIsAmbiguityFree() {
+        assertNotEquals(
+            MeshWire.seenTripleHash("ab", 12),
+            MeshWire.seenTripleHash("ab1", 2)
         )
     }
 }

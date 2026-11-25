@@ -221,11 +221,25 @@ object MeshWire {
     }
 
     /**
-     * The canonical anti-replay hash over (messageId, nonce) with EXPLICIT framing: the
-     * naive concatenation was ambiguous — ("ab", 12) and ("ab1", 2) both
-     * produce "ab12". Length-prefixing makes distinct messages hash apart.
+     * The canonical anti-replay hash over (messageId, nonce, payload) with
+     * EXPLICIT framing: the naive concatenation was ambiguous — ("ab", 12)
+     * and ("ab1", 2) both produce "ab12". Length-prefixing makes distinct
+     * messages hash apart.
+     *
+     * Fix 55c: the payload is part of the key — per-peer encrypted copies
+     * share (messageId, nonce) but carry distinct ciphertexts, so a copy a
+     * peer cannot decrypt must not poison the cache for its own decryptable
+     * copy. An identical frame still hashes identically (true replay).
      */
-    fun seenMessageHash(messageId: String, nonce: Int): String =
+    fun seenMessageHash(messageId: String, nonce: Int, payloadB64: String): String =
+        sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce:${payloadB64.length}:$payloadB64")
+
+    /**
+     * The per-triple hash over (messageId, nonce) — the same length-prefixed
+     * framing, without the payload. Fix 55d: the variant budget is keyed by
+     * the triple, so one PoW solve cannot admit unbounded payload variants.
+     */
+    fun seenTripleHash(messageId: String, nonce: Int): String =
         sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
 
     /**
@@ -433,9 +447,14 @@ object MeshWire {
          * that concatenates identically. Length-prefixing removes the
          * ambiguity; every hop constructs the challenge with this helper so
          * solver and verifier always agree.
+         *
+         * Fix 55 (NIN-1): the anti-replay nonce is bound into the challenge
+         * too — without it one solved PoW admitted arbitrarily many signed
+         * nonce variants of the same message. The nonce is length-prefixed
+         * like the other fields (same style as [seenMessageHash]).
          */
-        fun wirePrefix(messageId: String, ephemeralId: String): String =
-            "${messageId.length}:$messageId:${ephemeralId.length}:$ephemeralId"
+        fun wirePrefix(messageId: String, ephemeralId: String, nonce: Int): String =
+            "${messageId.length}:$messageId:${ephemeralId.length}:$ephemeralId:${nonce.toString().length}:$nonce"
 
         fun target(difficulty: Int): Long {
             // Audit: previously coerced silently via coerceIn — a caller
