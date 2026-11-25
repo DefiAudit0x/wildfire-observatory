@@ -87,9 +87,16 @@ describe("mesh hub", () => {
     expect(joinedMessage.nodeCount).toBe(3);
 
     // Leave exactly the beforeAll pair behind for the later cases.
+    // Wait for the hub's node:left broadcast, not just the client's
+    // own close event: the server deletes the node in a separate
+    // close handler, so the client event alone does not guarantee
+    // the count has dropped yet.
+    const left = waitForMessage(nodeA, "node:left");
     const closed = new Promise<void>((resolve) => { nodeC.on("close", () => resolve()); });
     nodeC.close();
     await closed;
+    const leftMessage = await left;
+    expect(leftMessage.nodeId).toBe("node-C");
     expect(meshHub.getNodeCount()).toBe(2);
   });
 
