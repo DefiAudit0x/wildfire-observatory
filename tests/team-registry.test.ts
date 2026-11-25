@@ -65,6 +65,14 @@ describe("teamRegistry — trail rules", () => {
     const third = ping("tm-still", 36.700002, 5.0, base + 11_000); // ~0.2m but >10s → gap rule appends
     expect(third.trail).toHaveLength(2);
   });
+
+  it("appends a point for a >20 m move inside the 10 s gap (distance rule alone)", () => {
+    const base = Date.now();
+    ping("tm-moved", 36.7, 5.0, base);
+    const second = ping("tm-moved", 36.7005, 5.0, base + 2_000); // ~55.6 m after 2 s
+    expect(second.trail).toHaveLength(2);
+    expect(second.trail[1].t).toBe(base + 2_000);
+  });
 });
 
 describe("teamRegistry — online window and eviction", () => {

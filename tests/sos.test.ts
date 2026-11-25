@@ -459,6 +459,23 @@ describe("Profile endpoints (server-side encrypted identity)", () => {
     await agent.get("/api/sos/profile/current").expect(200, updated);
   });
 
+  it("reads a profile back from the durable record when the memory cache is empty", async () => {
+    // Phase 1: capture a real at-rest blob from a genuine save.
+    const saver = supertest.agent(createApp());
+    await saver.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send(contact).expect(200);
+    const blob = fsMock.docSet.mock.calls[0][2].encrypted;
+    expect(typeof blob).toBe("string");
+
+    // Phase 2: a fresh agent (never enrolled, so no memory entry) reads
+    // the seeded durable record back through the docGet branch.
+    fsMock.docGet.mockResolvedValue({ encrypted: blob, expiresAt: Date.now() + 90 * 24 * 60 * 60 * 1000 });
+    const reader = supertest.agent(createApp());
+    await reader
+      .get("/api/sos/profile/current")
+      .set("Cookie", `sos_profile=${"a".repeat(64)}`)
+      .expect(200, contact);
+  });
+
   it("does not report successful profile storage when the durable write fails", async () => {
     const agent = supertest.agent(createApp());
     await agent.post("/api/sos/profile").set("Sec-Fetch-Site", "same-origin").send({}).expect(200);

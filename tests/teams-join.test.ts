@@ -263,9 +263,19 @@ describe("POST /api/teams/join — failure paths", () => {
       if (collection === "teams") return { teamId: "team-a1", name: "T", nameAr: "ت", active: true };
       return null;
     });
-    await supertest(createApp()).post("/api/teams/join").set(nextIp()).send({ code: "ABCD2345", name: "فريق" });
+    // Fresh address (T2/Phase C literal-IP precedent) + cleared spy
+    // history: this test's assertions must read only its own join.
+    fsMock.invalidateCollectionCache.mockClear();
+    fsMock.invalidateDocCache.mockClear();
+    const res = await supertest(createApp())
+      .post("/api/teams/join")
+      .set({ "X-Forwarded-For": "10.78.99.99" })
+      .send({ code: "ABCD2345", name: "فريق" });
+    expect(res.status).toBe(200);
+    expect(res.body.memberId).toMatch(/^tm-/);
     expect(fsMock.invalidateCollectionCache).toHaveBeenCalledWith("teamJoinCodes");
     expect(fsMock.invalidateCollectionCache).toHaveBeenCalledWith("teamMembers");
+    expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teamJoinCodes", "ABCD2345");
     expect(fsMock.invalidateDocCache).toHaveBeenCalledWith("teamMembers", expect.stringMatching(/^tm-/));
   });
 

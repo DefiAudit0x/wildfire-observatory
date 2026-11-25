@@ -149,9 +149,12 @@ describe("POST /api/teams/heartbeat", () => {
     // member from another team (token/teamId mismatch)
     fsMock.docGet.mockImplementation(async (collection: string) => {
       if (collection === "teamMembers") return { ...memberFixture("tm-cross"), teamId: "team-OTHER" };
+      if (collection === "teams") return { teamId: "team-a1", active: true };
       return null;
     });
-    expect((await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-cross")).set(nextIp()).send({ lat: 36.7, lng: 5.0 })).status).toBe(403);
+    const cross = await supertest(app).post("/api/teams/heartbeat").set(memberAuth("tm-cross")).set(nextIp()).send({ lat: 36.7, lng: 5.0 });
+    expect(cross.status).toBe(403);
+    expect(cross.body.code).toBe("MEMBER_INVALID");
 
     // deactivated member
     fsMock.docGet.mockImplementation(async (collection: string) => {
