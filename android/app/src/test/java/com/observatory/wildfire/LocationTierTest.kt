@@ -1,5 +1,6 @@
 package com.observatory.wildfire
 
+import android.location.LocationManager
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -8,8 +9,10 @@ import org.junit.Test
 /**
  * v2.16.0 (audit wave 3) — permission-tier contract: a coarse-only grant is
  * a WORKING engine tier (approximate fixes, honestly flagged), not a fake
- * NO_PERMISSION dead-end. Pins the pure verdicts; the device-side provider
- * wiring (GPS vs NETWORK per tier) is exercised by the instrumented tests.
+ * NO_PERMISSION dead-end. Pins the pure verdicts; the tier→provider wiring
+ * (GPS vs NETWORK per tier) is pinned by the JVM tests below
+ * (`updateProvidersForTier` / `seedProvidersForTier`) — the instrumented
+ * test covers only that `permissionTier()` reads the real system grant state.
  */
 class LocationTierTest {
 
@@ -94,5 +97,40 @@ class LocationTierTest {
         val best = LocationLogic.chooseBest(listOf(coarse, fine), nowMs = 6_000L)
         // Fresher wins regardless of tier — the flag never distorts selection.
         assertEquals(coarse, best)
+    }
+
+    @Test
+    fun `fine tier registers gps and network, coarse registers network only`() {
+        assertEquals(
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER),
+            LocationEngine.updateProvidersForTier(LocationLogic.Tier.FINE)
+        )
+        assertEquals(
+            listOf(LocationManager.NETWORK_PROVIDER),
+            LocationEngine.updateProvidersForTier(LocationLogic.Tier.COARSE)
+        )
+        assertEquals(
+            emptyList<String>(),
+            LocationEngine.updateProvidersForTier(LocationLogic.Tier.NONE)
+        )
+    }
+
+    @Test
+    fun `fine tier seeds passive as well, coarse seeds network only`() {
+        assertEquals(
+            listOf(
+                LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER,
+                LocationManager.PASSIVE_PROVIDER
+            ),
+            LocationEngine.seedProvidersForTier(LocationLogic.Tier.FINE)
+        )
+        assertEquals(
+            listOf(LocationManager.NETWORK_PROVIDER),
+            LocationEngine.seedProvidersForTier(LocationLogic.Tier.COARSE)
+        )
+        assertEquals(
+            emptyList<String>(),
+            LocationEngine.seedProvidersForTier(LocationLogic.Tier.NONE)
+        )
     }
 }

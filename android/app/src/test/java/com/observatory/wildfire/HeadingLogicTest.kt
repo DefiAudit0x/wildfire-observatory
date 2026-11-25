@@ -39,7 +39,8 @@ class HeadingLogicTest {
         assertEquals(350.0, HeadingLogic.normalizeDeg(-10.0), 1e-9)
         assertEquals(0.0, HeadingLogic.normalizeDeg(360.0), 1e-9)
         assertEquals(15.0, HeadingLogic.normalizeDeg(375.0), 1e-9)
-        assertTrue(HeadingLogic.normalizeDeg(-720.0) in 0.0..360.0)
+        assertEquals(0.0, HeadingLogic.normalizeDeg(-720.0), 1e-9)
+        assertEquals(350.0, HeadingLogic.normalizeDeg(-370.0), 1e-9)
     }
 
     // Fix 21 (NHEAD-1): the first real sample after a null previous

@@ -68,7 +68,21 @@ class GeoMathTest {
         val route = listOf(36.70 to 3.00, 36.70 to 3.10, 36.72 to 3.20)
         val nearMiddleLeg = 36.71 to 3.05
         val d = GeoMath.minDistanceToPolylineM(nearMiddleLeg.first, nearMiddleLeg.second, route)
-        assertTrue("expected < 10km, got $d", d < 10_000.0)
+        assertEquals(
+            GeoMath.pointSegmentDistanceM(36.71, 3.05, 36.70, 3.00, 36.70, 3.10),
+            d, 50.0
+        ) // ~1105 m to the near leg; the far leg is ~4597 m, so a wrong-leg pick fails
+    }
+
+    @Test
+    fun `min distance to polyline finds nearest leg when it is last`() {
+        val route = listOf(36.70 to 3.00, 36.70 to 3.10, 36.72 to 3.20)
+        val nearLastLeg = 36.715 to 3.15 // ~537 m from leg 2, ~4761 m from leg 1
+        val d = GeoMath.minDistanceToPolylineM(nearLastLeg.first, nearLastLeg.second, route)
+        assertEquals(
+            GeoMath.pointSegmentDistanceM(36.715, 3.15, 36.70, 3.10, 36.72, 3.20),
+            d, 50.0
+        )
     }
 
     // Fix 22 (NMAP-1): the clearance is the min distance between the ROAD

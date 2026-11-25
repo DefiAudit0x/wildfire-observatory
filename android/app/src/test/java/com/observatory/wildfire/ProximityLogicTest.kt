@@ -71,8 +71,10 @@ class ProximityLogicTest {
 
         val km = ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(poisonedNaN, poisonedRange, freshValid, freshCloser), now)
         org.junit.Assert.assertNotNull(km)
-        org.junit.Assert.assertTrue(km!!.isFinite())
-        org.junit.Assert.assertTrue(km < ProximityLogic.nearestFreshKm(36.8, 7.6, listOf(freshValid), now)!!)
+        assertEquals(
+            TeamLocationLogic.haversineMeters(36.8, 7.6, 36.79, 7.61) / 1000.0,
+            km!!, 0.05
+        ) // ~1.425 km to freshCloser; 0.0 or the 7.122 km freshValid distance both fail
     }
 
     @Test

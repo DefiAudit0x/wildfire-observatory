@@ -128,6 +128,20 @@ class LocationLogicTest {
     }
 
     @Test
+    fun `choose best lets accuracy overturn a near tie within fifteen seconds`() {
+        val olderAccurate = fix(ageMs = 10_000, accuracyM = 5f)   // score 10_000 + 5_000 = 15_000
+        val fresherCoarse = fix(ageMs = 5_000, accuracyM = 80f)   // score 5_000 + 15_000 = 20_000
+        assertEquals(5f, LocationLogic.chooseBest(listOf(olderAccurate, fresherCoarse), now)?.accuracyM)
+    }
+
+    @Test
+    fun `choose best freshness wins beyond the fifteen second tie window`() {
+        val olderAccurate = fix(ageMs = 20_000, accuracyM = 5f)   // score 20_000 + 5_000 = 25_000
+        val fresherCoarse = fix(ageMs = 5_000, accuracyM = 80f)   // score 5_000 + 15_000 = 20_000
+        assertEquals(80f, LocationLogic.chooseBest(listOf(olderAccurate, fresherCoarse), now)?.accuracyM)
+    }
+
+    @Test
     fun `choose best drops nonfinite and ancient`() {
         val nan = LocationLogic.FixSnapshot(Double.NaN, 3.0, 10f, now - 1_000, "gps")
         val ancient = fix(ageMs = LocationLogic.FIX_STALE_DROP_MS + 60_000)
