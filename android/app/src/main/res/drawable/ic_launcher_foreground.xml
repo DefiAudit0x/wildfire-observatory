@@ -2,7 +2,7 @@
 <!-- v2.16.0 brand launcher glyph: the observatory mark — a white shield
      carrying a stylised tree, with the orange "observation network" nodes on
      the shield's trailing edge — over the brand-green adaptive background
-     (@color/ic_launcher_background = #006233). Safe zone: 66dp centred. -->
+     (@color/ic_launcher_background = #1B5E20). Safe zone: 66dp centred. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
