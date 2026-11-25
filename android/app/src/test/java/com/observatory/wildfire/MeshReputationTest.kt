@@ -38,6 +38,9 @@ class MeshReputationTest {
         assertTrue(before === after)
         assertEquals(60, after.reputation)
         assertEquals(1000L, after.firstSeen)
+        // Repeat sight refreshes NOTHING (MeshReputation.kt:62–66): lastSeen
+        // stays at the scoring update's 2000, not the repeat sight's 3000.
+        assertEquals(2000L, after.lastSeen)
     }
 
     @Test
@@ -129,10 +132,36 @@ class MeshReputationTest {
             val key = "KEY_$i"
             r.sight(key, now = i.toLong() + 1)
         }
-        r.capRecords()
         assertEquals(MeshReputation.MAX_DEVICE_RECORDS, r.deviceRecords.size)
         for (i in 0 until 5) assertFalse(r.known("KEY_$i"))
         for (i in 5 until total) assertTrue(r.known("KEY_$i"))
+    }
+
+    @Test
+    fun capEvictionUsesLastSeenNotFirstSeen() {
+        val r = MeshReputation()
+        // KEY_0 is the OLDEST by creation, but a scoring refresh moves
+        // its lastSeen far ahead — the cap must evict by lastSeen, not
+        // firstSeen.
+        r.sight("KEY_0", now = 1L)
+        for (i in 1 until MeshReputation.MAX_DEVICE_RECORDS) {
+            r.sight("KEY_$i", now = i.toLong() + 1)
+        }
+        // Scoring refresh: reputation unchanged (delta 0), lastSeen moves.
+        r.update("KEY_0", 0, now = 2000L)
+        assertEquals(2000L, r.deviceRecords["KEY_0"]!!.lastSeen)
+        assertEquals(1L, r.deviceRecords["KEY_0"]!!.firstSeen)
+        // Five more sights force five evictions; the five
+        // least-recently-SEEN keys (KEY_1..KEY_5, lastSeen 2..6) must go,
+        // not the refreshed KEY_0.
+        for (i in 0 until 5) {
+            r.sight("KEY_${MeshReputation.MAX_DEVICE_RECORDS + i}", now = 2001L + i)
+        }
+        assertEquals(MeshReputation.MAX_DEVICE_RECORDS, r.deviceRecords.size)
+        assertTrue(r.known("KEY_0"))
+        for (i in 1..5) assertFalse(r.known("KEY_$i"))
+        for (i in 6 until MeshReputation.MAX_DEVICE_RECORDS) assertTrue(r.known("KEY_$i"))
+        for (i in 0 until 5) assertTrue(r.known("KEY_${MeshReputation.MAX_DEVICE_RECORDS + i}"))
     }
 
     @Test
