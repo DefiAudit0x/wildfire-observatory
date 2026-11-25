@@ -100,6 +100,7 @@ describe("validateDataset", () => {
     );
     try {
       validateDataset("reports", [validReport, { id: "x" }]);
+      throw new Error("expected a DatasetValidationError");
     } catch (err) {
       expect((err as DatasetValidationError).reason).toBe("malformed-item");
     }

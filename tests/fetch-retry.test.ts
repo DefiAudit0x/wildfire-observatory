@@ -40,8 +40,12 @@ describe("fetchWithRetry retry policy", () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // wait #2: 3s (after second 503)
-    await vi.advanceTimersByTimeAsync(3000);
+    // wait #2: 3s (after second 503) — the delay ESCALATES: at the
+    // halfway mark (t=3000) the third call must NOT have fired yet.
+    // A constant 1500 ms schedule fires it at t=3000 and fails here.
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1500);
     expect(fetchMock).toHaveBeenCalledTimes(3);
     await expect(promise).resolves.toHaveProperty("status", 200);
     vi.useRealTimers();

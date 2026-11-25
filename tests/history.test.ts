@@ -51,6 +51,14 @@ describe("GET /api/history", () => {
     const dates = res.body.buckets.map((b: { date: string }) => b.date);
     const sorted = [...dates].sort();
     expect(dates).toEqual(sorted);
+    // One distinct date per day: a duplicated date is already sorted,
+    // so sortedness alone cannot catch a collapsed series.
+    expect(new Set(dates).size).toBe(dates.length);
+    // And no day may be missing: each bucket must follow the previous
+    // by exactly one day.
+    for (let i = 1; i < dates.length; i++) {
+      expect(Date.parse(dates[i]) - Date.parse(dates[i - 1])).toBe(24 * 60 * 60 * 1000);
+    }
   });
 
   it("counts non-negative numbers", async () => {

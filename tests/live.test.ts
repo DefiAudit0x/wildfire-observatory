@@ -21,4 +21,20 @@ describe("live websocket connection identity", () => {
   it("falls back to the socket address when forwarding metadata is absent", () => {
     expect(connectionKey(request(undefined, "::1"))).toBe("::1");
   });
+
+  it("ignores X-Forwarded-For from a direct client (untrusted peer)", () => {
+    expect(connectionKey(request("198.51.100.99", "203.0.113.7"))).toBe("203.0.113.7");
+  });
+
+  it("ignores a whole forwarded chain from a direct client", () => {
+    expect(connectionKey(request("198.51.100.99, 203.0.113.42", "203.0.113.7"))).toBe("203.0.113.7");
+  });
+
+  it("still honors the header from a private-network proxy peer (Render)", () => {
+    expect(connectionKey(request("198.51.100.99, 203.0.113.42", "10.0.0.5"))).toBe("203.0.113.42");
+  });
+
+  it("honors the header from an IPv6 loopback peer", () => {
+    expect(connectionKey(request("198.51.100.99", "::1"))).toBe("198.51.100.99");
+  });
 });

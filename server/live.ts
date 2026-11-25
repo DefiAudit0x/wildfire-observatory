@@ -21,17 +21,42 @@ function originAllowed(origin: string | undefined): boolean {
 }
 
 /**
- * Express is configured for one trusted reverse-proxy hop. Such a proxy appends
- * the immediate client address to the right of X-Forwarded-For; a client can
- * prepend arbitrary values. Taking the right-most forwarded value therefore
- * avoids keying this limiter by a spoofable left-most value.
+ * The raw upgrade path bypasses Express, so `trust proxy` never
+ * applies here: X-Forwarded-For is honored ONLY when the immediate
+ * peer is a trusted reverse proxy. In this deployment the proxy is
+ * either local (loopback) or inside the platform's private network
+ * (Render fronts the app with its own proxy); a direct client
+ * arrives with a public socket address and must never control the
+ * limiter key. Taking the right-most forwarded value is correct
+ * ONLY behind that trusted hop — it stops a client spoofing the
+ * left-most value, but trusting the header from an untrusted peer
+ * would let a direct client pick ANY limiter key (rotate keys to
+ * dodge the cap, or impersonate a victim's IP to get them capped).
+ * The ranges are checked explicitly (RFC 1918): a library
+ * "is private" predicate also matches documentation ranges.
  */
+function isTrustedProxyPeer(address: string | undefined): boolean {
+  if (!address) return false;
+  if (address === "::1") return true;
+  const v4 = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+  const parts = v4.split(".");
+  if (parts.length !== 4 || parts.some((p) => !/^\d+$/.test(p))) return false;
+  const [a, b] = parts.map(Number);
+  if (a === 127) return true; // loopback 127/8
+  if (a === 10) return true; // RFC 1918 10/8
+  if (a === 172 && b >= 16 && b <= 31) return true; // RFC 1918 172.16/12
+  if (a === 192 && b === 168) return true; // RFC 1918 192.168/16
+  return false;
+}
+
 export function connectionKey(req: IncomingMessage): string {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string") {
-    const entries = forwarded.split(",").map((value) => value.trim()).filter(Boolean);
-    const clientIp = entries.at(-1);
-    if (clientIp) return clientIp;
+  if (isTrustedProxyPeer(req.socket.remoteAddress)) {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string") {
+      const entries = forwarded.split(",").map((value) => value.trim()).filter(Boolean);
+      const clientIp = entries.at(-1);
+      if (clientIp) return clientIp;
+    }
   }
   return req.socket.remoteAddress || "unknown";
 }
