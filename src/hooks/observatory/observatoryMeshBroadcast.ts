@@ -38,18 +38,27 @@ function guardedCoords(latLike: unknown, lngLike: unknown): { lat: number; lng: 
   return { lat, lng };
 }
 
-/** Fan-out of a report the SERVER accepted (its normalized copy, never PII). */
-export function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): void {
-  if (!isMeshSupported()) return;
+/** Fan-out of a report the SERVER accepted (its normalized copy, never PII). Returns whether the mesh accepted the broadcast. */
+export function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown }): boolean {
+  if (!isMeshSupported()) return false;
   try {
     const coords = guardedCoords(reportLike.lat, reportLike.lng);
-    if (!coords) return;
+    if (!coords) return false;
     // Mesh uses an allow-list: reporter name, phone, badge, image, and any
     // future form fields never cross the mesh boundary accidentally.
     const meshPayload = toMeshSafeReport(reportLike as Record<string, unknown>);
-    broadcastMessage(JSON.stringify(meshPayload), "report", coords.lat, coords.lng);
+    const payload = JSON.stringify(meshPayload);
+    // Fix 56b: broadcastMessage rejects plaintext above the 190 KiB mesh
+    // ceiling — the server already holds this report, so the mesh copy is
+    // best-effort gossip, but the rejection must not pass silently.
+    if (!broadcastMessage(payload, "report", coords.lat, coords.lng)) {
+      console.warn("Mesh broadcast rejected (oversize): report not fanned out", payload.length);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
+    return false;
   }
 }
 
@@ -59,15 +68,26 @@ export function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown
  * (meshRelay). The payload is shaped like a pending report — the same
  * contract receivers' gates enforce — and never carries PII.
  */
-export function broadcastFailedReportToMesh(payload: CitizenReportPayload): void {
-  if (!isMeshSupported()) return;
+export function broadcastFailedReportToMesh(payload: CitizenReportPayload): boolean {
+  if (!isMeshSupported()) return false;
   try {
     const coords = guardedCoords(payload.lat, payload.lng);
-    if (!coords) return;
+    if (!coords) return false;
     const pending = buildLocalPendingReport(payload);
     const meshPayload = toMeshSafeReport(pending as unknown as Record<string, unknown>);
-    broadcastMessage(JSON.stringify(meshPayload), "report", coords.lat, coords.lng);
+    const meshJson = JSON.stringify(meshPayload);
+    // Fix 56b: broadcastMessage rejects plaintext above the 190 KiB mesh
+    // ceiling — for this path the mesh copy was the fallback delivery
+    // route, so the rejection must not pass silently. The report content
+    // itself survives in the user's offline draft; the caller already
+    // surfaces the submission error.
+    if (!broadcastMessage(meshJson, "report", coords.lat, coords.lng)) {
+      console.warn("Mesh broadcast rejected (oversize): failed report not fanned out", meshJson.length);
+      return false;
+    }
+    return true;
   } catch (err) {
     console.error("Mesh broadcast failed:", err);
+    return false;
   }
 }
