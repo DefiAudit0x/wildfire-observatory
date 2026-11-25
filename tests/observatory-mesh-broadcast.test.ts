@@ -42,6 +42,9 @@ describe("observatory mesh broadcast (Fix 56b)", () => {
     const report = { lat: 36.75, lng: 3.05, description: "test" };
     expect(broadcastReportToMesh(report)).toBe(false);
     expect(warn).toHaveBeenCalled();
+    // Fix 56c: the warning must not label every rejection as oversize —
+    // the bridge carries no rejection reason.
+    expect(warn.mock.calls[0][0]).not.toContain("oversize");
   });
 
   it("broadcastFailedReportToMesh returns true when the mesh accepts the report", () => {
@@ -67,5 +70,7 @@ describe("observatory mesh broadcast (Fix 56b)", () => {
     };
     expect(broadcastFailedReportToMesh(payload)).toBe(false);
     expect(warn).toHaveBeenCalled();
+    // Fix 56c: same as above — no "(oversize)" label.
+    expect(warn.mock.calls[0][0]).not.toContain("oversize");
   });
 });
