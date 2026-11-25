@@ -385,6 +385,27 @@ describe("TeamPanel — native FGS integration", () => {
     expect(screen.getByText(/SOS #/)).toBeTruthy();
     expect(screen.getByText(/آخر نبضة:/)).toBeTruthy();
 
+    // the adoption is pinned on the NEW id, not the generic card: the default
+    // probe already supplies sos-77 in the same phase, so a bare "SOS #" match
+    // would pass without adopting sos-99 at all.
+    const sosSpan = screen.getByText(/SOS #sos-99/);
+    expect(sosSpan).toBeInTheDocument();
+    // the mission payload's timestamp refreshes with the beat: the card shows
+    // the since-time the beat carried, computed with the same formatter the
+    // component uses (self-consistent in this process).
+    expect(sosSpan.textContent).toContain(new Date(5000).toLocaleTimeString("ar-DZ"));
+    // the last-beat line refreshes too (P12): capture it, let a real second
+    // boundary pass, dispatch a second beat carrying a newer since, and
+    // require BOTH timestamps to move. A 1200 ms gap guarantees a different
+    // displayed second (toLocaleTimeString has 1 s resolution).
+    const lastBeatLine = screen.getByText(/آخر نبضة:/).closest("p")!.textContent;
+    await new Promise((r) => setTimeout(r, 1200));
+    window.dispatchEvent(new CustomEvent("teamTrackingState", {
+      detail: { state: "beat", missionJson: '{"sosId":"sos-99","phase":"en_route","since":3605000}' },
+    }));
+    await waitFor(() => expect(screen.getByText(/SOS #sos-99/).textContent).toContain(new Date(3605000).toLocaleTimeString("ar-DZ")));
+    expect(screen.getByText(/آخر نبضة:/).closest("p")!.textContent).not.toBe(lastBeatLine);
+
     // the server clears the mission: a null payload clears the stale card
     window.dispatchEvent(new CustomEvent("teamTrackingState", { detail: { state: "beat" } }));
     await waitFor(() => expect(screen.getByText(/لا توجد مهمة موجهة إليك حالياً/)).toBeTruthy());
@@ -524,23 +545,33 @@ describe("TeamPanel — native FGS integration", () => {
     expect(stopTeamTracking).toHaveBeenCalledTimes(1);
   });
 
-  it("re-creates the loop when the server re-paces the interval (P7d: heartbeatIntervalMs ≠ 15s)", async () => {
-    // /heartbeat always answers 30s: the loop must honor the re-pace by
-    // re-creating itself — observable as an immediate re-tick (beat #2) right
-    // after beat #1. A loop that ignores the answer stays at exactly 1 beat
-    // here (its next would come at the stale 15s cadence).
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url === "/api/teams/session") return jsonRes(200, { ...SESSION, mission: null, heartbeatIntervalMs: 15000 });
-      if (url === "/api/teams/heartbeat") return jsonRes(200, { ok: true, heartbeatIntervalMs: 30000, mission: null });
-      return jsonRes(404, { error: "no route" });
-    });
-    seedSession();
-    const beatCalls = () => fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/heartbeat").length;
-    render(<TeamPanel lang="ar" />);
-    await waitFor(() => expect(beatCalls()).toBe(2));
-    // and no leaked 15s timer fires another beat in the window
-    await new Promise((r) => setTimeout(r, 300));
-    expect(beatCalls()).toBe(2);
+  it("re-creates the loop on the server's 30s pace: no beat at 15s, a beat at 30s (P7d)", async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === "/api/teams/session") return jsonRes(200, { ...SESSION, mission: null, heartbeatIntervalMs: 15000 });
+        if (url === "/api/teams/heartbeat") return jsonRes(200, { ok: true, heartbeatIntervalMs: 30000, mission: null });
+        return jsonRes(404, { error: "no route" });
+      });
+      seedSession();
+      const beatCalls = () => fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/heartbeat").length;
+      render(<TeamPanel lang="ar" />);
+      // Drive the mount probe + immediate beats with microtask flushes; no
+      // waitFor under fake timers (it deadlocks — lesson (b)).
+      for (let i = 0; i < 20 && beatCalls() < 2; i++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      }
+      expect(beatCalls()).toBe(2);
+      // Boundary 1: a loop that always schedules 15s fires here — the 30s
+      // loop must stay silent.
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(beatCalls()).toBe(2);
+      // Boundary 2: the 30s interval fires its beat now.
+      await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
+      expect(beatCalls()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -644,6 +675,13 @@ describe("TeamPanel — Phase 3 auto-arrival (JS loop)", () => {
     expect(body.accuracy).toBe(8);
     // the mission card reflects the confirmed arrival
     await waitFor(() => expect(screen.getByText(/في موقع الحادث/)).toBeTruthy());
+    // ONE flip, counted: the title promises a single evidence flip, so pin
+    // the ledger — a second identical phase request must not hide behind
+    // the first one's evidence. The settle window covers any duplicate
+    // fired in the same tick; the next loop beat is 10 s away.
+    await new Promise((r) => setTimeout(r, 300));
+    const phaseCalls = fetchMock.mock.calls.filter(([u]: any[]) => u === "/api/teams/mission/phase");
+    expect(phaseCalls).toHaveLength(1);
   });
 
   it("never flips while the fixes stay outside the radius", async () => {
