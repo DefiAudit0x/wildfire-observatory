@@ -98,7 +98,17 @@ class MeshService : Service() {
         const val PEER_STALE_MS = MeshPeerRegistry.PEER_STALE_MS
         const val FORWARDED_MARKER_TTL_MS = MeshQueue.FORWARDED_MARKER_TTL_MS
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
-        const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
+        // Fix 56 (NWIRE-1): the wire ceiling is 256 KiB for the WHOLE frame
+        // (MeshWire.MAX_DECOMPRESSED_BODY_BYTES), but AES-GCM adds a 16-byte
+        // tag and base64 expands the ciphertext by 4/3 before frame metadata
+        // is added — a 256 KiB plaintext cannot fit the wire (196608 bytes
+        // already yields 262168 base64 chars before any metadata). 190 KiB
+        // is the largest round ceiling that always fits: base64 of
+        // 194560 + 16 bytes is 259436 chars; worst-case field-ceiling
+        // metadata adds at most 1348 chars; 259436 + 1348 = 260784 <= 262144
+        // (margin 1360 bytes). The largest sendable plaintext is 195581 bytes.
+        // 192 KiB does NOT work (196608 -> 262168 chars before metadata).
+        const val MAX_PLAINTEXT_BYTES = 190 * 1024 // 190 KB
         const val MAX_BRIDGE_JSON_BYTES = 512 * 1024 // JSON envelope before parsing
 
         // Network-wide proof-of-work requirement: the receiver does NOT trust
@@ -1280,7 +1290,18 @@ class MeshService : Service() {
             Log.w(TAG, "Frame rejected before send (pipe in field): ${e.message}")
             return false
         }
-        val compressed = MeshWire.compress(json.toByteArray(Charsets.UTF_8))
+        val compressed = try {
+            MeshWire.compress(json.toByteArray(Charsets.UTF_8))
+        } catch (e: IllegalArgumentException) {
+            // Fix 56 (NWIRE-1): the compress require fires when a frame
+            // exceeds the wire ceiling — a local defect, never a peer fault.
+            // Drop the frame here instead of letting the require propagate
+            // to the per-peer catch in trickleTick, which would quarantine
+            // an innocent peer. The message stays queued and retries until
+            // its 10-minute TTL expires (bounded; unreachable after D1).
+            Log.w(TAG, "Frame rejected before send (oversize): ${e.message}")
+            return false
+        }
         val payload = Payload.fromBytes(compressed)
         // Attribute the outgoing transfer outcome to this message + endpoint
         // (audit round 12: the binding now carries the endpointId so a peer
