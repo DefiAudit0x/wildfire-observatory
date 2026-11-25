@@ -16,9 +16,11 @@ class RiskScoreTest {
     fun `verified critical outweighs pending critical`() {
         val verified = RiskScore.score(listOf("critical" to true), 0)
         val pending = RiskScore.score(listOf("critical" to false), 0)
-        assertEquals(RiskScore.W_VERIFIED_CRITICAL, verified)
-        // Math.round half-UP: 25 * 0.5 = 12.5 → 13.
-        assertEquals(Math.round(RiskScore.W_VERIFIED_CRITICAL * RiskScore.PENDING_FACTOR).toInt(), pending)
+        // Pin the documented arithmetic as literals: 25 * 0.5 = 12.5 → 13
+        // (Math.round half-UP). Deriving the expectation from the production
+        // constants would pass even if both drifted from 0.5.
+        assertEquals(25, verified)
+        assertEquals(13, pending)
         assertTrue(verified > pending)
     }
 
