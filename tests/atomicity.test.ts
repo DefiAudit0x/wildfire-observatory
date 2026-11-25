@@ -261,6 +261,8 @@ describe("atomic persistence helpers", () => {
     const result = await createVolunteerRegistrationAtomically(registration("reg-new"), uniquenessKeys);
     expect(result).toBe("created");
     expect(state.docs.get("volunteerRegistrationUniqueness/phone-phone-hash")?.registrationId).toBe("reg-new");
+    expect(state.docs.get("volunteerRegistrationUniqueness/email-email-hash")?.registrationId).toBe("reg-new");
+    expect(state.docs.get("volunteerRegistrationUniqueness/name-name-hash:Bordj Bou Arreridj")?.registrationId).toBe("reg-new");
   });
 
   it("allows the same name and wilaya after the 30-day window expires", async () => {

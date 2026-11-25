@@ -10,6 +10,15 @@ import { generateAdminToken } from "../server/middleware.js";
 // value"). These tests assert the boundary at both layers: the pure sanitizer
 // and the two routes whose default admin-UI flow used to 503.
 
+function hasUndefinedDeep(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (Array.isArray(value)) return value.some(hasUndefinedDeep);
+  if (value !== null && typeof value === "object") {
+    return Object.values(value as Record<string, unknown>).some(hasUndefinedDeep);
+  }
+  return false;
+}
+
 const fsMock = vi.hoisted(() => ({
   collectionGet: vi.fn(async (..._a: any[]) => [] as any),
   docGet: vi.fn(async (..._a: any[]) => null as any),
@@ -37,14 +46,22 @@ import volunteersRouter from "../server/routes/volunteers.js";
 describe("stripUndefinedDeep (Firestore boundary sanitizer)", () => {
   it("drops undefined object keys at any depth", () => {
     const input = { a: 1, b: undefined, c: { d: undefined, e: 2, f: { g: undefined } } };
-    expect(stripUndefinedDeep(input)).toEqual({ a: 1, c: { e: 2, f: {} } });
+    const result = stripUndefinedDeep(input);
+    expect(result).toEqual({ a: 1, c: { e: 2, f: {} } });
+    expect("b" in result).toBe(false);
+    expect(Object.keys(result.c)).toEqual(["e", "f"]);
+    expect("d" in result.c).toBe(false);
+    expect(Object.keys(result.c.f)).toEqual([]);
   });
 
   it("drops undefined array members without changing order of the rest", () => {
     expect(stripUndefinedDeep([1, undefined, "x", undefined, 3])).toEqual([1, "x", 3]);
-    expect(stripUndefinedDeep({ list: [{ a: 1 }, undefined, { b: undefined }] })).toEqual({
-      list: [{ a: 1 }, {}],
-    });
+    const nested = stripUndefinedDeep({ list: [{ a: 1 }, undefined, { b: undefined }] });
+    expect(nested).toEqual({ list: [{ a: 1 }, {}] });
+    // The toEqual above already pins list[1] to {}; the guard only
+    // satisfies the type checker (noUncheckedIndexedAccess).
+    const second = nested.list[1];
+    expect(second !== undefined && "b" in second).toBe(false);
   });
 
   it("passes primitives, null and class instances through untouched", () => {
@@ -84,8 +101,9 @@ describe("ARC-C2: badge creation with empty optional fields", () => {
       maxUses: null,
       expiresAt: null,
     });
-    const written = JSON.stringify(atomicMock.lastCreated);
-    expect(written).not.toContain("undefined");
+    // JSON.stringify drops undefined-valued properties, so a string
+    // scan cannot detect them — walk the payload's own keys instead.
+    expect(hasUndefinedDeep(atomicMock.lastCreated)).toBe(false);
   });
 });
 
