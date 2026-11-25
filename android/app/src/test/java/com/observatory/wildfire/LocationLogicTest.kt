@@ -1,6 +1,7 @@
 package com.observatory.wildfire
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -9,8 +10,11 @@ class LocationLogicTest {
 
     private val now = 5_000_000_000L
 
+    // Fix 52: fixtures carry a REAL reported accuracy (hasAccuracy = true) —
+    // the accuracy values below are measurements, and the chooseBest
+    // tie-break tests depend on them scoring as measured, not as unknown.
     private fun fix(ageMs: Long, accuracyM: Float = 10f) = LocationLogic.FixSnapshot(
-        36.75, 3.05, accuracyM, now - ageMs, "gps"
+        36.75, 3.05, accuracyM, now - ageMs, "gps", hasAccuracy = true
     )
 
     @Test
@@ -51,11 +55,59 @@ class LocationLogicTest {
             LocationLogic.Status.SEARCHING,
             LocationLogic.computeStatus(true, true, true, lastFixAgeMs = LocationLogic.FIX_STALE_DROP_MS + 1)
         )
-        // Negative age = hostile clock — not a fix.
+        // Fix 52 (NLOGL-2): a small negative age is inside the shared 60 s
+        // skew window chooseBest and isFreshFix already allow — FIXED.
         assertEquals(
-            LocationLogic.Status.SEARCHING,
+            LocationLogic.Status.FIXED,
             LocationLogic.computeStatus(true, true, true, lastFixAgeMs = -5_000L)
         )
+    }
+
+    // Fix 52 (NLOGL-2): the status machine accepts the shared skew window.
+    @Test
+    fun `status accepts negative age inside skew window`() {
+        assertEquals(
+            LocationLogic.Status.FIXED,
+            LocationLogic.computeStatus(true, true, true, lastFixAgeMs = -30_000L)
+        )
+    }
+
+    // Fix 52 (NLOGL-2): beyond the 60 s skew allowance the fix is rejected.
+    @Test
+    fun `status rejects negative age beyond skew window`() {
+        assertEquals(
+            LocationLogic.Status.SEARCHING,
+            LocationLogic.computeStatus(true, true, true, lastFixAgeMs = -61_000L)
+        )
+    }
+
+    // Fix 52 (NLOC-1): an unknown-accuracy snapshot scores the maximum
+    // tie-break penalty, so a measured fix wins an equal-freshness tie.
+    @Test
+    fun `unknown accuracy loses freshness tie to measured fix`() {
+        val unknown = fix(ageMs = 5_000, accuracyM = 0f).copy(hasAccuracy = false)
+        val measured = fix(ageMs = 5_000, accuracyM = 5f)
+        assertEquals(5f, LocationLogic.chooseBest(listOf(unknown, measured), now)?.accuracyM)
+    }
+
+    // Fix 52 (NLOC-1): unknown accuracy is a penalty, not a disqualifier —
+    // alone, or strictly fresher by more than the 15 s tie-break cap, it
+    // is still the best fix in hand.
+    @Test
+    fun `unknown accuracy still selectable alone or when strictly fresher`() {
+        val unknown = fix(ageMs = 5_000, accuracyM = 0f).copy(hasAccuracy = false)
+        assertEquals(unknown, LocationLogic.chooseBest(listOf(unknown), now))
+        val fresherUnknown = fix(ageMs = 1_000, accuracyM = 0f).copy(hasAccuracy = false)
+        val olderMeasured = fix(ageMs = 20_000, accuracyM = 5f)
+        assertEquals(fresherUnknown, LocationLogic.chooseBest(listOf(olderMeasured, fresherUnknown), now))
+    }
+
+    // Fix 52 (NLOC-1): the flag defaults to false and copy preserves it.
+    @Test
+    fun `hasAccuracy defaults false`() {
+        val snapshot = LocationLogic.FixSnapshot(36.75, 3.05, 0f, now - 1_000, "gps")
+        assertFalse(snapshot.hasAccuracy)
+        assertTrue(snapshot.copy(hasAccuracy = true).hasAccuracy)
     }
 
     @Test

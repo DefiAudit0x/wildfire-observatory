@@ -132,7 +132,10 @@ class SosFragment : Fragment() {
             // says the age, as the header policy promises.
             fix != null -> {
                 val ageS = ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt()
-                getString(R.string.sos_location_fmt, fix.lat, fix.lng, fix.accuracyM.toInt(), ageS)
+                // Fix 52 (NLOC-1): a fix without reported accuracy shows
+                // "unknown", never "0 m".
+                val accText = if (fix.hasAccuracy) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
+                getString(R.string.sos_location_fmt, fix.lat, fix.lng, accText, ageS)
             }
             state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
             else -> getString(R.string.gps_searching)

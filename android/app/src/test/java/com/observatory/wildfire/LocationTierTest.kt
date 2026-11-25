@@ -50,6 +50,25 @@ class LocationTierTest {
         )
     }
 
+    // Fix 52 (NLOGL-1): COARSE has exactly one usable provider (NETWORK) —
+    // GPS on + network off leaves NO provider to listen to.
+    @Test
+    fun `coarse tier with gps on but network off is providers off`() {
+        assertEquals(
+            LocationLogic.Status.PROVIDERS_OFF,
+            LocationLogic.computeStatus(LocationLogic.Tier.COARSE, gpsEnabled = true, networkEnabled = false, lastFixAgeMs = null)
+        )
+    }
+
+    // Fix 52 (NLOGL-1): the tier rule never demotes a fix already in hand.
+    @Test
+    fun `coarse tier with gps on but network off still reports a held fix`() {
+        assertEquals(
+            LocationLogic.Status.FIXED,
+            LocationLogic.computeStatus(LocationLogic.Tier.COARSE, gpsEnabled = true, networkEnabled = false, lastFixAgeMs = 10_000L)
+        )
+    }
+
     @Test
     fun `legacy boolean form maps to FINE or NONE`() {
         assertEquals(
