@@ -79,6 +79,26 @@ class MeshWireTest {
     }
 
     @Test
+    fun compressFallsBackToRawFramingWhenDeflateCannotFit() {
+        // Incompressible input larger than the compressed cap: deflate
+        // cannot shrink it below MAX_COMPRESSED_BODY_BYTES (128 KiB), so
+        // compress must emit the RAW fallback — magic + FLAG_RAW +
+        // verbatim bytes — never a truncated deflate stream or raw bytes
+        // under the DEFLATE flag. (Verified: seeded random ASCII, 200_000
+        // bytes, deflates to ~166 KiB — 35 KiB over the cap.)
+        val random = java.util.Random(42)
+        val data = ByteArray(200_000) { (random.nextInt(95) + 0x20).toByte() }
+        val encoded = MeshWire.compress(data)
+        assertEquals(0x4D.toByte(), encoded[0])
+        assertEquals(0x43.toByte(), encoded[1])
+        assertEquals(0x01.toByte(), encoded[2]) // FLAG_RAW (private const)
+        assertEquals(3 + data.size, encoded.size)
+        assertTrue(encoded.copyOfRange(3, encoded.size).contentEquals(data))
+        // And the fallback frame still round-trips through the receiver.
+        assertEquals(String(data, Charsets.UTF_8), MeshWire.decompress(encoded))
+    }
+
+    @Test
     fun unknownCompressionFlagIsRejected() {
         val badFlag = byteArrayOf(0x4D, 0x43, 0x7F, 0x00)
         assertNull(MeshWire.decompress(badFlag))
@@ -167,11 +187,26 @@ class MeshWireTest {
 
     @Test
     fun frameToJsonThrowsOnPipeInAnyField() {
-        try {
-            MeshWire.frameToJson(sampleFrame().copy(messageId = "a|b"))
-            fail("frameToJson must reject pipe-carrying fields")
-        } catch (e: IllegalArgumentException) {
-            // expected
+        // Every pipe-carrying field must be rejected by the PRODUCER — a
+        // producer check limited to messageId would satisfy the old
+        // single-field test while the other six fields sailed through.
+        // (frameToJson checks fields.any { it.contains('|') }; the numeric
+        // fields can never carry a pipe, so only the seven string fields
+        // are exercised — the same seven the parse side pins at indices
+        // 1, 2, 3, 4, 6, 7, 9.)
+        val withPipe = listOf(
+            "messageId" to sampleFrame().copy(messageId = "a|b"),
+            "type" to sampleFrame().copy(type = "a|b"),
+            "payloadB64" to sampleFrame().copy(payloadB64 = "a|b"),
+            "iv" to sampleFrame().copy(iv = "a|b"),
+            "origEphemeralId" to sampleFrame().copy(origEphemeralId = "a|b"),
+            "origPublicKey" to sampleFrame().copy(origPublicKey = "a|b"),
+            "signature" to sampleFrame().copy(signature = "a|b")
+        )
+        for ((field, frame) in withPipe) {
+            assertThrows(field, IllegalArgumentException::class.java) {
+                MeshWire.frameToJson(frame)
+            }
         }
     }
 

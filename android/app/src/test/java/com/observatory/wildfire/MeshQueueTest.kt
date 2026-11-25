@@ -180,6 +180,7 @@ class MeshQueueTest {
         assertEquals(1, counts["msgB"])
         assertFalse(counts.containsKey("msgC"))
         assertFalse(counts.containsKey(""))
+        assertFalse(counts.containsKey("noColon"))
     }
 
     @Test
