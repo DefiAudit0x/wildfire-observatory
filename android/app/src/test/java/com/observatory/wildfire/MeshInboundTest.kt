@@ -32,15 +32,15 @@ class MeshInboundTest {
 
     private fun canonicalB64(bytes: ByteArray): String = Base64.getEncoder().encodeToString(bytes)
 
-    private fun solvedNonce(messageId: String, ephemeralId: String, diff: Int = difficulty): Int =
+    private fun solvedNonce(messageId: String, ephemeralId: String, nonce: Int = 7, diff: Int = difficulty): Int =
         MeshWire.ProofOfWork.solve(
-            MeshWire.ProofOfWork.wirePrefix(messageId, ephemeralId),
+            MeshWire.ProofOfWork.wirePrefix(messageId, ephemeralId, nonce),
             diff
         ) ?: throw AssertionError("PoW solve unexpectedly exhausted")
 
-    /** Deterministic nonce that FAILS verification for this (messageId, ephemeralId) pair. */
-    private fun failingNonce(messageId: String, ephemeralId: String, diff: Int = difficulty): Int {
-        val prefix = MeshWire.ProofOfWork.wirePrefix(messageId, ephemeralId)
+    /** Deterministic nonce that FAILS verification for this (messageId, ephemeralId, nonce) triple. */
+    private fun failingNonce(messageId: String, ephemeralId: String, nonce: Int = 7, diff: Int = difficulty): Int {
+        val prefix = MeshWire.ProofOfWork.wirePrefix(messageId, ephemeralId, nonce)
         var n = 0
         while (MeshWire.ProofOfWork.verify(prefix, n, diff)) n++
         return n
@@ -51,10 +51,10 @@ class MeshInboundTest {
         type: String = MeshInbound.TYPE_REPORT,
         payloadB64: String = canonicalB64("plaintext-payload".toByteArray()),
         timestamp: Long = now,
-        powNonce: Int = solvedNonce(messageId, "EPH_1"),
+        nonce: Int = 7,
+        powNonce: Int = solvedNonce(messageId, "EPH_1", nonce),
         powDifficulty: Int = difficulty,
-        hopsLeft: Int = 3,
-        nonce: Int = 7
+        hopsLeft: Int = 3
     ): MeshWire.Frame =
         MeshWire.Frame(
             protocolVersion = MeshWire.PROTOCOL_VERSION,
@@ -226,6 +226,33 @@ class MeshInboundTest {
 
     @Test
     fun sameMessageDifferentNonceHashesApart() {
+        val inb = inbound()
+        assertTrue(evaluate(frame(nonce = 7), inbound = inb) is MeshInbound.Verdict.Accepted)
+        assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
+        assertEquals(2, inb.seenMessageHashes.size)
+    }
+
+    // ---- Fix 55 (NIN-1): the PoW challenge binds the anti-replay nonce ----
+
+    @Test
+    fun samePowNonceDoesNotAdmitADifferentNonce() {
+        val inb = inbound()
+        // nonce 7 with its own solved PoW: accepted.
+        assertTrue(evaluate(frame(nonce = 7), inbound = inb) is MeshInbound.Verdict.Accepted)
+        // nonce 8 carrying the SAME powNonce: the PoW was solved for nonce 7,
+        // so verification must fail with the POW penalty — and the frame
+        // must NOT enter the seen-cache.
+        val second = evaluate(
+            frame(nonce = 8, powNonce = solvedNonce("msg-1", "EPH_1", 7)),
+            inbound = inb
+        )
+        assertEquals(MeshInbound.RejectReason.POW, (second as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(MeshReputation.REPUTATION_BAD_POW, second.penalty)
+        assertEquals(1, inb.seenMessageHashes.size)
+    }
+
+    @Test
+    fun differentNonceWithItsOwnSolvedPowIsAccepted() {
         val inb = inbound()
         assertTrue(evaluate(frame(nonce = 7), inbound = inb) is MeshInbound.Verdict.Accepted)
         assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
