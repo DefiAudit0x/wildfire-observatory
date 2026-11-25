@@ -81,6 +81,14 @@ object LocationLogic {
         lastFixAgeMs: Long?
     ): Status {
         if (permissionTier == Tier.NONE) return Status.NO_PERMISSION
+        // Fix 52b (NLOGL-1): a usable fix already in hand is never demoted
+        // by the providers-off verdict — while the fix is inside the shared
+        // freshness window (Fix 52 NLOGL-2: -CLOCK_SKEW_MS..FIX_STALE_DROP_MS)
+        // the honest verdict is FIXED, even if the providers have since been
+        // switched off. Only when there is no usable fix does the tier-aware
+        // providers-off rule apply.
+        val age = lastFixAgeMs
+        if (age != null && age in -CLOCK_SKEW_MS..FIX_STALE_DROP_MS) return Status.FIXED
         // Fix 52 (NLOGL-1): COARSE has exactly one usable provider (NETWORK) —
         // a coarse user with GPS on but network off has NO provider to listen
         // to, so the verdict is PROVIDERS_OFF, not SEARCHING.
@@ -89,11 +97,7 @@ object LocationLogic {
             else -> !gpsEnabled && !networkEnabled
         }
         if (providersOff) return Status.PROVIDERS_OFF
-        val age = lastFixAgeMs ?: return Status.SEARCHING
-        // Fix 52 (NLOGL-2): the status machine accepts the same 60 s skew
-        // window chooseBest and isFreshFix already allow — a fix seconds
-        // ahead is FIXED, not SEARCHING until the wall clock catches up.
-        return if (age in -CLOCK_SKEW_MS..FIX_STALE_DROP_MS) Status.FIXED else Status.SEARCHING
+        return Status.SEARCHING
     }
 
     /** Legacy boolean form — a `true` here always meant FINE. Kept for the
