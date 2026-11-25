@@ -304,6 +304,27 @@ class MeshInboundTest {
         assertTrue(inb.seenTripleCounts.containsKey("triple-fresh"))
     }
 
+    // ---- Fix 55e: budget map cap ----
+
+    @Test
+    fun tripleBudgetMapRejectsUnseenTriplesAtCapacity() {
+        // The budget map is capped — at capacity, unseen triples are
+        // rejected, but triples already tracked keep their budget.
+        val inb = inbound()
+        repeat(MeshInbound.MAX_SEEN_HASHES) { i ->
+            inb.seenTripleCounts["triple-$i"] = MeshInbound.TripleAdmission(1, System.currentTimeMillis())
+        }
+        val unseen = evaluate(frame(nonce = 7), inbound = inb)
+        assertTrue(unseen is MeshInbound.Verdict.Rejected)
+        assertEquals(MeshInbound.RejectReason.REPLAY, (unseen as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(0, inb.seenMessageHashes.size)
+        // A triple already in the map is still admitted at capacity.
+        val knownHash = MeshWire.seenTripleHash("msg-1", 8)
+        inb.seenTripleCounts[knownHash] = MeshInbound.TripleAdmission(1, System.currentTimeMillis())
+        assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
+        assertEquals(1, inb.seenMessageHashes.size)
+    }
+
     @Test
     fun seenCapEvictsOldestEntry() {
         val inb = MeshInbound({ true }, { null })
