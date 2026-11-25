@@ -124,7 +124,7 @@ class ObservatoryFragment : Fragment() {
         // order, only the stop positions differ. Corner radius matches
         // the old drawable's 99dp.
         val trackBackground = GradientDrawable(
-            GradientDrawable.Orientation.LEFT_TO_RIGHT,
+            GradientDrawable.Orientation.LEFT_RIGHT,
             intArrayOf(
                 RiskScore.bandColor(10),
                 RiskScore.bandColor(30),
