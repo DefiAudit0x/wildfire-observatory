@@ -124,6 +124,12 @@ class RadarV2Test {
         )
         assertTrue("arc radius left $left", abs(left / 1000.0 - RadarV2.coneRadiusKm()) < 0.2)
         assertTrue("arc radius right $right", abs(right / 1000.0 - RadarV2.coneRadiusKm()) < 0.2)
+        // Bearings pin the opening angle: endpoints at drift ± 22° (68° / 112°),
+        // mid-arc on the drift axis (90°). A cone with a different half-angle
+        // but the same radius passes the radius checks above and fails here.
+        assertEquals(90.0, GeoMath.bearingDeg(center.first, center.second, mid.first, mid.second), 1.0)
+        assertEquals(68.0, GeoMath.bearingDeg(center.first, center.second, pts[1].first, pts[1].second), 1.0)
+        assertEquals(112.0, GeoMath.bearingDeg(center.first, center.second, pts.last().first, pts.last().second), 1.0)
     }
 
     // ---------- route ranking (safety-first) ----------
