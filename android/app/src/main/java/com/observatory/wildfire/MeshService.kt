@@ -81,6 +81,16 @@ class MeshService : Service() {
         fun nextTrickleDelayMs(isSleeping: Boolean, trickleInterval: Long): Long =
             if (isSleeping) SLEEP_INTERVAL else trickleInterval
 
+        /**
+         * Fix 56b: the relay admission gate measures DECODED bytes, but the
+         * queued plaintext is re-encoded as UTF-8 — invalid bytes decode to
+         * U+FFFD (3 bytes each), so the re-encoded length can exceed the
+         * gate. Pure so it is JVM-testable (the service itself is
+         * Android-only); the REENCRYPT branch uses it before queueing.
+         */
+        fun reencodedPlaintextFits(plainBytes: ByteArray): Boolean =
+            String(plainBytes, Charsets.UTF_8).toByteArray(Charsets.UTF_8).size <= MAX_PLAINTEXT_BYTES
+
         const val EPHEMERAL_ROTATION_MS = 60 * 60 * 1000L
         const val SLEEP_IDLE_THRESHOLD = 120_000L  // 2 min no activity → sleep mode
         const val SLEEP_INTERVAL = 10_000L         // scan every 10s in sleep
@@ -709,8 +719,21 @@ class MeshService : Service() {
                 MeshQueue.RelayMode.REENCRYPT -> {
                     // relayMode returns REENCRYPT only when decrypted != null.
                     val plainBytes = decrypted
+                    val plaintext = plainBytes?.let { String(it, Charsets.UTF_8) }
+                    // Fix 56b: the decoded byte gate below is not enough —
+                    // invalid UTF-8 decodes to U+FFFD (3 bytes each when
+                    // re-encoded), so the re-encoded plaintext can exceed
+                    // the ceiling while the decoded bytes pass the gate.
+                    // Without this check the entry is dropped at send time
+                    // on every tick without ever advancing its TTL clock
+                    // (sweepExpiredMessages never expires a never-attempted
+                    // entry), pinning a queue slot until cap eviction. The
+                    // verbatim fallback carries the original ciphertext,
+                    // already wire-valid when received, so it always fits.
                     if (plainBytes == null || plainBytes.size > MAX_PLAINTEXT_BYTES ||
-                        !enqueueReencryptedRelay(payload, String(plainBytes, Charsets.UTF_8))
+                        plaintext == null ||
+                        !reencodedPlaintextFits(plainBytes) ||
+                        !enqueueReencryptedRelay(payload, plaintext)
                     ) {
                         enqueueVerbatimRelay(payload)
                     }
@@ -1297,8 +1320,12 @@ class MeshService : Service() {
             // exceeds the wire ceiling — a local defect, never a peer fault.
             // Drop the frame here instead of letting the require propagate
             // to the per-peer catch in trickleTick, which would quarantine
-            // an innocent peer. The message stays queued and retries until
-            // its 10-minute TTL expires (bounded; unreachable after D1).
+            // an innocent peer. Defense in depth only: admission gates
+            // (broadcastMessage, the 56b re-encoded relay check) keep
+            // every queued frame under the ceiling, so this fires only if
+            // frame metadata grows later. A dropped entry is retried on
+            // every tick without advancing its TTL clock (a never-attempted
+            // entry never expires — bounded only by the queue cap).
             Log.w(TAG, "Frame rejected before send (oversize): ${e.message}")
             return false
         }
