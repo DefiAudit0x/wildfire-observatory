@@ -221,12 +221,18 @@ object MeshWire {
     }
 
     /**
-     * The canonical anti-replay hash over (messageId, nonce) with EXPLICIT framing: the
-     * naive concatenation was ambiguous — ("ab", 12) and ("ab1", 2) both
-     * produce "ab12". Length-prefixing makes distinct messages hash apart.
+     * The canonical anti-replay hash over (messageId, nonce, payload) with
+     * EXPLICIT framing: the naive concatenation was ambiguous — ("ab", 12)
+     * and ("ab1", 2) both produce "ab12". Length-prefixing makes distinct
+     * messages hash apart.
+     *
+     * Fix 55c: the payload is part of the key — per-peer encrypted copies
+     * share (messageId, nonce) but carry distinct ciphertexts, so a copy a
+     * peer cannot decrypt must not poison the cache for its own decryptable
+     * copy. An identical frame still hashes identically (true replay).
      */
-    fun seenMessageHash(messageId: String, nonce: Int): String =
-        sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
+    fun seenMessageHash(messageId: String, nonce: Int, payloadB64: String): String =
+        sha256Hex("${messageId.length}:$messageId:${nonce.toString().length}:$nonce:${payloadB64.length}:$payloadB64")
 
     /**
      * Canonical coordinate serialization (audit round 12): micro-degrees,

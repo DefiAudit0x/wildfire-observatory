@@ -239,6 +239,15 @@ object CryptoEngine {
                     "Legacy stored identity unusable — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)", e
                 )
             }
+        } else if (legacyPrivB64 != null || legacyPubB64 != null) {
+            // Fix 55c: an incomplete legacy pair (only one half present) is
+            // unusable too — flag it so the fallback preserves what exists
+            // and records the regeneration.
+            legacyCorrupt = true
+            android.util.Log.w(
+                "CryptoEngine",
+                "Legacy stored identity incomplete (only one half present) — policy REGENERATE_AFTER_CORRUPTION (kept on disk for forensics)"
+            )
         }
 
         // Primary path for NEW installs: Android Keystore (API 26+, minSdk
@@ -296,11 +305,11 @@ object CryptoEngine {
         if (legacyCorrupt) {
             // Fix 55 (NCRYPTO-1): the corrupt legacy material is KEPT for
             // forensics (v2.16.0 policy REGENERATE_AFTER_CORRUPTION) — copy
-            // it to forensic keys BEFORE the fresh pair overwrites the
-            // primary keys. These keys are write-only retention; nothing
-            // ever reads them.
-            edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
-                .putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
+            // each existing legacy value to its forensic key BEFORE the
+            // fresh pair overwrites the primary keys. These keys are
+            // write-only retention; nothing ever reads them.
+            if (legacyPubB64 != null) edit.putString(IDENTITY_PUB_KEY + "_corrupt", legacyPubB64)
+            if (legacyPrivB64 != null) edit.putString(IDENTITY_PRIV_KEY + "_corrupt", legacyPrivB64)
         }
         val committed = edit
             .putString(IDENTITY_PUB_KEY, Base64.encodeToString(fresh.public.encoded, Base64.NO_WRAP))

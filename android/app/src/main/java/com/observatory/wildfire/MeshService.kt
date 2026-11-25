@@ -165,7 +165,14 @@ class MeshService : Service() {
         connectionsClient = Nearby.getConnectionsClient(this)
         createNotificationChannel()
         startForeground()
-        initCrypto()
+        // Fix 55c: identity storage is fail-closed (a failed commit throws)
+        // — contain it here so a storage failure stops the service instead
+        // of killing the process. No mesh runs without an identity.
+        if (!initCrypto()) {
+            Log.e(TAG, "MeshService cannot start: identity initialization failed — stopping")
+            stopSelf()
+            return
+        }
         // Audit round 12: rotateEphemeralId() restarts Nearby presence with
         // the fresh key name (stop + start advertising/discovery). The old
         // sequence then called startDiscovery()/startAdvertising() AGAIN —
@@ -221,7 +228,7 @@ class MeshService : Service() {
     // INITIALIZATION
     // ========================
 
-    private fun initCrypto() {
+    private fun initCrypto(): Boolean {
         // Provider note (v1.0.3 field crash): the old code tried to insert the
         // bundled full BouncyCastle provider at priority 1 here. On Android
         // that call ALWAYS no-ops — Security.insertProviderAt returns -1
@@ -232,7 +239,18 @@ class MeshService : Service() {
         // stripped provider and MeshService.onCreate died with
         // NoSuchAlgorithmException. CryptoEngine no longer pins any provider
         // (see its class kdoc): Conscrypt resolves the full algorithm set.
-        CryptoEngine.initialize(applicationContext)
+        //
+        // Fix 55c: identity initialization is fail-closed and may throw (a
+        // failed storage commit throws in loadOrCreateIdentityKeyPair) — a
+        // throw here means there is no identity, so report it and let the
+        // caller stop the service instead of crashing the process.
+        return try {
+            CryptoEngine.initialize(applicationContext)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "CryptoEngine initialization failed — service cannot start without an identity", e)
+            false
+        }
     }
 
     private fun createNotificationChannel() {

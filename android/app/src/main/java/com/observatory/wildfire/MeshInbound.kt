@@ -172,7 +172,10 @@ class MeshInbound(
         // recording (messageId + nonce) BEFORE the PoW + signature checks
         // let a forged invalid frame poison the cache and block the valid
         // one (audit). Only authenticated frames may enter the seen-cache.
-        val msgHash = MeshWire.seenMessageHash(payload.messageId, payload.nonce)
+        // Fix 55c: the key also covers the payload — per-peer encrypted
+        // copies share (messageId, nonce) with distinct ciphertexts, so an
+        // undecryptable copy must not block the intended copy.
+        val msgHash = MeshWire.seenMessageHash(payload.messageId, payload.nonce, payload.payloadB64)
         // Atomic admission prevents two concurrent Nearby callbacks from
         // accepting the same authenticated frame at the same time.
         if (seenMessageHashes.putIfAbsent(msgHash, now) != null) {
