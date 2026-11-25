@@ -118,8 +118,8 @@ class MapFragment : Fragment() {
             (nowMs - lastUserFixMs) <= LocationLogic.FIX_FRESH_MS
     // F11: recenter discipline. The old onFix called animateTo on EVERY
     // fix, fighting the user's free pan. Recentering now happens only on
-    // the first fix, when the user walks their marker OUT of the visible
-    // window, or when the recenter button is pressed.
+    // the first fresh fix or when the recenter button is pressed; follow mode
+    // rides every fresh fix. A manual pan is never undone by an incoming fix.
     private var firstFixSeen = false
 
     // S4 radar state.
@@ -282,7 +282,9 @@ class MapFragment : Fragment() {
                 "CartoVoyager-rt-${key.takeLast(6)}", 1, 19, 256, ".png?key=$key",
                 arrayOf("https://basemaps.cartocdn.com/rastertiles/voyager/")
             )
-            mv2.setTileSource(cartoSource)
+            // Fix 53 (NMAP-4): a tap while the config was pending already
+            // switched to satellite — a late street source must not yank it back.
+            if (!satelliteActive) mv2.setTileSource(cartoSource)
             streetSource = cartoSource
             mv2.invalidate()
         }
@@ -338,16 +340,13 @@ class MapFragment : Fragment() {
             mv.controller.animateTo(point)
         }
         // F11 residual: no fix was ever seen (cold start) → first jump still
-        // applies even without follow; leaving follow ON afterwards.
-        if (!firstFixSeen) {
+        // applies on the first FRESH fix even without follow; leaving follow ON afterwards.
+        // Fix 53b: the one-shot must not be spent by a stale startup fix —
+        // gating on fresh keeps the initial recenter for the first fix that
+        // can actually position the map (CodeRabbit 4688548974).
+        if (!firstFixSeen && fresh) {
             firstFixSeen = true
-            if (!followMode && fresh) mv.controller.animateTo(point)
-        }
-        val box = mv.boundingBox
-        val outsideView = box == null || !box.contains(point)
-        if (!followMode && outsideView && fresh) {
-            programmaticMoveUntilMs = System.currentTimeMillis() + ANIMATE_SUPPRESS_MS
-            mv.controller.animateTo(point)
+            if (!followMode) mv.controller.animateTo(point)
         }
         // Status line now names the wilaya — offline-safe nearest-centroid.
         // Fix 20 (NMAP-3): a stale fix is labelled stale, never presented
@@ -370,8 +369,7 @@ class MapFragment : Fragment() {
     /** Arrow rotation: GPS course while moving, compass when standing. */
     private fun updateUserMarkerRotation(fix: LocationLogic.FixSnapshot? = app.locationEngine.currentFix()) {
         val marker = userMarker ?: return
-        val heading = fix?.bearingDeg ?: currentHeadingDeg ?: return
-        marker.rotation = heading.toFloat()
+        marker.rotation = LocationLogic.displayBearing(fix, currentHeadingDeg, System.currentTimeMillis())?.toFloat() ?: return
     }
 
     /** Street ⇄ Esri World Imagery. Esri tiles are z/y/x ordered — the

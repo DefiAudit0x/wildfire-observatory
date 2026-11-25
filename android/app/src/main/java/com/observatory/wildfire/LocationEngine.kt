@@ -238,7 +238,10 @@ class LocationEngine(private val context: Context) : LocationListener {
         timeMs = loc.time,
         provider = loc.provider ?: "unknown",
         approximate = tier == LocationLogic.Tier.COARSE,
-        bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null
+        bearingDeg = if (loc.hasBearing()) loc.bearing.toDouble() else null,
+        // Fix 53 (NMAP-5): speed travels with the fix (TeamLocationService
+        // precedent) so the map arrow can tell moving from standing.
+        speedMps = if (loc.hasSpeed()) loc.speed else null
     )
 
     private fun publish(state: LocationLogic.Status) {
