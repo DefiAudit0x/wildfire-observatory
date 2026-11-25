@@ -51,8 +51,12 @@ export function broadcastReportToMesh(reportLike: { lat?: unknown; lng?: unknown
     // Fix 56b: broadcastMessage rejects plaintext above the 190 KiB mesh
     // ceiling — the server already holds this report, so the mesh copy is
     // best-effort gossip, but the rejection must not pass silently.
+    // Fix 56c: the warning must not say "(oversize)" — broadcastMessage
+    // also returns false for a PoW failure or a native error, and the
+    // bridge carries no rejection reason; mislabeling those as oversize
+    // would send troubleshooting toward payload size instead.
     if (!broadcastMessage(payload, "report", coords.lat, coords.lng)) {
-      console.warn("Mesh broadcast rejected (oversize): report not fanned out", payload.length);
+      console.warn("Mesh broadcast rejected: report not fanned out", payload.length);
       return false;
     }
     return true;
@@ -81,8 +85,11 @@ export function broadcastFailedReportToMesh(payload: CitizenReportPayload): bool
     // route, so the rejection must not pass silently. The report content
     // itself survives in the user's offline draft; the caller already
     // surfaces the submission error.
+    // Fix 56c: same as above — no "(oversize)" label; the bridge carries
+    // no rejection reason, and a PoW failure or native error is not a
+    // size rejection.
     if (!broadcastMessage(meshJson, "report", coords.lat, coords.lng)) {
-      console.warn("Mesh broadcast rejected (oversize): failed report not fanned out", meshJson.length);
+      console.warn("Mesh broadcast rejected: failed report not fanned out", meshJson.length);
       return false;
     }
     return true;
