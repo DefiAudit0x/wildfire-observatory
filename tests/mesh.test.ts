@@ -49,6 +49,7 @@ describe("mesh hub", () => {
   afterAll(() => {
     clients.forEach((c) => { try { c.close(); } catch { /* ignore */ } });
     return new Promise<void>((resolve) => {
+      if (!server) { resolve(); return; }
       server.close(() => resolve());
       server.closeAllConnections?.();
     });
@@ -58,19 +59,38 @@ describe("mesh hub", () => {
     server = http.createServer();
     meshHub.attach(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const nodeA = await connectClient(server, "node-A");
+    clients.push(nodeA);
+    // connectClient resolves on socket open, before the hello is
+    // processed — wait until A's joined broadcast for B proves the
+    // pair is established, or a stale B-join would resolve the
+    // registration test's own listener first.
+    const joinedB = waitForMessage(nodeA, "node:joined");
+    clients.push(await connectClient(server, "node-B"));
+    await joinedB;
   });
 
   it("registers nodes and broadcasts node:joined to peers", async () => {
-    const nodeA = await connectClient(server, "node-A");
-    clients.push(nodeA);
+    const nodeA = clients[0];
+    const nodeB = clients[1];
 
-    const joined = waitForMessage(nodeA, "node:joined");
-    const nodeB = await connectClient(server, "node-B");
-    clients.push(nodeB);
+    // Both listeners attach BEFORE node-C hellos: the joined
+    // broadcast for C reaches a node only if that node is already
+    // registered, so awaiting both proves A and B are established.
+    const joinedA = waitForMessage(nodeA, "node:joined");
+    const joinedB = waitForMessage(nodeB, "node:joined");
+    const nodeC = await connectClient(server, "node-C");
+    clients.push(nodeC);
 
-    const joinedMessage = await joined;
-    expect(joinedMessage.node).toEqual(expect.objectContaining({ id: "node-B" }));
-    expect(joinedMessage.nodeCount).toBe(2);
+    const [joinedMessage] = await Promise.all([joinedA, joinedB]);
+    expect(joinedMessage.node).toEqual(expect.objectContaining({ id: "node-C" }));
+    expect(joinedMessage.nodeCount).toBe(3);
+
+    // Leave exactly the beforeAll pair behind for the later cases.
+    const closed = new Promise<void>((resolve) => { nodeC.on("close", () => resolve()); });
+    nodeC.close();
+    await closed;
+    expect(meshHub.getNodeCount()).toBe(2);
   });
 
   it("relays report:new from one node to all other nodes — with trust fields STRIPPED (v2.15.0)", async () => {
@@ -168,6 +188,11 @@ describe("mesh hub", () => {
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Server not listening");
 
+    // Replacement keeps the node count: capture it first, because the
+    // third node (subject-from-token) exists only when the identity
+    // test ran before this one — in isolation the count is 2.
+    const countBefore = meshHub.getNodeCount();
+
     const oldClosed = new Promise<void>((resolve) => {
       nodeA.on("close", () => resolve());
     });
@@ -181,8 +206,8 @@ describe("mesh hub", () => {
     await oldClosed;
     const welcomeMessage = await welcome;
     expect(welcomeMessage.deviceId).toBe("node-A");
-    expect(welcomeMessage.nodeCount).toBe(3); // node-A (replaced) + node-B + subject-from-token
-    expect(meshHub.getNodeCount()).toBe(3);
+    expect(welcomeMessage.nodeCount).toBe(countBefore); // replacement, not an addition
+    expect(meshHub.getNodeCount()).toBe(countBefore);
   });
   it("ignores non-object frames before mesh hello and accepts the following hello", async () => {
     const address = server.address();

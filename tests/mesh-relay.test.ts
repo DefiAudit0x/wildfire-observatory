@@ -136,6 +136,13 @@ describe("recipient-side key rotation (audit round 12)", () => {
     // Rotate: a second initMesh() retires the old key pair.
     await initMesh();
 
+    // The rotation must actually have happened: the advertised key
+    // changes. Without this, a build that reuses the first key
+    // decrypts fine and the test passes without exercising
+    // retired-key fallback at all.
+    const rotatedKey = getLocalPublicKeyBase64();
+    expect(rotatedKey).not.toBe(myKey);
+
     // The message encrypted under the OLD generation must still decrypt:
     // decryptFromPeer tries the current key first, then each retired key.
     const decrypted = await decryptFromPeer(encrypted!);
@@ -174,7 +181,14 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
 
   it("rejects a payload missing required description length (server schema mirror)", () => {
     const bad = envelope();
-    bad.payload = JSON.stringify({ locationName: "غابة", wilaya: "مل", description: "قصير" });
+    bad.payload = JSON.stringify({
+      locationName: "غابة",
+      wilaya: "الجزائر - الطارف",
+      description: "قصير",
+      severity: "medium",
+      reporterType: "citizen",
+      clientGeneratedId: "cg-mesh-payload-0002",
+    });
     expect(buildRelayedPayload(bad)).toBeNull();
   });
 
@@ -190,14 +204,28 @@ describe("buildRelayedPayload — mesh report envelope → API payload", () => {
     expect(buildRelayedPayload(envelope({ payload: 123 }))).toBeNull();
   });
 
-  it("rejects invalid severity/reporterType instead of clamping them silently", () => {
+  it("rejects an invalid severity instead of clamping it silently", () => {
     const e = envelope();
     e.payload = JSON.stringify({
       locationName: "غابة اختبار",
       wilaya: "الجزائر - الطارف",
       description: "حريق محدود في الأحراش قرب مسالك الغابة — اختبار ترحيل",
       severity: "catastrophic",
+      reporterType: "citizen",
+      clientGeneratedId: "cg-mesh-payload-0003",
+    });
+    expect(buildRelayedPayload(e)).toBeNull();
+  });
+
+  it("rejects an invalid reporterType instead of clamping it silently", () => {
+    const e = envelope();
+    e.payload = JSON.stringify({
+      locationName: "غابة اختبار",
+      wilaya: "الجزائر - الطارف",
+      description: "حريق محدود في الأحراش قرب مسالك الغابة — اختبار ترحيل",
+      severity: "medium",
       reporterType: "admin",
+      clientGeneratedId: "cg-mesh-payload-0004",
     });
     expect(buildRelayedPayload(e)).toBeNull();
   });

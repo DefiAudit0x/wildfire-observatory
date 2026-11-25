@@ -79,6 +79,11 @@ describe("mesh relay capacity recovery after reload", () => {
 
     const recovered = JSON.parse(storage.get("mesh_relay_queue") || "{}");
     expect(fetchMock).toHaveBeenCalled();
+    // The delivered item must be the protected one — not just any fetch:
+    // the first call's body is the flushed report (submitRelayOutcome
+    // POSTs JSON.stringify(report)), so it must carry the protected id.
+    const deliveredBody = JSON.parse(String(fetchMock.mock.calls[0][1].body)) as { clientGeneratedId?: unknown };
+    expect(deliveredBody.clientGeneratedId).toBe(protectedItem.report.clientGeneratedId);
     expect(recovered.pending.some((item: { report: { clientGeneratedId: string } }) =>
       item.report.clientGeneratedId === protectedItem.report.clientGeneratedId
     )).toBe(false);
