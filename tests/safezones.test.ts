@@ -43,6 +43,9 @@ describe("safe-zone persistence failures", () => {
 
   it("returns 503 when DELETE cannot persist", async () => {
     fsMock.collectionGet.mockResolvedValue([zoneTest]);
+    // The success test above already recorded a docDelete call; clear the
+    // mock history so this test's assertion reads only its own request.
+    fsMock.docDelete.mockClear();
     fsMock.docDelete.mockResolvedValueOnce(false);
     const res = await supertest(createApp())
       .delete("/api/safezones/zone-test")
@@ -50,6 +53,7 @@ describe("safe-zone persistence failures", () => {
 
     expect(res.status).toBe(503);
     expect(res.body.error).toContain("unavailable");
+    expect(fsMock.docDelete).toHaveBeenCalledTimes(1);
     expect(fsMock.docDelete).toHaveBeenCalledWith("safeZones", "zone-test");
   });
 });
