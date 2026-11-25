@@ -422,7 +422,10 @@ class ObservatoryFragment : Fragment() {
             val lng = m.lng ?: continue
             // Fix 53 (NOBS-3): stale mesh blips are not threats — same
             // 30-minute window the banner uses (ProximityLogic.isFresh).
-            if (!ProximityLogic.isFresh(m.tsMs, now)) continue
+            // Fix 54 (NPROX-1): mesh pins get the same coordinate check as
+            // the banner — a lat-360 pin must not render while the banner
+            // ignores it (Fix 53 follow-up (4)).
+            if (!ProximityLogic.isFresh(m.tsMs, now) || !ProximityLogic.isValidCoordinates(lat, lng)) continue
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, lat, lng, RadarModel.Kind.MESH_INTEL, m.text))
         }
         // Fix 21 (NOBS-2): a stale wind passes null (existing path in

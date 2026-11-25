@@ -10,10 +10,13 @@ package com.observatory.wildfire
  * OVERPASS moment, typically 10+ minutes before the app sees it — so the
  * freshness window is the same 30 minutes the web uses (isFreshThreatTimestamp),
  * never a "3 minutes ago" test that would reject every real hotspot forever.
+ * The future-skew allowance is the same 2 minutes the web allows
+ * (THREAT_MAX_FUTURE_SKEW_MS, mirrored from src/utils/threats.ts).
  */
 object ProximityLogic {
 
     const val THREAT_MAX_AGE_MS = 30 * 60_000L // mirrors THREAT_MAX_AGE_MS in src/utils/threats.ts
+    const val THREAT_MAX_FUTURE_SKEW_MS = 2 * 60_000L // mirrors THREAT_MAX_FUTURE_SKEW_MS in src/utils/threats.ts
 
     // Alert ladder (distance from the USER to the freshest threat).
     const val CRITICAL_KM = 2.0
@@ -24,12 +27,21 @@ object ProximityLogic {
 
     data class ThreatPin(val lat: Double, val lng: Double, val timestampMs: Long)
 
+    /**
+     * Physical coordinate ranges — THE shared validation contract for
+     * evaluate() and nearestFreshKm(). A latitude of 360 wraps through the
+     * pure-trig haversine to ~0 km, so range checks belong here, once,
+     * not in each caller (Fix 54, NPROX-1).
+     */
+    fun isValidCoordinates(lat: Double, lng: Double): Boolean =
+        lat.isFinite() && lng.isFinite() && lat in -90.0..90.0 && lng in -180.0..180.0
+
     fun isFresh(timestampMs: Long, nowMs: Long): Boolean {
         if (timestampMs <= 0L) return false
         val age = nowMs - timestampMs
         // Future timestamps beyond a small clock-skew allowance are hostile
         // data (garbled clocks), not "extra fresh".
-        if (age < -60_000L) return false
+        if (age < -THREAT_MAX_FUTURE_SKEW_MS) return false
         return age <= THREAT_MAX_AGE_MS
     }
 
@@ -47,7 +59,7 @@ object ProximityLogic {
         var best: Level? = null
         for (t in threats) {
             if (!isFresh(t.timestampMs, nowMs)) continue
-            if (!t.lat.isFinite() || !t.lng.isFinite()) continue
+            if (!isValidCoordinates(t.lat, t.lng)) continue
             val km = TeamLocationLogic.haversineMeters(userLat, userLng, t.lat, t.lng) / 1000.0
             val level = when {
                 km <= CRITICAL_KM -> Level.CRITICAL
@@ -70,13 +82,10 @@ object ProximityLogic {
         var best: Double? = null
         for (t in threats) {
             if (!isFresh(t.timestampMs, nowMs)) continue
-            // v2.15.0 audit fix: same validation contract as evaluate() — a
-            // NaN-coordinate pin made km = NaN, and since `km < NaN` is
-            // always false, one poisoned pin permanently returned NaN and
-            // rendered a literal "NaN" in the proximity banner.
-            if (!t.lat.isFinite() || !t.lng.isFinite() ||
-                t.lat < -90.0 || t.lat > 90.0 || t.lng < -180.0 || t.lng > 180.0
-            ) continue
+            // v2.15.0: same validation contract as evaluate() — see
+            // isValidCoordinates. A NaN-coordinate pin once made km = NaN
+            // and rendered a literal "NaN" in the proximity banner.
+            if (!isValidCoordinates(t.lat, t.lng)) continue
             val km = TeamLocationLogic.haversineMeters(userLat, userLng, t.lat, t.lng) / 1000.0
             if (!km.isFinite()) continue
             if (best == null || km < best) best = km
