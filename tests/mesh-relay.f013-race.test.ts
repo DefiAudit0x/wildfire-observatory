@@ -49,7 +49,21 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
       firstRequestStarted();
       await firstRelease;
-      return { status: 200, json: async () => ({}) } as Response;
+      return {
+        status: 200,
+        json: async () => ({
+          id: "srv-f013-first",
+          lat: first.lat,
+          lng: first.lng,
+          locationName: first.locationName,
+          wilaya: first.wilaya,
+          description: first.description,
+          severity: "medium",
+          status: "pending",
+          timestamp: new Date().toISOString(),
+          consensusCount: 1,
+        }),
+      } as Response;
     });
 
     const storage = globalThis.localStorage as ReturnType<typeof createMemoryStorage>;
@@ -80,6 +94,15 @@ describe("F-013 — flushQueue/enqueueRelay persistence races", () => {
     await expect(enqueueRelay(second)).resolves.toMatchObject({ accepted: true });
     releaseFirstRequest();
     await flush;
+
+    // The failed reconciliation is observable in durable storage: the
+    // delivered journal for the first item persisted, but the write
+    // that would have dropped it from pending did not — the newer item
+    // survives only in volatile authoritative storage.
+    const storedAfterFlush = JSON.parse(storage.getItem("mesh_relay_queue") || "{}");
+    expect(storedAfterFlush.journal.find((entry: { clientGeneratedId: string }) => entry.clientGeneratedId === first.clientGeneratedId)?.state)
+      .toBe("delivered");
+    expect(storedAfterFlush.pending).toHaveLength(2);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
