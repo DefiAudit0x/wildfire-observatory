@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
     fragment_map.xml — v2.20.0 NEO MAP (2025)
-    The map is now FULL-BLEED: the tile canvas fills the entire screen and
-    every control floats above it as glass. The 2024 layout (solid navy
-    header block, typed "+ − ◎ ⌖" zoom glyphs, full-width route bar) is gone.
+    The map fills the inset-padded fragment area: the tile canvas does NOT
+    extend beneath the system bars (NativeMainActivity pads the root with
+    the real system-bar/cutout/IME insets, so the map starts below the
+    status bar and ends above the navigation bar) — the 2024 "full-bleed"
+    claim was wrong. Every control floats above the map as glass. The 2024
+    layout (solid navy header block, typed "+ − ◎ ⌖" zoom glyphs,
+    full-width route bar) is gone.
     All android:id values preserved exactly for MapFragment.kt.
 -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
@@ -12,7 +16,7 @@
     android:layout_height="match_parent"
     android:background="@android:color/transparent">
 
-    <!-- The live map: edge-to-edge, no bars around it anymore -->
+    <!-- The live map: fills the fragment area inside the system-bar insets -->
     <org.osmdroid.views.MapView
         android:id="@+id/map_view"
         android:layout_width="match_parent"
