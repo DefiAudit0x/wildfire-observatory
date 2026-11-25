@@ -1035,7 +1035,12 @@ class MeshService : Service() {
                                 // back from the returned SecureMessage below.
                                 messageId = msg.messageId,
                                 type = msg.type,
-                                hopCount = msg.hopCount
+                                hopCount = msg.hopCount,
+                                // Fix 55b: pass the nonce the PoW was solved
+                                // over — sendToTarget transmits encrypted.nonce
+                                // with msg.powNonce, and the receiver rebuilds
+                                // the challenge from the transmitted nonce.
+                                nonce = msg.nonce
                             ).takeIf { it.ciphertext.isNotBlank() }
                                 ?: return@peerLoop // encryption failure: retry next window
                         } else null

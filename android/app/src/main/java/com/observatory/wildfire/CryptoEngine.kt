@@ -481,6 +481,12 @@ object CryptoEngine {
      * border-line rotation would yield an id/key mismatch that every peer
      * would reject. All of these are consistent because they derive from one
      * snapshot object.
+     *
+     * Fix 55b: the nonce is a caller-supplied parameter (default: a fresh
+     * draw) — the PoW challenge binds (messageId, ephemeralId, nonce), so
+     * the encryption MUST use the nonce the PoW was solved over. Drawing a
+     * fresh nonce here made every encrypted frame fail PoW at the receiver
+     * (sendToTarget transmits encrypted.nonce with msg.powNonce).
      */
     @Synchronized
     fun encryptForPeerWithSnapshot(
@@ -491,7 +497,8 @@ object CryptoEngine {
         lng: Double,
         messageId: String = "",
         type: String = "",
-        hopCount: Int = 0
+        hopCount: Int = 0,
+        nonce: Int = protocolRandom.nextInt()
     ): SecureMessage {
         // Wire-contract enforcement at the API boundary (audit round 12):
         // MeshWire.parseFrame rejects blank messageId/type and any non-zero
@@ -510,7 +517,6 @@ object CryptoEngine {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey, "AES"), GCMParameterSpec(GCM_TAG_LENGTH, iv))
         val ciphertext = cipher.doFinal(payload)
-        val nonce = protocolRandom.nextInt()
 
         // ONE timestamp for both the signature and the message (audit): a
         // second now-call between the two would desync the signed value from
