@@ -81,6 +81,16 @@ class MeshService : Service() {
         fun nextTrickleDelayMs(isSleeping: Boolean, trickleInterval: Long): Long =
             if (isSleeping) SLEEP_INTERVAL else trickleInterval
 
+        /**
+         * Fix 56b: the relay admission gate measures DECODED bytes, but the
+         * queued plaintext is re-encoded as UTF-8 — invalid bytes decode to
+         * U+FFFD (3 bytes each), so the re-encoded length can exceed the
+         * gate. Pure so it is JVM-testable (the service itself is
+         * Android-only); the REENCRYPT branch uses it before queueing.
+         */
+        fun reencodedPlaintextFits(plainBytes: ByteArray): Boolean =
+            String(plainBytes, Charsets.UTF_8).toByteArray(Charsets.UTF_8).size <= MAX_PLAINTEXT_BYTES
+
         const val EPHEMERAL_ROTATION_MS = 60 * 60 * 1000L
         const val SLEEP_IDLE_THRESHOLD = 120_000L  // 2 min no activity → sleep mode
         const val SLEEP_INTERVAL = 10_000L         // scan every 10s in sleep
@@ -98,7 +108,17 @@ class MeshService : Service() {
         const val PEER_STALE_MS = MeshPeerRegistry.PEER_STALE_MS
         const val FORWARDED_MARKER_TTL_MS = MeshQueue.FORWARDED_MARKER_TTL_MS
         // Maximum plaintext size before queueing (audit: prevent OOM via oversized payloads).
-        const val MAX_PLAINTEXT_BYTES = 256 * 1024 // 256 KB
+        // Fix 56 (NWIRE-1): the wire ceiling is 256 KiB for the WHOLE frame
+        // (MeshWire.MAX_DECOMPRESSED_BODY_BYTES), but AES-GCM adds a 16-byte
+        // tag and base64 expands the ciphertext by 4/3 before frame metadata
+        // is added — a 256 KiB plaintext cannot fit the wire (196608 bytes
+        // already yields 262168 base64 chars before any metadata). 190 KiB
+        // is the largest round ceiling that always fits: base64 of
+        // 194560 + 16 bytes is 259436 chars; worst-case field-ceiling
+        // metadata adds at most 1348 chars; 259436 + 1348 = 260784 <= 262144
+        // (margin 1360 bytes). The largest sendable plaintext is 195581 bytes.
+        // 192 KiB does NOT work (196608 -> 262168 chars before metadata).
+        const val MAX_PLAINTEXT_BYTES = 190 * 1024 // 190 KB
         const val MAX_BRIDGE_JSON_BYTES = 512 * 1024 // JSON envelope before parsing
 
         // Network-wide proof-of-work requirement: the receiver does NOT trust
@@ -699,8 +719,21 @@ class MeshService : Service() {
                 MeshQueue.RelayMode.REENCRYPT -> {
                     // relayMode returns REENCRYPT only when decrypted != null.
                     val plainBytes = decrypted
+                    val plaintext = plainBytes?.let { String(it, Charsets.UTF_8) }
+                    // Fix 56b: the decoded byte gate below is not enough —
+                    // invalid UTF-8 decodes to U+FFFD (3 bytes each when
+                    // re-encoded), so the re-encoded plaintext can exceed
+                    // the ceiling while the decoded bytes pass the gate.
+                    // Without this check the entry is dropped at send time
+                    // on every tick without ever advancing its TTL clock
+                    // (sweepExpiredMessages never expires a never-attempted
+                    // entry), pinning a queue slot until cap eviction. The
+                    // verbatim fallback carries the original ciphertext,
+                    // already wire-valid when received, so it always fits.
                     if (plainBytes == null || plainBytes.size > MAX_PLAINTEXT_BYTES ||
-                        !enqueueReencryptedRelay(payload, String(plainBytes, Charsets.UTF_8))
+                        plaintext == null ||
+                        !reencodedPlaintextFits(plainBytes) ||
+                        !enqueueReencryptedRelay(payload, plaintext)
                     ) {
                         enqueueVerbatimRelay(payload)
                     }
@@ -1280,7 +1313,22 @@ class MeshService : Service() {
             Log.w(TAG, "Frame rejected before send (pipe in field): ${e.message}")
             return false
         }
-        val compressed = MeshWire.compress(json.toByteArray(Charsets.UTF_8))
+        val compressed = try {
+            MeshWire.compress(json.toByteArray(Charsets.UTF_8))
+        } catch (e: IllegalArgumentException) {
+            // Fix 56 (NWIRE-1): the compress require fires when a frame
+            // exceeds the wire ceiling — a local defect, never a peer fault.
+            // Drop the frame here instead of letting the require propagate
+            // to the per-peer catch in trickleTick, which would quarantine
+            // an innocent peer. Defense in depth only: admission gates
+            // (broadcastMessage, the 56b re-encoded relay check) keep
+            // every queued frame under the ceiling, so this fires only if
+            // frame metadata grows later. A dropped entry is retried on
+            // every tick without advancing its TTL clock (a never-attempted
+            // entry never expires — bounded only by the queue cap).
+            Log.w(TAG, "Frame rejected before send (oversize): ${e.message}")
+            return false
+        }
         val payload = Payload.fromBytes(compressed)
         // Attribute the outgoing transfer outcome to this message + endpoint
         // (audit round 12: the binding now carries the endpointId so a peer

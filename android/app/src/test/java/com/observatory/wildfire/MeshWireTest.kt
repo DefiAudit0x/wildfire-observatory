@@ -501,4 +501,44 @@ class MeshWireTest {
             MeshWire.seenTripleHash("ab1", 2)
         )
     }
+
+    // ---------- Fix 56: wire size accounting (NWIRE-1) ----------
+
+    /** Worst-case frame at the plaintext ceiling: simulated ciphertext
+     * (plaintext + the 16-byte GCM tag) base64-encoded with padding — the
+     * same shape the send path produces — with every metadata field at its
+     * parse-side ceiling, so the bound holds under the strongest
+     * assumption, not under today's generator sizes. */
+    private fun maxPlaintextFrame(plaintextBytes: Int = MeshService.MAX_PLAINTEXT_BYTES): MeshWire.Frame =
+        sampleFrame().copy(
+            messageId = "m".repeat(64),
+            type = "t".repeat(32),
+            payloadB64 = java.util.Base64.getEncoder().encodeToString(ByteArray(plaintextBytes + 16)),
+            iv = "i".repeat(64),
+            origEphemeralId = "e".repeat(64),
+            origPublicKey = "k".repeat(512),
+            signature = "s".repeat(512)
+        )
+
+    @Test
+    fun maxAcceptedPlaintextAlwaysFitsTheWire() {
+        // Fix 56 (NWIRE-1): a frame carrying the largest accepted plaintext
+        // must fit the 256 KiB wire ceiling. Fails on old code by
+        // construction: MAX_PLAINTEXT_BYTES was 262144, so the payload
+        // alone was 349548 base64 chars and the frame ~350896 bytes.
+        MeshWire.compress(MeshWire.frameToJson(maxPlaintextFrame()).toByteArray())
+    }
+
+    @Test
+    fun oversizeFrameIsRejectedByCompress() {
+        // Guard test, not a finding test: passes on old code too — it pins
+        // the require's existence. One extra payload byte would not move
+        // the base64 length (quantization: 194576 bytes is 2 mod 3), so
+        // the frame carries 2048 extra bytes, which provably crosses the
+        // ceiling (payload 262168 chars before metadata).
+        val frame = maxPlaintextFrame(MeshService.MAX_PLAINTEXT_BYTES + 2048)
+        assertThrows(IllegalArgumentException::class.java) {
+            MeshWire.compress(MeshWire.frameToJson(frame).toByteArray())
+        }
+    }
 }
