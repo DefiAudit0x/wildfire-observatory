@@ -287,7 +287,6 @@ export async function createSosWithAdmission(
         const lastAcceptedAt = Number(existing.exists ? existing.data()?.acceptedAt : 0);
         if (lastAcceptedAt > 0 && acceptedAt - lastAcceptedAt < windowMs) return "duplicate";
 
-        tx.set(db.collection("trappedSos").doc(sosId), sosData);
         tx.set(admissionRef, {
           acceptedAt,
           expiresAt: acceptedAt + windowMs,
