@@ -10,6 +10,13 @@ test.describe("Smoke tests", () => {
     await page.goto("/");
     await page.click('button:has-text("المرصد والخريطة")');
     await expect(page.locator("#map-target").first()).toBeAttached({ timeout: 15000 });
+    // Fix 79 (NTESTSMOKE-1): #map-target is rendered unconditionally by
+    // InteractiveMap, so attachment alone proves nothing about the map.
+    // Leaflet must actually initialize inside the container: panes are
+    // created by L.map, and the zoom control exists only when the map was
+    // constructed with zoomControl: true. Neither needs network tiles.
+    await expect(page.locator("#map-target .leaflet-pane").first()).toBeAttached({ timeout: 15000 });
+    await expect(page.locator("#map-target .leaflet-control-zoom").first()).toBeVisible({ timeout: 15000 });
   });
 
   test("API health endpoint returns OK", async ({ request }) => {
