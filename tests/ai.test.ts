@@ -1,9 +1,15 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import type { ReportsDbResult } from "../server/db.js";
+import type { Report } from "../src/types.js";
+
+const { getReportsDbResult } = vi.hoisted(() => ({
+  getReportsDbResult: vi.fn<() => Promise<ReportsDbResult>>(),
+}));
 
 vi.mock("../server/db.js", () => ({
-  getReportsDbResult: async () => ({ status: "empty" }),
+  getReportsDbResult,
 }));
 
 vi.mock("../server/ai.js", () => ({
@@ -13,6 +19,12 @@ vi.mock("../server/ai.js", () => ({
 
 import { sanitizeForPrompt, distanceKm } from "../server/routes/ai.js";
 import aiRouter from "../server/routes/ai.js";
+import { getWilayaCentroid } from "../server/geo.js";
+
+beforeEach(() => {
+  getReportsDbResult.mockReset();
+  getReportsDbResult.mockResolvedValue({ status: "empty" });
+});
 
 describe("sanitizeForPrompt", () => {
   it("strips zero-width and bidi control characters", () => {
@@ -74,6 +86,59 @@ describe("POST /api/ai/guidance", () => {
     return app;
   }
 
+  it.each([{}, { lang: "ar" }, { lang: "fr" }, { wilaya: "Unknown region", lang: "fr" }])(
+    "returns generic unknown guidance without a resolvable location: %j", async (body) => {
+      const res = await supertest(createAiApp()).post("/api/ai/guidance")
+        .set("x-forwarded-for", "203.0.113.20").send(body);
+      expect(res.status).toBe(200);
+      expect(res.body.guidance).toMatch(/حالة الحرائق غير معروفة|Situation des incendies inconnue/);
+      expect(res.body.guidance).toMatch(/الموقع غير محدد|Position inconnue/);
+      expect(res.body.guidance).not.toMatch(/المنطقة الشرقية|région de l'Est|Aucun signalement récent|لم نتلقَّ/);
+      expect(getReportsDbResult).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { body: { wilaya: "Rabat", lang: "fr" }, count: 1 },
+    { body: { lat: 36.8, lng: 7.5, lang: "fr" }, count: 2 },
+    { body: { lat: 36.8, lng: 7.5, wilaya: "Rabat", lang: "fr" }, count: 2 },
+  ])("counts incidents at the resolved or explicit coordinates: $body", async ({ body, count }) => {
+    const report: Report = {
+      id: "rabat", lat: 34.15, lng: -6.25, locationName: "Rabat", wilaya: "Rabat",
+      description: "Fire", severity: "critical", status: "pending",
+      timestamp: new Date().toISOString(), consensusCount: 0,
+    };
+    getReportsDbResult.mockResolvedValue({ status: "ok", reports: [
+      report,
+      { ...report, id: "east-1", lat: 36.8, lng: 7.5 },
+      { ...report, id: "east-2", lat: 36.8, lng: 7.5 },
+      { ...report, id: "resolved", status: "resolved" },
+      { ...report, id: "stale", timestamp: new Date(Date.now() - 3600000).toISOString() },
+    ] });
+    const res = await supertest(createAiApp()).post("/api/ai/guidance")
+      .set("x-forwarded-for", "203.0.113.21").send(body);
+    expect(res.status).toBe(200);
+    expect(res.body.guidance).toContain(`${count} signalements graves`);
+  });
+
+  it.each([{ lat: 34 }, { lng: -6 }, { lat: 34, wilaya: "Rabat" }])(
+    "rejects partial coordinates even with a wilaya: %j", async (body) => {
+      const res = await supertest(createAiApp()).post("/api/ai/guidance")
+        .set("x-forwarded-for", "203.0.113.22").send(body);
+      expect(res.status).toBe(400);
+      expect(getReportsDbResult).not.toHaveBeenCalled();
+    },
+  );
+
+  it("resolves known wilaya labels and unique aliases, without guessing unknown or ambiguous names", () => {
+    for (const name of ["Rabat", " rabat ", "Rabat-Salé", "المغرب - الرباط سلا القنيطرة (Maroc - Rabat-Salé)"]) {
+      const location = getWilayaCentroid(name);
+      expect(location?.lat).toBeCloseTo(34.15);
+      expect(location?.lng).toBe(-6.25);
+    }
+    for (const name of ["", "Unknown region", "Maroc"]) expect(getWilayaCentroid(name)).toBeUndefined();
+  });
+
   it("returns fallback guidance without an API key (offline path)", async () => {
     const app = createAiApp();
     const res = await supertest(app)
@@ -82,7 +147,7 @@ describe("POST /api/ai/guidance", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 

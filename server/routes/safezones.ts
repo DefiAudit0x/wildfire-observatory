@@ -16,6 +16,8 @@ type ZonesData = NonNullable<Awaited<ReturnType<typeof collectionGet>>>;
 type ZonesResult = { data: ZonesData; stale: boolean; loadedAt: number };
 let cachedZones: { data: ZonesData; expiresAt: number; loadedAt: number } | null = null;
 
+let zonesGeneration = 0;
+
 const zoneSchema = z.object({
   nameAr: z.string().min(2).max(120),
   nameFr: z.string().min(2).max(120),
@@ -32,11 +34,14 @@ async function loadZones(): Promise<ZonesResult> {
   // added by another instance (or directly in Firestore) never appeared, and a
   // failure snapshot froze the served list at whatever it happened to hold.
   if (cachedZones && now < cachedZones.expiresAt) return { data: cachedZones.data, stale: false, loadedAt: cachedZones.loadedAt };
+  const generation = zonesGeneration;
   try {
     const fromDb = await collectionGet("safeZones", "createdAt", 1000);
     if (fromDb === null) throw new Error("safe-zone database read unavailable");
-    cachedZones = { data: fromDb, expiresAt: now + ZONES_CACHE_TTL_MS, loadedAt: now };
-    return { data: cachedZones.data, stale: false, loadedAt: now };
+    if (generation === zonesGeneration) {
+      cachedZones = { data: fromDb, expiresAt: now + ZONES_CACHE_TTL_MS, loadedAt: now };
+    }
+    return { data: fromDb, stale: false, loadedAt: now };
   } catch (err) {
     if (cachedZones && Date.now() - cachedZones.loadedAt <= ZONES_MAX_STALE_AGE_MS) {
       logger.warn({ err }, "Safe zones read failed — serving the stale cached copy");
@@ -91,6 +96,7 @@ router.post("/", requireAdmin, async (req: Request, res: Response) => {
     res.status(503).json({ error: "Safe-zone data is currently unavailable" });
     return;
   }
+  zonesGeneration += 1;
   cachedZones = null;
   liveHub.broadcast("safezones:changed", { id });
   res.json(zone);
@@ -121,6 +127,7 @@ router.put("/:id", requireAdmin, async (req: Request, res: Response) => {
       res.status(503).json({ error: "Safe-zone data is currently unavailable" });
       return;
     }
+    zonesGeneration += 1;
     cachedZones = null;
     liveHub.broadcast("safezones:changed", { id });
     res.json(merged);
@@ -142,6 +149,7 @@ router.delete("/:id", requireAdmin, async (req: Request, res: Response) => {
       res.status(503).json({ error: "Safe-zone data is currently unavailable" });
       return;
     }
+    zonesGeneration += 1;
     cachedZones = null;
     liveHub.broadcast("safezones:changed", { id });
     res.json({ success: true });

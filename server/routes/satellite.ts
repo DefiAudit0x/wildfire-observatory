@@ -157,10 +157,13 @@ export async function getLiveSatelliteData(): Promise<SatelliteData> {
         );
         if (!existing) {
           unique.push(h);
-        } else if (h.confidence > existing.confidence) {
-          existing.confidence = h.confidence;
-          existing.brightness = h.brightness;
-          existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+        } else {
+          if (Date.parse(h.scanTime) > Date.parse(existing.scanTime)) existing.scanTime = h.scanTime;
+          if (h.confidence > existing.confidence) {
+            existing.confidence = h.confidence;
+            existing.brightness = h.brightness;
+            existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+          }
         }
       }
       const data = { hotspots: unique, sources: sourceStatuses };

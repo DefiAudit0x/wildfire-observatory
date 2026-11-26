@@ -8,6 +8,7 @@ import { isTrustedOrigin, requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
+import { isFreshThreatTimestamp } from "./wilayas.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -239,7 +240,7 @@ function anonymizeSos(sos: any) {
 type SosReadSource = "firestore" | "memory_fallback";
 
 async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
-  const fromDb = await collectionGet("trappedSos", "timestamp", 100);
+  const fromDb = await collectionGet("trappedSos", "timestamp");
   if (fromDb === null) return { items: memorySos, source: "memory_fallback" };
 
   let merged: any[];
@@ -250,7 +251,9 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   } else {
     merged = memorySos;
   }
-  return { items: merged, source: "firestore" };
+  let resolvedCount = 0;
+  merged.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return { items: merged.filter((s) => s.status !== "resolved" || ++resolvedCount <= 100), source: "firestore" };
 }
 
 router.get("/", async (_req: Request, res: Response) => {
@@ -421,7 +424,7 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
         }),
       ]);
       const active = dbResult.status === "ok" ? dbResult.reports.filter(
-        (r: any) => r.status !== "resolved" && r.status !== "rejected"
+        (r: any) => r.status !== "resolved" && r.status !== "rejected" && isFreshThreatTimestamp(r.timestamp)
       ) : [];
       if (active.length > 0) {
         nearestFireDistanceKm = active.reduce((min: number, fire: any) => {

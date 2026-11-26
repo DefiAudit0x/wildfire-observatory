@@ -320,6 +320,8 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       }
       if (res.ok) {
         const data = await res.json().catch(() => null);
+        // A GET started before this acknowledgement cannot replace it.
+        sosFetchSeq.current += 1;
         applyLocalDispatch(sosId, data?.dispatch || body);
         if (onRefresh) onRefresh();
         return true;

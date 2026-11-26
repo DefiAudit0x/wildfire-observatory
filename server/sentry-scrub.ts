@@ -14,6 +14,11 @@ const SENSITIVE_FIELDS = new Set([
   "lastName",
   "firstName",
   "reporterBadgeCode",
+  "token",
+  "code",
+  "lat",
+  "lng",
+  "textMessage",
 ]);
 const NORMALIZED_SENSITIVE_FIELDS = new Set([...SENSITIVE_FIELDS].map(normalizeFieldName));
 

@@ -3,7 +3,7 @@ import { z } from "zod";
 import logger from "../logger.js";
 import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
-import { collectionGet, docGet, docSet, docUpdate } from "../fs.js";
+import { collectionGet, docGet, docUpdate } from "../fs.js";
 import { createDocIfAbsent, deleteUnitIfUnlinked } from "../atomic.js";
 
 const router = Router();
@@ -37,7 +37,7 @@ router.put("/:id", requireRole("superadmin", "admin"), async (req: Request, res:
   const id = str(req.params.id); const parsed = unitSchema.safeParse(req.body);
   if (!parsed.success) { res.status(400).json({ error: "Validation failed", details: parsed.error.flatten() }); return; }
   if (toUnitId(parsed.data.code) !== id) { res.status(409).json({ error: "Unit code cannot change (it fixes the document id)" }); return; }
-  try { const existing = await docGet("units", id); if (!existing) { res.status(404).json({ error: "Unit not found" }); return; } const updated = { ...existing, code: parsed.data.code, nameAr: parsed.data.nameAr, nameFr: parsed.data.nameFr, wilaya: parsed.data.wilaya, updatedAt: new Date().toISOString() }; const ok = await docSet("units", id, updated); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } res.json(updated); }
+  try { const existing = await docGet("units", id); if (!existing) { res.status(404).json({ error: "Unit not found" }); return; } const update = { code: parsed.data.code, nameAr: parsed.data.nameAr, nameFr: parsed.data.nameFr, wilaya: parsed.data.wilaya, updatedAt: new Date().toISOString() }; const ok = await docUpdate("units", id, update); if (!ok) { res.status(503).json({ error: "Database not available" }); return; } res.json({ ...existing, ...update }); }
   catch (err) { logger.error({ err }, "Failed to update unit"); res.status(500).json({ error: "Internal server error" }); }
 });
 

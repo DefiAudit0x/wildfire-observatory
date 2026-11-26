@@ -25,7 +25,7 @@ describe("scrubSentryEvent", () => {
     expect((out as any).request.data.deviceId).toBe("[redacted]");
     expect((out as any).request.data.phone).toBe("[redacted]");
     expect((out as any).request.data.email).toBe("[redacted]");
-    expect((out as any).request.data.lat).toBe(36.75);
+    expect((out as any).request.data.lat).toBe("[redacted]");
   });
 
   it("redacts whole body when it is not JSON", () => {

@@ -146,7 +146,7 @@ describe("S-M2: password-admin now has a UNIFORM staff-management surface", () =
       .delete("/api/users/agent-1")
       .set("Authorization", `Bearer ${generateAdminToken("admin")}`);
     expect(res.status).toBe(200);
-    expect(state.deleteUserAtomically).toHaveBeenCalledWith("agent-1");
+    expect(state.deleteUserAtomically).toHaveBeenCalledWith("agent-1", expect.any(Function));
     expect(state.docDelete).not.toHaveBeenCalled();
   });
 

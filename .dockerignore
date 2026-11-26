@@ -15,3 +15,8 @@ tests/
 coverage/
 dist/
 .vite/
+
+# Local service-account and pipeline credentials
+firebase-service-account.json
+*-service-account.json
+scripts/.gh_token

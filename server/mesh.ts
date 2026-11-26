@@ -59,8 +59,8 @@ function isValidRelayedReport(report: unknown): boolean {
   if (r.lng !== undefined && (typeof r.lng !== "number" || !Number.isFinite(r.lng) || r.lng < -180 || r.lng > 180)) return false;
   if (r.description !== undefined && (typeof r.description !== "string" || r.description.length > 2000)) return false;
   if (r.wilaya !== undefined && (typeof r.wilaya !== "string" || r.wilaya.length > 200)) return false;
-  if (r.severity !== undefined && !VALID_SEVERITIES.has(String(r.severity))) return false;
-  if (r.status !== undefined && !VALID_STATUSES.has(String(r.status))) return false;
+  if (r.severity !== undefined && (typeof r.severity !== "string" || !VALID_SEVERITIES.has(r.severity))) return false;
+  if (r.status !== undefined && (typeof r.status !== "string" || !VALID_STATUSES.has(r.status))) return false;
   return true;
 }
 
@@ -89,7 +89,15 @@ class MeshHub {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_BYTES });
 
     server.on("upgrade", (req, socket, head) => {
-      const pathname = new URL(req.url || "/", "http://localhost").pathname;
+      if (socket.destroyed) return;
+      let pathname: string;
+      try {
+        pathname = new URL(req.url || "/", "http://localhost").pathname;
+      } catch {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       if (pathname !== MESH_PATH || !this.wss) return;
 
       // C3 fix: per-IP connection-attempt cap (same policy as live.ts).
@@ -136,91 +144,112 @@ class MeshHub {
           return;
         }
 
-        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return;
-        const message = parsed as MeshMessage;
-
-        if (message.type === "hello") {
-          const token = String(message.authKey || message.token || "");
-          const payload = verifyMeshToken(token);
-          if (!payload) {
-            logger.warn({ ip }, "Mesh hello rejected — invalid token");
-            this.send(ws, { type: "error", message: "Unauthorized" });
-            ws.close(4001, "Unauthorized");
+        try {
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return;
+          const message = parsed as MeshMessage;
+          if (typeof message.type !== "string") {
+            this.send(ws, { type: "error", message: "Invalid message type" });
             return;
           }
 
-          // The JWT subject is authoritative. Client-provided deviceId is never
-          // used as an identity key and may only exist as display metadata.
-          const subject = payload.subject;
-          const label = String(message.label || message.deviceId || "Mesh Node").slice(0, 64);
+          if (message.type === "hello") {
+            if ([message.authKey, message.token, message.label, message.deviceId].some(
+              (value) => value !== undefined && typeof value !== "string"
+            )) {
+              this.send(ws, { type: "error", message: "Invalid hello fields" });
+              ws.close(4001, "Invalid hello fields");
+              return;
+            }
+            const token = message.authKey || message.token || "";
+            const payload = typeof token === "string" ? verifyMeshToken(token) : null;
+            if (!payload) {
+              logger.warn({ ip }, "Mesh hello rejected — invalid token");
+              this.send(ws, { type: "error", message: "Unauthorized" });
+              ws.close(4001, "Unauthorized");
+              return;
+            }
 
-          const previous = this.nodes.get(subject);
-          if (!previous && this.nodes.size >= MAX_NODES) {
-            logger.warn({ ip, subject }, "Mesh node rejected — node limit reached");
-            this.send(ws, { type: "error", message: "Node limit reached" });
-            ws.close(4001, "Too many nodes");
+            // The JWT subject is authoritative. Client-provided deviceId is never
+            // used as an identity key and may only exist as display metadata.
+            const subject = payload.subject;
+            const labelValue = message.label || message.deviceId || "Mesh Node";
+            if (typeof labelValue !== "string") {
+              this.send(ws, { type: "error", message: "Invalid node label" });
+              ws.close(4001, "Invalid node label");
+              return;
+            }
+            const label = labelValue.slice(0, 64);
+
+            const previous = this.nodes.get(subject);
+            if (!previous && this.nodes.size >= MAX_NODES) {
+              logger.warn({ ip, subject }, "Mesh node rejected — node limit reached");
+              this.send(ws, { type: "error", message: "Node limit reached" });
+              ws.close(4001, "Too many nodes");
+              return;
+            }
+
+            if (previous && previous.ws !== ws) {
+              try { previous.ws.close(); } catch { /* ignore */ }
+            }
+
+            nodeId = subject;
+            if (authTimer) { clearTimeout(authTimer); authTimer = null; }
+            this.nodes.set(subject, { id: subject, label, lastSeen: Date.now(), ws });
+            logger.info({ subject, ip, nodeCount: this.nodes.size }, "Mesh node joined");
+
+            this.send(ws, {
+              type: "welcome",
+              deviceId: subject,
+              nodeCount: this.nodes.size,
+              nodes: this.getNodeInfos(),
+            });
+            this.broadcast({ type: "node:joined", node: { id: subject, label }, nodeCount: this.nodes.size }, subject);
             return;
           }
 
-          if (previous && previous.ws !== ws) {
-            try { previous.ws.close(); } catch { /* ignore */ }
+          if (!nodeId) {
+            this.send(ws, { type: "error", message: "Send hello first" });
+            return;
           }
 
-          nodeId = subject;
-          if (authTimer) { clearTimeout(authTimer); authTimer = null; }
-          this.nodes.set(subject, { id: subject, label, lastSeen: Date.now(), ws });
-          logger.info({ subject, ip, nodeCount: this.nodes.size }, "Mesh node joined");
+          const node = this.nodes.get(nodeId);
+          if (!node) return;
+          node.lastSeen = Date.now();
 
-          this.send(ws, {
-            type: "welcome",
-            deviceId: subject,
-            nodeCount: this.nodes.size,
-            nodes: this.getNodeInfos(),
-          });
-          this.broadcast({ type: "node:joined", node: { id: subject, label }, nodeCount: this.nodes.size }, subject);
-          return;
-        }
-
-        if (!nodeId) {
-          this.send(ws, { type: "error", message: "Send hello first" });
-          return;
-        }
-
-        const node = this.nodes.get(nodeId);
-        if (!node) return;
-        node.lastSeen = Date.now();
-
-        switch (message.type) {
-          case "ping":
-            this.send(ws, { type: "pong", at: Date.now() });
-            break;
-          case "report:new":
-            if (!isValidRelayedReport(message.report)) {
-              logger.warn({ nodeId }, "Mesh relay rejected — invalid report payload");
-              this.send(ws, { type: "error", message: "Invalid report payload" });
+          switch (message.type) {
+            case "ping":
+              this.send(ws, { type: "pong", at: Date.now() });
               break;
-            }
-            // v2.15.0: relay a SANITIZED copy — the node may gossip the
-            // report's existence, never its trust level.
-            this.broadcast(
-              { type: "report:new", report: stripTrustFields(message.report as Record<string, unknown>), from: nodeId },
-              nodeId,
-            );
-            break;
-          case "report:confirm":
-            if (!isValidRelayedConfirm(message)) {
-              logger.warn({ nodeId }, "Mesh relay rejected — invalid confirm payload");
-              this.send(ws, { type: "error", message: "Invalid confirm payload" });
+            case "report:new":
+              if (!isValidRelayedReport(message.report)) {
+                logger.warn({ nodeId }, "Mesh relay rejected — invalid report payload");
+                this.send(ws, { type: "error", message: "Invalid report payload" });
+                break;
+              }
+              // v2.15.0: relay a SANITIZED copy — the node may gossip the
+              // report's existence, never its trust level.
+              this.broadcast(
+                { type: "report:new", report: stripTrustFields(message.report as Record<string, unknown>), from: nodeId },
+                nodeId,
+              );
               break;
-            }
-            // v2.15.0: relay the REPORT ID only. consensusCount/status from a
-            // node are attacker-controlled; clients reconcile against the
-            // HTTP API (or the hub's own ledger broadcast, which carries no
-            // `from` field).
-            this.broadcast({ type: "report:confirm", id: message.id, from: nodeId }, nodeId);
-            break;
-          default:
-            this.send(ws, { type: "error", message: `Unknown message type: ${message.type}` });
+            case "report:confirm":
+              if (!isValidRelayedConfirm(message)) {
+                logger.warn({ nodeId }, "Mesh relay rejected — invalid confirm payload");
+                this.send(ws, { type: "error", message: "Invalid confirm payload" });
+                break;
+              }
+              // v2.15.0: relay the REPORT ID only. consensusCount/status from a
+              // node are attacker-controlled; clients reconcile against the
+              // HTTP API (or the hub's own ledger broadcast, which carries no
+              // `from` field).
+              this.broadcast({ type: "report:confirm", id: message.id, from: nodeId }, nodeId);
+              break;
+            default:
+              this.send(ws, { type: "error", message: `Unknown message type: ${message.type}` });
+          }
+        } catch {
+          this.send(ws, { type: "error", message: "Invalid message" });
         }
       });
 

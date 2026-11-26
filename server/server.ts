@@ -211,7 +211,15 @@ async function startServer() {
   // last: if both hubs rejected the path, destroy the socket explicitly.
   const WS_HUB_PATHS = new Set([MESH_PATH, LIVE_PATH]);
   httpServer.on("upgrade", (req, socket) => {
-    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    if (socket.destroyed) return;
+    let pathname: string;
+    try {
+      pathname = new URL(req.url || "/", "http://localhost").pathname;
+    } catch {
+      socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     if (!WS_HUB_PATHS.has(pathname)) {
       socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
       socket.destroy();

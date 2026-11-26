@@ -77,7 +77,7 @@ describe("Fix 12 AIG-1 unavailable report context", () => {
   it("keeps a confirmed empty dataset successful", async () => {
     const res = await guidanceRequest(await appFor("ai"));
     expect(res.status).toBe(200);
-    expect(res.body.guidance).toContain("Aucun foyer");
+    expect(res.body.guidance).toContain("Situation des incendies inconnue");
   });
 });
 
@@ -91,7 +91,7 @@ describe("Fix 12 AIG-2 guidance freshness", () => {
     const app = await appFor("ai");
     const fallback = await guidanceRequest(app);
     expect(fallback.status).toBe(200);
-    expect(fallback.body.guidance).toContain("Aucun foyer");
+    expect(fallback.body.guidance).toContain("Situation des incendies inconnue");
     backend.aiEnabled = true;
     backend.generate.mockResolvedValue({ text: "provider response" });
     const live = await guidanceRequest(app);

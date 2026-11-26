@@ -10,7 +10,7 @@ import TrappedSOSModal from "../../src/components/TrappedSOSModal";
 
 const CANNED_AUDIO = "data:audio/webm;base64," + "QUJD".repeat(50);
 const LOC = { lat: 36.7, lng: 3.1 };
-const THREAT = { distanceM: 500, kind: "report" as const };
+const THREAT = { distanceM: 500, kind: "report" as const, confirmed: true };
 
 const recorderInstances: MockMediaRecorder[] = [];
 
@@ -172,7 +172,7 @@ describe("Fix 27 SOSM-1 — verification effect is pre-recording only", () => {
     await act(async () => {});
     expect(screen.getByText("تم استلام ونشر نداء الاستغاثة!")).toBeTruthy();
     rerender(
-      <TrappedSOSModal lang="ar" onClose={vi.fn()} userLocation={LOC} nearestThreat={{ distanceM: 400, kind: "report" }} />,
+      <TrappedSOSModal lang="ar" onClose={vi.fn()} userLocation={LOC} nearestThreat={{ distanceM: 400, kind: "report", confirmed: true }} />,
     );
     await act(async () => {});
     expect(screen.getByText("تم استلام ونشر نداء الاستغاثة!")).toBeTruthy();

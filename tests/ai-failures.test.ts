@@ -50,7 +50,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -63,7 +63,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -76,7 +76,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -89,7 +89,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   }, 25000);
 });

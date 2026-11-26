@@ -144,6 +144,18 @@ export function canonicalizeWilaya(value: string): string {
   return matches.length === 1 ? matches[0].name : trimmed;
 }
 
+/** Resolve a known region (or unique name component such as Rabat) to its bounds' centroid. */
+export function getWilayaCentroid(value: string): { lat: number; lng: number } | undefined {
+  const canonical = canonicalizeWilaya(value);
+  const folded = value.trim().toLocaleLowerCase();
+  const matches = WILAYA_BOUNDS.filter((b) => b.name === canonical || b.name.split(/[-()]/).some(
+    (part) => part.trim().toLocaleLowerCase() === folded,
+  ));
+  if (matches.length !== 1) return undefined;
+  const bounds = matches[0];
+  return { lat: (bounds.minLat + bounds.maxLat) / 2, lng: (bounds.minLng + bounds.maxLng) / 2 };
+}
+
 export function runClustering(reports: Report[]): Report[] {
   const CLUSTER_THRESHOLD_KM = 3.0;
   const visited = new Set<string>();
