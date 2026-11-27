@@ -373,9 +373,13 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
     // Authorization and writes share the verification document's transaction.
     // Re-evaluate on retries: a concurrent verification must not be undone by
     // an unproved subscribe that originally observed an unverified mailbox.
+    // Narrow write type: the values are only string | string[] | boolean,
+    // which both SDKs' tx.update index signatures accept (their value type
+    // is Partial<unknown> = {}, and every non-null value is assignable to it).
+    // Record<string, unknown> does NOT type-check against them.
     const changeFor = (current: Record<string, unknown> | undefined):
       | { outcome: "forbidden" }
-      | { outcome: "preferences" | "updated" | "created"; data: Record<string, unknown> } => {
+      | { outcome: "preferences" | "updated" | "created"; data: Record<string, string | string[] | boolean> } => {
       const preferences = { email, wilayas: wilayas || [], minSeverity: minSeverity || "medium" };
       if (current?.verified === true) {
         if (typeof token !== "string" || token !== current.unsubscribeToken) return { outcome: "forbidden" };
