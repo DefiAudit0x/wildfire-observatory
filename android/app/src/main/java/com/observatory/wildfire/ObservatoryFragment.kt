@@ -299,6 +299,7 @@ class ObservatoryFragment : Fragment() {
             riskScoreText?.setTextColor(RiskScore.bandColor(score))
         } else {
             riskBarMarker?.animate()?.cancel()
+            lastMarkerX = -1f
             riskBarMarker?.visibility = View.GONE
         }
         riskLabelText?.text = if (fresh) RiskScore.labelAr(score) else getString(R.string.risk_unknown)

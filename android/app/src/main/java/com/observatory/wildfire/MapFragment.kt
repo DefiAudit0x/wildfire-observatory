@@ -840,10 +840,12 @@ class MapFragment : Fragment() {
                     snap.meshIntel.filter { it.kind == "report" && ProximityLogic.isFresh(it.tsMs, now) }
                         .mapNotNull { intel -> intel.lat?.let { lat -> intel.lng?.let { lng -> lat to lng } } }
                 // Movement from the request origin triggers a refresh, but
-                // a completed road is usable while we are still near it.
+                // an unmoved origin may be off-road: OSRM snaps to a road.
+                // After movement, keep only geometry we are still near.
                 val latestFix = lastUserLatLng ?: return@launch
                 val usable = raw.filter { (pts, _, _) ->
-                    GeoMath.minDistanceToPolylineM(latestFix.first, latestFix.second, pts) <= ROUTE_MATCH_DISTANCE_M
+                    movedFromRequest < ROUTE_REFRESH_DISTANCE_M ||
+                        GeoMath.minDistanceToPolylineM(latestFix.first, latestFix.second, pts) <= ROUTE_MATCH_DISTANCE_M
                 }
                 rankedRoutes = RadarV2.rankRoutes(
                 usable.map { (pts, dist, dur) ->
@@ -859,7 +861,7 @@ class MapFragment : Fragment() {
                     routeLine?.let { mv.overlays.remove(it); routeLine = null }
                     mv.invalidate()
                     routeChipsScroll?.visibility = View.GONE
-                    routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, 0.0)
+                    routeInfoText?.text = getString(R.string.route_unavailable)
                     return@launch
                 }
                 selectRoute(0)
