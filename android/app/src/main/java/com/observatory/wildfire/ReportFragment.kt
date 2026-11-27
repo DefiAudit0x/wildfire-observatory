@@ -86,6 +86,7 @@ class ReportFragment : Fragment() {
     /** True while code sets field text — the watchers must not treat that as
      *  a manual edit (manual edits are protected, programmatic fills are ours). */
     private var programmaticFill = false
+    private var placeFix: LocationLogic.FixSnapshot? = null
 
     // v2.19.0: the permission request lives HERE now — the activity ladder
     // runs once at launch; a user who tapped "لاحقًا" and later opens the
@@ -282,6 +283,10 @@ class ReportFragment : Fragment() {
     }
 
     private fun reverseGeocode(lat: Double, lng: Double) {
+        // A partial autofill already belongs to its captured fix. Do not mix
+        // another fix's remaining fields into the same report.
+        val boundFix = placeFix
+        if (boundFix != null && (boundFix.lat != lat || boundFix.lng != lng)) return
         // F6: single-flight + failure backoff. The lookup used to re-fire
         // with every GPS publish while the autofill flags were unset, and
         // once the service degraded into 403s this became a continuous
@@ -300,9 +305,13 @@ class ReportFragment : Fragment() {
         // the previous fix's wilaya next to the new coordinates in
         // submit(). No network request is started here.
         if (SystemClock.elapsedRealtime() < geoBackoffUntilElapsedMs) {
-            if (!autofilledWilaya) fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
+            if (!autofilledWilaya) {
+                fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
+                placeFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng }
+            }
             return
         }
+        val lookupFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng } ?: return
         geoLookupInFlight = true
         if (!autofilledName) setGeoStatus(getString(R.string.geo_status_resolving))
         viewLifecycleOwner.lifecycleScope.launch {
@@ -322,7 +331,10 @@ class ReportFragment : Fragment() {
                     geoBackoffUntilElapsedMs = SystemClock.elapsedRealtime() + GEO_BACKOFF_MS
                     if (!autofilledName) {
                         val fallback = Wilayas.nearest(lat, lng)
-                        if (!autofilledWilaya) fillField(wilayaInput, fallback.nameAr)
+                        if (!autofilledWilaya) {
+                            fillField(wilayaInput, fallback.nameAr)
+                            placeFix = lookupFix
+                        }
                         setGeoStatus(getString(R.string.geo_status_offline_fmt, fallback.nameAr))
                     } else {
                         setGeoStatus(getString(R.string.geo_status_failed))
@@ -338,10 +350,12 @@ class ReportFragment : Fragment() {
                 geoBackoffUntilElapsedMs = 0L
                 val (display, stateName) = result
                 if (!autofilledName) {
+                    placeFix = lookupFix
                     fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
                     autofilledName = true
                 }
                 if (!autofilledWilaya && stateName.isNotBlank()) {
+                    placeFix = lookupFix
                     fillField(wilayaInput, stateName)
                     autofilledWilaya = true
                 }
@@ -460,7 +474,7 @@ class ReportFragment : Fragment() {
 
     private fun submit() {
         val ctx = context ?: return
-        val fix = app.locationEngine.currentFix()
+        val fix = placeFix ?: app.locationEngine.currentFix()
         val name = locationNameInput?.text?.toString()?.trim().orEmpty()
         val wilaya = wilayaInput?.text?.toString()?.trim().orEmpty()
         val desc = descriptionInput?.text?.toString()?.trim().orEmpty()
@@ -497,6 +511,7 @@ class ReportFragment : Fragment() {
                     telemetryLine?.visibility = View.GONE
                     // v2.19.0: the NEXT report is a new report — autofill must
                     // run again (was stuck for the whole view lifetime).
+                    placeFix = null
                     autofilledName = false
                     autofilledWilaya = false
                     geoFailed = false

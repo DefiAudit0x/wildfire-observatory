@@ -328,7 +328,7 @@ class ObservatoryFragment : Fragment() {
             val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
             val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
                 snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
-                snap.meshIntel.mapNotNull { intel ->
+                snap.meshIntel.filter { it.kind == "report" }.mapNotNull { intel ->
                     val lat = intel.lat ?: return@mapNotNull null
                     val lng = intel.lng ?: return@mapNotNull null
                     ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
@@ -381,14 +381,14 @@ class ObservatoryFragment : Fragment() {
             scoredReports.map { it.severity to (it.status == "verified") },
             snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
         )
-        riskScoreText?.text = score.toString()
+        riskScoreText?.text = if (snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)) score.toString() else "—"
         positionRiskMarker(score)
         // v2.1.0: band the number's color — a calm 6/100 must never scream red.
         // v2.16.0: bands follow the brand book's 5-level fire danger scale
         // (Low / Moderate / High / Very High / Extreme).
         // Fix 57 (NRESBG-1): single-sourced from RiskScore.bandColor.
         riskScoreText?.setTextColor(RiskScore.bandColor(score))
-        riskLabelText?.text = RiskScore.labelAr(score)
+        riskLabelText?.text = if (snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)) RiskScore.labelAr(score) else getString(R.string.risk_unknown)
         riskDetailText?.text = getString(
             R.string.risk_detail_fmt,
             snap.reports.count { it.status == "verified" },
@@ -438,7 +438,7 @@ class ObservatoryFragment : Fragment() {
         for (s in snap.safezones) {
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, s.lat, s.lng, RadarModel.Kind.SAFEZONE, s.nameAr))
         }
-        for (m in snap.meshIntel) {
+        for (m in snap.meshIntel.filter { it.kind == "report" }) {
             val lat = m.lat ?: continue
             val lng = m.lng ?: continue
             // Fix 53 (NOBS-3): stale mesh blips are not threats — same
@@ -460,7 +460,7 @@ class ObservatoryFragment : Fragment() {
         val wilaya = Wilayas.nearest(liveFix.lat, liveFix.lng)
         val nearest = blips.filter { it.kind != RadarModel.Kind.SAFEZONE }.minByOrNull { it.distKm }
         awarenessText?.text = if (nearest == null || nearest.distKm > RadarModel.RANGE_KM) {
-            getString(R.string.radar_awareness_calm_fmt, wilaya.nameAr)
+            getString(R.string.radar_awareness_unknown_fmt, wilaya.nameAr)
         } else {
             val dirAr = TelemetryCamera.bearingDirectionAr(nearest.angleDeg)
             getString(R.string.radar_awareness_fmt, wilaya.nameAr, nearest.distKm, dirAr)

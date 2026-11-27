@@ -28,7 +28,7 @@ package com.observatory.wildfire
  * what the persistence layer writes — INCLUDES in-flight entries, and
  * restoreAll() rehydrates them with their attempt history intact.
  */
-class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
+class OfflineQueue<T>(private val capacity: Int = CAPACITY, private val retryForever: Boolean = false) {
 
     data class Entry<T>(
         val key: String,
@@ -198,8 +198,8 @@ class OfflineQueue<T>(private val capacity: Int = CAPACITY) {
         val requeue = ArrayList<Entry<T>>()
         for ((key, entry) in inFlight) {
             if (key in deliveredKeys) continue
-            val attempts = entry.attempts + 1
-            if (attempts < MAX_ATTEMPTS) {
+            val attempts = if (entry.attempts == Int.MAX_VALUE) Int.MAX_VALUE else entry.attempts + 1
+            if (retryForever || attempts < MAX_ATTEMPTS) {
                 requeue.add(
                     entry.copy(
                         attempts = attempts,

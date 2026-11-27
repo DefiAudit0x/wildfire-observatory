@@ -88,7 +88,7 @@ class AppRepository(
     val state: StateFlow<Snapshot> = _state
 
     private val reportQueue = OfflineQueue<String>()
-    private val sosQueue = OfflineQueue<String>()
+    private val sosQueue = OfflineQueue<String>(retryForever = true)
 
     // Fix 18 (NREP-4): one lock per queue kind. Snapshot + write happen
     // inside the same lock, so two writers for one kind are totally
@@ -452,10 +452,11 @@ class AppRepository(
                 put("teamId", join.teamId)
                 put("intervalMs", TeamLocationLogic.DEFAULT_HEARTBEAT_MS)
             }
-            val ok = TeamTrackingStarter.start(context, cfg.toString())
             _state.value = _state.value.copy(
-                team = TeamUiState(active = ok, state = if (ok) "started" else "error", teamNameAr = join.teamNameAr)
+                team = TeamUiState(active = false, state = "starting", teamNameAr = join.teamNameAr)
             )
+            val ok = TeamTrackingStarter.start(context, cfg.toString())
+            if (!ok) _state.value = _state.value.copy(team = _state.value.team.copy(active = false, state = "error"))
             onDone(ok, join.teamNameAr, if (ok) null else "تعذر بدء خدمة التتبع")
         }
     }
@@ -1024,11 +1025,15 @@ class AppRepository(
  */
 object TeamTrackingStarter {
     fun start(context: Context, configJson: String): Boolean = try {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            false
+        } else {
         val intent = android.content.Intent(context, TeamLocationService::class.java)
             .setAction(TeamLocationService.ACTION_START)
             .putExtra(TeamLocationService.EXTRA_CONFIG, configJson)
         androidx.core.content.ContextCompat.startForegroundService(context, intent)
         true
+        }
     } catch (e: Exception) {
         Log.w("TeamTrackingStarter", "start failed", e)
         false

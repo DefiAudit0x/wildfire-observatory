@@ -107,9 +107,9 @@ object TeamLocationLogic {
      */
     fun parseMissionCoords(missionJson: String?): Pair<Double, Double>? {
         if (missionJson.isNullOrBlank()) return null
-        val lat = Regex("\"sosLat\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)").find(missionJson)
+        val lat = Regex("\"sosLat\"\\s*:\\s*(-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(?=\\s*[,}])").find(missionJson)
             ?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
-        val lng = Regex("\"sosLng\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)").find(missionJson)
+        val lng = Regex("\"sosLng\"\\s*:\\s*(-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(?=\\s*[,}])").find(missionJson)
             ?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
         if (!lat.isFinite() || !lng.isFinite()) return null
         return lat to lng
