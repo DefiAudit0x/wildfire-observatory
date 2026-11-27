@@ -1,6 +1,6 @@
 import { Request, Response, Router } from "express";
 import { wilayasStatus } from "../data.js";
-import { getReportsFromFirestore } from "../db.js";
+import { getReportsDbResult } from "../db.js";
 import { getLiveSatelliteData, SatelliteUnavailableError } from "./satellite.js";
 import logger from "../logger.js";
 import type { SatelliteHotspot } from "../../src/types.js";
@@ -139,15 +139,15 @@ router.get("/", async (_req: Request, res: Response) => {
 
   let currentReports: any[] = [];
   try {
-    const firestoreReports = await getReportsFromFirestore();
+    const reportsResult = await getReportsDbResult();
     // ARC-M04 + W-M8: the ACTIVE filter (not resolved/rejected) is applied
     // by the caller below together with the freshness window — stale rows
     // must not drive severity even if Firestore still holds them.
-    if (firestoreReports === null) {
+    if (reportsResult.status === "error" || reportsResult.status === "no-db") {
       res.status(503).json({ error: "Report-derived region status unavailable", reportsUnavailable: true });
       return;
     }
-    currentReports = firestoreReports;
+    currentReports = reportsResult.status === "ok" ? reportsResult.reports : [];
   } catch (err) {
     logger.warn(
       { msg: err instanceof Error ? err.message : String(err) },
