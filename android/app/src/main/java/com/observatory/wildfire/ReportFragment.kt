@@ -603,6 +603,8 @@ class ReportFragment : Fragment() {
                     // run again (was stuck for the whole view lifetime).
                     reportGeneration++
                     placeFix = null
+                    fillField(locationNameInput, "")
+                    fillField(wilayaInput, "")
                     autofilledName = false
                     autofilledWilaya = false
                     nameManuallyEdited = false
