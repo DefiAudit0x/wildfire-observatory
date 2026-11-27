@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { determineWilayaByCoords, OUT_OF_COVERAGE } from "../../utils/geo";
+import { useEffect, useState, useMemo } from "react";
+import { determineWilayaByCoords, OUT_OF_COVERAGE, WILAYA_BOUNDS } from "../../utils/geo";
 import { geoErrorMessage } from "../useGeolocation";
 import { MAGHREB_REGIONS } from "../../data/maghrebRegions";
 import { isResolvedWilayaMismatch, type WilayaNote } from "./reportFormShared";
@@ -43,7 +43,12 @@ export interface UseReportFieldsParams {
 export function useReportFields({ mapClickedCoords, wilayas, isArabic, setErrorMsg }: UseReportFieldsParams) {
   // The server owns the wilaya geofence; the static copy only covers the
   // first-load/offline window before the API list arrives.
-  const wilayaOptions = wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS;
+  const wilayaOptions = useMemo(() => (wilayas && wilayas.length > 0 ? wilayas : FALLBACK_WILAYAS)
+    .flatMap((region) => {
+      const bounds = WILAYA_BOUNDS.find((b) => b.name.startsWith(`${region.nameAr} (`));
+      if (!bounds) return [];
+      return [{ ...region, nameFr: bounds.name.slice(region.nameAr.length + 2, -1) }];
+    }), [wilayas]);
   const [lat, setLat] = useState("");
   const [lng, setLng] = useState("");
   const [locationName, setLocationName] = useState("");
