@@ -433,6 +433,8 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     try {
       const res = await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
       if (!res.ok) return;
+      // Ignore any already-running poll that may contain the unread snapshot.
+      cycleRef.current += 1;
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     } catch (e) {
       console.error("Failed to mark notification read", e);
