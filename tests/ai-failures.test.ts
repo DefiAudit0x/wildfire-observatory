@@ -26,6 +26,7 @@ import aiRouter from "../server/routes/ai.js";
 beforeEach(() => {
   getReportsDbResult.mockReset();
   getReportsDbResult.mockResolvedValue({ status: "empty" });
+  fakeClient.models.generateContent.mockClear();
 });
 
 describe("POST /api/ai/guidance — provider behavior", () => {
@@ -41,7 +42,8 @@ describe("POST /api/ai/guidance — provider behavior", () => {
     // sanitizeAiOutput only escapes HTML/dangerous schemes — it does not
     // enforce the unknown-status wording, so a provider reply like
     // "Aucun incendie à proximité" must fall through to the local
-    // unknown-status fallback instead of being served as-is.
+    // unknown-status fallback instead of being served as-is. The provider
+    // is not even consulted when there is no active report to describe.
     setGenerateContent(async () => ({ text: "Aucun incendie à proximité, tout est calme." }));
     const app = createAiApp();
     const res = await supertest(app)
@@ -49,6 +51,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .set("x-forwarded-for", "203.0.113.11")
       .send({ lat: 36.8, lng: 7.5, lang: "fr" });
     expect(res.status).toBe(200);
+    expect(fakeClient.models.generateContent).not.toHaveBeenCalled();
     expect(res.body.guidance).not.toContain("Aucun incendie à proximité");
     expect(res.body.guidance).toContain("Situation des incendies inconnue");
     expect(res.body.guidance).toContain("Protection Civile: 1021");

@@ -130,5 +130,40 @@ for (const admin of [true, false]) {
       });
       expect(again).toHaveLength(3);
     });
+
+    it("gives null, NaN, ±Infinity, -0, undefined and the string \"null\" distinct cache keys", () => {
+      // CodeRabbit on PR #213: JSON.stringify collapses null, NaN and
+      // Infinity all to "null", so those filters shared one cache key.
+      const values: unknown[] = [null, NaN, Infinity, -Infinity, -0, undefined, "null", 0, "active", new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-02T00:00:00.000Z")];
+      const keys = values.map((v) =>
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "status", op: "==", value: v })
+      );
+      expect(new Set(keys).size).toBe(values.length);
+    });
+
+    it("does not serve one filter value's cached rows to a distinct filter value", async () => {
+      // End-to-end through collectionGet: the null query caches its rows;
+      // a NaN query (or the string "null") must not be served them.
+      const now = Date.now();
+      backend.rows.set("trappedSos/score-null", { status: "active", score: null, timestamp: new Date(now).toISOString() });
+      backend.rows.set("trappedSos/score-nan", { status: "active", score: NaN, timestamp: new Date(now - 60_000).toISOString() });
+      backend.rows.set("trappedSos/score-inf", { status: "active", score: Infinity, timestamp: new Date(now - 120_000).toISOString() });
+      const nullRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
+        field: "score", op: "==", value: null,
+      });
+      expect(nullRows!.map((r: any) => r.id)).toEqual(["score-null"]);
+      const nanRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
+        field: "score", op: "==", value: NaN,
+      });
+      expect(nanRows).toHaveLength(0);
+      const infRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
+        field: "score", op: "==", value: Infinity,
+      });
+      expect(infRows!.map((r: any) => r.id)).toEqual(["score-inf"]);
+      const strRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
+        field: "score", op: "==", value: "null",
+      });
+      expect(strRows).toHaveLength(0);
+    });
   });
 }

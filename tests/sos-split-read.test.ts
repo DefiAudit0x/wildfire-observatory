@@ -53,7 +53,12 @@ describe("GET /api/sos — split active/resolved reads (CodeRabbit on PR #213)",
     const active = [
       sosRow("sos-active-1", "active", 1),
       sosRow("sos-active-2", "active", 2),
-      sosRow("sos-active-3", "active", 3),
+      // CodeRabbit on PR #213 (test nitpick): every active fixture used to
+      // be newer than every resolved one, so the newest-100 query returned
+      // every active SOS on its own and an implementation ignoring the
+      // active result still passed. This one is OLDER than all 150 resolved
+      // records, so only the active query can surface it.
+      sosRow("sos-active-3", "active", 200),
     ];
     const resolved = Array.from({ length: 150 }, (_, i) =>
       sosRow(`sos-resolved-${String(i).padStart(3, "0")}`, "resolved", i + 10)
@@ -76,14 +81,15 @@ describe("GET /api/sos — split active/resolved reads (CodeRabbit on PR #213)",
     const ids = new Set(list.body.map((s: any) => s.id));
     // Every active SOS is present, even with 150 resolved behind them.
     for (const a of active) expect(ids.has(a.id)).toBe(true);
-    // The 3 active SOS occupy slots in the newest-100 window, so only the
-    // 97 newest resolved are shown (minutesAgo 10..106); the cap is a
-    // maximum, not a guarantee.
+    // The 2 young active SOS occupy slots in the newest-100 window, so
+    // only the 98 newest resolved are shown (minutesAgo 10..107); the cap
+    // is a maximum, not a guarantee. The 200-minute-old active SOS is
+    // present only because the active query returned it.
     const presentResolved = resolved.filter((r) => ids.has(r.id));
-    expect(presentResolved).toHaveLength(97);
+    expect(presentResolved).toHaveLength(98);
     expect(ids.has("sos-resolved-000")).toBe(true);
-    expect(ids.has("sos-resolved-096")).toBe(true);
-    expect(ids.has("sos-resolved-097")).toBe(false);
+    expect(ids.has("sos-resolved-097")).toBe(true);
+    expect(ids.has("sos-resolved-098")).toBe(false);
     expect(ids.has("sos-resolved-149")).toBe(false);
     // The two reads use single-field indexes only: filtered query without
     // orderBy, ordered query without a where filter — no composite index.
@@ -113,5 +119,25 @@ describe("GET /api/sos — split active/resolved reads (CodeRabbit on PR #213)",
     const list = await supertest(app).get("/api/sos");
     expect(list.status).toBe(200);
     expect(list.headers["x-sos-source"]).toBe("memory_fallback");
+    // CodeRabbit on PR #213: only the history read failed — the active SOS
+    // the first read returned must survive instead of being discarded.
+    expect(list.body.map((s: any) => s.id)).toContain("sos-active-1");
+  });
+
+  it("dedups an SOS that a resolve between the two reads put in both lists, resolved version winning", async () => {
+    const app = createApp();
+    const activeVersion = sosRow("sos-dup-1", "active", 1);
+    const resolvedVersion = sosRow("sos-dup-1", "resolved", 1);
+    fsMock.collectionGet.mockImplementation(async (...args: any[]) => {
+      const where = args[4];
+      if (where?.value === "active") return [activeVersion];
+      return [resolvedVersion];
+    });
+    const list = await supertest(app).get("/api/sos");
+    expect(list.status).toBe(200);
+    expect(list.headers["x-sos-source"]).toBe("firestore");
+    const dupes = list.body.filter((s: any) => s.id === "sos-dup-1");
+    expect(dupes).toHaveLength(1);
+    expect(dupes[0].status).toBe("resolved");
   });
 });
