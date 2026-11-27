@@ -66,6 +66,7 @@
     <string name="route_need_fix">تحديد موقعك أولًا لرسم الطريق</string>
     <string name="route_no_safezones">لا توجد ملاذات آمنة مسجلة على الخادم بعد</string>
     <string name="route_fetching">جارٍ حساب الطريق…</string>
+    <string name="route_unavailable">لا يتوفر مسار للموقع الحالي</string>
     <string name="route_offline_fmt">%1$s على بُعد %2$.1f كلم خط مستقيم — لا يمكن رسم الطريق بدون اتصال</string>
     <string name="route_offline_toast">لا يوجد اتصال بخادم الطرق — عرض المسافة المستقيمة فقط</string>
     <string name="route_ok_fmt">الطريق إلى %1$s: %2$.1f كلم — حوالي %3$d دقيقة · بعيد عن الحرائق</string>
@@ -234,6 +235,6 @@
     <string name="cd_zoom_in">تكبير الخريطة</string>
     <string name="cd_zoom_out">تصغير الخريطة</string>
     <string name="cd_recenter">توسيط الخريطة على موقعي</string>
-    <string name="report_use_current_location">انتهت صلاحية موقع البلاغ. هل تريد استخدام موقعك الحالي ومسح اسم المكان والولاية وإعادة تعبئتهما؟ سيبقى الوصف والصورة محفوظين.</string>
+    <string name="report_use_current_location">هل تريد استخدام موقعك الحالي ومسح اسم المكان والولاية وإعادة تعبئتهما؟ سيبقى الوصف والصورة محفوظين.</string>
     <string name="report_use_current_location_action">استخدام موقعي الحالي وإعادة تعبئة المكان</string>
 </resources>
