@@ -71,7 +71,24 @@ export async function captureScreenshots(deps = {}) {
         throw new Error(`Screenshot server exited during startup (exit code ${server.exitCode ?? server.signalCode})`);
       }
       try {
-        const res = await fetchFn(`${baseUrl}/api/health`);
+        const remainingMs = Math.max(1, deadline - Date.now());
+        const controller = new AbortController();
+        let timeout;
+        const timeoutPromise = new Promise((_, reject) => {
+          timeout = setTimeout(() => {
+            controller.abort();
+            reject(new Error("Screenshot readiness request timed out"));
+          }, remainingMs);
+        });
+        let res;
+        try {
+          res = await Promise.race([
+            fetchFn(`${baseUrl}/api/health`, { signal: controller.signal }),
+            timeoutPromise,
+          ]);
+        } finally {
+          clearTimeout(timeout);
+        }
         if (res.ok) {
           if (server.exitCode !== null || server.signalCode !== null) {
             throw new Error(`Screenshot server exited during startup (exit code ${server.exitCode ?? server.signalCode})`);
@@ -81,6 +98,7 @@ export async function captureScreenshots(deps = {}) {
       } catch (err) {
         // The exit-code throw above must not be swallowed as "not up yet".
         if (err.message.startsWith("Screenshot server exited")) throw err;
+        if (err.message === "Screenshot readiness request timed out") throw err;
         // not up yet
       }
       await new Promise((r) => setTimeout(r, 400));
