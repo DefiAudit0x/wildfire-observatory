@@ -92,6 +92,25 @@ class MeshInboundTest {
         at: Long = now
     ): MeshInbound.Verdict = inbound.evaluate(wireBytes(f), at, ttl, skew, difficulty)
 
+    @Test
+    fun `copied bound ID signed by other keys cannot charge authentic triple budget`() {
+        val trustedKey = canonicalB64(ByteArray(32) { 1 })
+        val boundId = MeshIdentityBinding.issue(trustedKey)
+        // Isolate binding admission ordering; PoW is the same captured solve.
+        val inb = inbound(
+            verify = { MeshIdentityBinding.accepts(it.ephemeralId, it.senderPublicKey) },
+            powVerify = { _, _, _ -> true }
+        )
+        for (i in 2..17) {
+            val copy = frame(origPublicKey = canonicalB64(ByteArray(32) { i.toByte() }))
+                .copy(origEphemeralId = boundId)
+            val rejected = evaluate(copy, inb) as MeshInbound.Verdict.Rejected
+            assertEquals(MeshInbound.RejectReason.SIGNATURE, rejected.reason)
+        }
+        val authentic = frame(origPublicKey = trustedKey).copy(origEphemeralId = boundId)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Accepted)
+    }
+
     // ---- accept paths ----
 
     @Test

@@ -14,6 +14,19 @@ import org.junit.Test
 class ApiPayloadsTest {
 
     @Test
+    fun `SOS queued body matches only the same emergency under the stored key`() {
+        fun body(lat: Double = 36.0, audio: String = "data:audio/webm;base64,AA==", key: String = "queued-key") =
+            ApiPayloads.buildSosJson("device", lat, 3.0, null, null, "help", audio, 2, key)?.first
+        val queuedBody = body()
+        assertNotNull(queuedBody)
+        assertEquals(queuedBody, body())
+        assertFalse(queuedBody == body(lat = 37.0))
+        assertFalse(queuedBody == body(audio = "data:audio/webm;base64,BB=="))
+        assertFalse(queuedBody == body(key = "fresh-key"))
+    }
+
+
+    @Test
     fun `report body happy path shape`() {
         val pair = ApiPayloads.buildReportJson(
             lat = 36.75, lng = 3.05,

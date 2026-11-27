@@ -13,6 +13,17 @@ import kotlin.math.abs
 class GeoMathTest {
 
     @Test
+    fun `driving along returned road stays usable while off road fix does not`() {
+        val route = listOf(36.0 to 3.0, 36.01 to 3.0)
+        val latestLat = 36.000405 // about 45 m driven since request, >30 m refresh gate
+        assertTrue(TeamLocationLogic.haversineMeters(36.0, 3.0, latestLat, 3.0) >= 30.0)
+        assertTrue(GeoMath.minDistanceToPolylineM(latestLat, 3.0, route) <= 60.0)
+        assertTrue(GeoMath.minDistanceToPolylineM(latestLat, 3.002, route) > 60.0)
+        assertTrue(GeoMath.minDistanceToPolylineM(latestLat, 3.0, emptyList()) > 60.0)
+    }
+
+
+    @Test
     fun `bearing north east south west`() {
         // Algiers as the anchor point.
         val lat = 36.7538; val lng = 3.0588

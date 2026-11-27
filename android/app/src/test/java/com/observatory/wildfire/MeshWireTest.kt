@@ -32,6 +32,15 @@ class MeshWireTest {
         hopsLeft = 5
     )
 
+    @Test
+    fun keyBoundSchemeUsesExistingWireFormatWithoutVersionBump() {
+        val original = sampleFrame()
+        val bound = original.copy(origEphemeralId = MeshIdentityBinding.issue(original.origPublicKey))
+        assertTrue(bound.origEphemeralId.length <= 64)
+        assertEquals(bound, MeshWire.parseFrame(MeshWire.frameToJson(bound)))
+        assertEquals(original, MeshWire.parseFrame(MeshWire.frameToJson(original)))
+    }
+
     // ---------- framing ----------
 
     @Test
