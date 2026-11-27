@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { isFreshThreatTimestamp } from "../../utils/threats";
 import { calculateBearing, getDistanceKm, safeAlignmentAccuracyValue } from "./reportFormShared";
+import { useNowTick } from "../useNowTick";
 
 /**
  * ARC-H13 — THE owner of the field-camera concern: the getUserMedia lifecycle
@@ -20,6 +21,7 @@ export interface UseReportCameraParams {
 }
 
 export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: UseReportCameraParams) {
+  const threatFreshnessTick = useNowTick(30_000);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
   const [cameraStatus, setCameraStatus] = useState<"closed" | "active" | "unavailable">("closed");
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -140,7 +142,7 @@ export function useReportCamera({ lat, lng, reports, isArabic, setErrorMsg }: Us
       setMatchedReport(null);
       setAlignmentAccuracy(null);
     }
-  }, [lat, lng, heading, reports]);
+  }, [lat, lng, heading, reports, threatFreshnessTick]);
 
   const safeAlignmentAccuracy = safeAlignmentAccuracyValue(alignmentAccuracy);
   const safeMatchedDistance = matchedReport && Number.isFinite(Number(matchedReport.distance))
