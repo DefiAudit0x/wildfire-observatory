@@ -45,7 +45,7 @@ test.describe("Smoke tests", () => {
     const adminPw = "test-admin";
     await page.goto("/");
     await page.click('button:has-text("مشرف")');
-    const input = page.getByPlaceholder(/mot de passe|كلمة المرور/i);
+    const input = page.locator('#admin-auth-card').getByPlaceholder(/mot de passe|كلمة المرور/i);
     await expect(input).toBeVisible({ timeout: 5000 });
     await input.fill(adminPw);
     await page.click('button:has-text("ولوج المشرف")');
