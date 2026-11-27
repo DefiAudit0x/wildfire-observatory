@@ -143,12 +143,18 @@ router.get("/", async (_req: Request, res: Response) => {
     // ARC-M04 + W-M8: the ACTIVE filter (not resolved/rejected) is applied
     // by the caller below together with the freshness window — stale rows
     // must not drive severity even if Firestore still holds them.
-    currentReports = firestoreReports || [];
+    if (firestoreReports === null) {
+      res.status(503).json({ error: "Report-derived region status unavailable", reportsUnavailable: true });
+      return;
+    }
+    currentReports = firestoreReports;
   } catch (err) {
     logger.warn(
       { msg: err instanceof Error ? err.message : String(err) },
-      "Wilayas route: Firestore reports unavailable — falling back to static baseline"
+      "Wilayas route: Firestore reports unavailable"
     );
+    res.status(503).json({ error: "Report-derived region status unavailable", reportsUnavailable: true });
+    return;
   }
 
   let hotspots: SatelliteHotspot[] = [];
