@@ -159,10 +159,13 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
   }
 }
 
-export type UserDeleteAtomicResult = "deleted" | "not-found" | "unavailable";
+export type UserDeleteAtomicResult = "deleted" | "not-found" | "forbidden" | "unavailable";
 
 /** Delete a staff doc and release its counted unit link in the same transaction. */
-export async function deleteUserAtomically(userId: string): Promise<UserDeleteAtomicResult> {
+export async function deleteUserAtomically(
+  userId: string,
+  authorize: (target: Record<string, unknown>) => boolean = () => true
+): Promise<UserDeleteAtomicResult> {
   const db = getDb();
   if (!db) return "unavailable";
   try {
@@ -175,6 +178,7 @@ export async function deleteUserAtomically(userId: string): Promise<UserDeleteAt
             const user = await tx.get(userRef);
             if (!user.exists) return "not-found";
             const data = user.data() || {};
+            if (!authorize(data)) return "forbidden";
             const unitRef = typeof data.unitId === "string" && data.linkedStaffCounted === true
               ? db.collection("units").doc(unitDocumentId(data.unitId))
               : null;
@@ -194,6 +198,7 @@ export async function deleteUserAtomically(userId: string): Promise<UserDeleteAt
             const user = await tx.get(userRef);
             if (!user.exists()) return "not-found";
             const data = user.data() || {};
+            if (!authorize(data)) return "forbidden";
             const unitRef = typeof data.unitId === "string" && data.linkedStaffCounted === true
               ? doc(db, "units", unitDocumentId(data.unitId))
               : null;

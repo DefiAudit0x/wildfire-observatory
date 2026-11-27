@@ -76,9 +76,39 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       if (res.ok) {
         const data = await res.json();
         if (seq !== sosFetchSeq.current) return;
-        setFullSos(data);
-        sosErrorRef.current = false;
         const source = res.headers.get("X-SOS-Source");
+        if (source === "memory_fallback") {
+          // CodeRabbit on PR #213: a memory_fallback snapshot is known
+          // incomplete — when the server's Firestore read failed it may
+          // not hold a just-acknowledged dispatch, so a wholesale replace
+          // would remove it from the UI. Merge instead: snapshot rows win
+          // per SOS, but a locally acknowledged dispatch is unioned in
+          // (identity teamId + dispatchedAt, as in applyLocalDispatch, so
+          // a clear + re-dispatch keeps both entries), and local SOSes
+          // absent from the snapshot are kept. The next
+          // firestore-sourced poll corrects any staleness this keeps.
+          setFullSos((prev) => {
+            const snapshot: TrappedSOS[] = Array.isArray(data) ? data : [];
+            const snapshotIds = new Set(snapshot.map((s) => s.id));
+            const merged = snapshot.map((s) => {
+              const local = prev.find((p) => p.id === s.id);
+              if (!local?.dispatchedTeams?.length) return s;
+              const teams = [...(s.dispatchedTeams ?? [])];
+              for (const t of local.dispatchedTeams) {
+                const held = teams.some(
+                  (x) => x.teamId === t.teamId && x.dispatchedAt === t.dispatchedAt
+                );
+                if (!held) teams.push(t);
+              }
+              return { ...s, dispatchedTeams: teams };
+            });
+            const keptLocal = prev.filter((p) => !snapshotIds.has(p.id));
+            return [...merged, ...keptLocal];
+          });
+        } else {
+          setFullSos(data);
+        }
+        sosErrorRef.current = false;
         if (source === "memory_fallback" && !reportedFallbackRef.current) {
           reportedFallbackRef.current = true;
           push(
@@ -320,7 +350,17 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
       }
       if (res.ok) {
         const data = await res.json().catch(() => null);
+        // A GET started before this acknowledgement cannot replace it.
+        sosFetchSeq.current += 1;
         applyLocalDispatch(sosId, data?.dispatch || body);
+        // CodeRabbit on PR #213: the rendered list is local `fullSos`,
+        // refreshed only by fetchFullSos() — NOT by onRefresh (App
+        // fetchData). Without a fresh fetch here, a new SOS B inside the
+        // discarded GET stays hidden until the next 15 s poll. The fresh
+        // fetch carries the next sequence number, so it cannot be
+        // invalidated by the bump above; it replaces the optimistic entry
+        // with the server state, which includes this dispatch.
+        void fetchFullSos();
         if (onRefresh) onRefresh();
         return true;
       }

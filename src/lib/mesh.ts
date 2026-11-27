@@ -93,10 +93,22 @@ class MeshClient {
     const timeout = window.setTimeout(() => controller.abort(), FETCH_TOKEN_TIMEOUT_MS);
     try {
       if (!this.meshToken) {
-        const res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
+        let res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
           headers: { Accept: "application/json" },
           signal: controller.signal,
         });
+        if (res.status === 401) {
+          const enrollment = await fetch("/api/public-principal", {
+            method: "POST",
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
+          if (!enrollment.ok) throw new Error("mesh principal unavailable");
+          res = await fetch(`/api/mesh/token?deviceId=${encodeURIComponent(this.deviceId)}`, {
+            headers: { Accept: "application/json" },
+            signal: controller.signal,
+          });
+        }
         if (!res.ok) throw new Error("mesh token unavailable");
         const data = (await res.json()) as { token?: unknown };
         this.meshToken = typeof data.token === "string" && data.token.length > 0 ? data.token : null;

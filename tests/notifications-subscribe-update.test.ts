@@ -18,6 +18,15 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../server/firebase.js", () => ({
   getDb: () => ({
+    runTransaction: async (callback: (tx: {
+      get: () => Promise<{ exists: boolean; data: () => Record<string, unknown> }>;
+      update: (_ref: unknown, data: Record<string, unknown>) => void;
+      set: (_ref: unknown, data: Record<string, unknown>) => void;
+    }) => Promise<unknown>) => callback({
+      get: async () => ({ exists: state.subscriberExists, data: () => state.existing }),
+      update: (_ref, data) => { state.updateCalls.push(data); },
+      set: (_ref, data) => { state.setCalls.push(data); },
+    }),
     collection: () => ({
       doc: () => ({
         get: async () => ({ exists: state.subscriberExists, data: () => state.existing }),
@@ -34,6 +43,15 @@ vi.mock("../server/firebase.js", () => ({
 }));
 
 vi.mock("firebase/firestore", () => ({
+  runTransaction: async (_db: unknown, callback: (tx: {
+    get: () => Promise<{ exists: () => boolean; data: () => Record<string, unknown> }>;
+    update: (_ref: unknown, data: Record<string, unknown>) => void;
+    set: (_ref: unknown, data: Record<string, unknown>) => void;
+  }) => Promise<unknown>) => callback({
+    get: async () => ({ exists: () => state.subscriberExists, data: () => state.existing }),
+    update: (_ref, data) => { state.updateCalls.push(data); },
+    set: (_ref, data) => { state.setCalls.push(data); },
+  }),
   doc: () => ({}),
   getDoc: async () => ({ exists: () => state.subscriberExists, data: () => state.existing }),
   updateDoc: async (_ref: unknown, update: Record<string, unknown>) => {

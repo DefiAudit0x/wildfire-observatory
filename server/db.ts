@@ -18,7 +18,10 @@ let reportsCache: { data: any[] | null; expiresAt: number } | null = null;
 // per request, and the wire shape (no PII, no inline base64) is computed once.
 let reportsWireCache: { data: any[] | null; expiresAt: number } | null = null;
 
+let reportsGeneration = 0;
+
 export function invalidateReportsCache() {
+  reportsGeneration += 1;
   reportsCache = null;
   reportsWireCache = null;
 }
@@ -160,6 +163,7 @@ export async function getReportsDbResult(): Promise<ReportsDbResult> {
   if (reportsCache && Date.now() < reportsCache.expiresAt) {
     return reportsCache.data === null ? { status: "empty" } : { status: "ok", reports: reportsCache.data };
   }
+  const generation = reportsGeneration;
   const db = getDb();
   if (!db) return { status: "no-db" };
   try {
@@ -208,7 +212,7 @@ export async function getReportsDbResult(): Promise<ReportsDbResult> {
       }
     }
     if (data === null) return { status: "empty" };
-    reportsCache = { data, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
+    if (generation === reportsGeneration) reportsCache = { data, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
     return { status: "ok", reports: data };
   } catch (err) {
     logger.error({ err }, "Error reading reports from Firestore");
@@ -242,6 +246,7 @@ export async function getPublicReportsWire(): Promise<ReportsDbResult> {
   if (reportsWireCache && Date.now() < reportsWireCache.expiresAt) {
     return reportsWireCache.data === null ? { status: "empty" } : { status: "ok", reports: reportsWireCache.data };
   }
+  const generation = reportsGeneration;
   const result = await getReportsDbResult();
   if (result.status !== "ok") return result;
   if (!result.reports.every(isClusterableReport)) {
@@ -249,7 +254,7 @@ export async function getPublicReportsWire(): Promise<ReportsDbResult> {
     return { status: "error" };
   }
   const wire = runClustering(result.reports).map(sanitizePublicReport);
-  reportsWireCache = { data: wire, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
+  if (generation === reportsGeneration) reportsWireCache = { data: wire, expiresAt: Date.now() + REPORTS_CACHE_TTL_MS };
   return { status: "ok", reports: wire };
 }
 

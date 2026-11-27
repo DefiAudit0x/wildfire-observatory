@@ -26,6 +26,7 @@ export function buildLocalPendingReport(payload: CitizenReportPayload): Report {
   const lng = Number(payload.lng);
   return {
     id: payload.clientGeneratedId || `rep-local-${crypto.randomUUID()}`,
+    clientGeneratedId: payload.clientGeneratedId,
     lat: Number.isFinite(lat) ? lat : NaN,
     lng: Number.isFinite(lng) ? lng : NaN,
     locationName: payload.locationName,

@@ -135,7 +135,10 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
     const existing = await docGet("users", agentId);
     if (!existing) { res.status(404).json({ error: "User not found" }); return; }
     if (existing.role === "superadmin" && !isTrueSuperadmin(admin)) { res.status(403).json({ error: "Only the superadmin credential can delete superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
-    const deletion = await deleteUserAtomically(agentId);
+    const deletion = await deleteUserAtomically(agentId, (target) =>
+      target.role !== "superadmin" || isTrueSuperadmin(admin)
+    );
+    if (deletion === "forbidden") { res.status(403).json({ error: "Only the superadmin credential can delete superadmin accounts", code: "SUPERADMIN_GRANT_FORBIDDEN" }); return; }
     if (deletion === "not-found") { res.status(404).json({ error: "User not found" }); return; }
     if (deletion === "unavailable") { res.status(503).json({ error: "Database not available" }); return; }
     // S-M8: account deletion is the harshest privilege action — audit it

@@ -77,7 +77,7 @@ describe("Fix 12 AIG-1 unavailable report context", () => {
   it("keeps a confirmed empty dataset successful", async () => {
     const res = await guidanceRequest(await appFor("ai"));
     expect(res.status).toBe(200);
-    expect(res.body.guidance).toContain("Aucun foyer");
+    expect(res.body.guidance).toContain("Situation des incendies inconnue");
   });
 });
 
@@ -91,12 +91,19 @@ describe("Fix 12 AIG-2 guidance freshness", () => {
     const app = await appFor("ai");
     const fallback = await guidanceRequest(app);
     expect(fallback.status).toBe(200);
-    expect(fallback.body.guidance).toContain("Aucun foyer");
+    expect(fallback.body.guidance).toContain("Situation des incendies inconnue");
     backend.aiEnabled = true;
     backend.generate.mockResolvedValue({ text: "provider response" });
     const live = await guidanceRequest(app);
-    expect(live.body.guidance).toBe("provider response");
-    expect(backend.generate.mock.calls[0][0].contents).toContain("Active reports: 0, High/Critical: 0");
+    // F046 (CodeRabbit on PR #213): with zero active reports the
+    // provider's text must not be served as-is — sanitizeAiOutput does
+    // not enforce the unknown-status wording, so a provider all-clear
+    // would stand. The provider is not consulted at all when there is no
+    // active report to describe, so the unknown-status fallback is what
+    // the user gets, with no provider call spent.
+    expect(live.body.guidance).toContain("Situation des incendies inconnue");
+    expect(live.body.guidance).not.toBe("provider response");
+    expect(backend.generate).not.toHaveBeenCalled();
   });
   it("keeps fresh critical reports and excludes resolved/rejected reports", async () => {
     const reports = ["pending", "resolved", "rejected"].map(status => ({

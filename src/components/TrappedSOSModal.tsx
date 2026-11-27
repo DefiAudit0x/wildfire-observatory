@@ -7,14 +7,8 @@ interface TrappedSOSModalProps {
   lang: "ar" | "fr";
   onClose: () => void;
   userLocation: { lat: number; lng: number } | null;
-  /**
-   * Distance to the nearest ACTIVE danger and what kind of source it is:
-   * "report" = citizen-signaled fire, "satellite" = thermal hotspot detected
-   * from orbit (a detection, NOT an on-the-ground confirmation). The modal
-   * wording reflects the kind so a hotspot is never presented as a confirmed
-   * fire.
-   */
-  nearestThreat?: { distanceM: number; kind: "report" | "satellite" } | null;
+  /** Only a confirmed citizen report within 10 km can establish imminent danger. */
+  nearestThreat?: { distanceM: number; kind: "report" | "satellite"; confirmed?: boolean } | null;
 }
 
 type Step =
@@ -65,6 +59,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   // permission await resolves — a granted stream for a dead modal is
   // stopped at once, never stored, recorded, analysed, or timed.
   const mountedRef = useRef(true);
+  const recordingGenerationRef = useRef(0);
   // Fix 27 (SOSM-2): the timer callback must read the current count without
   // closing over stale state — and the stop must not live inside a state
   // updater (StrictMode double-invokes updaters in dev).
@@ -238,7 +233,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       setNearestThreatState(null);
       return;
     }
-    if (nearestThreat == null) {
+    if (nearestThreat == null || nearestThreat.confirmed !== true || nearestThreat.kind !== "report" ||
+        !Number.isFinite(nearestThreat.distanceM) || nearestThreat.distanceM < 0 || nearestThreat.distanceM > 10_000) {
       setStep("no_fires");
       setNearestThreatState(null);
       return;
@@ -274,6 +270,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   };
 
   const startRecording = async () => {
+    const generation = ++recordingGenerationRef.current;
     setStep("recording");
     setRecordingTime(0);
     recordingTimeRef.current = 0;
@@ -289,7 +286,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         // Fix 27 (SOSM-3): the user may have closed the modal while the
         // permission prompt was open. A granted stream for a dead modal must
         // be stopped at once — never stored, recorded, analysed, or timed.
-        if (!mountedRef.current) {
+        if (!mountedRef.current || generation !== recordingGenerationRef.current) {
           stream.getTracks().forEach((track) => track.stop());
           return;
         }
@@ -373,9 +370,12 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         setMicStatus("permission_denied");
       }
     } catch (err) {
+      if (!mountedRef.current || generation !== recordingGenerationRef.current) return;
       console.warn("Microphone access unavailable or denied:", err);
       setMicStatus("permission_denied");
     }
+
+    if (!mountedRef.current || generation !== recordingGenerationRef.current) return;
 
     // Fix 27 (SOSM-2): the stop is a plain statement now, not a side effect
     // inside the setRecordingTime updater (StrictMode double-invokes updaters
@@ -386,6 +386,15 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
         if (timerRef.current) clearInterval(timerRef.current);
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
           try { mediaRecorderRef.current.stop(); } catch { /* ignore */ }
+        }
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+          mediaStreamRef.current = null;
+        }
+        if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+        if (recordingAudioCtxRef.current) {
+          try { recordingAudioCtxRef.current.close(); } catch { /* ignore */ }
+          recordingAudioCtxRef.current = null;
         }
         recordingTimeRef.current = MAX_AUDIO_DURATION_SEC;
         setRecordingTime(MAX_AUDIO_DURATION_SEC);
@@ -483,6 +492,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
   }, [phone, userLocation]);
 
   const stopRecordingAndSend = async () => {
+    recordingGenerationRef.current += 1;
     if (timerRef.current) clearInterval(timerRef.current);
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     setIsSending(true);
@@ -758,12 +768,12 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
               </div>
               <div>
                 <h3 className="text-lg font-bold text-emerald-400 mb-2">
-                  {isArabic ? "لا توجد حرائق نشطة قريبة" : "Aucun incendie actif détecté"}
+                  {isArabic ? "لم يتأكد خطر قريب" : "Danger à proximité non confirmé"}
                 </h3>
                 <p className="text-sm text-slate-300">
                   {isArabic
-                    ? "لم يرصد النظام حريقاً نشطاً قريباً. إذا كنت تخاطر فعلياً، يمكنك مواصلة إرسال استغاثتك."
-                    : "Aucun incendie actif à proximité. Si vous êtes en danger réel, vous pouvez continuer l'alerte."}
+                    ? "لم يتأكد وجود حريق نشط قريب؛ قد تكون البيانات غير مكتملة. إذا كنت في خطر، يمكنك مواصلة إرسال استغاثتك."
+                    : "Les données disponibles ne confirment pas de feu actif à proximité et peuvent être incomplètes. Si vous êtes en danger, vous pouvez continuer l'alerte."}
                 </p>
               </div>
               <div className="w-full space-y-3 bg-black/40 p-4 rounded-xl border border-white/5" dir={isArabic ? "rtl" : "ltr"}>
@@ -820,8 +830,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                   <span className="font-bold text-white px-1">{nearestThreatState?.distanceM} {isArabic ? "متر" : "mètres"}</span>
                   {nearestThreatState?.kind === "satellite"
                     ? (isArabic
-                        ? "من بؤرة حرارية رصدها القمر الصناعي — يُفحص موقعها ميدانياً الآن."
-                        : "d'un point chaud détecté par satellite — vérification terrain en cours.")
+                        ? "من بؤرة حرارية رصدها القمر الصناعي — لم يتأكد موقعها ميدانياً."
+                        : "d'un point chaud détecté par satellite — sans confirmation sur le terrain.")
                     : (isArabic
                         ? "من حريق نشط أبلغ عنه مواطنون."
                         : "d'un feu actif signalé par des citoyens.")}

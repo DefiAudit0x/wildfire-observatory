@@ -8,6 +8,7 @@ import { isTrustedOrigin, requireAdmin } from "../middleware.js";
 import { str } from "../params.js";
 import { getHaversineDistance, NA_BOUNDS } from "../geo.js";
 import { getReportsDbResult } from "../db.js";
+import { isFreshThreatTimestamp } from "./wilayas.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -238,10 +239,54 @@ function anonymizeSos(sos: any) {
 
 type SosReadSource = "firestore" | "memory_fallback";
 
-async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
-  const fromDb = await collectionGet("trappedSos", "timestamp", 100);
-  if (fromDb === null) return { items: memorySos, source: "memory_fallback" };
+// The public + staff feeds cap resolved SOS at the 100 newest: operators
+// need every active SOS plus recent history, not an unbounded archive.
+const SOS_RESOLVED_CAP = 100;
 
+async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
+  // CodeRabbit on PR #213: the old read fetched the ENTIRE trappedSos
+  // collection on every cache miss, then kept all non-resolved + the first
+  // 100 resolved — with 50k resolved SOS that is 50,001 docs read. Split
+  // the read instead: every active SOS (UNCAPPED — a shared limit must
+  // never omit an active SOS, F058) + the 100 newest SOS overall, filtered
+  // to resolved in memory.
+  //
+  // SINGLE-FIELD INDEXES ONLY — by design, no composite index: Firestore
+  // auto-creates a single-field index for every field, so neither query
+  // needs a manual `firebase deploy --only firestore:indexes` and the PR
+  // is self-contained. A `where(status == ...)` COMBINED with an
+  // `orderBy(timestamp)` would require a (status, timestamp) composite
+  // index that no workflow or doc deploys — until someone deployed it by
+  // hand, both queries would fail in production and this would fall back
+  // to the (empty-when-healthy) memory list, hiding every SOS on a
+  // safety-critical surface. So: the filtered query has NO orderBy (its
+  // rows are sorted in memory below), and the ordered query has NO where
+  // filter (resolved is filtered in memory below). Either query alone is
+  // served by a single-field index.
+  //
+  // Consequence, accepted: the resolved history shown may be fewer than
+  // 100 when active SOS occupy slots in the newest-100 window — the cap
+  // is a maximum, not a guarantee. TrappedSOS status is only "active" |
+  // "resolved" (src/types.ts), so == "active" covers every non-resolved
+  // document.
+  const active = await collectionGet("trappedSos", undefined, undefined, false, { field: "status", op: "==", value: "active" });
+  if (active === null) return { items: memorySos, source: "memory_fallback" };
+  const newest = await collectionGet("trappedSos", "timestamp", SOS_RESOLVED_CAP, false);
+  // CodeRabbit on PR #213: when only the history read fails, the active
+  // read already succeeded — discarding it hid every active SOS (after a
+  // restart memorySos can be empty, so both feeds answered an empty list
+  // with HTTP 200). Return the active result merged with available memory
+  // records instead; the source stays "memory_fallback" because the
+  // resolved history is missing and the list is incomplete.
+  const resolved = newest === null ? [] : newest.filter((s: any) => s.status === "resolved");
+
+  // CodeRabbit on PR #213: the two reads are not one snapshot — a resolve
+  // landing between them returns the same SOS in both lists (active
+  // version + resolved version), and [...active, ...resolved] kept both.
+  // Dedup by id with the later (resolved) version winning.
+  const byId = new Map<string, any>();
+  for (const s of [...active, ...resolved]) byId.set(s.id, s);
+  const fromDb = [...byId.values()];
   let merged: any[];
   if (fromDb.length > 0) {
     const dbIds = new Set(fromDb.map((s: any) => s.id));
@@ -250,7 +295,9 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   } else {
     merged = memorySos;
   }
-  return { items: merged, source: "firestore" };
+  let resolvedCount = 0;
+  merged.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+  return { items: merged.filter((s) => s.status !== "resolved" || ++resolvedCount <= SOS_RESOLVED_CAP), source: newest === null ? "memory_fallback" : "firestore" };
 }
 
 router.get("/", async (_req: Request, res: Response) => {
@@ -421,7 +468,7 @@ router.post("/", sosIpLimiter, sosPostLimiter, async (req: Request, res: Respons
         }),
       ]);
       const active = dbResult.status === "ok" ? dbResult.reports.filter(
-        (r: any) => r.status !== "resolved" && r.status !== "rejected"
+        (r: any) => r.status !== "resolved" && r.status !== "rejected" && isFreshThreatTimestamp(r.timestamp)
       ) : [];
       if (active.length > 0) {
         nearestFireDistanceKm = active.reduce((min: number, fire: any) => {

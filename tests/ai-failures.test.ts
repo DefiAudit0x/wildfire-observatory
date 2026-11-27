@@ -1,14 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import supertest from "supertest";
+import type { ReportsDbResult } from "../server/db.js";
 
-const { fakeClient, setGenerateContent } = vi.hoisted(() => {
+const { fakeClient, setGenerateContent, getReportsDbResult } = vi.hoisted(() => {
   const fakeClient: any = { models: { generateContent: vi.fn() } };
-  return { fakeClient, setGenerateContent: (impl: any) => fakeClient.models.generateContent.mockImplementation(impl) };
+  return {
+    fakeClient,
+    setGenerateContent: (impl: any) => fakeClient.models.generateContent.mockImplementation(impl),
+    getReportsDbResult: vi.fn<() => Promise<ReportsDbResult>>(),
+  };
 });
 
 vi.mock("../server/db.js", () => ({
-  getReportsDbResult: async () => ({ status: "empty" }),
+  getReportsDbResult,
 }));
 
 vi.mock("../server/ai.js", () => ({
@@ -17,6 +22,12 @@ vi.mock("../server/ai.js", () => ({
 }));
 
 import aiRouter from "../server/routes/ai.js";
+
+beforeEach(() => {
+  getReportsDbResult.mockReset();
+  getReportsDbResult.mockResolvedValue({ status: "empty" });
+  fakeClient.models.generateContent.mockClear();
+});
 
 describe("POST /api/ai/guidance — provider behavior", () => {
   function createAiApp() {
@@ -27,16 +38,50 @@ describe("POST /api/ai/guidance — provider behavior", () => {
     return app;
   }
 
-  it("returns the AI guidance when the provider responds with text", async () => {
-    setGenerateContent(async () => ({ text: "### رد النموذج\nإرشادات رسمية من المزود" }));
+  it("does NOT serve provider text as an all-clear with zero active reports (F046)", async () => {
+    // sanitizeAiOutput only escapes HTML/dangerous schemes — it does not
+    // enforce the unknown-status wording, so a provider reply like
+    // "Aucun incendie à proximité" must fall through to the local
+    // unknown-status fallback instead of being served as-is. The provider
+    // is not even consulted when there is no active report to describe.
+    setGenerateContent(async () => ({ text: "Aucun incendie à proximité, tout est calme." }));
     const app = createAiApp();
     const res = await supertest(app)
       .post("/api/ai/guidance")
       .set("x-forwarded-for", "203.0.113.11")
+      .send({ lat: 36.8, lng: 7.5, lang: "fr" });
+    expect(res.status).toBe(200);
+    expect(fakeClient.models.generateContent).not.toHaveBeenCalled();
+    expect(res.body.guidance).not.toContain("Aucun incendie à proximité");
+    expect(res.body.guidance).toContain("Situation des incendies inconnue");
+    expect(res.body.guidance).toContain("Protection Civile: 1021");
+  });
+
+  it("serves provider text when at least one active report is nearby", async () => {
+    getReportsDbResult.mockResolvedValue({
+      status: "ok",
+      reports: [{
+        id: "rep-1",
+        lat: 36.8,
+        lng: 7.5,
+        locationName: "Annaba",
+        wilaya: "Annaba",
+        description: "Fire",
+        severity: "medium",
+        status: "verified",
+        timestamp: new Date().toISOString(),
+        consensusCount: 0,
+      }],
+    });
+    setGenerateContent(async () => ({ text: "### رد النموذج\nإرشادات رسمية من المزود" }));
+    const app = createAiApp();
+    const res = await supertest(app)
+      .post("/api/ai/guidance")
+      .set("x-forwarded-for", "203.0.113.16")
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("رد النموذج");
-    expect(res.body.guidance).not.toContain("لا يوجد نشاط حرائق");
+    expect(res.body.guidance).not.toContain("غير معروفة");
   });
 
   it("falls back to local guidance when the provider throws (network error)", async () => {
@@ -50,7 +95,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -63,7 +108,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -76,7 +121,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   });
 
@@ -89,7 +134,7 @@ describe("POST /api/ai/guidance — provider behavior", () => {
       .send({ lat: 36.8, lng: 7.5, lang: "ar" });
     expect(res.status).toBe(200);
     expect(res.body.guidance).toContain("###");
-    expect(res.body.guidance).toContain("لا يوجد نشاط حرائق قريب من المنطقة الشرقية حالياً");
+    expect(res.body.guidance).toContain("حالة الحرائق غير معروفة في المنطقة الشرقية");
     expect(res.body.guidance).toContain("الحماية المدنية: 1021");
   }, 25000);
 });

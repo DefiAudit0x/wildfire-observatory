@@ -176,26 +176,36 @@ router.post("/verify", verifyLimiter, async (req: Request, res: Response) => {
         res.status(404).json({ error: "Subscriber not found" });
         return;
       }
-      const sub = existing.docs[0].data() as any;
-      if (!isVerificationTokenValid(sub, token)) {
+      const verified = await db.runTransaction(async (tx) => {
+        const ref = existing.docs[0].ref;
+        const current = await tx.get(ref);
+        if (!current.exists || !isVerificationTokenValid(current.data(), token)) return false;
+        tx.update(ref, { verified: true, verificationToken: null, verificationExpiresAt: null });
+        return true;
+      });
+      if (!verified) {
         res.status(403).json({ error: "Invalid verification token" });
         return;
       }
-      await existing.docs[0].ref.update({ verified: true, verificationToken: null, verificationExpiresAt: null });
     } else {
-      const { collection, getDocs, query, where, updateDoc, doc } = await import("firebase/firestore");
+      const { collection, getDocs, query, where, runTransaction, doc } = await import("firebase/firestore");
       const q = query(collection(db, "subscribers"), where("email", "==", email));
       const snap = await getDocs(q);
       if (snap.empty) {
         res.status(404).json({ error: "Subscriber not found" });
         return;
       }
-      const sub = snap.docs[0].data() as any;
-      if (!isVerificationTokenValid(sub, token)) {
+      const verified = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "subscribers", snap.docs[0].id);
+        const current = await tx.get(ref);
+        if (!current.exists() || !isVerificationTokenValid(current.data(), token)) return false;
+        tx.update(ref, { verified: true, verificationToken: null, verificationExpiresAt: null });
+        return true;
+      });
+      if (!verified) {
         res.status(403).json({ error: "Invalid verification token" });
         return;
       }
-      await updateDoc(doc(db, "subscribers", snap.docs[0].id), { verified: true, verificationToken: null, verificationExpiresAt: null });
     }
     res.send("<h2>✅ اشتراكك مؤكد! سنرسل لك تنبيهات الحرائق.</h2>");
   } catch (err) {
@@ -360,113 +370,71 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
       return;
     }
 
-    if (isAdminDb(db)) {
-      // ARC-M06 fix: deterministic id — no check-then-add duplicate window.
-      const ref = db.collection("subscribers").doc(subscriberId(email));
-      const existingDoc = await ref.get();
-      if (existingDoc.exists) {
-        if (existingDoc.data()?.verified === true) {
-          // Fix 8c: a verified subscriber re-submitting preferences must be
-          // able to repair them. The pre-8c early return ("Subscription
-          // already verified.") left legacy stored aliases unfixable
-          // (CodeRabbit review 6001797406). The email is already verified,
-          // so no new token or verification email is issued and `verified`
-          // stays true — only the schema-validated preferences change.
-          // Fix 8e: the caller must first prove mailbox control — the
-          // stored unsubscribeToken, the same check as the /unsubscribe
-          // endpoint (CodeRabbit review 6002033438, CWE-862). Without it,
-          // anyone who knew the email could rewrite the preferences.
-          if (token !== existingDoc.data()?.unsubscribeToken) {
-            res.status(403).json({ error: "Invalid unsubscribe token" });
-            return;
-          }
-          await ref.update({
-            email,
-            wilayas: wilayas || [],
-            minSeverity: minSeverity || "medium",
-            updatedAt: new Date().toISOString(),
-          });
-          res.json({ success: true, message: "Subscription preferences updated." });
-          return;
-        }
-        await ref.update({
-          email,
-          wilayas: wilayas || [],
-          minSeverity: minSeverity || "medium",
-          verified: existingDoc.data()?.verified === true,
-          verificationToken,
-          verificationExpiresAt,
-          unsubscribeToken,
-          updatedAt: new Date().toISOString(),
-        });
-        // Fix 44 (MAIL-3): when mail is unconfigured the record is still
-        // persisted (unverified), but the response must not promise a
-        // verification email that can never arrive.
-        const emailDelivery = await sendVerificationEmail(email, verificationToken);
-        if (emailDelivery === "not-configured") {
-          res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
-          return;
-        }
-        res.json({ success: true, message: "Subscription updated. Check email to verify." });
-        return;
+    // Authorization and writes share the verification document's transaction.
+    // Re-evaluate on retries: a concurrent verification must not be undone by
+    // an unproved subscribe that originally observed an unverified mailbox.
+    // Narrow write type: the values are only string | string[] | boolean,
+    // which both SDKs' tx.update index signatures accept (their value type
+    // is Partial<unknown> = {}, and every non-null value is assignable to it).
+    // Record<string, unknown> does NOT type-check against them.
+    const changeFor = (current: Record<string, unknown> | undefined):
+      | { outcome: "forbidden" }
+      | { outcome: "preferences" | "updated" | "created"; data: Record<string, string | string[] | boolean> } => {
+      const preferences = { email, wilayas: wilayas || [], minSeverity: minSeverity || "medium" };
+      if (current?.verified === true) {
+        if (typeof token !== "string" || token !== current.unsubscribeToken) return { outcome: "forbidden" };
+        return { outcome: "preferences", data: { ...preferences, updatedAt: new Date().toISOString() } };
       }
-      await ref.set({
-        email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
+      return {
+        outcome: current ? "updated" : "created",
+        data: {
+          ...preferences, verified: false, verificationToken, verificationExpiresAt, unsubscribeToken,
+          ...(current ? { updatedAt: new Date().toISOString() } : { createdAt: new Date().toISOString() }),
+        },
+      };
+    };
+    let outcome: "forbidden" | "preferences" | "updated" | "created";
+    if (isAdminDb(db)) {
+      const ref = db.collection("subscribers").doc(subscriberId(email));
+      outcome = await db.runTransaction(async (tx) => {
+        const current = await tx.get(ref);
+        const change = changeFor(current.exists ? current.data() : undefined);
+        if (change.outcome !== "forbidden") {
+          if (current.exists) tx.update(ref, change.data);
+          else tx.set(ref, change.data);
+        }
+        return change.outcome;
       });
     } else {
-      const { doc, getDoc, setDoc, updateDoc } = await import("firebase/firestore");
+      const { doc, runTransaction } = await import("firebase/firestore");
       const ref = doc(db, "subscribers", subscriberId(email));
-      const existingDoc = await getDoc(ref);
-      if (existingDoc.exists()) {
-        if (existingDoc.data()?.verified === true) {
-          // Fix 8c: same repair path as the Admin SDK branch above — a
-          // verified subscriber may update preferences without re-verifying.
-          // Fix 8e: same mailbox-control proof as the Admin SDK branch —
-          // the stored unsubscribeToken (CodeRabbit review 6002033438,
-          // CWE-862).
-          if (token !== existingDoc.data()?.unsubscribeToken) {
-            res.status(403).json({ error: "Invalid unsubscribe token" });
-            return;
-          }
-          await updateDoc(ref, {
-            email,
-            wilayas: wilayas || [],
-            minSeverity: minSeverity || "medium",
-            updatedAt: new Date().toISOString(),
-          });
-          res.json({ success: true, message: "Subscription preferences updated." });
-          return;
+      outcome = await runTransaction(db, async (tx) => {
+        const current = await tx.get(ref);
+        const change = changeFor(current.exists() ? current.data() : undefined);
+        if (change.outcome !== "forbidden") {
+          if (current.exists()) tx.update(ref, change.data);
+          else tx.set(ref, change.data);
         }
-        await updateDoc(ref, {
-          email,
-          wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-          verified: existingDoc.data()?.verified === true,
-          verificationToken, verificationExpiresAt, unsubscribeToken, updatedAt: new Date().toISOString(),
-        });
-        // Fix 44 (MAIL-3): same unconfigured-mail branch as the Admin SDK site above.
-        const emailDelivery = await sendVerificationEmail(email, verificationToken);
-        if (emailDelivery === "not-configured") {
-          res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
-          return;
-        }
-        res.json({ success: true, message: "Subscription updated. Check email to verify." });
-        return;
-      }
-      await setDoc(ref, {
-        email, wilayas: wilayas || [], minSeverity: minSeverity || "medium",
-        verified: false, verificationToken, verificationExpiresAt, unsubscribeToken, createdAt: new Date().toISOString(),
+        return change.outcome;
       });
     }
+    if (outcome === "forbidden") {
+      res.status(403).json({ error: "Invalid unsubscribe token" });
+      return;
+    }
+    if (outcome === "preferences") {
+      res.json({ success: true, message: "Subscription preferences updated." });
+      return;
+    }
 
-    // Fix 44 (MAIL-3): same unconfigured-mail branch as the verified-update sites above.
+    // Email is sent only after commit, never inside a retried transaction.
     const emailDelivery = await sendVerificationEmail(email, verificationToken);
-    logger.info({ emailFingerprint: secretFingerprint(email) }, "New subscriber registered");
+    if (outcome === "created") logger.info({ emailFingerprint: secretFingerprint(email) }, "New subscriber registered");
     if (emailDelivery === "not-configured") {
       res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });
       return;
     }
-    res.json({ success: true, message: "Subscription created. Check email to verify." });
+    res.json({ success: true, message: outcome === "created" ? "Subscription created. Check email to verify." : "Subscription updated. Check email to verify." });
   } catch (err) {
     logger.error({ err }, "Failed to subscribe");
     res.status(500).json({ error: "Internal server error" });

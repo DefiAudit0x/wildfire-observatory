@@ -501,10 +501,16 @@ describe("CentralCommand dispatch upsert (Fix 43b)", () => {
       dispatchedTeams: [dispatched],
     };
     const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true, baseLat: null, baseLng: null, blockedPrincipals: [], members: [], activeMission: null };
+    // The post-dispatch refetch (CodeRabbit on PR #213) reads the server
+    // state, which includes the committed dispatch — the mock models that
+    // instead of returning the pre-dispatch list forever.
+    let dispatchedNotes = "";
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
       if (String(url).includes("/api/teams")) return jsonResponse(200, [team]);
-      if (String(url).includes("/api/sos/full")) return jsonResponse(200, [already]);
+      if (String(url).includes("/api/sos/full")) {
+        return jsonResponse(200, [{ ...already, dispatchedTeams: [{ ...dispatched, notes: dispatchedNotes }] }]);
+      }
       if (String(url).includes("/api/locations")) return jsonResponse(200, []);
       if (String(url).includes("/dispatch")) {
         // Fix 43c: a real replay returns the STORED entry verbatim — the
@@ -512,6 +518,7 @@ describe("CentralCommand dispatch upsert (Fix 43b)", () => {
         // notes only). The 43b draft used 11:00 here, which no real replay
         // ever produces; with identity-based reconciliation (43c) a
         // mismatched dispatchedAt would append instead of replacing.
+        dispatchedNotes = "second";
         return jsonResponse(200, {
           success: true,
           dispatch: { ...dispatched, notes: "second" },
@@ -594,15 +601,26 @@ describe("CentralCommand dispatch identity upsert (Fix 43c)", () => {
       ...sos("sos-fresh-1", "مناداة موجهة"),
       dispatchedTeams: [first],
     };
+    const second = {
+      ...first,
+      dispatchedAt: "2026-11-24T11:00:00.000Z",
+      notes: "second",
+    };
+    // The post-dispatch refetch (CodeRabbit on PR #213) reads the server
+    // state, which holds BOTH entries after clear + re-dispatch.
+    let dispatched = false;
     const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
       if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
       if (String(url).includes("/api/teams")) return jsonResponse(200, [teamAlpha]);
-      if (String(url).includes("/api/sos/full")) return jsonResponse(200, [already]);
+      if (String(url).includes("/api/sos/full")) {
+        return jsonResponse(200, [dispatched ? { ...already, dispatchedTeams: [first, second] } : already]);
+      }
       if (String(url).includes("/api/locations")) return jsonResponse(200, []);
       if (String(url).includes("/dispatch")) {
+        dispatched = true;
         return jsonResponse(200, {
           success: true,
-          dispatch: { ...first, dispatchedAt: "2026-11-24T11:00:00.000Z", notes: "second" },
+          dispatch: { ...second },
           alreadyDispatched: false,
         });
       }
@@ -688,5 +706,86 @@ describe("CentralCommand dispatch identity upsert (Fix 43c)", () => {
     expect(target?.dispatchedTeams).toHaveLength(2);
     expect(target?.dispatchedTeams?.[0]?.notes).toBe("first");
     expect(target?.dispatchedTeams?.[1]?.notes).toBe("second");
+  });
+});
+
+describe("CentralCommand dispatch refresh (CodeRabbit on PR #213)", () => {
+  let onRefresh: Mock<() => void>;
+
+  beforeEach(() => {
+    onRefresh = vi.fn(() => {});
+    recordedFocus.length = 0;
+    recordedSosCalls.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a dispatch refetches the SOS list, so a concurrent new SOS appears at once", async () => {
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true, baseLat: null, baseLng: null, blockedPrincipals: [], members: [], activeMission: null };
+    const dispatchItem = {
+      teamId: "team-alpha",
+      type: "protection_civile" as const,
+      teamNameAr: "فريق ألفا",
+      teamNameFr: "Team Alpha",
+      dispatchedAt: "2026-11-24T10:00:00.000Z",
+      status: "en_route" as const,
+      notes: "",
+    };
+    // SOS B is created on the server while the dispatch is in flight: it
+    // is absent from the first list and present in the post-dispatch one.
+    // Without the refetch, B stays hidden until the next 15 s poll.
+    // CodeRabbit on PR #213 (test nitpick): the post-dispatch fixture
+    // used to return SOS A without dispatchItem, so the refresh silently
+    // removed the local acknowledgment while the test still passed. The
+    // post-dispatch list is now a memory_fallback snapshot (the server's
+    // Firestore read failed, so it does not hold the dispatch) and the
+    // test asserts A keeps it.
+    const sosResponse = (body: unknown, source?: string) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          ...(source ? { "X-SOS-Source": source } : {}),
+        },
+      });
+    let dispatched = false;
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (String(url).includes("/api/admin/session")) return jsonResponse(200, {});
+      if (String(url).includes("/api/teams")) return jsonResponse(200, [team]);
+      if (String(url).includes("/api/sos/full")) {
+        return dispatched
+          ? sosResponse([sos("sos-a", "مناداة أ"), sos("sos-b", "مناداة ب")], "memory_fallback")
+          : jsonResponse(200, [sos("sos-a", "مناداة أ")]);
+      }
+      if (String(url).includes("/api/locations")) return jsonResponse(200, []);
+      if (String(url).includes("/dispatch")) {
+        dispatched = true;
+        return jsonResponse(200, { success: true, dispatch: dispatchItem, alreadyDispatched: false });
+      }
+      return jsonResponse(404, {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="ar" onRefresh={onRefresh} />
+    );
+    await waitFor(() => expect(screen.getByText("مناداة أ")).toBeTruthy());
+    expect(screen.queryByText("مناداة ب")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "توجيه نجدة للمحاصر" }));
+    const dispatchSelect = screen
+      .getAllByRole("combobox")
+      .find((s) => s.querySelector('option[value="team-alpha"]'));
+    expect(dispatchSelect).toBeTruthy();
+    fireEvent.change(dispatchSelect!, { target: { value: "team-alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "إرسال الفرقة" }));
+    await waitFor(() => expect(screen.getByText("مناداة ب")).toBeTruthy());
+    expect(fetchMock.mock.calls.filter(([u]: any[]) => String(u).includes("/api/sos/full")).length).toBeGreaterThan(1);
+    // The memory_fallback refresh must not drop the just-acknowledged
+    // dispatch from SOS A, even though the snapshot lacks it.
+    const last = recordedSosCalls[recordedSosCalls.length - 1] as TrappedSOS[];
+    const sosA = (last || []).find((s) => s.id === "sos-a");
+    expect(sosA?.dispatchedTeams).toHaveLength(1);
+    expect(sosA?.dispatchedTeams?.[0]?.teamId).toBe("team-alpha");
   });
 });

@@ -25,7 +25,7 @@ describe("scrubSentryEvent", () => {
     expect((out as any).request.data.deviceId).toBe("[redacted]");
     expect((out as any).request.data.phone).toBe("[redacted]");
     expect((out as any).request.data.email).toBe("[redacted]");
-    expect((out as any).request.data.lat).toBe(36.75);
+    expect((out as any).request.data.lat).toBe("[redacted]");
   });
 
   it("redacts whole body when it is not JSON", () => {
@@ -97,6 +97,46 @@ describe("scrubSentryEvent", () => {
       idNumber: "[redacted]",
       eventCategory: "report-created",
     });
+  });
+
+  it("redacts token and coordinate field variants (CodeRabbit on PR #213)", () => {
+    // "accessToken"/"verificationToken" normalize to "accesstoken"/
+    // "verificationtoken", matching neither the exact "token" entry nor
+    // the key regex; "latitude"/"longitude" likewise match neither the
+    // "lat"/"lng" entries nor the regex. All four are credentials or
+    // precise location and must be redacted.
+    const event = makeEvent({
+      accessToken: "secret-access",
+      verificationToken: "secret-verify",
+      latitude: 36.75,
+      longitude: 7.6,
+      token: "secret-token",
+      lat: 36.75,
+      lng: 7.6,
+      wilaya: "Annaba",
+    });
+    const out = scrubSentryEvent(event) as any;
+    expect(out.request.data.accessToken).toBe("[redacted]");
+    expect(out.request.data.verificationToken).toBe("[redacted]");
+    expect(out.request.data.latitude).toBe("[redacted]");
+    expect(out.request.data.longitude).toBe("[redacted]");
+    expect(out.request.data.token).toBe("[redacted]");
+    expect(out.request.data.lat).toBe("[redacted]");
+    expect(out.request.data.lng).toBe("[redacted]");
+    expect(out.request.data.wilaya).toBe("Annaba");
+  });
+
+  it("redacts nested token and coordinate fields", () => {
+    const event = makeEvent({
+      auth: { accessToken: "secret-access" },
+      location: { latitude: 36.75, longitude: 7.6 },
+      incidentType: "wildfire",
+    });
+    const out = scrubSentryEvent(event) as any;
+    expect(out.request.data.auth.accessToken).toBe("[redacted]");
+    expect(out.request.data.location.latitude).toBe("[redacted]");
+    expect(out.request.data.location.longitude).toBe("[redacted]");
+    expect(out.request.data.incidentType).toBe("wildfire");
   });
 
   it("returns the same event object for events without request/extra", () => {

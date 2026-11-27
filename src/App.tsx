@@ -133,24 +133,32 @@ export default function App() {
     }
   }, [activeTab, privilegedTabVisible, rosterVisible]);
 
-  // Nearest active danger to the user, combining clustered citizen reports
-  // (non-resolved) and high-confidence satellite hotspots (>=70%) through the
-  // single shared threat helper (same definition as the home emergency banner).
-  // The EXACT KIND of the nearest source travels with the distance: a
-  // satellite hotspot is "a thermal point detected from orbit", NOT a
-  // confirmed fire — the SOS modal labels it accordingly.
+  // Only fresh, verified citizen reports within the shared 10 km nearby
+  // radius qualify for the SOS modal's confirmed imminent-danger label.
   const nearestThreat = useMemo(() => {
     if (!userLocation) return null;
 
-    const { nearest } = getNearestActiveThreat({
+    const { nearbySources } = getNearestActiveThreat({
       lat: userLocation.lat,
       lng: userLocation.lng,
       reports,
       satellites,
+      // Fix 25b doctrine (EvacuationRadar): the freshness check reads the
+      // clock, so the memo must re-evaluate as time passes. Without a clock
+      // dep, a verified report keeps `confirmed: true` past the 30-min
+      // window whenever polls fail and the reports reference stays put,
+      // and TrappedSOSModal keeps showing the imminent-danger label from
+      // that stale object. The 30 s syncNow clock drives the re-check.
+      now: syncNow,
     });
 
-    return nearest ? { distanceM: Math.round(nearest.distanceKm * 1000), kind: nearest.kind } : null;
-  }, [userLocation, reports, satellites]);
+    const confirmed = nearbySources.filter((source) => source.kind === "report" && source.status === "verified");
+    const nearest = confirmed.reduce<(typeof confirmed)[number] | null>(
+      (closest, source) => !closest || source.distanceKm < closest.distanceKm ? source : closest,
+      null
+    );
+    return nearest ? { distanceM: Math.round(nearest.distanceKm * 1000), kind: nearest.kind, confirmed: true } : null;
+  }, [userLocation, reports, satellites, syncNow]);
 
   return (
     <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>

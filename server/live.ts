@@ -71,7 +71,15 @@ class LiveHub {
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 
     server.on("upgrade", (req, socket, head) => {
-      const pathname = new URL(req.url || "/", "http://localhost").pathname;
+      if (socket.destroyed) return;
+      let pathname: string;
+      try {
+        pathname = new URL(req.url || "/", "http://localhost").pathname;
+      } catch {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       if (pathname !== LIVE_PATH || !this.wss) return;
 
       if (!originAllowed(req.headers.origin)) {

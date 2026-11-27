@@ -61,17 +61,73 @@ export function invalidateDocCache(collectionName: string, id: string) {
   docCache.delete(key);
 }
 
-function collectionCacheKey(collectionName: string, orderByField?: string, limitCount?: number) {
-  return `${collectionName}::${orderByField || ""}::${limitCount || ""}`;
+/**
+ * CodeRabbit on PR #213: JSON.stringify collapses null, NaN and Infinity
+ * all to "null", so distinct filter values collided in the cache key and a
+ * later query could be served another filter's cached rows. The key is
+ * type-preserving: NaN / ±Infinity / -0 / undefined are distinct from null
+ * and from each other, and a string "null" is distinct from null.
+ */
+function encodeWhereValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "number:NaN";
+    if (value === Infinity) return "number:Infinity";
+    if (value === -Infinity) return "number:-Infinity";
+    if (Object.is(value, -0)) return "number:-0";
+    return `number:${value}`;
+  }
+  if (typeof value === "string") return `string:${JSON.stringify(value)}`;
+  if (typeof value === "boolean") return `boolean:${value}`;
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (value instanceof Date) return `date:${value.toISOString()}`;
+  if (Array.isArray(value)) return `array:[${value.map(encodeWhereValue).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${encodeWhereValue(v)}`);
+    return `object:{${entries.join(",")}}`;
+  }
+  return `${typeof value}:${String(value)}`;
 }
+
+export function collectionCacheKey(
+  collectionName: string,
+  orderByField?: string,
+  limitCount?: number,
+  whereFilter?: CollectionWhere
+) {
+  // CodeRabbit on PR #213: the where segment used to concatenate field +
+  // op + value with no separators, so distinct (field, op) pairs collided
+  // — field "statusnot-" + op "in" produced the same segment as field
+  // "status" + op "not-in". The filter is now serialized as a JSON tuple
+  // so each element keeps its own boundary.
+  const whereKey = whereFilter
+    ? `::${JSON.stringify([whereFilter.field, whereFilter.op, encodeWhereValue(whereFilter.value)])}`
+    : "";
+  return `${collectionName}::${orderByField || ""}::${limitCount || ""}${whereKey}`;
+}
+
+/** A single Firestore field filter for collectionGet (admin + client SDK). */
+export type CollectionWhere = {
+  field: string;
+  op: "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not-in" | "array-contains";
+  value: unknown;
+};
 
 export async function collectionGet(
   collectionName: string,
   orderByField?: string,
   limitCount?: number,
-  fresh = false
+  fresh = false,
+  // CodeRabbit on PR #213 (SOS list): the caller must be able to read one
+  // status slice without pulling the whole collection — e.g. all active SOS
+  // plus the 100 newest resolved, each as its own timestamp-ordered query.
+  // A where filter changes the result set, so it is part of the cache key.
+  whereFilter?: CollectionWhere
 ): Promise<any[] | null> {
-  const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount);
+  const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount, whereFilter);
   const cached = collectionCache.get(cacheKey);
   if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
@@ -83,6 +139,7 @@ export async function collectionGet(
     let data: any[] = [];
     if (isAdminDb(db)) {
       let ref: any = db.collection(collectionName);
+      if (whereFilter) ref = ref.where(whereFilter.field, whereFilter.op, whereFilter.value);
       if (orderByField) ref = ref.orderBy(orderByField, "desc");
       if (limitCount) ref = ref.limit(limitCount);
       const snapshot = await ref.get();
@@ -92,6 +149,14 @@ export async function collectionGet(
     } else {
       const { collection, getDocs, query, orderBy, limit } = await loadClientSdk();
       let q: any = collection(db, collectionName);
+      if (whereFilter) {
+        // Lazy: destructuring `where` up front breaks test doubles of the
+        // client SDK that do not define it (Vitest throws on access of a
+        // missing mocked export) — and production callers without a filter
+        // must not pay for it either.
+        const { where } = await loadClientSdk();
+        q = query(q, where(whereFilter.field, whereFilter.op, whereFilter.value));
+      }
       if (orderByField) q = query(q, orderBy(orderByField, "desc"));
       if (limitCount) q = query(q, limit(limitCount));
       const snapshot = await getDocs(q);
