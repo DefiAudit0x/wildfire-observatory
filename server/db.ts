@@ -616,6 +616,12 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
         batch.delete(db.collection(REPORT_IDEMPOTENCY_COLLECTION).doc(key));
       }
       await batch.commit();
+      // CodeRabbit (PR #215, R3-#1): invalidate right after the commit —
+      // the straggler pass below is fallible, and if it throws after the
+      // parent is durably deleted the purge returns "error" and the old
+      // invalidation (after the straggler) never ran, leaving the deleted
+      // report cached until the 30 s TTL expires.
+      invalidateReportsCache();
       // CodeRabbit (PR #215): a confirmation whose transaction committed
       // after the first snapshot but before the parent delete is not in
       // the delete set, and deleting the parent does not delete its
@@ -625,7 +631,6 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       // is gone now, so confirmReportWithPrincipal refuses new
       // confirmations (report not found) and none can land after this read.
       await deleteConfirmations();
-      invalidateReportsCache();
       return "deleted";
     }
 
@@ -667,13 +672,17 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       batch.delete(doc(db, REPORT_IDEMPOTENCY_COLLECTION, key));
     }
     await batch.commit();
+    // CodeRabbit (PR #215, R3-#1): invalidate right after the commit —
+    // same reason as the admin branch: if the straggler pass below throws
+    // after the parent is durably deleted, the purge returns "error" and
+    // an invalidation placed after it would never run.
+    invalidateReportsCache();
     // CodeRabbit (PR #215, R2-#1): straggler pass, mirroring the admin
     // branch — a confirmation committed after the first snapshot but
     // before the parent delete survives under the deleted path. One pass
     // suffices: the parent is gone now, so no new confirmation can land
     // after this read.
     await deleteConfirmations();
-    invalidateReportsCache();
     return "deleted";
   } catch (err) {
     logger.error({ err }, "[Firestore] Failed to purge report with idempotency record");
