@@ -574,8 +574,28 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
   try {
     if (isAdminDb(db)) {
       const reportRef = db.collection("reports").doc(id);
+      // CodeRabbit (PR #215, R2-#1): the confirmation cleanup is a helper
+      // because it runs in three places — before the parent delete, as the
+      // straggler pass after it, and on the "missing" path below. A previous
+      // purge that deleted the parent and then failed in the straggler pass
+      // leaves confirmations under the deleted path; a retry used to return
+      // "missing" before ever reaching the cleanup, orphaning them forever
+      // (deleting a parent does not delete its subcollection). A
+      // subcollection read/delete under an absent parent is a harmless
+      // no-op when nothing is there, so the retry cleans up first.
+      const deleteConfirmations = async () => {
+        const confirmations = await reportRef.collection("confirmations").get();
+        for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
+          const confirmationBatch = db.batch();
+          confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
+          await confirmationBatch.commit();
+        }
+      };
       const reportSnap = await reportRef.get();
-      if (!reportSnap.exists) return "missing";
+      if (!reportSnap.exists) {
+        await deleteConfirmations();
+        return "missing";
+      }
       const keys = new Set<string>();
       const cgid = (reportSnap.data() as any)?.clientGeneratedId;
       if (typeof cgid === "string" && cgid) keys.add(cgid);
@@ -584,12 +604,7 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
         .where("reportId", "==", id)
         .get();
       legacy.forEach((d) => keys.add(d.id));
-      const confirmations = await reportRef.collection("confirmations").get();
-      for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
-        const confirmationBatch = db.batch();
-        confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
-        await confirmationBatch.commit();
-      }
+      await deleteConfirmations();
       const batch = db.batch();
       batch.delete(reportRef);
       // S-H1: the split shards are part of the report's lifecycle — purge
@@ -602,27 +617,37 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       }
       await batch.commit();
       // CodeRabbit (PR #215): a confirmation whose transaction committed
-      // after the line-587 snapshot but before the parent delete is not in
+      // after the first snapshot but before the parent delete is not in
       // the delete set, and deleting the parent does not delete its
       // subcollection in Firestore — it would survive under the deleted
       // report path while the purge still returns "deleted". Re-read and
       // delete stragglers before returning. One pass suffices: the parent
       // is gone now, so confirmReportWithPrincipal refuses new
       // confirmations (report not found) and none can land after this read.
-      const stragglers = await reportRef.collection("confirmations").get();
-      for (let offset = 0; offset < stragglers.docs.length; offset += 450) {
-        const stragglerBatch = db.batch();
-        stragglers.docs.slice(offset, offset + 450).forEach((confirmation) => stragglerBatch.delete(confirmation.ref));
-        await stragglerBatch.commit();
-      }
+      await deleteConfirmations();
       invalidateReportsCache();
       return "deleted";
     }
 
     const { collection, doc, getDoc, getDocs, query, where, writeBatch } = await loadClientSdk();
     const reportRef = doc(db, "reports", id);
+    // CodeRabbit (PR #215, R2-#1): same helper as the admin branch — the
+    // client branch had the same "missing"-before-cleanup gap and no
+    // straggler pass at all. A subcollection read/delete under an absent
+    // parent path is a harmless no-op when nothing is there.
+    const deleteConfirmations = async () => {
+      const confirmations = await getDocs(collection(db, "reports", id, "confirmations"));
+      for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
+        const confirmationBatch = writeBatch(db);
+        confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
+        await confirmationBatch.commit();
+      }
+    };
     const reportSnap = await getDoc(reportRef);
-    if (!reportSnap.exists()) return "missing";
+    if (!reportSnap.exists()) {
+      await deleteConfirmations();
+      return "missing";
+    }
     const keys = new Set<string>();
     const cgid = reportSnap.data()?.clientGeneratedId;
     if (typeof cgid === "string" && cgid) keys.add(cgid);
@@ -630,12 +655,7 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       query(collection(db, REPORT_IDEMPOTENCY_COLLECTION), where("reportId", "==", id))
     );
     legacy.forEach((d) => keys.add(d.id));
-    const confirmations = await getDocs(collection(db, "reports", id, "confirmations"));
-    for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
-      const confirmationBatch = writeBatch(db);
-      confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
-      await confirmationBatch.commit();
-    }
+    await deleteConfirmations();
     const batch = writeBatch(db);
     batch.delete(reportRef);
     // Fix 44 (DB-2 scope expansion): the client branch used to omit the
@@ -647,6 +667,12 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       batch.delete(doc(db, REPORT_IDEMPOTENCY_COLLECTION, key));
     }
     await batch.commit();
+    // CodeRabbit (PR #215, R2-#1): straggler pass, mirroring the admin
+    // branch — a confirmation committed after the first snapshot but
+    // before the parent delete survives under the deleted path. One pass
+    // suffices: the parent is gone now, so no new confirmation can land
+    // after this read.
+    await deleteConfirmations();
     invalidateReportsCache();
     return "deleted";
   } catch (err) {
