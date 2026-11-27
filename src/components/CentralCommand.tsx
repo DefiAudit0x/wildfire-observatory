@@ -323,6 +323,14 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         // A GET started before this acknowledgement cannot replace it.
         sosFetchSeq.current += 1;
         applyLocalDispatch(sosId, data?.dispatch || body);
+        // CodeRabbit on PR #213: the rendered list is local `fullSos`,
+        // refreshed only by fetchFullSos() — NOT by onRefresh (App
+        // fetchData). Without a fresh fetch here, a new SOS B inside the
+        // discarded GET stays hidden until the next 15 s poll. The fresh
+        // fetch carries the next sequence number, so it cannot be
+        // invalidated by the bump above; it replaces the optimistic entry
+        // with the server state, which includes this dispatch.
+        void fetchFullSos();
         if (onRefresh) onRefresh();
         return true;
       }
