@@ -590,6 +590,7 @@ class ReportFragment : Fragment() {
         ) { ok, userError ->
             activity?.runOnUiThread {
                 submitButton?.isEnabled = true
+                if (!isAdded) return@runOnUiThread
                 if (ok && userError == null) {
                     Toast.makeText(ctx, R.string.report_sent, Toast.LENGTH_LONG).show()
                     descriptionInput?.setText("")
