@@ -266,6 +266,7 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
     });
     expect(speakMock).toHaveBeenCalledTimes(1);
     expect(screen.getByText("إيقاف الملاحة الصوتية")).toBeTruthy();
+    cancelMock.mockClear();
     // Admin deactivates B mid-speech — the stop button unmounts with the
     // route, so the clearing branch itself must cancel.
     zonesData = [zoneA];
@@ -275,6 +276,19 @@ describe("SafeEvacuation zone refresh (Fix 26 — EVAC-2)", () => {
     expect(cancelMock).toHaveBeenCalledTimes(1);
     expect(screen.queryByText("إيقاف الملاحة الصوتية")).toBeNull();
     expect(screen.queryByText("المسار نشط على الخريطة")).toBeNull();
+  });
+
+  it("F010: selecting another centre cancels the old destination speech", async () => {
+    const cancel = vi.fn();
+    vi.stubGlobal("speechSynthesis", { speak: vi.fn(), cancel });
+    vi.stubGlobal("SpeechSynthesisUtterance", class { lang = ""; rate = 1; constructor(public text: string) {} });
+    await renderPage();
+    await calculateRouteForB();
+    await act(async () => { fireEvent.click(screen.getByText("استمع إلى ملخص المسار")); });
+    cancel.mockClear();
+    await act(async () => { fireEvent.click(screen.getAllByText("اعرض مسار الطريق")[0]); });
+    expect(cancel).toHaveBeenCalled();
+    expect(screen.queryByText("إيقاف الملاحة الصوتية")).toBeNull();
   });
 
   it("with no change, a centre stays selectable and its route calculates (control)", async () => {

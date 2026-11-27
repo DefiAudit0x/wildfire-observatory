@@ -60,7 +60,9 @@ describe("ADM-1 operator CSV download", () => {
       vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
       const malicious = { ...report, id: value, locationName: value, wilaya: value, description: value, reporterName: value, timestamp: value };
       render(<AdminPanel reports={[malicious, report]} onRefresh={() => {}} lang="fr" />);
-      fireEvent.click(await screen.findByRole("button", { name: "Exporter CSV" }));
+      const exportButton = await screen.findByRole("button", { name: "Exporter CSV" });
+      await waitFor(() => expect(exportButton).toBeEnabled(), { timeout: 4000 });
+      fireEvent.click(exportButton);
       const csv = await readBlob(createObjectURL.mock.calls[0][0] as Blob);
       const safe = "'" + value;
       const quoted = `"${safe.replace(/"/g, '""')}"`;
@@ -92,13 +94,19 @@ describe("MAP-1 reporter authority", () => {
     const marker = vi.spyOn(L, "marker");
     const element = <InteractiveMap reports={[{ ...report, reporterType, status }]} satellites={[]} onMapClick={() => {}} onConfirmReport={async () => true} selectedReportId={null} lang={lang} />;
     const { rerender } = render(element);
-    await waitFor(() => expect(marker).toHaveBeenCalled());
-    const content: unknown = marker.mock.results.at(-1)?.value.getPopup()?.getContent();
-    const popup = content instanceof HTMLElement ? content.innerHTML : String(content);
     const text = labels(lang, reporterType);
-    expect(popup).not.toContain(text.popup);
-    expect(popup).toContain(text.citizen);
+    if (status === "pending") {
+      await waitFor(() => expect(marker).toHaveBeenCalled());
+      const content: unknown = marker.mock.results.at(-1)?.value.getPopup()?.getContent();
+      const popup = content instanceof HTMLElement ? content.innerHTML : String(content);
+      expect(popup).not.toContain(text.popup);
+      expect(popup).toContain(text.citizen);
+    } else {
+      // Default map excludes rejected/resolved reports (F019).
+      expect(marker).not.toHaveBeenCalled();
+    }
     rerender(cloneElement(element, { reports: [{ ...report, reporterType, status: "verified" }] }));
+    await waitFor(() => expect(marker).toHaveBeenCalled());
     const verifiedContent: unknown = marker.mock.results.at(-1)?.value.getPopup()?.getContent();
     expect(verifiedContent instanceof HTMLElement ? verifiedContent.innerHTML : String(verifiedContent)).toContain(text.popup);
   });

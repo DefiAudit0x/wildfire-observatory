@@ -22,6 +22,12 @@ describe("StatisticsPanel history chart (Fix 12c)", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
+  it("F050: makes snapshot incompleteness visible", async () => {
+    stubHistory({ partial: true, buckets: [{ date: "2026-11-27", reports: 1, verified: 0, sos: 0, hotspots: 0 }] });
+    render(<StatisticsPanel reports={[]} satellites={[]} wilayas={[]} lang="fr" />);
+    expect(await screen.findByText(/Historique partiel.*pas un décompte complet/)).toBeInTheDocument();
+  });
+
   it("marks satellite data unavailable instead of plotting confirmed zeros", async () => {
     stubHistory({
       days: 2,

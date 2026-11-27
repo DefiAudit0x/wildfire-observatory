@@ -247,9 +247,10 @@ describe("AdminPanel", () => {
     const unauthenticatedFetch = vi.fn(async (_input: string | URL | Request) => new Response("{}", { status: 401 }));
     vi.stubGlobal("fetch", unauthenticatedFetch);
     render(<AdminPanel reports={[report]} onRefresh={() => {}} lang="fr" />);
-    await screen.findByPlaceholderText(/Mot de passe/i);
-    expect(unauthenticatedFetch).toHaveBeenCalledTimes(1);
-    expect(unauthenticatedFetch.mock.calls[0][0]).toBe("/api/admin/session");
+    await waitFor(() => expect(document.getElementById("admin-auth-card")).toBeTruthy());
+    expect(within(document.getElementById("admin-auth-card")!).getByPlaceholderText(/Mot de passe/i)).toBeInTheDocument();
+    expect(unauthenticatedFetch.mock.calls.some(([url]) => String(url) === "/api/admin/session")).toBe(true);
+    expect(unauthenticatedFetch.mock.calls.some(([url]) => String(url).includes("/identity"))).toBe(false);
     expect(screen.queryByText(/Amina Reporter/)).not.toBeInTheDocument();
   });
 
