@@ -257,7 +257,9 @@ export default function InteractiveMap({
 
     // 2. Plot citizen reports (filtered)
     const visibleReports = reports.filter(
-      (r) => severityFilter.has(r.severity) && (statusFilter === "all" || r.status === statusFilter)
+      (r) => severityFilter.has(r.severity) && (statusFilter === "all"
+        ? r.status !== "rejected" && r.status !== "resolved"
+        : r.status === statusFilter)
     );
 
     const getSeverityColor = (sev: string) => {

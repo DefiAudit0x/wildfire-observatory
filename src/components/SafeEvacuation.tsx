@@ -346,6 +346,8 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
   useEffect(() => () => window.speechSynthesis?.cancel(), []);
 
   const handleCalculateRoute = async (zone: SafeZone) => {
+    window.speechSynthesis?.cancel();
+    setIsSpeaking(false);
     if (!userLocation) {
       setRouteError(isArabic ? "لا يمكن حساب المسافة قبل تحديد موقعك." : "Votre position est nécessaire pour calculer la distance.");
       setActiveRoute(null);

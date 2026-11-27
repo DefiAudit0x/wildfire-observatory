@@ -91,6 +91,25 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
 
   const isWritable = staffSession.authenticated && (staffSession.role === "commander" || staffSession.role === "superadmin" || staffSession.role === "admin");
 
+  const isGlobalAdmin = staffSession.role === "admin" || staffSession.role === "superadmin";
+  const [units, setUnits] = useState<Array<{ code: string; nameFr: string; nameAr: string }>>([]);
+  const [selectedUnit, setSelectedUnit] = useState("");
+  const unitQuery = isGlobalAdmin && selectedUnit ? `?unit=${encodeURIComponent(selectedUnit)}` : "";
+  const unitRef = useRef(unitQuery);
+  unitRef.current = unitQuery;
+  useEffect(() => {
+    if (!staffSession.authenticated || !isGlobalAdmin) return;
+    let cancelled = false;
+    void apiFetch("/api/units", "GET").then(async (res) => {
+      if (!res.ok) throw new Error("Units unavailable");
+      const data: { units: Array<{ code: string; nameFr: string; nameAr: string }> } = await res.json();
+      if (cancelled) return;
+      setUnits(data.units);
+      setSelectedUnit((current) => current || staffSession.unitId || data.units[0]?.code || "");
+    }).catch(() => { if (!cancelled) setMsg(isArabic ? "تعذر تحميل الوحدات." : "Impossible de charger les unités."); });
+    return () => { cancelled = true; };
+  }, [staffSession.authenticated, staffSession.unitId, isGlobalAdmin, isArabic]);
+
   // Fix 37 (RSTR-4): only assignable accounts are offered. The selector is
   // the only consumer of `staff`; `roster.unitId` is the authority for the
   // unit (server-canonicalized), not the session's unitId (null for a
@@ -115,6 +134,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const rosterRef = useRef(roster);
   rosterRef.current = roster;
   const fetchRoster = useCallback(async () => {
+    if (isGlobalAdmin && !selectedUnit) return;
     rosterReqRef.current?.abort();
     const controller = new AbortController();
     rosterReqRef.current = controller;
@@ -122,7 +142,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setLoading(true);
     setMsg(null);
     try {
-      const res = await fetch(`/api/roster/${date}`, { credentials: "same-origin", signal: controller.signal });
+      const res = await fetch(`/api/roster/${date}${unitQuery}`, { credentials: "same-origin", signal: controller.signal });
       const data = await res.json();
       if (!isCurrent()) return;
       if (res.ok) {
@@ -151,7 +171,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [date, isArabic]);
+  }, [date, isArabic, unitQuery, isGlobalAdmin, selectedUnit]);
 
   useEffect(() => {
     return () => rosterReqRef.current?.abort();
@@ -193,28 +213,26 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await apiFetch(`/api/roster/${rosterDate}`, "PUT", { posts: roster.posts });
+      const res = await apiFetch(`/api/roster/${rosterDate}${unitQuery}`, "PUT", { posts: roster.posts });
       const data = await res.json();
       // Fix 24 (RSTR-1): the operator may have navigated while the PUT
       // was in flight. The response belongs to rosterDate — if the board
       // is showing another day now, discard it: the new day's GET (fired
       // by the date change) is already loading or loaded, and installing
       // day A's roster under day B's header is the finding.
-      if (rosterDate !== dateRef.current) return;
+      if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
       if (res.ok) {
-        setRoster(data);
+        setRoster((current) => current === roster ? data : current);
         setMsg(isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré.");
       } else {
         setMsg(isArabic ? (data.error || "فشل الحفظ") : (data.error || "Échec de l'enregistrement"));
-        await fetchRoster();
       }
     } catch {
       // Same guard on the failure path — the closure's fetchRoster would
       // target the OLD date and abort the new day's in-flight GET, then
       // load day A under day B's header.
-      if (rosterDate !== dateRef.current) return;
+      if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
       setMsg(isArabic ? "تعذر حفظ الجدول." : "Erreur d'enregistrement.");
-      await fetchRoster();
     } finally {
       setSaving(false);
     }
@@ -224,7 +242,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await apiFetch(`/api/roster/${date}/copy-to/${target}`, "POST");
+      const res = await apiFetch(`/api/roster/${date}/copy-to/${target}${unitQuery}`, "POST");
       const data = await res.json();
       if (res.status === 201) {
         setMsg(isArabic ? `✓ نُسخ الجدول إلى ${target}.` : `✓ Copié vers ${target}.`);
@@ -253,7 +271,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     setSaving(true);
     setMsg(null);
     try {
-      const res = await apiFetch(`/api/roster/${date}`, "POST", {
+      const res = await apiFetch(`/api/roster/${date}${unitQuery}`, "POST", {
         labelAr: newPost.labelAr.trim(),
         vehicle: newPost.vehicle.trim() || undefined,
         status: "active",
@@ -270,7 +288,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         // merge into, and never when the operator has moved to another day
         // (that day's GET is already in flight — the stale closure's
         // fetchRoster would fetch the OLD day and abort the new load).
-        if (requestedDate !== dateRef.current) return;
+        if (requestedDate !== dateRef.current || unitRef.current !== unitQuery) return;
         if (!roster) {
           await fetchRoster();
           return;
@@ -469,6 +487,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
             <ClipboardList className="h-6 w-6" />
           </div>
           <div>
+            {isGlobalAdmin && <select aria-label={isArabic ? "الوحدة" : "Unité"} value={selectedUnit} onChange={(e) => { setRoster(null); setSelectedUnit(e.target.value); }} className="bg-zinc-900 border border-white/10 rounded p-2">
+              <option value="">{isArabic ? "اختر الوحدة" : "Choisir une unité"}</option>
+              {units.map((unit) => <option key={unit.code} value={unit.code}>{isArabic ? unit.nameAr : unit.nameFr}</option>)}
+            </select>}
             <h2 className="text-lg font-black text-slate-100 flex items-center gap-2 flex-wrap">
               {isArabic ? "جدول مناوبة الوحدة" : "Tableau de Garde"}
               {staffSession.unitId && (

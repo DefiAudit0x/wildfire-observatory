@@ -47,6 +47,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   const risk = useMemo(() => computeFireRisk(reports, satellites, wilayas), [reports, satellites, wilayas]);
 
   const [history, setHistory] = useState<HistoryBucket[] | null>(null);
+  const [historyPartial, setHistoryPartial] = useState(false);
   const [hotspotsPartial, setHotspotsPartial] = useState(false);
   const [hotspotsUnavailable, setHotspotsUnavailable] = useState(false);
   // Fix 36 (STA-3): the chart had no loading/failure state — a dead
@@ -74,6 +75,7 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
         if (!isCurrent()) return;
         if (data?.buckets) {
           setHistory(data.buckets);
+          setHistoryPartial(data.partial === true);
           setHotspotsPartial(data?.hotspotsPartial === true && data?.hotspotsUnavailable !== true);
           setHotspotsUnavailable(data?.hotspotsUnavailable === true);
           setHistoryStatus("ready");
@@ -278,6 +280,9 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
                 is at the RIGHT — the old legend claimed the left. */}
             <span className="text-[10px] text-gray-500">{isArabic ? "اليوم في أقصى اليمين" : "Aujourd'hui à droite"}</span>
           </div>
+          {historyStatus === "ready" && historyPartial && <p role="status" className="text-xs text-amber-300 mb-2">
+            {isArabic ? "سجل جزئي من لقطات محدودة؛ ليس إحصاءً كاملاً للفترة. رصد الأقمار يغطي آخر 24 ساعة فقط." : "Historique partiel issu de relevés limités ; pas un décompte complet de la période. Satellites : dernières 24 h seulement."}
+          </p>}
           <div className="flex items-end gap-[3px] h-16" dir="ltr">
             {historyStatus === "loading" && (
               <p className="text-xs text-gray-400">{isArabic ? "جاري تحميل السجل…" : "Chargement de l'historique…"}</p>

@@ -599,13 +599,6 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
     setRecordedAudioUrl(finalAudioBase64);
 
-    if (!userLocation) {
-      setSendError(isArabic ? "لا يمكن تحديد موقعك. يرجى تفعيل GPS ثم المحاولة." : "Impossible de vous localiser. Activez le GPS puis réessayez.");
-      setStep("send_failed");
-      setIsSending(false);
-      return;
-    }
-
     try {
       const storedId = getDeviceId();
 
@@ -637,8 +630,8 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
             sosClientGeneratedIdRef.current ??=
             (globalThis.crypto?.randomUUID?.().replace(/-/g, "") ||
               `${Date.now()}${Math.random().toString(36).slice(2, 10)}`),
-          lat: userLocation.lat,
-          lng: userLocation.lng,
+          lat: userLocation?.lat ?? null,
+          lng: userLocation?.lng ?? null,
           name: finalName,
           phone: phone.trim(),
           // W-H2: only a REAL, non-trivial audio body travels — never "".
@@ -727,6 +720,11 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
                     : "Impossible d'identifier votre position. Activez le GPS pour transmettre votre localisation."}
                 </p>
               </div>
+              <input aria-label={isArabic ? "الاسم" : "Nom"} value={name} onChange={(e) => handleNameChange(e.target.value)} className="w-full bg-zinc-900 p-3 rounded-xl" />
+              <input type="tel" aria-label={isArabic ? "الهاتف" : "Téléphone"} value={phone} onChange={(e) => handlePhoneChange(e.target.value)} className="w-full bg-zinc-900 p-3 rounded-xl" />
+              <button onClick={startRecording} className="w-full py-3 rounded-xl bg-red-700 text-white font-bold">
+                {isArabic ? "إرسال استغاثة بدون موقع GPS" : "Envoyer un SOS sans position GPS"}
+              </button>
               <div className="w-full space-y-2">
                 <p className="text-xs font-bold text-amber-200">
                   {isArabic ? "إذا كنت في خطر مباشر، اتصل الآن:" : "En danger immédiat, appelez maintenant :"}
