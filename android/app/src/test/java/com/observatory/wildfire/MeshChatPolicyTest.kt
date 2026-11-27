@@ -23,6 +23,6 @@ class MeshChatPolicyTest {
     @Test
     fun `display remains bounded to 160 characters`() {
         val payload = MeshChatPolicy.plaintext("x".repeat(500))
-        assertEquals(160, payload.take(160).length)
+        assertEquals("💬 " + "x".repeat(160), payload)
     }
 }
