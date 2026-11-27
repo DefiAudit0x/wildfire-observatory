@@ -343,7 +343,7 @@ class MeshInboundTest {
         assertEquals(MeshInbound.RejectReason.REPLAY, (unseen as MeshInbound.Verdict.Rejected).reason)
         assertEquals(0, inb.seenMessageHashes.size)
         // A triple already in the map is still admitted at capacity.
-        val knownHash = MeshWire.seenTripleHash("msg-1", 8)
+        val knownHash = MeshWire.seenTripleHash("msg-1", 8, frame().origPublicKey)
         inb.seenTripleCounts[knownHash] = MeshInbound.TripleAdmission(1, System.currentTimeMillis())
         assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
         assertEquals(1, inb.seenMessageHashes.size)
@@ -396,4 +396,17 @@ class MeshInboundTest {
         assertEquals(f.type, sm.type)
         assertEquals(f.hopCount, sm.hopCount)
     }
+    @Test
+    fun differentSenderCannotSuppressAuthenticFrameWithSameIdentity() {
+        val inb = inbound(decrypt = { msg ->
+            if (msg.senderPublicKey == frame().origPublicKey) "authentic".toByteArray() else null
+        })
+        val authentic = frame()
+        val otherSender = authentic.copy(origPublicKey = canonicalB64(ByteArray(32) { 1 }))
+        assertTrue(evaluate(otherSender, inb) is MeshInbound.Verdict.Accepted)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Accepted)
+        assertEquals(2, inb.seenMessageHashes.size)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Rejected)
+    }
+
 }

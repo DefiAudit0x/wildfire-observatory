@@ -584,4 +584,16 @@ class MeshWireTest {
             MeshWire.compress(MeshWire.frameToJson(frame).toByteArray())
         }
     }
+    @Test
+    fun replayIdentityIncludesAuthenticatedSenderKey() {
+        assertNotEquals(
+            MeshWire.seenMessageHash("same", 7, "ciphertext", "key-A"),
+            MeshWire.seenMessageHash("same", 7, "ciphertext", "key-B")
+        )
+        assertNotEquals(
+            MeshWire.seenTripleHash("same", 7, "key-A"),
+            MeshWire.seenTripleHash("same", 7, "key-B")
+        )
+    }
+
 }

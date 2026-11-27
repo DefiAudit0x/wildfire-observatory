@@ -387,4 +387,13 @@ class TeamLocationLogicTest {
         assertNull(TeamLocationLogic.missionKey(null))
         assertNull(TeamLocationLogic.missionKey("\"since\":1000"))
     }
+    @Test
+    fun missionCoordinatesAcceptCompleteScientificNumbers() {
+        val target = TeamLocationLogic.parseMissionCoords("""{"sosLat":3.67E1,"sosLng":1e-7}""")!!
+        assertEquals(36.7, target.first, 0.000001)
+        assertEquals(0.0000001, target.second, 0.0000000001)
+        assertNull(TeamLocationLogic.parseMissionCoords("""{"sosLat":36.7,"sosLng":1e-}"""))
+        assertNull(TeamLocationLogic.parseMissionCoords("""{"sosLat":36.7,"sosLng":1junk}"""))
+    }
+
 }

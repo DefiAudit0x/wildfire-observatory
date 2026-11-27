@@ -1,5 +1,6 @@
 package com.observatory.wildfire
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -157,12 +158,12 @@ class ApiPayloadsTest {
     }
 
     @Test
-    fun `mesh intel envelope is report or sos only`() {
+    fun `mesh intel envelope allows report sos and chat only`() {
         val json = ApiPayloads.buildMeshIntelJson("sos", "أحتاج مساعدة \"الآن\"", 36.0, 3.0, 123L)
         assertTrue(json.contains("\"kind\":\"sos\""))
         assertTrue(json.contains("أحتاج مساعدة \\\"الآن\\\""))
         try {
-            ApiPayloads.buildMeshIntelJson("chat", "hi", 36.0, 3.0, 1L)
+            ApiPayloads.buildMeshIntelJson("unknown", "hi", 36.0, 3.0, 1L)
             throw AssertionError("kind must be whitelisted")
         } catch (e: IllegalArgumentException) {
             // expected
@@ -277,4 +278,11 @@ class ApiPayloadsTest {
         assertNull(r?.first)
         assertNotNull(r?.second)
     }
+    @Test
+    fun ordinaryChatHasSeparateMeshKindFromFireReports() {
+        val json = ApiPayloads.buildMeshIntelJson("chat", "hello", 36.7, 3.0, 1000L)
+        assertTrue(json.contains("\"kind\":\"chat\""))
+        assertFalse(json.contains("\"kind\":\"report\""))
+    }
+
 }

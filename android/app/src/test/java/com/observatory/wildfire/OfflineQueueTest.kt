@@ -440,4 +440,24 @@ class OfflineQueueTest {
         assertEquals(0, persistedOver.size)
         assertEquals(1, omittedOver)
     }
+    @Test
+    fun `SOS retries remain queued beyond eight transient failures and after restore`() {
+        val q = OfflineQueue<String>(retryForever = true)
+        q.enqueue("sos", "stored emergency")
+        repeat(12) { round ->
+            val now = round * OfflineQueue.BACKOFF_MAX_MS
+            assertEquals(1, q.reserveDue(1, now).size)
+            q.commit(now, emptySet(), "HTTP 503")
+            assertEquals(1, q.size())
+        }
+        val restored = OfflineQueue<String>(retryForever = true)
+        restored.restoreAll(q.snapshot())
+        assertEquals("stored emergency", restored.snapshot().single().payload)
+        assertEquals(12, restored.snapshot().single().attempts)
+        val due = 13 * OfflineQueue.BACKOFF_MAX_MS
+        restored.reserveDue(1, due)
+        restored.commit(due, setOf("sos"))
+        assertEquals(0, restored.size())
+    }
+
 }
