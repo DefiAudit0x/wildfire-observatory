@@ -157,41 +157,76 @@ export async function getLiveSatelliteData(): Promise<SatelliteData> {
       // paired a fresh scanTime with a stale 95% confidence — downstream
       // freshness filters then read it as a fresh high-confidence threat,
       // although no observation inside the 30-min window ever had 95%.
-      // The confidence a representative carries came from one observation;
-      // its scanTime is tracked alongside (confidenceTime), so the merge
-      // below can only pair a scanTime with a confidence measured inside
-      // the freshness window of that scanTime. The latest observation's
-      // own confidence always qualifies (gap 0), so the representative
-      // still reflects the latest scan. Unparseable timestamps keep the
-      // old behavior (no merge of that field).
-      const confidenceTime = new Map<SatelliteHotspot, number>();
+      // The first fix kept only one confidence per representative (the
+      // winner so far) and discarded the rest, which made the result
+      // depend on input order: with A=11:10/95, B=11:35/80, C=12:00/60,
+      // oldest-first discarded B's 80 when A won at the 11:35 step, so C
+      // saw only the stale 95 and its own 60 — (12:00, 60) — while
+      // newest-first kept B and reported (12:00, 80). Every candidate
+      // observation is now retained (time + confidence + brightness +
+      // satellite) and the winner is chosen only once the final latest
+      // scanTime is known: the highest-confidence candidate measured
+      // within THREAT_MAX_AGE_MS of that final latest scanTime. The
+      // representative therefore never pairs a scanTime with a confidence
+      // measured outside the 30-min window of that scanTime, and the same
+      // observations always merge to the same representative. The latest
+      // observation's own confidence always qualifies (gap 0), so the
+      // representative still reflects the latest scan. Unparseable
+      // timestamps keep the old behavior (the base observation's own
+      // values stand).
+      type MergeCandidate = {
+        time: number;
+        confidence: number;
+        brightness: number;
+        satellite: SatelliteHotspot["satellite"];
+      };
+      const candidates = new Map<SatelliteHotspot, MergeCandidate[]>();
       for (const h of hotspots) {
         const existing = unique.find(
           (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
         );
         if (!existing) {
           unique.push(h);
-          confidenceTime.set(h, Date.parse(h.scanTime));
+          candidates.set(h, [{
+            time: Date.parse(h.scanTime),
+            confidence: h.confidence,
+            brightness: h.brightness,
+            satellite: h.satellite,
+          }]);
         } else {
           const existingTime = Date.parse(existing.scanTime);
           const incomingTime = Date.parse(h.scanTime);
           if (Number.isFinite(incomingTime) && incomingTime > existingTime) existing.scanTime = h.scanTime;
-          const latestTime = Date.parse(existing.scanTime);
-          const candidates = [
-            { time: confidenceTime.get(existing) ?? existingTime, confidence: existing.confidence, fromIncoming: false },
-            { time: incomingTime, confidence: h.confidence, fromIncoming: true },
-          ].filter(
-            (c) => Number.isFinite(c.time) && Number.isFinite(latestTime) && latestTime - c.time <= THREAT_MAX_AGE_MS
-          );
-          if (candidates.length > 0) {
-            const winner = candidates.reduce((best, c) => (c.confidence > best.confidence ? c : best), candidates[0]);
-            if (winner.fromIncoming) {
-              existing.confidence = h.confidence;
-              existing.brightness = h.brightness;
-              existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
-              confidenceTime.set(existing, incomingTime);
-            }
-          }
+          candidates.get(existing)!.push({
+            time: incomingTime,
+            confidence: h.confidence,
+            brightness: h.brightness,
+            satellite: h.satellite,
+          });
+        }
+      }
+      // The winner is picked per representative now that the final latest
+      // scanTime is known. Ties on confidence go to the later observation,
+      // so the choice does not depend on input order either.
+      for (const rep of unique) {
+        const latestTime = Date.parse(rep.scanTime);
+        const list = candidates.get(rep) ?? [];
+        const eligible = list.filter(
+          (c) => Number.isFinite(c.time) && Number.isFinite(latestTime) && latestTime - c.time <= THREAT_MAX_AGE_MS
+        );
+        if (eligible.length === 0) continue;
+        const winner = eligible.reduce(
+          (best, c) => (c.confidence > best.confidence || (c.confidence === best.confidence && c.time > best.time) ? c : best),
+          eligible[0]
+        );
+        const base = list[0];
+        rep.confidence = winner.confidence;
+        rep.brightness = winner.brightness;
+        // Satellite-name joining (as before): when the winning observation
+        // came from a different satellite than the representative's base,
+        // the name records both contributors.
+        if (winner !== base && winner.satellite !== base.satellite) {
+          rep.satellite = `${base.satellite}/${winner.satellite}` as SatelliteHotspot["satellite"];
         }
       }
       const data = { hotspots: unique, sources: sourceStatuses };
