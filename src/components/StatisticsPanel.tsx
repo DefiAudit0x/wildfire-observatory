@@ -194,7 +194,8 @@ export default function StatisticsPanel({ reports, satellites, wilayas, lang }: 
   ];
 
   const downloadFile = (content: string, filename: string, mime: string) => {
-    const blob = new Blob(["\ufeff" + content], { type: mime });
+    const body = mime.includes("json") ? content : `\ufeff${content}`;
+    const blob = new Blob([body], { type: mime });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;

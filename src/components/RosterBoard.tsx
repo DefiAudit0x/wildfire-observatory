@@ -228,8 +228,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       // day A's roster under day B's header is the finding.
       if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
       if (res.ok) {
-        setRoster((current) => current === roster ? data : current);
-        setMsg(isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré.");
+        const hasUnsavedChanges = rosterRef.current !== roster;
+        if (!hasUnsavedChanges) setRoster(data);
+        setMsg(hasUnsavedChanges
+          ? (isArabic ? "✓ تم الحفظ، لكن توجد تغييرات غير محفوظة." : "✓ Enregistré, mais des modifications restent à enregistrer.")
+          : (isArabic ? "✓ تم حفظ جدول المناوبة." : "✓ Tableau de garde enregistré."));
       } else {
         setMsg(isArabic ? (data.error || "فشل الحفظ") : (data.error || "Échec de l'enregistrement"));
       }
@@ -455,11 +458,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   };
 
   const handleLogout = () => {
-    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
-      .catch(() => {})
-      .finally(() => {
-        void refetchSession();
-      });
+    void Promise.allSettled([
+      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }),
+      fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }),
+    ]).finally(() => refetchSession());
     setRoster(null);
   };
 

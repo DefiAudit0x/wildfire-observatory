@@ -20,6 +20,7 @@ interface InteractiveMapProps {
   onMapClick: (lat: number, lng: number) => void;
   onConfirmReport: (id: string) => Promise<boolean>;
   selectedReportId: string | null;
+  selectionVersion?: number;
   lang: "ar" | "fr";
 }
 
@@ -29,6 +30,7 @@ export default function InteractiveMap({
   onMapClick,
   onConfirmReport,
   selectedReportId,
+  selectionVersion,
   lang,
 }: InteractiveMapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -506,7 +508,7 @@ export default function InteractiveMap({
         duration: 1.5,
       });
     }
-  }, [selectedReportId]);
+  }, [selectedReportId, selectionVersion]);
 
   return (
     <div className="relative w-full h-[300px] md:h-[450px] bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">

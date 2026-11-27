@@ -6,6 +6,7 @@ import { Report, SatelliteHotspot } from "../types";
 import { haversineKm, minDistanceToPolylineKm } from "../utils/geo";
 import { isFreshThreatTimestamp } from "../utils/threats";
 import { useLiveEvents } from "../utils/live";
+import { useNowTick } from "../hooks/useNowTick";
 
 interface SafeEvacuationProps {
   lang: "ar" | "fr";
@@ -44,6 +45,7 @@ type LngLat = [number, number];
  */
 export default function SafeEvacuation({ lang, userLocation, reports = [], satellites = [] }: SafeEvacuationProps) {
   const isArabic = lang === "ar";
+  const threatFreshnessTick = useNowTick(30_000);
   const [isCalculating, setIsCalculating] = useState(false);
   const [activeRoute, setActiveRoute] = useState<SafeZone | null>(null);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -147,7 +149,7 @@ export default function SafeEvacuation({ lang, userLocation, reports = [], satel
       list.push({ lat: s.lat, lng: s.lng, label: isArabic ? `نقطة ساخنة (${s.satellite})` : `Point chaud (${s.satellite})` });
     }
     return list;
-  }, [reports, satellites, isArabic]);
+  }, [reports, satellites, isArabic, threatFreshnessTick]);
 
   // How close does the active route pass to any fire? Null = no route.
   // Fix 25 (EVAC-1): every road SEGMENT is measured, not every 4th vertex —

@@ -72,6 +72,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     suppressEscape: step === "recording" || isSending,
   });
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const soundTestGenerationRef = useRef(0);
   // W-H1: the recording visualizer minted its OWN AudioContext per recording
   // and never closed it — one leaked context per take, plus the synthetic
   // fallback's context on its error path. Every context the modal creates is
@@ -133,6 +134,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
 
   const playSOSTestSound = () => {
     if (isTestingSound) {
+      soundTestGenerationRef.current += 1;
       if (audioCtxRef.current) {
         try {
           audioCtxRef.current.close();
@@ -148,6 +150,7 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
     try {
       const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       const ctx = new AudioCtx();
+      const generation = ++soundTestGenerationRef.current;
       audioCtxRef.current = ctx;
       setIsTestingSound(true);
 
@@ -174,10 +177,9 @@ export default function TrappedSOSModal({ lang, onClose, userLocation, nearestTh
       osc.start();
 
       setTimeout(() => {
+        if (generation !== soundTestGenerationRef.current || audioCtxRef.current !== ctx) return;
         clearInterval(interval);
-        if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-          audioCtxRef.current.close();
-        }
+        if (ctx.state !== "closed") ctx.close();
         audioCtxRef.current = null;
         setIsTestingSound(false);
       }, 4000);
