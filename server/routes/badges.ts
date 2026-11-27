@@ -19,7 +19,7 @@ async function loadBadges(): Promise<any[]> {
 router.get("/", requireAdmin, async (_req: Request, res: Response) => { const codes = await loadBadges(); res.json(codes); });
 router.get("/analytics", requireAdmin, async (_req: Request, res: Response) => {
   const badges = await loadBadges(); const now = Date.now();
-  const isExpiredBadge = (b: any) => { if (!b.expiresAt) return false; const exp = typeof b.expiresAt === "number" ? b.expiresAt : new Date(b.expiresAt).getTime(); return Number.isFinite(exp) && exp <= now; };
+  const isExpiredBadge = (b: any) => { if (!b.expiresAt) return false; const exp = typeof b.expiresAt === "number" ? b.expiresAt : new Date(b.expiresAt).getTime(); return !Number.isFinite(exp) || exp <= now; };
   const isCapReached = (b: any) => typeof b.maxUses === "number" && b.maxUses > 0 && Number(b.usedCount || 0) >= b.maxUses;
   const active = badges.filter((b: any) => b.isActive === true && !isExpiredBadge(b) && !isCapReached(b)); const inactive = badges.filter((b: any) => b.isActive !== true); const expired = badges.filter(isExpiredBadge); const capReached = badges.filter(isCapReached);
   const byType: Record<string, number> = {}; const byWilaya: Record<string, number> = {};

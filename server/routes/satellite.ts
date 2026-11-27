@@ -86,9 +86,17 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
         const lat = Number(cols[columns.lat]);
         const lng = Number(cols[columns.lng]);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        const brightness = parseFloat(cols[columns.brightness]);
+        const brightness = Number(cols[columns.brightness]);
         const scanDate = cols[columns.scanDate];
         const scanTimeRaw = cols[columns.scanTime].padStart(4, "0");
+        const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scanDate);
+        const timeValue = Number(scanTimeRaw);
+        if (!Number.isFinite(brightness) || !dateMatch || !Number.isInteger(timeValue) ||
+            timeValue < 0 || timeValue > 2359 || timeValue % 100 >= 60) continue;
+        const checkedDate = new Date(Date.UTC(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])));
+        if (checkedDate.getUTCFullYear() !== Number(dateMatch[1]) ||
+            checkedDate.getUTCMonth() !== Number(dateMatch[2]) - 1 ||
+            checkedDate.getUTCDate() !== Number(dateMatch[3])) continue;
         const spacecraft = cols[columns.satellite];
         const satType = ["Terra", "Aqua", "T", "A"].includes(spacecraft) ? "MODIS" : ["N", "N20", "N21"].includes(spacecraft) ? "VIIRS" : null;
         if (!satType || cols[columns.instrument] !== satType) continue;

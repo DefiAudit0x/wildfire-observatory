@@ -38,6 +38,15 @@ const postSchema = z.object({
 
 const daySchema = z.object({
   posts: z.array(postSchema).max(MAX_POSTS_PER_DAY),
+}).superRefine((day, ctx) => {
+  const ids = new Set<string>();
+  day.posts.forEach((post, index) => {
+    if (!post.id) return;
+    if (ids.has(post.id)) {
+      ctx.addIssue({ code: "custom", path: ["posts", index, "id"], message: "Post IDs must be unique" });
+    }
+    ids.add(post.id);
+  });
 });
 
 function resolveUnitForWrite(admin: any, queryUnit: any): { unitId: string | null; error?: string } {
@@ -315,6 +324,10 @@ router.post("/:date", requireAuth, rosterWriteLimiter, async (req: Request, res:
     }
     if (result === "duplicate-agent") {
       res.status(409).json({ error: "One or more agents are already assigned on this day" });
+      return;
+    }
+    if (result === "duplicate-post-id") {
+      res.status(409).json({ error: "Post ID already exists on this day" });
       return;
     }
     if (result !== "created") {

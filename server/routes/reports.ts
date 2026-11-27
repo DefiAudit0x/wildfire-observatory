@@ -43,6 +43,7 @@ const upload = multer({
 const DUPLICATE_WINDOW_MS = 60 * 60 * 1000;
 const DUPLICATE_DISTANCE_KM = 0.5;
 const recentReports: { lat: number; lng: number; timestamp: number }[] = [];
+const inFlightIdempotency = new Map<string, { fingerprint: string; promise: Promise<void>; finish: () => void }>();
 
 // Client-generated idempotency keys: a retry of the same logical submission
 // (offline draft sync, double tap, tab reopened after a crash) must return the
@@ -170,7 +171,7 @@ const createReportSchema = z.object({
   reporterName: z.string().trim().max(120).optional(),
   reporterPhone: z.string().trim().max(30).refine((value) => !value || /^\+?[0-9][0-9 ()-]{5,29}$/.test(value), "Invalid phone number").optional(),
   reporterType: z.enum(["citizen", "volunteer", "official"]).default("citizen"),
-  reporterBadgeCode: z.string().trim().max(20).optional(),
+  reporterBadgeCode: z.string().trim().max(64).optional(),
   deviceId: z.string().max(128).optional(),
   clientGeneratedId: z.string().min(8).max(64),
   image: z
@@ -339,6 +340,38 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
       res.json(sanitizePublicReport(lookup.report));
       return;
     }
+
+    const current = inFlightIdempotency.get(clientGeneratedId);
+    if (current) {
+      if (current.fingerprint !== requestFingerprint) {
+        res.status(409).json({
+          code: "IDEMPOTENCY_KEY_REUSE",
+          error: "clientGeneratedId is already bound to a different report",
+        });
+        return;
+      }
+      await current.promise;
+      const completed = await lookupReportIdempotency(clientGeneratedId);
+      if (completed.status === "found" && completed.fingerprint === requestFingerprint) {
+        res.json(sanitizePublicReport(completed.report));
+      } else {
+        res.status(503).json({
+          code: "DURABLE_IDEMPOTENCY_UNAVAILABLE",
+          error: "The original report submission did not complete; retry shortly",
+        });
+      }
+      return;
+    }
+
+    let finish!: () => void;
+    const pending = { fingerprint: requestFingerprint, promise: new Promise<void>((resolve) => { finish = resolve; }), finish: () => {} };
+    pending.finish = () => {
+      finish();
+      if (inFlightIdempotency.get(clientGeneratedId) === pending) inFlightIdempotency.delete(clientGeneratedId);
+    };
+    inFlightIdempotency.set(clientGeneratedId, pending);
+    res.once("finish", pending.finish);
+    res.once("close", pending.finish);
   }
 
   // Image content gate: the MIME claim is metadata, not proof. Both upload
