@@ -347,14 +347,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         personnel: [],
       });
       const data = await res.json();
+      // CodeRabbit (PR #215, R4-#1): identity guard BEFORE status dispatch —
+      // the R3-#2 guard sat inside the success branch only, so a stale
+      // HTTP-error response (e.g. 503 with valid JSON) skipped it and its
+      // error was displayed on the new commander's board (line 421).
+      // Mirrors saveRoster, whose guard already sits before `if (res.ok)`.
+      if (identityAtAddStart !== sessionIdentityRef.current) return;
       if (res.ok || res.status === 201) {
         if (requestedDate !== dateRef.current || unitRef.current !== unitQuery) return;
-        // CodeRabbit (PR #215, R3-#2): same guard for the signed-in
-        // identity — if another commander signed in while the POST was in
-        // flight, the response belongs to the old session and must not be
-        // merged into the new one's roster (nor refetched through the
-        // stale closure's fetchRoster).
-        if (identityAtAddStart !== sessionIdentityRef.current) return;
         setNewPost({ labelAr: "", vehicle: "" });
         // Fix 24 (RSTR-2): the POST returns the created post (201 + the
         // post object, server-assigned id). Append it to the LOCAL roster
