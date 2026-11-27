@@ -16,6 +16,11 @@ type DocData = Record<string, any>;
 function makeFakeAdminDb(existing: Record<string, DocData>) {
   const deleted: string[] = [];
   const written: Record<string, DocData> = {};
+  // CodeRabbit (PR #215, R3-#1): lets a test fail the Nth confirmations
+  // read — the straggler pass re-reads the subcollection after commit, so
+  // failing the 2nd read reproduces a post-commit straggler failure while
+  // the pre-commit cleanup still succeeds.
+  const hooks = { failConfirmationsGetOnCall: 0, confirmationsGetCalls: 0 };
 
   const docRef = (col: string, id: string) => {
     const path = `${col}/${id}`;
@@ -44,6 +49,10 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
     __filter: filter,
     limit: () => queryRef(col, filter),
     get: async () => {
+      if (col.endsWith("/confirmations") && hooks.failConfirmationsGetOnCall > 0 &&
+          ++hooks.confirmationsGetCalls === hooks.failConfirmationsGetOnCall) {
+        throw new Error("simulated confirmations read failure");
+      }
       const docs = Object.entries(existing)
         .filter(([path, data]) => path.startsWith(`${col}/`) && !path.slice(col.length + 1).includes("/") &&
           (!filter || data[filter.field] === filter.value))
@@ -90,7 +99,7 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
     }),
   };
 
-  return { db, deleted, written, docs: existing };
+  return { db, deleted, written, docs: existing, hooks };
 }
 
 const state = vi.hoisted(() => ({ fake: null as any, clientMode: false }));
@@ -107,18 +116,35 @@ vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, collection: string, id: string) => ({ id, __path: `${collection}/${id}`, path: `${collection}/${id}` }),
   collection: (_db: unknown, ...segments: string[]) => ({ __col: segments.join("/") }),
   where: (field: string, _op: string, value: any) => ({ field, value }),
-  query: (col: { __col: string }, filter?: { field: string; value: any }) => ({ __col: col.__col, __filter: filter }),
+  orderBy: (field: string, _dir?: string) => ({ __orderBy: field }),
+  limit: (n: number) => ({ __limit: n }),
+  startAfter: (_doc: unknown) => ({ __startAfter: true }),
+  query: (col: { __col: string }, ...constraints: any[]) => {
+    const merged: any = { __col: col.__col };
+    for (const c of constraints) {
+      if (c?.field) merged.__filter = c;
+      if (c?.__limit !== undefined) merged.__limit = c.__limit;
+    }
+    return merged;
+  },
   getDoc: async (ref: { __path: string }) => ({
     exists: () => state.fake?.docs[ref.__path] !== undefined,
     data: () => state.fake?.docs[ref.__path],
     id: ref.__path.split("/")[1],
   }),
-  getDocs: async (q: { __col: string; __filter?: { field: string; value: any } }) => {
+  getDocs: async (q: { __col: string; __filter?: { field: string; value: any }; __limit?: number }) => {
+    // CodeRabbit (PR #215, R3-#1): same failure hook as the admin fake —
+    // fail the Nth confirmations read (the client branch's straggler pass).
+    if (q.__col.endsWith("/confirmations") && state.fake?.hooks?.failConfirmationsGetOnCall > 0 &&
+        ++state.fake.hooks.confirmationsGetCalls === state.fake.hooks.failConfirmationsGetOnCall) {
+      throw new Error("simulated confirmations read failure");
+    }
     const docs = Object.entries(state.fake?.docs ?? {})
       .filter(([path, data]: [string, any]) => path.startsWith(`${q.__col}/`) && !path.slice(q.__col.length + 1).includes("/") &&
         (!q.__filter || data[q.__filter.field] === q.__filter.value))
       .map(([path, data]: [string, any]) => ({ id: path.split("/").at(-1), ref: { __path: path }, data: () => data }));
-    return { docs, empty: docs.length === 0, forEach: (cb: (d: any) => void) => docs.forEach(cb) };
+    const limited = q.__limit !== undefined ? docs.slice(0, q.__limit) : docs;
+    return { docs: limited, empty: limited.length === 0, forEach: (cb: (d: any) => void) => limited.forEach(cb) };
   },
   writeBatch: () => {
     const ops: string[] = [];
@@ -333,6 +359,80 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
     expect(fake.deleted).toContain("reports/rep-orphan/confirmations/principal-b");
     expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-orphan/"))).toEqual([]);
     expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
+  });
+
+  // CodeRabbit (PR #215, R3-#1): the caches were invalidated only AFTER
+  // the fallible straggler pass. If that pass throws after batch.commit(),
+  // the purge returns "error" and the old invalidation never ran, so the
+  // deleted report stayed cached until the 30 s TTL expired. The
+  // invalidation must happen at commit time, so a post-commit straggler
+  // failure still clears the cache.
+  it("a straggler failure after commit still invalidates the reports cache", async () => {
+    const fake = makeFakeAdminDb({
+      "reports/rep-privacy-1": {
+        lat: 36.75, lng: 7.6, locationName: "غابة تازا", wilaya: "w", description: "d",
+        severity: "high", status: "pending", clientGeneratedId: "cg-privacy-1",
+        timestamp: new Date().toISOString(), consensusCount: 1,
+      },
+      "reports/rep-keep": {
+        lat: 36.8, lng: 7.7, locationName: "x", wilaya: "w", description: "d",
+        severity: "low", status: "pending",
+        timestamp: new Date().toISOString(), consensusCount: 1,
+      },
+      "reports/rep-privacy-1/confirmations/principal-a": { at: 1 },
+    });
+    state.fake = fake;
+    // Populate the cache with both reports before the purge.
+    const before = await getReportsDbResult();
+    expect(before.status).toBe("ok");
+    expect((before as any).reports.map((r: any) => r.id)).toContain("rep-privacy-1");
+    // Fail the 2nd confirmations read — the straggler pass, after commit
+    // (the 1st read is the pre-commit cleanup, which must still succeed).
+    fake.hooks.failConfirmationsGetOnCall = 2;
+
+    const outcome = await purgeReportWithIdempotency("rep-privacy-1");
+    // The parent IS deleted (the straggler failure is reported honestly),
+    // but the cache must already have been cleared at commit time.
+    expect(outcome).toBe("error");
+    expect(fake.deleted).toContain("reports/rep-privacy-1");
+
+    const after = await getReportsDbResult();
+    expect(after.status).toBe("ok");
+    const ids = (after as any).reports.map((r: any) => r.id);
+    expect(ids).not.toContain("rep-privacy-1");
+    expect(ids).toContain("rep-keep");
+  });
+
+  it("a straggler failure after commit still invalidates the reports cache (client branch)", async () => {
+    const fake = makeFakeAdminDb({
+      "reports/rep-privacy-1": {
+        lat: 36.75, lng: 7.6, locationName: "غابة تازا", wilaya: "w", description: "d",
+        severity: "high", status: "pending", clientGeneratedId: "cg-privacy-1",
+        timestamp: new Date().toISOString(), consensusCount: 1,
+      },
+      "reports/rep-keep": {
+        lat: 36.8, lng: 7.7, locationName: "x", wilaya: "w", description: "d",
+        severity: "low", status: "pending",
+        timestamp: new Date().toISOString(), consensusCount: 1,
+      },
+      "reports/rep-privacy-1/confirmations/principal-a": { at: 1 },
+    });
+    state.fake = fake;
+    state.clientMode = true;
+    const before = await getReportsDbResult();
+    expect(before.status).toBe("ok");
+    expect((before as any).reports.map((r: any) => r.id)).toContain("rep-privacy-1");
+    fake.hooks.failConfirmationsGetOnCall = 2;
+
+    const outcome = await purgeReportWithIdempotency("rep-privacy-1");
+    expect(outcome).toBe("error");
+    expect(fake.deleted).toContain("reports/rep-privacy-1");
+
+    const after = await getReportsDbResult();
+    expect(after.status).toBe("ok");
+    const ids = (after as any).reports.map((r: any) => r.id);
+    expect(ids).not.toContain("rep-privacy-1");
+    expect(ids).toContain("rep-keep");
   });
 });
 

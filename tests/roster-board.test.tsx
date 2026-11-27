@@ -943,6 +943,112 @@ describe("RosterBoard identity change (CodeRabbit PR #215, R2-#3)", () => {
   });
 });
 
+describe("RosterBoard add-post identity change (CodeRabbit PR #215, R3-#2)", () => {
+  function rosterResponse(label: string) {
+    return new Response(
+      JSON.stringify({
+        unitId: "unit-dz16",
+        date: todayISO(),
+        posts: [{ id: "p1", labelAr: label, status: "active", personnel: [] }],
+        saved: true,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  function installPostStub() {
+    let rosterCalls = 0;
+    let resolvePost!: (value: Response) => void;
+    let rejectPost!: (err: Error) => void;
+    const postPromise = new Promise<Response>((resolve, reject) => {
+      resolvePost = resolve;
+      rejectPost = reject;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: any) => {
+        if (String(url).includes("/api/roster/")) {
+          if (init?.method === "POST") return postPromise;
+          rosterCalls += 1;
+          return rosterResponse(rosterCalls === 1 ? "منصب أ" : "منصب ب");
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    return {
+      get rosterCalls() {
+        return rosterCalls;
+      },
+      resolvePost,
+      rejectPost,
+    };
+  }
+
+  async function startAddPost() {
+    fireEvent.change(screen.getByPlaceholderText(/اسم المنصب/), { target: { value: "منصب جديد" } });
+    fireEvent.click(screen.getByText("إضافة المنصب"));
+  }
+
+  it("does not merge an add-post response issued under the previous identity", async () => {
+    const stub = installPostStub();
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    // Start adding a post under commander A.
+    await startAddPost();
+    // While the POST is in flight, commander B signs in.
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    expect(stub.rosterCalls).toBe(2);
+    // The POST now lands with commander A's created post — it must be
+    // discarded, not merged into commander B's roster, and must not
+    // trigger a refetch through the stale closure's fetchRoster.
+    stub.resolvePost(
+      new Response(JSON.stringify({ id: "p-new", labelAr: "منصب جديد", status: "active", personnel: [] }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("منصب جديد")).toBeNull();
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+    expect(stub.rosterCalls).toBe(2);
+  });
+
+  it("merges the add-post response when the identity is unchanged (control)", async () => {
+    const stub = installPostStub();
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    await startAddPost();
+    stub.resolvePost(
+      new Response(JSON.stringify({ id: "p-new", labelAr: "منصب جديد", status: "active", personnel: [] }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await waitFor(() => expect(screen.getByText("منصب جديد")).toBeTruthy());
+    expect(screen.getByText("منصب أ")).toBeTruthy();
+    expect(stub.rosterCalls).toBe(1);
+  });
+
+  it("does not surface an add-post failure from the previous identity", async () => {
+    const stub = installPostStub();
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    await startAddPost();
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    stub.rejectPost(new Error("network down"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("تعذر إضافة المنصب.")).toBeNull();
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+  });
+});
+
 describe("RosterBoard logout timeout (CodeRabbit PR #215, R2-#4)", () => {
   it("logout rides the 15 s apiFetch ceiling", async () => {
     const fetchMock = vi.fn(async (url: string, _init?: any) => {
