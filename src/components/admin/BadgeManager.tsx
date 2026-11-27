@@ -72,6 +72,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
   const [badges, setBadges] = useState<Badge[]>([]);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
@@ -94,26 +95,39 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
     onAuthErrorRef.current = onAuthError;
   });
 
+  const loadSeqRef = useRef(0);
+
   const loadAll = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const [bRes, aRes] = await Promise.all([
         apiFetch("/api/badges", "GET"),
         apiFetch("/api/badges/analytics", "GET"),
       ]);
+      if (seq !== loadSeqRef.current) return;
       if (bRes.ok) {
         const data = await bRes.json();
+        if (seq !== loadSeqRef.current) return;
         setBadges(Array.isArray(data) ? data : []);
-      } else if (!onAuthErrorRef.current(bRes)) {
-        setMsg(isArabic ? "فشل تحميل البادجات" : "Échec du chargement des badges");
+      } else if (!onAuthErrorRef.current(bRes) && seq === loadSeqRef.current) {
+        setLoadError(isArabic ? "تعذر تحميل البادجات" : "Impossible de charger les badges");
       }
       if (aRes.ok) {
-        setAnalytics(await aRes.json());
+        const data = await aRes.json();
+        if (seq !== loadSeqRef.current) return;
+        setAnalytics(data);
+      } else if (!onAuthErrorRef.current(aRes) && seq === loadSeqRef.current) {
+        setLoadError(isArabic ? "تعذر تحميل إحصاءات البادجات" : "Impossible de charger les statistiques des badges");
       }
     } catch (err) {
       console.error("Failed to load badges", err);
+      if (seq === loadSeqRef.current) {
+        setLoadError(isArabic ? "تعذر تحميل بيانات البادجات" : "Impossible de charger les données des badges");
+      }
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, [isArabic]);
 
@@ -373,6 +387,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
       </form>
 
       {msg && <p className="text-xs text-slate-400 bg-white/5 border border-white/10 px-3 py-2 rounded-lg">{msg}</p>}
+      {loadError && <p role="alert" className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded-lg">{loadError}</p>}
 
       {/* Badge list */}
       <div className="bg-zinc-900/40 border border-white/5 rounded-2xl p-5 space-y-3">
@@ -383,7 +398,7 @@ export default function BadgeManager({ lang, onAuthError }: BadgeManagerProps) {
           </h4>
         </div>
 
-        {badges.length === 0 && !loading ? (
+        {badges.length === 0 && !loading && !loadError ? (
           <p className="text-xs text-gray-600 text-center py-6">
             {isArabic ? "لا توجد بادجات بعد." : "Aucun badge enregistré."}
           </p>

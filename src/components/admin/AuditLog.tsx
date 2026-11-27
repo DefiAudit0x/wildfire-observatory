@@ -60,6 +60,7 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
   // loaded trail), and a late success overwrote entries and reset the page.
   // Only the latest request may write entries/page/loadError/loading.
   const requestSeq = useRef(0);
+  const REQUEST_DEADLINE_MS = 10_000;
 
   const fetchEntries = useCallback(async () => {
     const seq = ++requestSeq.current;
@@ -67,14 +68,42 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await fetch("/api/audit", { credentials: "same-origin" });
+      let res: Response | null = null;
+      let responseData: unknown;
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const controller = new AbortController();
+        let deadline: ReturnType<typeof setTimeout> | undefined;
+        const timedOut = new Promise<never>((_, reject) => {
+          deadline = setTimeout(() => {
+            controller.abort();
+            reject(new Error("Audit request timed out"));
+          }, REQUEST_DEADLINE_MS);
+        });
+        try {
+          const result = await Promise.race([
+            (async () => {
+              const response = await fetch("/api/audit", { credentials: "same-origin", signal: controller.signal });
+              return { response, data: response.ok ? await response.json() : undefined };
+            })(),
+            timedOut,
+          ]);
+          res = result.response;
+          responseData = result.data;
+        } catch (err) {
+          lastError = err;
+        } finally {
+          clearTimeout(deadline);
+        }
+        if (res || !isCurrent()) break;
+      }
+      if (!res) throw lastError ?? new Error("Audit request timed out");
       if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data) && isCurrent()) {
-          setEntries(data);
+        if (Array.isArray(responseData) && isCurrent()) {
+          setEntries(responseData);
           setPage(1);
         }
-      } else if (!onAuthErrorRef.current(res)) {
+      } else if (isCurrent() && !onAuthErrorRef.current(res)) {
         // Fix 32 (AUD-1): a non-auth failure used to be silent, so the empty
         // list rendered "No actions recorded" for a load that never happened.
         if (isCurrent()) {
@@ -146,7 +175,7 @@ export default function AuditLog({ lang, onAuthError }: AuditLogProps) {
                 {loadError}
               </div>
             )}
-            {entries.length === 0 ? (
+            {entries.length === 0 && !loading ? (
               <div className="text-center py-10 text-xs text-gray-500">
                 {isArabic ? "لا توجد إجراءات مسجلة بعد." : "Aucune action enregistrée pour l'instant."}
               </div>

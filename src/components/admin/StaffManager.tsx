@@ -60,6 +60,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   const [units, setUnits] = useState<Unit[]>([]);
   const [users, setUsers] = useState<StaffUser[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [unitForm, setUnitForm] = useState({ code: "", nameAr: "", nameFr: "", wilaya: "" });
   const [userForm, setUserForm] = useState({ agentId: "", name: "", role: "agent", unitId: "", password: "" });
@@ -67,34 +68,44 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   const [busy, setBusy] = useState(false);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
 
-  const fetchUnits = useCallback(async () => {
+  const fetchUnits = useCallback(async (): Promise<boolean> => {
     try {
       const res = await apiFetch("/api/units", "GET");
       if (res.ok) {
         const data = await res.json();
         setUnits(Array.isArray(data.units) ? data.units : []);
+        return true;
       }
+      return false;
     } catch (err) {
       console.error("Failed to load units", err);
+      return false;
     }
   }, []);
 
-  const fetchUsers = useCallback(async () => {
+  const fetchUsers = useCallback(async (): Promise<boolean> => {
     try {
       const res = await apiFetch("/api/users", "GET");
       if (res.ok) {
         const data = await res.json();
         setUsers(Array.isArray(data.users) ? data.users : []);
+        return true;
       }
+      return false;
     } catch (err) {
       console.error("Failed to load users", err);
+      return false;
     }
   }, []);
 
   const loadAll = useCallback(async () => {
-    await Promise.all([fetchUnits(), fetchUsers()]);
+    setLoadError(null);
+    const results = await Promise.all([fetchUnits(), fetchUsers()]);
+    if (results.some((ok) => !ok)) {
+      setLoadError(isArabic ? "تعذر تحميل بيانات الإدارة" : "Impossible de charger les données de gestion");
+    }
     setLoaded(true);
-  }, [fetchUnits, fetchUsers]);
+  }, [fetchUnits, fetchUsers, isArabic]);
 
   useEffect(() => {
     if (staffSession.authenticated) {
@@ -103,6 +114,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
       setLoaded(false);
       setUsers([]);
       setUnits([]);
+      setLoadError(null);
     }
   }, [staffSession.authenticated, loadAll]);
 
@@ -135,11 +147,10 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   };
 
   const handleLogout = () => {
-    fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" })
-      .catch(() => {})
-      .finally(() => {
-        void refetchSession();
-      });
+    void Promise.allSettled([
+      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }),
+      fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }),
+    ]).finally(() => refetchSession());
   };
 
   const handleAddUnit = async (e: React.FormEvent) => {
@@ -457,7 +468,7 @@ export default function StaffManager({ lang }: StaffManagerProps) {
                 </button>
               </div>
             ))}
-            {units.length === 0 && (
+            {units.length === 0 && !loadError && (
               <p className="text-xs text-gray-500 text-center py-6 col-span-full">
                 {isArabic ? "لا توجد وحدات بعد." : "Aucune unité enregistrée."}
               </p>
@@ -531,9 +542,10 @@ export default function StaffManager({ lang }: StaffManagerProps) {
         )}
 
         {msg && <p className="text-xs text-slate-400 bg-white/5 border border-white/10 px-3 py-2 rounded-lg">{msg}</p>}
+        {loadError && <p role="alert" className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded-lg">{loadError}</p>}
 
         <div className="space-y-2">
-          {users.length === 0 && loaded ? (
+          {users.length === 0 && loaded && !loadError ? (
             <p className="text-xs text-gray-600 text-center py-4">
               {isArabic ? "لا توجد حسابات كادر بعد." : "Aucun compte enregistré."}
             </p>

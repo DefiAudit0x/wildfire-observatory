@@ -27,6 +27,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
   const isArabic = lang === "ar";
   const [zones, setZones] = useState<SafeZoneItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [form, setForm] = useState({
@@ -72,6 +73,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
     // own loadZones in SafeEvacuation already has the guard).
     const seq = ++fetchSeqRef.current;
     setLoading(true);
+    setLoadError(null);
     try {
       const res = await apiFetch("/api/safezones/admin", "GET");
       if (seq !== fetchSeqRef.current) return;
@@ -85,12 +87,14 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
         // was the one place that didn't.)
         if (seq !== fetchSeqRef.current) return;
         if (Array.isArray(data)) setZones(data);
+        else setLoadError(isArabic ? "تعذر تحميل المراكز" : "Impossible de charger les centres");
       } else {
-        onAuthErrorRef.current(res);
+        if (!onAuthErrorRef.current(res)) setLoadError(isArabic ? "تعذر تحميل المراكز" : "Impossible de charger les centres");
       }
     } catch (err) {
       if (seq !== fetchSeqRef.current) return;
       console.error("Failed to load safe zones", err);
+      setLoadError(isArabic ? "تعذر تحميل المراكز" : "Impossible de charger les centres");
     } finally {
       if (seq === fetchSeqRef.current) setLoading(false);
     }
@@ -213,6 +217,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
 
   return (
     <div className="space-y-4">
+      {loadError && <p role="alert" className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 px-3 py-2 rounded-lg">{loadError}</p>}
       {/* Add Zone Form */}
       <form onSubmit={handleAddZone} className="bg-zinc-900/40 border border-white/5 rounded-2xl p-5 shadow-lg space-y-3">
         <h3 className="font-extrabold text-sm text-slate-200 flex items-center gap-2">
@@ -321,12 +326,11 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
         </div>
 
         <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-          {filteredZones.length === 0 ? (
+          {filteredZones.length === 0 && !loadError ? (
             <div className="text-center py-8 text-xs text-gray-500">
               {isArabic ? "لا توجد مراكز مطابقة." : "Aucun centre correspondant."}
             </div>
-          ) : (
-            filteredZones.map((z) => (
+          ) : filteredZones.length > 0 ? filteredZones.map((z) => (
               <div key={z.id} className={`bg-black/40 border rounded-lg p-3 flex items-center justify-between gap-3 ${z.isActive === false ? "border-white/5 opacity-60" : "border-emerald-500/20"}`}>
                 <div className="min-w-0 space-y-0.5">
                   <p className="text-xs font-bold text-slate-200 truncate flex items-center gap-1.5">
@@ -358,8 +362,7 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
                   </button>
                 </div>
               </div>
-            ))
-          )}
+            )) : null}
         </div>
       </div>
       <ConfirmDialog
