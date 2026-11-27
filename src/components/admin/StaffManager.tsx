@@ -147,9 +147,13 @@ export default function StaffManager({ lang }: StaffManagerProps) {
   };
 
   const handleLogout = () => {
+    // CodeRabbit (PR #215, R2-#4): bare fetch() has no timeout — a hung
+    // logout used to leave Promise.allSettled unsettled forever and the
+    // session state stale. apiFetch applies the shared 15 s ceiling, so
+    // an aborted request rejects, allSettled settles, and refetch runs.
     void Promise.allSettled([
-      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }),
-      fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }),
+      apiFetch("/api/auth/logout", "POST"),
+      apiFetch("/api/admin/logout", "POST"),
     ]).finally(() => refetchSession());
   };
 
