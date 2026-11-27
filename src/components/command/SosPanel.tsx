@@ -99,7 +99,10 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
     .filter((s) => s.status === "active")
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  const waitingCount = activeSos.filter((s) => !s.dispatchedTeams || s.dispatchedTeams.length === 0).length;
+  const hasActiveDispatch = (sosId: string) => registeredTeams.some((team) =>
+    team.active !== false && team.activeMission?.sosId === sosId && team.activeMission.phase !== "cleared"
+  );
+  const waitingCount = activeSos.filter((s) => !hasActiveDispatch(s.id)).length;
 
   return (
     <div className="bg-zinc-900/60 border border-red-500/10 rounded-xl shadow-[0_4px_25px_rgba(0,0,0,0.3)] flex flex-col overflow-hidden">
@@ -129,7 +132,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
           </div>
         ) : (
           activeSos.map((sos) => {
-            const hasDispatch = sos.dispatchedTeams && sos.dispatchedTeams.length > 0;
+            const hasDispatch = hasActiveDispatch(sos.id);
             const ageMin = Math.floor((now - new Date(sos.timestamp).getTime()) / 60000);
             return (
               <div key={sos.id} className={`rounded-lg p-2.5 text-[11px] space-y-2 text-start relative overflow-hidden border ${
