@@ -35,6 +35,7 @@ const fsMock = vi.hoisted(() => ({
 }));
 
 const atomicMock = vi.hoisted(() => ({
+  deactivateTeamMemberIfGeneration: vi.fn(async () => "left"),
   joinTeamAtomically: vi.fn(async (..._a: any[]) => ({ status: "joined", member: {}, tokenGen: 0 }) as any),
   setMissionPhaseAtomically: vi.fn(async (..._a: any[]) => ({ status: "updated", mission: { sosId: "sos-1", phase: "on_scene" } }) as any),
   clearTeamMissionAtomically: vi.fn(async (..._a: any[]) => ({ status: "cleared", mission: {} }) as any),
@@ -78,6 +79,7 @@ beforeEach(() => {
   clearRegistry();
   fsMock.collectionGet.mockReset().mockResolvedValue([]);
   fsMock.docGet.mockReset().mockResolvedValue(null);
+  atomicMock.deactivateTeamMemberIfGeneration.mockReset().mockResolvedValue("left");
   fsMock.docSet.mockReset().mockResolvedValue(true);
   fsMock.docMergeSet.mockReset().mockResolvedValue(true);
   fsMock.docMergeTeamPositionIfActive.mockReset().mockResolvedValue(true);
@@ -261,7 +263,7 @@ describe("POST /api/teams/leave", () => {
     const res = await supertest(app).post("/api/teams/leave").set(memberAuth("tm-leave")).set(nextIp());
     expect(res.status).toBe(200);
     expect(listPositions()).toHaveLength(0);
-    expect(fsMock.docUpdate).toHaveBeenCalledWith("teamMembers", "tm-leave", expect.objectContaining({ active: false }));
+    expect(atomicMock.deactivateTeamMemberIfGeneration).toHaveBeenCalledWith("tm-leave", "team-a1", 0);
   });
 
   it("401 without token, 403 for foreign membership", async () => {
@@ -271,6 +273,7 @@ describe("POST /api/teams/leave", () => {
       if (collection === "teamMembers") return { ...memberFixture("tm-foreign"), teamId: "team-OTHER" };
       return null;
     });
+    atomicMock.deactivateTeamMemberIfGeneration.mockResolvedValueOnce("missing");
     expect((await supertest(app).post("/api/teams/leave").set(memberAuth("tm-foreign")).set(nextIp())).status).toBe(403);
   });
 });
@@ -873,5 +876,18 @@ describe("POST /api/teams/:id/join-code — Phase 3 dead-code sweep", () => {
     // Freshly minted code still comes back with its budget
     expect(res.body.code).toMatch(/^[23456789ABCDEFGHJKMNPQRSTUVWXYZ]{8}$/);
     expect(res.body.maxUses).toBe(12);
+  });
+});
+
+
+describe("F059 membership storage availability", () => {
+  it.each(["heartbeat", "session"])("%s returns a retryable failure during storage outage", async (path) => {
+    heartbeatableMocks(`tm-outage-${path}`);
+    fsMock.docGet.mockRejectedValueOnce(new Error("storage offline"));
+    const app = createApp();
+    const res = await supertest(app).post(`/api/teams/${path}`)
+      .set(memberAuth(`tm-outage-${path}`)).set(nextIp()).send({ lat: 36.7, lng: 5.0 });
+    expect(res.status).toBe(503);
+    expect(res.body.code).toBe("TEAMS_STORAGE_UNAVAILABLE");
   });
 });

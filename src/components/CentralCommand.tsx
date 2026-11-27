@@ -309,6 +309,16 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
   };
 
   const applyLocalDispatch = (sosId: string, dispatchItem: any) => {
+    // Bridge only this acknowledgement to the next successful roster snapshot.
+    // Failed refreshes retain it; setRegisteredTeams(data) replaces it on success.
+    const teamId = dispatchItem?.teamId as string | undefined;
+    const dispatchedAt = dispatchItem?.dispatchedAt as string | undefined;
+    const since = dispatchedAt ? Date.parse(dispatchedAt) : NaN;
+    if (teamId && Number.isFinite(since)) {
+      setRegisteredTeams((prev) => prev.map((team) => team.teamId === teamId
+        ? { ...team, activeMission: { sosId, phase: "en_route", since } }
+        : team));
+    }
     // Fix 43c (CodeRabbit 6040115063): reconcile by stable identity
     // (teamId + dispatchedAt), not by teamId alone. teamId does not
     // identify a dispatch: after clear + re-dispatch the server holds TWO
@@ -352,6 +362,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
         const data = await res.json().catch(() => null);
         // A GET started before this acknowledgement cannot replace it.
         sosFetchSeq.current += 1;
+        teamsFetchSeq.current += 1;
         applyLocalDispatch(sosId, data?.dispatch || body);
         // CodeRabbit on PR #213: the rendered list is local `fullSos`,
         // refreshed only by fetchFullSos() — NOT by onRefresh (App
@@ -537,6 +548,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
             sosCalls={fullSos}
             dispatchLoading={dispatchLoading}
             registeredTeams={registeredTeams}
+            teamsLoaded={teamsLastUpdated !== null}
             onDispatch={handleDispatchRegistered}
             onResolve={(sos) => setConfirmResolve(sos)}
             onFocusSos={handleFocusSos}

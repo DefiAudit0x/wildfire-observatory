@@ -14,6 +14,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import org.osmdroid.config.Configuration
 import org.osmdroid.tileprovider.tilesource.OnlineTileSourceBase
@@ -78,6 +79,9 @@ class MapFragment : Fragment() {
         private const val MAX_ROUTE_CHIPS = 3
         /** Window that hides our own animateTo from the scroll listener. */
         private const val ANIMATE_SUPPRESS_MS = 900L
+        /** Moving 30 m queues a refresh; a completed road can still be usable. */
+        private const val ROUTE_REFRESH_DISTANCE_M = 30.0
+        private const val ROUTE_MATCH_DISTANCE_M = 60.0
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -129,6 +133,11 @@ class MapFragment : Fragment() {
     private var selectedRouteIndex = -1
     private var lastSafezoneNameAr: String? = null
     private var routeFetchInFlight = false
+    private var routeFetchJob: Job? = null
+    private var routeRefreshPending = false
+    private var routeOrigin: Pair<Double, Double>? = null
+    private var routeGeneration = 0
+    private var routeSnapshot: AppRepository.Snapshot? = null
 
     // v2.19.0 — satellite layer + follow mode + compass.
     private var satelliteActive = false
@@ -316,6 +325,16 @@ class MapFragment : Fragment() {
             (lastUserLatLng!!.first != fix.lat || lastUserLatLng!!.second != fix.lng)
         lastUserLatLng = fix.lat to fix.lng
         lastUserFixMs = fix.timeMs
+        val origin = routeOrigin
+        if (routeSnapshot != null && origin != null &&
+            TeamLocationLogic.haversineMeters(origin.first, origin.second, fix.lat, fix.lng) >= ROUTE_REFRESH_DISTANCE_M
+        ) {
+            if (routeFetchInFlight) {
+                routeRefreshPending = true
+            } else if (hasFreshOrigin()) {
+                fetchEvacuationRoute()
+            }
+        }
         val point = GeoPoint(fix.lat, fix.lng)
         if (userMarker == null) {
             userMarker = Marker(mv).apply {
@@ -641,10 +660,30 @@ class MapFragment : Fragment() {
 
     // ---------- Snapshot rendering ----------
 
+    private fun invalidateEvacuationRoute() {
+        routeGeneration++
+        routeFetchJob?.cancel()
+        routeFetchJob = null
+        routeFetchInFlight = false
+        routeRefreshPending = false
+        routeOrigin = null
+        routeSnapshot = null
+        routeLine?.let { map?.overlays?.remove(it) }
+        routeLine = null
+        rankedRoutes = emptyList()
+        lastSafezoneNameAr = null
+        routeChipsScroll?.visibility = View.GONE
+        routeInfoText?.setText(R.string.route_data_changed)
+    }
+
     private fun render(snap: AppRepository.Snapshot) {
         val mv = map ?: return
         if (!mapReady) return
         val now = System.currentTimeMillis()
+        val previous = routeSnapshot
+        val refreshRoute = previous != null && (previous.reports != snap.reports ||
+            previous.hotspots != snap.hotspots || previous.meshIntel != snap.meshIntel || previous.safezones != snap.safezones)
+        if (refreshRoute) invalidateEvacuationRoute()
 
         // Rebuild data overlays (keep identity markers + route line).
         val keep = mv.overlays.filter { it === userMarker || it === routeLine || it === missionMarker }
@@ -661,12 +700,13 @@ class MapFragment : Fragment() {
             getString(R.string.map_status_offline_fmt, snap.reports.size, snap.hotspots.size)
         }
         mv.invalidate()
+        if (refreshRoute) fetchEvacuationRoute()
     }
 
     private fun renderThreats(mv: MapView, snap: AppRepository.Snapshot, now: Long) {
         val ctx = context ?: return
         for (h in snap.hotspots) {
-            if (h.confidence < 70) continue
+            if (h.confidence < 70 || !ProximityLogic.isFresh(h.scanTimeMs, now)) continue
             val marker = Marker(mv).apply {
                 position = GeoPoint(h.lat, h.lng)
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -677,9 +717,9 @@ class MapFragment : Fragment() {
             mv.overlays.add(marker)
         }
         for (r in snap.reports) {
-            if (r.status == "rejected") continue
+            if (r.status == "rejected" || r.status == "resolved") continue
             if (!ProximityLogic.isFresh(r.timestampMs, now)) continue
-            val verified = r.status == "verified" || r.status == "resolved"
+            val verified = r.status == "verified"
             val marker = Marker(mv).apply {
                 position = GeoPoint(r.lat, r.lng)
                 setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
@@ -702,7 +742,8 @@ class MapFragment : Fragment() {
             }
             mv.overlays.add(marker)
         }
-        for (m in snap.meshIntel) {
+        for (m in snap.meshIntel.filter { it.kind == "report" }) {
+            if (!ProximityLogic.isFresh(m.tsMs, now)) continue
             val lat = m.lat ?: continue
             val lng = m.lng ?: continue
             val marker = Marker(mv).apply {
@@ -745,20 +786,41 @@ class MapFragment : Fragment() {
             Toast.makeText(requireContext(), R.string.route_no_safezones, Toast.LENGTH_LONG).show()
             return
         }
+        routeSnapshot = snap
+        routeOrigin = user
+        val requestGeneration = ++routeGeneration
         lastSafezoneNameAr = target.nameAr
         routeInfoText?.text = getString(R.string.route_fetching)
         routeFetchInFlight = true
-        viewLifecycleOwner.lifecycleScope.launch {
-            val url = ApiPayloads.buildOsrmUrl(user.first, user.second, target.lat, target.lng)
-            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                when (val r = app.api.get(url)) {
-                    is ObservatoryApi.Result.Ok -> Parsers.parseOsrmAlternatives(r.body)
-                    else -> null
+        routeFetchJob = viewLifecycleOwner.lifecycleScope.launch {
+            try {
+                val url = ApiPayloads.buildOsrmUrl(user.first, user.second, target.lat, target.lng)
+                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    when (val r = app.api.get(url)) {
+                        is ObservatoryApi.Result.Ok -> Parsers.parseOsrmAlternatives(r.body)
+                        else -> null
+                    }
                 }
-            }
-            routeFetchInFlight = false
-            if (!isAdded) return@launch
-            val raw = result ?: run {
+                if (requestGeneration != routeGeneration) return@launch
+                if (!isAdded) return@launch
+                if (!hasFreshOrigin()) {
+                    invalidateEvacuationRoute()
+                    return@launch
+                }
+                val movedFromRequest = lastUserLatLng?.let {
+                    TeamLocationLogic.haversineMeters(user.first, user.second, it.first, it.second)
+                } ?: Double.POSITIVE_INFINITY
+                if (movedFromRequest >= ROUTE_REFRESH_DISTANCE_M) {
+                    routeRefreshPending = true
+                }
+                val current = app.repository.state.value
+                if (current.reports != snap.reports || current.hotspots != snap.hotspots ||
+                    current.meshIntel != snap.meshIntel || current.safezones != snap.safezones) {
+                    invalidateEvacuationRoute()
+                    if (hasFreshOrigin()) fetchEvacuationRoute()
+                    return@launch
+                }
+                val raw = result ?: run {
                 // Honest fallback: NO invented route line — say what we know.
                 val straightKm = TeamLocationLogic.haversineMeters(user.first, user.second, target.lat, target.lng) / 1000.0
                 routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, straightKm)
@@ -767,30 +829,60 @@ class MapFragment : Fragment() {
                 rankedRoutes = emptyList()
                 Toast.makeText(requireContext(), R.string.route_offline_toast, Toast.LENGTH_LONG).show()
                 return@launch
-            }
-            // One threat picture, reused for every candidate (fresh reports +
-            // hotspots — the same corridor discipline as v2.1.0, now per-route).
-            val now = System.currentTimeMillis()
-            val threats: List<Pair<Double, Double>> =
-                snap.reports.filter { ProximityLogic.isFresh(it.timestampMs, now) }
-                    .map { it.lat to it.lng } +
-                    snap.hotspots.map { it.lat to it.lng }
-            rankedRoutes = RadarV2.rankRoutes(
-                raw.map { (pts, dist, dur) ->
+                }
+                // One threat picture, reused for every candidate (fresh reports +
+                // hotspots — the same corridor discipline as v2.1.0, now per-route).
+                val now = System.currentTimeMillis()
+                val threats: List<Pair<Double, Double>> =
+                    snap.reports.filter { it.status != "rejected" && it.status != "resolved" && ProximityLogic.isFresh(it.timestampMs, now) }
+                        .map { it.lat to it.lng } +
+                    snap.hotspots.filter { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }.map { it.lat to it.lng } +
+                    snap.meshIntel.filter { it.kind == "report" && ProximityLogic.isFresh(it.tsMs, now) }
+                        .mapNotNull { intel -> intel.lat?.let { lat -> intel.lng?.let { lng -> lat to lng } } }
+                // Movement from the request origin triggers a refresh, but
+                // an unmoved origin may be off-road: OSRM snaps to a road.
+                // After movement, keep only geometry we are still near.
+                val latestFix = lastUserLatLng ?: return@launch
+                val usable = raw.filter { (pts, _, _) ->
+                    movedFromRequest < ROUTE_REFRESH_DISTANCE_M ||
+                        GeoMath.minDistanceToPolylineM(latestFix.first, latestFix.second, pts) <= ROUTE_MATCH_DISTANCE_M
+                }
+                rankedRoutes = RadarV2.rankRoutes(
+                usable.map { (pts, dist, dur) ->
                     // Fix 22 (NMAP-1): the clearance is the min distance
                     // between the ROAD polyline and the FIRE points — the
                     // old code measured each road vertex against imaginary
                     // fire-to-fire segments.
                     RadarV2.RouteOption(pts, dist, dur, GeoMath.minDistanceBetweenPolylineAndPointsM(pts, threats))
                 }
-            )
-            renderRouteChips()
-            if (rankedRoutes.isEmpty()) {
-                routeChipsScroll?.visibility = View.GONE
-                routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, 0.0)
-                return@launch
+                )
+                renderRouteChips()
+                if (rankedRoutes.isEmpty()) {
+                    routeLine?.let { mv.overlays.remove(it); routeLine = null }
+                    mv.invalidate()
+                    routeChipsScroll?.visibility = View.GONE
+                    routeInfoText?.text = getString(R.string.route_unavailable)
+                    return@launch
+                }
+                selectRoute(0)
+            } finally {
+                if (requestGeneration == routeGeneration) {
+                    routeFetchInFlight = false
+                    routeFetchJob = null
+                    if (routeRefreshPending) {
+                        routeRefreshPending = false
+                        val latestOrigin = routeOrigin
+                        val latestFix = lastUserLatLng
+                        if (latestOrigin != null && latestFix != null && hasFreshOrigin() &&
+                            TeamLocationLogic.haversineMeters(
+                                latestOrigin.first, latestOrigin.second, latestFix.first, latestFix.second
+                            ) >= ROUTE_REFRESH_DISTANCE_M
+                        ) {
+                            fetchEvacuationRoute()
+                        }
+                    }
+                }
             }
-            selectRoute(0)
         }
     }
 
@@ -883,6 +975,7 @@ class MapFragment : Fragment() {
     }
 
     override fun onDestroyView() {
+        invalidateEvacuationRoute()
         app.locationEngine.removeListener(locationListener)
         TeamLocationService.removeStateListener(serviceListener)
         headingEngine?.let { it.removeListener(headingListener); it.stop() }

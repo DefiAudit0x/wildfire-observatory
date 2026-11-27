@@ -307,7 +307,7 @@ object Parsers {
         val o = JSONObject(plaintext)
         val app = o.optString("app", "")
         val kind = o.optString("kind", "")
-        if (app != "wlfire" || (kind != "report" && kind != "sos")) return@runCatching null
+        if (app != "wlfire" || (kind != "report" && kind != "sos" && kind != "chat")) return@runCatching null
         // v2.15.0 audit hardening (trust boundary): a mesh peer's intel is
         // authenticated but NOT authoritative. Coordinates must be finite
         // and physical or they are DROPPED to null (a NaN/out-of-range pair

@@ -10,6 +10,7 @@ interface SosPanelProps {
   dispatchLoading: boolean;
   /** v2.3.0: real registered teams only — the hardcoded phantom roster is gone. */
   registeredTeams: RegisteredTeam[];
+  teamsLoaded: boolean;
   onDispatch: (sosId: string, teamId: string, notes: string) => Promise<boolean>;
   onResolve: (sos: TrappedSOS) => void;
   onFocusSos: (sos: TrappedSOS) => void;
@@ -23,12 +24,14 @@ interface SosPanelProps {
  * team's true position/status lives in the live roster (RegisteredTeams +
  * map member markers), not in a timer.
  */
-function dispatchElapsedText(dispatchedAt: string | { seconds?: number } | undefined, isArabic: boolean): string {
+function dispatchElapsedText(dispatchedAt: string | number | { seconds?: number } | undefined, isArabic: boolean): string {
   let dispatchedTime = Date.now();
   if (typeof dispatchedAt === "string") {
     dispatchedTime = new Date(dispatchedAt).getTime();
-  } else if (dispatchedAt && typeof dispatchedAt === "object" && (dispatchedAt as any).seconds) {
-    dispatchedTime = (dispatchedAt as any).seconds * 1000;
+  } else if (typeof dispatchedAt === "number") {
+    dispatchedTime = dispatchedAt;
+  } else if (dispatchedAt && typeof dispatchedAt === "object" && typeof dispatchedAt.seconds === "number") {
+    dispatchedTime = dispatchedAt.seconds * 1000;
   }
   if (isNaN(dispatchedTime)) return isArabic ? "أُرسلت" : "Dépêchée";
   const elapsedMin = Math.max(0, Math.floor((Date.now() - dispatchedTime) / 60000));
@@ -38,7 +41,7 @@ function dispatchElapsedText(dispatchedAt: string | { seconds?: number } | undef
   return isArabic ? `أُرسلت قبل ${hours} س` : `Dépêchée il y a ${hours} h`;
 }
 
-export default function SosPanel({ isArabic, sosCalls, dispatchLoading, registeredTeams, onDispatch, onResolve, onFocusSos, onAudioError }: SosPanelProps) {
+export default function SosPanel({ isArabic, sosCalls, dispatchLoading, registeredTeams, teamsLoaded, onDispatch, onResolve, onFocusSos, onAudioError }: SosPanelProps) {
   const [dispatchingSosId, setDispatchingSosId] = useState<string | null>(null);
   const [dispatchType, setDispatchType] = useState<'protection_civile' | 'volunteers'>('protection_civile');
   const [selectedTeam, setSelectedTeam] = useState('');
@@ -99,7 +102,10 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
     .filter((s) => s.status === "active")
     .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  const waitingCount = activeSos.filter((s) => !s.dispatchedTeams || s.dispatchedTeams.length === 0).length;
+  const activeDispatchTeams = (sosId: string) => registeredTeams.filter((team) =>
+    team.active !== false && team.activeMission?.sosId === sosId && team.activeMission.phase !== "cleared"
+  );
+  const waitingCount = teamsLoaded ? activeSos.filter((s) => activeDispatchTeams(s.id).length === 0).length : 0;
 
   return (
     <div className="bg-zinc-900/60 border border-red-500/10 rounded-xl shadow-[0_4px_25px_rgba(0,0,0,0.3)] flex flex-col overflow-hidden">
@@ -111,7 +117,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
           </span>
         </div>
         <div className="flex items-center gap-1.5">
-          {waitingCount > 0 && (
+          {teamsLoaded && waitingCount > 0 && (
             <span className="bg-amber-500/20 text-amber-400 text-[9px] font-black px-1.5 py-0.5 rounded-full border border-amber-500/30">
               {isArabic ? `${waitingCount} بانتظار التوجيه` : `${waitingCount} sans dispatch`}
             </span>
@@ -129,7 +135,8 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
           </div>
         ) : (
           activeSos.map((sos) => {
-            const hasDispatch = sos.dispatchedTeams && sos.dispatchedTeams.length > 0;
+            const matchingTeams = teamsLoaded ? activeDispatchTeams(sos.id) : [];
+            const hasDispatch = matchingTeams.length > 0;
             const ageMin = Math.floor((now - new Date(sos.timestamp).getTime()) / 60000);
             return (
               <div key={sos.id} className={`rounded-lg p-2.5 text-[11px] space-y-2 text-start relative overflow-hidden border ${
@@ -141,8 +148,10 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
                     <span>{sos.name}</span>
                     {hasDispatch ? (
                       <span className="text-[8px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-1 py-0.5 rounded font-bold">🚒 {isArabic ? "فريق موجّه" : "Dispatché"}</span>
-                    ) : (
+                    ) : teamsLoaded ? (
                       <span className="text-[8px] bg-red-500/20 text-red-400 border border-red-500/30 px-1 py-0.5 rounded font-bold animate-pulse">⚠️ {isArabic ? "بانتظار التوجيه" : "En attente"}</span>
+                    ) : (
+                      <span className="text-[8px] text-gray-400">{isArabic ? "جارٍ تحميل الفرق…" : "Chargement des équipes…"}</span>
                     )}
                   </span>
                   <span className="flex items-center gap-1 text-[9px] text-red-400/80 font-mono">
@@ -198,15 +207,15 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
                     <span className="text-[9px] font-extrabold uppercase text-emerald-400 block">
                       {isArabic ? "الفرق الموجهة:" : "Dépêchés:"}
                     </span>
-                    {sos.dispatchedTeams!.map((team, idx) => {
+                    {matchingTeams.map((team) => {
                       return (
-                        <div key={idx} className="bg-black/30 border border-white/5 rounded p-1 text-[10px] flex items-center justify-between gap-1">
+                        <div key={team.teamId} className="bg-black/30 border border-white/5 rounded p-1 text-[10px] flex items-center justify-between gap-1">
                           <span className="font-bold text-slate-300 truncate max-w-[130px]">
                             {team.type === "protection_civile" ? "🚒 " : "💚 "}
-                            {isArabic ? team.teamNameAr : team.teamNameFr}
+                            {isArabic ? team.nameAr : team.name}
                           </span>
                           <span className="text-[8px] font-extrabold border px-1 py-0.5 rounded shrink-0 bg-amber-500/10 text-amber-400 border-amber-500/20">
-                            {dispatchElapsedText(team.dispatchedAt, isArabic)}
+                            {dispatchElapsedText(team.activeMission?.since, isArabic)}
                           </span>
                         </div>
                       );

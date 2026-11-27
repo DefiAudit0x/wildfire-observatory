@@ -471,7 +471,9 @@ object CryptoEngine {
             }
         }
         ephemeralKeyPair = generateECKeyPair()
-        ephemeralId = generateRandomId()
+        ephemeralId = MeshIdentityBinding.issue(
+            Base64.encodeToString(ephemeralKeyPair!!.public.encoded, Base64.NO_WRAP)
+        )
         return EphemeralSnapshot(
             keyPair = ephemeralKeyPair!!,
             ephemeralId = ephemeralId,
@@ -697,6 +699,9 @@ object CryptoEngine {
      * be altered in transit).
      */
     fun verifyMessageSignature(message: SecureMessage): Boolean {
+        // Check the issuance binding BEFORE MeshInbound charges the PoW
+        // triple's budget. Legacy random IDs remain accepted in phase 1.
+        if (!MeshIdentityBinding.accepts(message.ephemeralId, message.senderPublicKey)) return false
         return try {
             val ciphertext = Base64.decode(message.ciphertext, Base64.NO_WRAP)
             val iv = Base64.decode(message.iv, Base64.NO_WRAP)
@@ -759,10 +764,5 @@ object CryptoEngine {
         sig.initVerify(publicKey)
         sig.update(data)
         return sig.verify(signature)
-    }
-
-    private fun generateRandomId(): String {
-        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return (1..16).map { chars[protocolRandom.nextInt(chars.length)] }.joinToString("")
     }
 }

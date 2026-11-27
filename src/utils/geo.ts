@@ -65,7 +65,7 @@ export function minDistanceToPolylineKm(route: [number, number][], lat: number, 
 // server/geo.ts; any bounds change must land in both files.
 export const OUT_OF_COVERAGE = "خارج التغطية (Hors zone)";
 
-const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = [
+export const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: number; maxLng: number }[] = [
   { name: "الجزائر - الطارف (Algérie - El Tarf)", minLat: 36.5, maxLat: 37.0, minLng: 8.0, maxLng: 8.6 },
   { name: "الجزائر - عنابة (Algérie - Annaba)", minLat: 36.7, maxLat: 37.0, minLng: 7.4, maxLng: 7.95 },
   { name: "الجزائر - سكيكدة (Algérie - Skikda)", minLat: 36.6, maxLat: 37.0, minLng: 6.2, maxLng: 7.5 },
@@ -78,8 +78,8 @@ const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: num
   { name: "تونس - تونس العاصمة (Tunisie - Tunis)", minLat: 36.5, maxLat: 37.2, minLng: 9.8, maxLng: 10.5 },
   { name: "تونس - سوسة (Tunisie - Sousse)", minLat: 35.6, maxLat: 36.2, minLng: 10.2, maxLng: 10.9 },
   { name: "تونس - صفاقس (Tunisie - Sfax)", minLat: 34.5, maxLat: 35.6, minLng: 10.3, maxLng: 11.2 },
-  { name: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)", minLat: 35.0, maxLat: 36.0, minLng: -6.0, maxLng: -4.5 },
-  { name: "المغرب - الرباط سلا القنيطرة (Maroc - Rabat-Salé)", minLat: 33.5, maxLat: 34.8, minLng: -7.0, maxLng: -5.5 },
+  { name: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan-Al Hoceïma)", minLat: 35.0, maxLat: 36.0, minLng: -6.0, maxLng: -4.5 },
+  { name: "المغرب - الرباط سلا القنيطرة (Maroc - Rabat-Salé-Kénitra)", minLat: 33.5, maxLat: 34.8, minLng: -7.0, maxLng: -5.5 },
   { name: "المغرب - مراكش آسفي (Maroc - Marrakech-Safi)", minLat: 31.0, maxLat: 33.5, minLng: -9.0, maxLng: -7.0 },
   { name: "المغرب - سوس ماسة (Maroc - Souss-Massa)", minLat: 29.5, maxLat: 31.5, minLng: -10.0, maxLng: -8.0 },
   { name: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)", minLat: 32.0, maxLat: 33.0, minLng: 21.0, maxLng: 22.5 },

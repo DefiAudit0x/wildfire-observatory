@@ -39,7 +39,7 @@ async function transaction(_db: unknown, callback: (tx: unknown) => Promise<unkn
         return read(ref);
       },
       update: (ref: Ref, data: Data) => writes.push({ ref, data, kind: "update" }),
-      set: (ref: Ref, data: Data) => writes.push({ ref, data, kind: "set" }),
+      set: (ref: Ref, data: Data, options?: { merge?: boolean }) => writes.push({ ref, data, kind: options?.merge ? "update" : "set" }),
       create: (ref: Ref, data: Data) => writes.push({ ref, data, kind: "set" }),
       delete: (ref: Ref) => writes.push({ ref, kind: "delete" }),
     };

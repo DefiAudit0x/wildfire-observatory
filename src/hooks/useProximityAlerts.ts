@@ -163,7 +163,6 @@ export function useProximityAlerts(
   const operatorPendingRef = useRef<Map<string, string>>(new Map());
   const operatorFlushTimerRef = useRef<number | null>(null);
   const lastOperatorBeepAtRef = useRef(0);
-  const proximityScanInFlightRef = useRef(false);
   const trustedReporterRef = useRef(isTrustedReporter);
   trustedReporterRef.current = isTrustedReporter;
   // Fix 36 (PROX-1): mute must be readable inside async callbacks (flush,
@@ -317,8 +316,10 @@ export function useProximityAlerts(
       return;
     }
 
+    let cancelled = false;
+    let inFlight = false;
     const scanProximity = async () => {
-      if (proximityScanInFlightRef.current) return;
+      if (inFlight) return;
       // Non-finite coordinates (NaN markers from unresolved server responses)
       // are never measured: NaN distance comparisons are always false, but
       // the invariant is enforced here so no downstream consumer sees one.
@@ -360,7 +361,7 @@ export function useProximityAlerts(
       const newly = computeNewAlerts(announced, nearReports);
       if (newly.length === 0) return; // nothing new: memory stays untouched
 
-      proximityScanInFlightRef.current = true;
+      inFlight = true;
       try {
         if (!proximityAudioCtxRef.current) {
           proximityAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -369,7 +370,7 @@ export function useProximityAlerts(
         if (audioCtx.state === "suspended") await audioCtx.resume();
         // Fix 36 (PROX-1, D9): the mute check above ran before the await —
         // muting during resume must still silence the siren.
-        if (isMutedRef.current) return;
+        if (cancelled || isMutedRef.current) return;
         if (audioCtx.state !== "running") throw new Error("AudioContext is not running");
         const osc1 = audioCtx.createOscillator();
         const osc2 = audioCtx.createOscillator();
@@ -396,13 +397,16 @@ export function useProximityAlerts(
       } catch (err) {
         console.warn("Audio feedback blocked or uninitialized in sandbox context.", err);
       } finally {
-        proximityScanInFlightRef.current = false;
+        inFlight = false;
       }
     };
 
     void scanProximity();
     const alertInterval = setInterval(() => void scanProximity(), 15000);
-    return () => clearInterval(alertInterval);
+    return () => {
+      cancelled = true;
+      clearInterval(alertInterval);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userLocation, reports, isMuted]);
 

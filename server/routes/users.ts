@@ -7,7 +7,7 @@ import { requireRole } from "../middleware.js";
 import { str } from "../params.js";
 import { logAdminAction, actorFromRequest } from "./audit.js";
 import { collectionGet, docGet, docSet, updateUserAtomic } from "../fs.js";
-import { createUserIfUnitExists, createDocIfAbsent, deleteUserAtomically } from "../atomic.js";
+import { createUserIfUnitExists, createDocIfAbsent, deleteUserAtomically, removeAgentFromRosterDay } from "../atomic.js";
 import { toUnitId } from "./units.js";
 
 const router = Router();
@@ -161,13 +161,9 @@ router.delete("/:agentId", requireRole("superadmin", "admin"), async (req: Reque
             Array.isArray(dayDoc?.posts) &&
             dayDoc.posts.some((p: any) => Array.isArray(p?.personnel) && p.personnel.some((x: any) => x?.agentId === agentId))
           );
-          const results = await Promise.all(affected.map((dayDoc: any) => {
-            const posts = dayDoc.posts.map((p: any) => ({
-              ...p,
-              personnel: Array.isArray(p.personnel) ? p.personnel.filter((x: any) => x?.agentId !== agentId) : p.personnel,
-            }));
-            return docSet(rosterCollection, dayDoc.id, { ...dayDoc, posts, updatedAt: new Date().toISOString() });
-          }));
+          const results = await Promise.all(affected.map((dayDoc: { id: string }) =>
+            removeAgentFromRosterDay(rosterCollection, dayDoc.id, agentId)
+          ));
           const removed = results.filter(Boolean).length;
           rosterCleanup = { days: affected.length, removed, failed: affected.length - removed };
           if (rosterCleanup.failed > 0) logger.warn({ agentId, unitId: existing.unitId, days: affected.length, failed: rosterCleanup.failed }, "Roster cleanup after user deletion partially failed — some rosters keep the historical copy");

@@ -2,6 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import express, { type Router } from "express";
 import supertest from "supertest";
 
+vi.mock("../server/db.js", () => ({
+  getReportsDbResult: async () => ({ status: "empty" }),
+}));
+
 const unavailable = () => new Response("offline", { status: 503 });
 const modisHeader = "latitude,longitude,brightness,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_t31,frp,daynight";
 const viirsHeader = modisHeader.replace("brightness", "bright_ti4").replace("bright_t31", "bright_ti5");

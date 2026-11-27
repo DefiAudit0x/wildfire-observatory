@@ -134,11 +134,9 @@ export default function MainContent({
       )}
 
       {/* Team member panel (Phase 2): join by code, GPS heartbeat, mission state */}
-      {activeTab === "team" && (
-        <div className="col-span-12 animate-fadeIn">
+      <div hidden={activeTab !== "team"} className="col-span-12 animate-fadeIn">
           <TeamPanel lang={lang} />
-        </div>
-      )}
+      </div>
 
       {/* Central Command - full-screen command dashboard */}
       {activeTab === "command" && privilegedTabVisible && (

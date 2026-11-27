@@ -25,6 +25,7 @@ export function useReportImage({ isArabic, setErrorMsg }: UseReportImageParams) 
   const [uploadWarning, setUploadWarning] = useState<string | null>(null);
   const [edgeAiStatus, setEdgeAiStatus] = useState<EdgeAiStatusView | null>(null);
   const prescanCounter = useRef(0);
+  const captureGeneration = useRef(0);
 
   // --- LIGHTWEIGHT ON-DEVICE HEURISTIC PRE-SCANNER ---
   // Note: this is a coarse color-based heuristic (feasible in-browser without a
@@ -103,24 +104,30 @@ export function useReportImage({ isArabic, setErrorMsg }: UseReportImageParams) 
       e.target.value = "";
       return;
     }
+    const generation = ++captureGeneration.current;
+    prescanCounter.current++;
     setErrorMsg(null);
     setOriginalSize((file.size / 1024).toFixed(1) + " KB");
     setIsCompressing(true);
 
     const reader = new FileReader();
     reader.onerror = () => {
+      if (generation !== captureGeneration.current) return;
       setIsCompressing(false);
       setImage(null);
       setErrorMsg(isArabic ? "تعذر قراءة الصورة المحددة." : "Impossible de lire l'image sélectionnée.");
     };
     reader.onload = (event) => {
+      if (generation !== captureGeneration.current) return;
       const img = new Image();
       img.onerror = () => {
+      if (generation !== captureGeneration.current) return;
         setIsCompressing(false);
         setImage(null);
         setErrorMsg(isArabic ? "الصورة تالفة أو غير قابلة للفك." : "L'image est corrompue ou illisible.");
       };
       img.onload = () => {
+      if (generation !== captureGeneration.current) return;
         const canvas = document.createElement("canvas");
         const ctx = canvas.getContext("2d");
 
@@ -184,6 +191,9 @@ export function useReportImage({ isArabic, setErrorMsg }: UseReportImageParams) 
   // A LIVE capture carries the GPS/UTC stamp inside the frame pixels; a file
   // upload does not (the upload path warns about that instead).
   const applyCapturedImage = (dataUrl: string) => {
+    captureGeneration.current++;
+    prescanCounter.current++;
+    setIsCompressing(false);
     setImage(dataUrl);
     setUploadWarning(null);
   };
@@ -191,6 +201,8 @@ export function useReportImage({ isArabic, setErrorMsg }: UseReportImageParams) 
   // Reset applied after an accepted submission (ported verbatim from the
   // original success path: image + sizes + AI status).
   const resetImage = () => {
+    captureGeneration.current++;
+    setIsCompressing(false);
     // Fix 40 (RIMG-1): invalidate any in-flight pre-scan, as a new scan
     // does — otherwise a late onload repopulates edgeAiStatus for an image
     // that is no longer attached (e.g. after an accepted submit).

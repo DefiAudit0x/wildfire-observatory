@@ -3,6 +3,9 @@ import express from "express";
 import supertest from "supertest";
 import historyRouter from "../server/routes/history";
 
+const reportStore = vi.hoisted(() => ({ result: { status: "empty" } as { status: string; reports?: unknown[] } }));
+vi.mock("../server/db.js", () => ({ getReportsDbResult: async () => reportStore.result }));
+
 vi.mock("../server/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../server/config.js")>();
   return { default: { ...actual.default, nasaFirmsKey: "test-key" } };
@@ -11,6 +14,7 @@ vi.mock("../server/config.js", async (importOriginal) => {
 // History's successful bucket contract requires successful satellite observations.
 // Mock the HTTP backend, keeping the real satellite and history handlers.
 beforeEach(() => {
+  reportStore.result = { status: "empty" };
   vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => new Response("latitude,longitude,bright_ti4,scan,track,acq_date,acq_time,satellite,instrument,confidence,version,bright_ti5,frp,daynight\n")));
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -90,5 +94,21 @@ describe("GET /api/history", () => {
     for (const bucket of res.body.buckets) {
       expect(bucket.hotspots).toBe(0);
     }
+  });
+});
+
+describe("Round 2 history availability and coverage", () => {
+  it.each(["error", "no-db"])("reports %s as unavailable instead of zero history", async (status) => {
+    reportStore.result = { status };
+    const res = await supertest(createTestApp()).get("/api/history");
+    expect(res.status).toBe(503);
+    expect(res.body.reportsUnavailable).toBe(true);
+    expect(res.body.buckets).toBeUndefined();
+  });
+  it("labels all current snapshots as incomplete historical coverage", async () => {
+    const res = await supertest(createTestApp()).get("/api/history?days=180");
+    expect(res.status).toBe(200);
+    expect(res.body.partial).toBe(true);
+    expect(res.body.coverage.hotspots).toContain("24 hours");
   });
 });

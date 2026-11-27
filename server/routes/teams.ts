@@ -4,7 +4,7 @@ import { z } from "zod";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import logger from "../logger.js";
 import { collectionGet, docGet, docSet, docUpdate, docDelete, docDeleteFields, incrementDocField, invalidateCollectionCache, invalidateDocCache, removeTeamMemberAtomically } from "../fs.js";
-import { joinTeamAtomically, rotateTeamJoinCodeAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked } from "../atomic.js";
+import { joinTeamAtomically, rotateTeamJoinCodeAtomically, setMissionPhaseAtomically, clearTeamMissionAtomically, setPrincipalBlocked, deactivateTeamMemberIfGeneration } from "../atomic.js";
 import { requireAdmin } from "../middleware.js";
 import { getPublicPrincipal, issuePublicPrincipal, renewPublicPrincipal } from "../public-principal.js";
 import { createTeamMemberToken, isTokenGenerationStale, teamTokenFromRequest } from "../teamAuth.js";
@@ -521,7 +521,8 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     return;
   }
 
-  const member = await docGet("teamMembers", token.memberId);
+  try {
+  const member = await docGet("teamMembers", token.memberId, true, { strict: true });
   if (!member || member.teamId !== token.teamId) {
     logger.warn({ memberId: token.memberId, teamId: token.teamId }, "Heartbeat rejected: MEMBER_INVALID");
     res.status(403).json({ code: "MEMBER_INVALID", error: "Team membership not found" });
@@ -540,7 +541,7 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
     res.status(403).json({ code: "MEMBER_REVOKED", error: "Membership token has been revoked" });
     return;
   }
-  const team = await docGet("teams", token.teamId);
+  const team = await docGet("teams", token.teamId, true, { strict: true });
   if (!team || team.active === false) {
     logger.warn({ memberId: token.memberId, teamId: token.teamId }, "Heartbeat rejected: TEAM_INACTIVE");
     res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
@@ -565,6 +566,9 @@ router.post("/heartbeat", heartbeatLimiter, async (req: Request, res: Response) 
 
   const mission = activeMissionOf(await docGet("teamMissions", token.teamId));
   res.json({ ok: true, serverTime: now, heartbeatIntervalMs: 15_000, mission });
+  } catch {
+    res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable; retry later" });
+  }
 });
 
 /**
@@ -599,7 +603,8 @@ router.post("/session", sessionLimiter, async (req: Request, res: Response) => {
     res.status(401).json({ error: "Team session required" });
     return;
   }
-  const member = await docGet("teamMembers", token.memberId);
+  try {
+  const member = await docGet("teamMembers", token.memberId, true, { strict: true });
   if (!member || member.teamId !== token.teamId) {
     res.status(403).json({ code: "MEMBER_INVALID", error: "Team membership not found" });
     return;
@@ -612,7 +617,7 @@ router.post("/session", sessionLimiter, async (req: Request, res: Response) => {
     res.status(403).json({ code: "MEMBER_REVOKED", error: "Membership token has been revoked" });
     return;
   }
-  const team = await docGet("teams", token.teamId);
+  const team = await docGet("teams", token.teamId, true, { strict: true });
   if (!team || team.active === false) {
     res.status(403).json({ code: "TEAM_INACTIVE", error: "Team is deactivated" });
     return;
@@ -628,6 +633,9 @@ router.post("/session", sessionLimiter, async (req: Request, res: Response) => {
     heartbeatIntervalMs: 15_000,
     serverTime: Date.now(),
   });
+  } catch {
+    res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable; retry later" });
+  }
 });
 
 /**
@@ -640,17 +648,16 @@ router.post("/leave", async (req: Request, res: Response) => {
     res.status(401).json({ error: "Team session required" });
     return;
   }
-  const member = await docGet("teamMembers", token.memberId);
-  if (!member || member.teamId !== token.teamId) {
-    res.status(403).json({ error: "Team membership not found" });
+  const result = await deactivateTeamMemberIfGeneration(token.memberId, token.teamId, Number(token.gen ?? 0));
+  if (result === "missing") {
+    res.status(403).json({ code: "MEMBER_INVALID", error: "Team membership not found" });
     return;
   }
-  if (isMemberTokenRevoked(token, member)) {
+  if (result === "revoked") {
     res.status(403).json({ code: "MEMBER_REVOKED", error: "Membership token has been revoked" });
     return;
   }
-  const deactivated = await docUpdate("teamMembers", token.memberId, { active: false, leftAt: Date.now() });
-  if (!deactivated) {
+  if (result === "unavailable") {
     res.status(503).json({ code: "TEAMS_STORAGE_UNAVAILABLE", error: "Teams storage unavailable" });
     return;
   }

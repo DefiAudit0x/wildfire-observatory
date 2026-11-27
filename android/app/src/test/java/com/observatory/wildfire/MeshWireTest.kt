@@ -32,6 +32,15 @@ class MeshWireTest {
         hopsLeft = 5
     )
 
+    @Test
+    fun keyBoundSchemeUsesExistingWireFormatWithoutVersionBump() {
+        val original = sampleFrame()
+        val bound = original.copy(origEphemeralId = MeshIdentityBinding.issue(original.origPublicKey))
+        assertTrue(bound.origEphemeralId.length <= 64)
+        assertEquals(bound, MeshWire.parseFrame(MeshWire.frameToJson(bound)))
+        assertEquals(original, MeshWire.parseFrame(MeshWire.frameToJson(original)))
+    }
+
     // ---------- framing ----------
 
     @Test
@@ -584,4 +593,16 @@ class MeshWireTest {
             MeshWire.compress(MeshWire.frameToJson(frame).toByteArray())
         }
     }
+    @Test
+    fun replayIdentityIncludesAuthenticatedSenderKey() {
+        assertNotEquals(
+            MeshWire.seenMessageHash("same", 7, "ciphertext", "key-A"),
+            MeshWire.seenMessageHash("same", 7, "ciphertext", "key-B")
+        )
+        assertNotEquals(
+            MeshWire.seenTripleHash("same", 7, "key-A"),
+            MeshWire.seenTripleHash("same", 7, "key-B")
+        )
+    }
+
 }

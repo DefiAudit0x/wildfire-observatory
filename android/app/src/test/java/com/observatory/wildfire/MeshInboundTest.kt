@@ -54,7 +54,8 @@ class MeshInboundTest {
         nonce: Int = 7,
         powNonce: Int = solvedNonce(messageId, "EPH_1", nonce),
         powDifficulty: Int = difficulty,
-        hopsLeft: Int = 3
+        hopsLeft: Int = 3,
+        origPublicKey: String = canonicalB64(ByteArray(32))
     ): MeshWire.Frame =
         MeshWire.Frame(
             protocolVersion = MeshWire.PROTOCOL_VERSION,
@@ -64,7 +65,7 @@ class MeshInboundTest {
             iv = canonicalB64(ByteArray(12)),
             hopCount = 0,
             origEphemeralId = "EPH_1",
-            origPublicKey = canonicalB64(ByteArray(32)),
+            origPublicKey = origPublicKey,
             timestamp = timestamp,
             signature = canonicalB64(ByteArray(64)),
             nonce = nonce,
@@ -90,6 +91,25 @@ class MeshInboundTest {
         inbound: MeshInbound = inbound(),
         at: Long = now
     ): MeshInbound.Verdict = inbound.evaluate(wireBytes(f), at, ttl, skew, difficulty)
+
+    @Test
+    fun `copied bound ID signed by other keys cannot charge authentic triple budget`() {
+        val trustedKey = canonicalB64(ByteArray(32) { 1 })
+        val boundId = MeshIdentityBinding.issue(trustedKey)
+        // Isolate binding admission ordering; PoW is the same captured solve.
+        val inb = inbound(
+            verify = { MeshIdentityBinding.accepts(it.ephemeralId, it.senderPublicKey) },
+            powVerify = { _, _, _ -> true }
+        )
+        for (i in 2..17) {
+            val copy = frame(origPublicKey = canonicalB64(ByteArray(32) { i.toByte() }))
+                .copy(origEphemeralId = boundId)
+            val rejected = evaluate(copy, inb) as MeshInbound.Verdict.Rejected
+            assertEquals(MeshInbound.RejectReason.SIGNATURE, rejected.reason)
+        }
+        val authentic = frame(origPublicKey = trustedKey).copy(origEphemeralId = boundId)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Accepted)
+    }
 
     // ---- accept paths ----
 
@@ -318,6 +338,22 @@ class MeshInboundTest {
     }
 
     @Test
+    fun variantBudgetIsSharedAcrossKeysForTheSamePowIdentity() {
+        val inb = inbound()
+        repeat(MeshInbound.MAX_VARIANTS_PER_TRIPLE) { i ->
+            val payload = canonicalB64("ciphertext-variant-$i".toByteArray())
+            val key = canonicalB64(ByteArray(32) { (i % 2).toByte() })
+            assertTrue(evaluate(frame(nonce = 7, payloadB64 = payload, origPublicKey = key), inbound = inb) is MeshInbound.Verdict.Accepted)
+        }
+        val extra = canonicalB64("ciphertext-variant-extra".toByteArray())
+        val otherKey = canonicalB64(ByteArray(32) { 1 })
+        val verdict = evaluate(frame(nonce = 7, payloadB64 = extra, origPublicKey = otherKey), inbound = inb)
+        assertTrue(verdict is MeshInbound.Verdict.Rejected)
+        assertEquals(MeshInbound.RejectReason.REPLAY, (verdict as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(MeshInbound.MAX_VARIANTS_PER_TRIPLE, inb.seenMessageHashes.size)
+    }
+
+    @Test
     fun sweepReplayWindowExpiresTripleCounts() {
         val inb = inbound()
         val now = System.currentTimeMillis()
@@ -343,7 +379,7 @@ class MeshInboundTest {
         assertEquals(MeshInbound.RejectReason.REPLAY, (unseen as MeshInbound.Verdict.Rejected).reason)
         assertEquals(0, inb.seenMessageHashes.size)
         // A triple already in the map is still admitted at capacity.
-        val knownHash = MeshWire.seenTripleHash("msg-1", 8)
+        val knownHash = MeshWire.seenTripleHash("msg-1", 8, frame().origEphemeralId)
         inb.seenTripleCounts[knownHash] = MeshInbound.TripleAdmission(1, System.currentTimeMillis())
         assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
         assertEquals(1, inb.seenMessageHashes.size)
@@ -396,4 +432,17 @@ class MeshInboundTest {
         assertEquals(f.type, sm.type)
         assertEquals(f.hopCount, sm.hopCount)
     }
+    @Test
+    fun differentSenderCannotSuppressAuthenticFrameWithSameIdentity() {
+        val inb = inbound(decrypt = { msg ->
+            if (msg.senderPublicKey == frame().origPublicKey) "authentic".toByteArray() else null
+        })
+        val authentic = frame()
+        val otherSender = authentic.copy(origPublicKey = canonicalB64(ByteArray(32) { 1 }))
+        assertTrue(evaluate(otherSender, inb) is MeshInbound.Verdict.Accepted)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Accepted)
+        assertEquals(2, inb.seenMessageHashes.size)
+        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Rejected)
+    }
+
 }

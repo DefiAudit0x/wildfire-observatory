@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Lock, Unlock, Shield, Trash2, Check, X, AlertTriangle, RefreshCw, Layers, MapPin, Phone, User, Clock, Search, Download, ScrollText, Building2, BadgeCheck } from "lucide-react";
 import { Report, Language } from "../types";
 import AuditLog from "./admin/AuditLog";
@@ -32,6 +32,9 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
   // Fix 8b: tracks the in-flight identity requests so the CSV export can
   // wait for reporter names instead of writing "" for them.
   const [reporterIdentitiesLoading, setReporterIdentitiesLoading] = useState(false);
+  const identityCacheRef = useRef<Record<string, { reporterName?: string; reporterPhone?: string }>>({});
+  const identityNextAtRef = useRef(0);
+  const [identityIncomplete, setIdentityIncomplete] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -69,39 +72,48 @@ export default function AdminPanel({ reports, onRefresh, lang }: AdminPanelProps
 
   useEffect(() => {
     if (!isAuthenticated) {
+      identityCacheRef.current = {};
       setReporterIdentities({});
       setReporterIdentitiesLoading(false);
+      setIdentityIncomplete(false);
       return;
     }
-
     let cancelled = false;
     setReporterIdentitiesLoading(true);
-    void Promise.all(reports.map(async (report) => {
-      try {
-        const res = await apiFetch(`/api/reports/${encodeURIComponent(report.id)}/identity`, "GET");
+    setIdentityIncomplete(false);
+    void (async () => {
+      for (const report of reports) {
         if (cancelled) return;
-        if (res.status === 401) {
-          setIsAuthenticated(false);
-          return;
+        if (identityCacheRef.current[report.id]) continue;
+        // Reserve at most 60 requests/minute for identity hydration, leaving
+        // room in the shared API bucket for moderation and polling.
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, identityNextAtRef.current - Date.now())));
+        if (cancelled) return;
+        identityNextAtRef.current = Date.now() + 1000;
+        try {
+          const res = await apiFetch(`/api/reports/${encodeURIComponent(report.id)}/identity`, "GET");
+          if (cancelled) return;
+          if (res.status === 401) { setIsAuthenticated(false); return; }
+          if (!res.ok) {
+            setIdentityIncomplete(true);
+            if (res.status === 429) break;
+            continue;
+          }
+          const data: unknown = await res.json();
+          if (!data || typeof data !== "object") { setIdentityIncomplete(true); continue; }
+          const identity = {
+            reporterName: "reporterName" in data && typeof data.reporterName === "string" ? data.reporterName : undefined,
+            reporterPhone: "reporterPhone" in data && typeof data.reporterPhone === "string" ? data.reporterPhone : undefined,
+          };
+          if (cancelled) return;
+          identityCacheRef.current[report.id] = identity;
+          setReporterIdentities((current) => ({ ...current, [report.id]: identity }));
+        } catch {
+          if (!cancelled) setIdentityIncomplete(true);
         }
-        if (!res.ok) return;
-        const data: unknown = await res.json();
-        if (!data || typeof data !== "object") return;
-        const identity = {
-          reporterName: "reporterName" in data && typeof data.reporterName === "string" ? data.reporterName : undefined,
-          reporterPhone: "reporterPhone" in data && typeof data.reporterPhone === "string" ? data.reporterPhone : undefined,
-        };
-        if (!cancelled) setReporterIdentities((current) => ({ ...current, [report.id]: identity }));
-      } catch {
-        // A missing identity shard leaves the existing anonymous fallback intact.
       }
-    })).finally(() => {
-      if (!cancelled) setReporterIdentitiesLoading(false);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    })().finally(() => { if (!cancelled) setReporterIdentitiesLoading(false); });
+    return () => { cancelled = true; };
   }, [isAuthenticated, reports]);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -264,6 +276,8 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
 
   if (!isAuthenticated) {
     return (
+      <>
+      <StaffManager lang={lang} />
       <div id="admin-auth-card" className="max-w-md mx-auto my-12 bg-zinc-950/80 border border-white/5 rounded-2xl p-8 shadow-[0_10px_50px_rgba(0,0,0,0.8)] text-center space-y-6">
         <div className="mx-auto w-16 h-16 bg-red-600/10 border border-red-500/20 rounded-2xl flex items-center justify-center text-red-500">
           <Shield className="h-8 w-8 animate-pulse" />
@@ -320,10 +334,15 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
           {isArabic ? "الوصول مخصص للمشرفين المعتمدين" : "Accès réservé aux administrateurs autorisés"}
         </p>
       </div>
+      </>
     );
   }
 
   const exportToCSV = () => {
+    if (identityIncomplete) {
+      push(isArabic ? "التصدير غير مكتمل: تعذر تحميل بعض بيانات المبلغين. أعد المحاولة لاحقاً." : "Export incomplet : certaines identités sont indisponibles. Réessayez plus tard.", "error");
+      return;
+    }
     // Fix 8b: every column goes through the shared csvCell guard (the same
     // one reportsToCsv uses) so citizen-supplied text — reporter name,
     // location, wilaya, description — cannot inject spreadsheet formulas.
@@ -358,6 +377,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
 
   return (
     <div id="admin-panel-container" className="space-y-6 w-full animate-fade-in">
+      {identityIncomplete && <p role="alert" className="text-amber-300 text-sm">{isArabic ? "بعض بيانات المبلغين غير متاحة؛ التصدير غير مكتمل." : "Certaines identités sont indisponibles ; export incomplet."}</p>}
       
       {/* Admin header */}
       <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-zinc-900/50 border border-white/5 p-5 rounded-2xl shadow-xl">
@@ -489,7 +509,7 @@ const res = await apiFetch("/api/admin/verify", "POST", { password });
         </select>
         <button
           onClick={exportToCSV}
-          disabled={reporterIdentitiesLoading}
+          disabled={reporterIdentitiesLoading || reports.some((report) => !reporterIdentities[report.id])}
           className="px-4 py-2.5 bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs font-black flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <Download className="h-4 w-4" />

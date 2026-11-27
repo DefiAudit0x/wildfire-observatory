@@ -72,6 +72,7 @@ export function useGeolocation(isArabic: boolean) {
       return false;
     }
   });
+  const heartbeatControllerRef = useRef<AbortController | null>(null);
   const [deviceId, setDeviceId] = useState(() => getDeviceId());
   // Monotonic sequence for one-shot refetches: only the LATEST refetch may
   // write location/error state — a slow earlier response can never overwrite
@@ -203,6 +204,7 @@ export function useGeolocation(isArabic: boolean) {
   // operator name from the badge code, or shows "غير معروف"), and badgeCode
   // only travels when one is stored, for server-side role resolution.
   const setLocationConsent = useCallback((granted: boolean) => {
+    if (!granted) heartbeatControllerRef.current?.abort();
     setLocationSharingConsent(granted);
     try {
       if (granted) localStorage.setItem(HEARTBEAT_CONSENT_KEY, "true");
@@ -225,7 +227,10 @@ export function useGeolocation(isArabic: boolean) {
   // notices the pause.
   useEffect(() => {
     if (!locationSharingConsent) return;
+    const controller = new AbortController();
+    heartbeatControllerRef.current = controller;
     const sendHeartbeat = () => {
+      if (controller.signal.aborted) return;
       if (document.hidden) return; // W-M14: pause while the tab is hidden
       const loc = locationRef.current;
       if (!loc) return;
@@ -233,6 +238,7 @@ export function useGeolocation(isArabic: boolean) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(buildHeartbeatPayload(deviceId, loc)),
+        signal: controller.signal,
       }).catch(() => {});
     };
     const onVisibility = () => {
@@ -243,6 +249,7 @@ export function useGeolocation(isArabic: boolean) {
     const interval = setInterval(sendHeartbeat, 30000);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      controller.abort();
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };

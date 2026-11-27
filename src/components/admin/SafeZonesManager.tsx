@@ -108,10 +108,14 @@ export default function SafeZonesManager({ lang, onAuthError }: SafeZonesManager
 
   const handleAddZone = async (e: React.FormEvent) => {
     e.preventDefault();
-    const lat = parseFloat(form.lat);
-    const lng = parseFloat(form.lng);
+    const parseCoordinate = (value: string) => {
+      const text = value.trim();
+      return /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(text) ? Number(text) : NaN;
+    };
+    const lat = parseCoordinate(form.lat);
+    const lng = parseCoordinate(form.lng);
     const capacity = parseInt(form.capacity, 10);
-    if (isNaN(lat) || isNaN(lng) || !form.nameAr.trim() || !form.nameFr.trim() || isNaN(capacity) || capacity <= 0) {
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || !form.nameAr.trim() || !form.nameFr.trim() || isNaN(capacity) || capacity <= 0) {
       setMsg(isArabic ? "تحقق من تعبئة جميع الحقول بقيم صحيحة." : "Vérifiez que tous les champs sont valides.");
       return;
     }

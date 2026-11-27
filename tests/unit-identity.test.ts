@@ -34,7 +34,7 @@ vi.mock("firebase/firestore", () => ({
 import { deleteUnitIfUnlinked } from "../server/atomic.js";
 beforeEach(() => { state.unit = true; state.staff = []; state.deletes.mockClear(); });
 describe.each([true, false])("ATM-1 admin SDK=%s", (admin) => {
-  it.each(["DZ16", "unit-dz16"])("protects staff linked as %s", async (identity) => {
+  it.each(["DZ16", "dz16", "unit-dz16"])("protects staff linked as %s", async (identity) => {
     state.admin = admin;
     // Route-produced unit document units/unit-dz16 and users with raw DZ16.
     state.staff = [identity];

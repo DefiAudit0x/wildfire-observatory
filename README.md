@@ -40,9 +40,9 @@
 
 ## 🌍 Overview / نظرة عامة
 
-**AR:** منصة إنسانية مفتوحة المصدر تهدف إلى إنقاذ الأرواح في المناطق المعرضة لحرائق الغابات في شمال أفريقيا (الجزائر، تونس، المغرب، ليبيا). تعتمد المنصة على الذكاء الاصطناعي (Google Gemini) وبيانات الأقمار الصناعية (NASA FIRMS، شبه فورية Near-real-time) والإجماع البشري للتحقق من البلاغات.
+**AR:** منصة إنسانية مفتوحة المصدر تهدف إلى إنقاذ الأرواح في المناطق المعرضة لحرائق الغابات في شمال أفريقيا (الجزائر، تونس، المغرب، ليبيا). تعتمد المنصة على الذكاء الاصطناعي (Google Gemini) وبيانات الأقمار الصناعية (NASA FIRMS، شبه فورية Near-real-time) والتأكيدات المجتمعية لدعم مراجعة البلاغات؛ التحقق من اختصاص المسارات المخوّلة.
 
-**FR:** Plateforme humanitaire open source visant à sauver des vies dans les zones sujettes aux feux de forêt en Afrique du Nord (Algérie, Tunisie, Maroc, Libye). Elle s'appuie sur l'IA (Google Gemini), les données satellitaires (NASA FIRMS, quasi temps réel / near-real-time) et le consensus citoyen pour la vérification des signalements.
+**FR:** Plateforme humanitaire open source visant à sauver des vies dans les zones sujettes aux feux de forêt en Afrique du Nord (Algérie, Tunisie, Maroc, Libye). Elle s'appuie sur l'IA (Google Gemini), les données satellitaires (NASA FIRMS, quasi temps réel / near-real-time) et les confirmations citoyennes pour informer la revue des signalements ; la validation relève des intervenants autorisés.
 
 ---
 
@@ -57,7 +57,7 @@
 | 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time over a Cloudflare proxy; unreachable = an honest empty sky, zero fabricated hotspots) |
 | 📊 **Fire Risk Index** | Deterministic 0–100 risk indicator from citizen reports, satellite hotspots & wilaya severity |
 | 📈 **History & Open Export** | 30-day activity chart + public CSV/GeoJSON export of reports and hotspots |
-| 👥 **Consensus Engine** | Citizen upvoting system — 5+ confirmations auto-verifies a report |
+| 👥 **Consensus Engine** | Citizen confirmations — 5+ marks community agreement without changing verification status |
 | 📍 **Geo-Clustering** | Automatic grouping of nearby reports within 3km radius |
 | 🌐 **Bilingual UI** | Arabic / French interface |
 | 📱 **PWA** | Offline support via service worker, installable on mobile |
@@ -124,9 +124,9 @@
 
 - **NASA FIRMS** — Near-real-time thermal anomalies (fire hotspots) over the Maghreb region, fetched through a Cloudflare proxy and degraded gracefully to a static snapshot when unreachable (fully offline-safe).
 - **MODIS vs VIIRS** — MODIS offers ~1 km resolution with 2–4 passes/day; VIIRS ~375 m with more frequent passes. Every hotspot carries its source satellite, brightness (fire radiative power proxy), confidence and detection time.
-- **What a hotspot means** — a thermal anomaly flagged by the sensor is a *signal to verify*, not a confirmed fire. The pipeline cross-checks it against citizen reports, AI image analysis and the consensus engine before status decisions.
+- **What a hotspot means** — a thermal anomaly flagged by the sensor is a *signal to verify*, not a confirmed fire. Satellite observations are displayed independently; they do not automatically corroborate or verify citizen reports.
 - **Confidence** — nominal confidence is normalized to a percentage; high-confidence hotspots (≥70%) trigger proximity alerts.
-- **Google Gemini Vision** — AI-assisted image verification (fire/smoke detection) with confidence scoring; outputs are informational and subject to human/consensus review.
+- **Google Gemini Vision** — AI-assisted image verification (fire/smoke detection) with confidence scoring; outputs are advisory; they do not grant verified status.
 - Complete data provenance, endpoints and fallback behavior: [DATA_SOURCES.md](DATA_SOURCES.md).
 
 ---
@@ -175,17 +175,11 @@ observatory/
 
 ### Verification Pipeline / خط أنابيب التحقق
 
-```
-Report Submitted
-    │
-    ├─► AI Vision (Gemini) ───► confidence >= 75% → auto-verified
-    │     (if image provided)
-    │
-    ├─► Satellite (NASA FIRMS) ──► hotspot within 3km → +confidence
-    │
-    └─► Human Consensus ──► 5+ confirmations → auto-verified
-          (citizen upvoting)
-```
+- Image analysis (when supplied) records advisory AI findings; high confidence may suggest severity, but does not verify a report.
+- Five distinct citizen confirmations set `communityConfirmed`; they do not change the report status.
+- Verified status comes from validated official/volunteer badge submission paths or authorized operator moderation.
+- Satellite hotspots are independent observations. There is no automatic satellite-to-report verification or confidence boost.
+
 
 ---
 
@@ -298,8 +292,10 @@ See `docs/RUNTIME_BASELINE.md` for the verified runtime matrix. Test counts are 
 # Build
 docker build -t wildfire-observatory .
 
-# Run
-docker run -p 3000:3000 --env-file .env wildfire-observatory
+# Run: create .env.production with production credentials (ADMIN_PASSWORD,
+# SUPER_ADMIN_PASSWORD and Firebase Admin configuration); omit development settings.
+# NODE_ENV is explicitly overridden so startup serves dist without importing Vite.
+docker run -p 3000:3000 --env-file .env.production -e NODE_ENV=production wildfire-observatory
 ```
 
 Multi-stage build:

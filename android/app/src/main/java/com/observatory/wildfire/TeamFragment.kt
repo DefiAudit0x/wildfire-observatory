@@ -194,9 +194,9 @@ class TeamFragment : Fragment() {
         val fix = app.locationEngine.currentFix()
         // v2.15.0: no fix → no coordinates, never a fabricated Algiers fix.
         val ok = if (fix != null) {
-            app.repository.broadcastMeshIntel("report", text, fix.lat, fix.lng)
+            app.repository.broadcastMeshIntel("chat", text, fix.lat, fix.lng)
         } else {
-            app.repository.broadcastMeshIntel("report", "⚠ بدون تحديد GPS — $text", null, null)
+            app.repository.broadcastMeshIntel("chat", "⚠ بدون تحديد GPS — $text", null, null)
         }
         // Fix 57 (NTEAM-1): keep the typed text on failure — the only copy
         // of it is the input, and the toast already reports the failure.

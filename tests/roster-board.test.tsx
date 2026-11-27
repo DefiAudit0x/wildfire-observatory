@@ -2,12 +2,14 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import RosterBoard from "../src/components/RosterBoard.js";
 
+const staffSession = vi.hoisted(() => ({ authenticated: true, role: "commander", unitId: "DZ16", name: "Test", agentId: "t-commander" }));
+
 // Fix 15b: a failed roster load used to install an editable empty roster,
 // and saving it after the DB recovered replaced the real day. The board must
 // leave the roster unavailable (null + load error) instead.
 vi.mock("../src/hooks/useAuth.js", () => ({
   useStaffSession: () => ({
-    session: { authenticated: true, role: "commander", unitId: "DZ16", name: "Test", agentId: "t-commander" },
+    session: staffSession,
     refetch: vi.fn(),
     loading: false,
   }),
@@ -20,6 +22,8 @@ function todayISO(): string {
 }
 
 afterEach(() => {
+  staffSession.role = "commander";
+  staffSession.unitId = "DZ16";
   vi.unstubAllGlobals();
 });
 
@@ -802,5 +806,27 @@ describe("RosterBoard rank clear and assignment filter (Fix 37 — RSTR-3/RSTR-4
     fireEvent.click(screen.getByText("حفظ جدول اليوم"));
     await waitFor(() => expect(screen.getByText("✓ تم حفظ جدول المناوبة.")).toBeTruthy());
     expect(putBodies[0].posts[0].personnel[0].agentId).toBe("a1");
+  });
+});
+
+
+describe("Round 2 roster unit selection", () => {
+  it("F007: a unitless global admin defaults to an available unit and can save its roster", async () => {
+    staffSession.role = "admin";
+    staffSession.unitId = "";
+    const roster = { unitId: "unit-dz16", date: todayISO(), saved: true, posts: [] };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      const body = url === "/api/units" ? { units: [{ code: "DZ16", nameAr: "وحدة", nameFr: "Unité" }] }
+        : url.includes("/api/roster/") && url.endsWith("?unit=DZ16") ? roster : { users: [] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RosterBoard lang="fr" />);
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Unité" }) as HTMLSelectElement).value).toBe("DZ16"));
+    const save = screen.getByRole("button", { name: /Enregistrer/i });
+    await waitFor(() => expect(save).toBeEnabled());
+    fireEvent.click(save);
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("?unit=DZ16") && init?.method === "PUT")).toBe(true));
   });
 });

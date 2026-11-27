@@ -204,7 +204,7 @@ class ObservatoryFragment : Fragment() {
         val track = riskBar ?: return
         val marker = riskBarMarker ?: return
         track.post {
-            if (track.width == 0 || marker.width == 0) return@post
+            if (marker.visibility != View.VISIBLE || track.width == 0 || marker.width == 0) return@post
             val range = (track.width - marker.width).toFloat()
             if (range <= 0f) return@post
             // score/100f keeps this in Float space (translationX is a Float
@@ -278,7 +278,37 @@ class ObservatoryFragment : Fragment() {
         val now = System.currentTimeMillis()
         updateWeatherLine(snap, now)
         updateProximityBanner(snap)
+        updateRiskDisplay(snap, now)
         updateRadar()
+    }
+
+    private fun updateRiskDisplay(snap: AppRepository.Snapshot, now: Long) {
+        val scoredReports = snap.reports.filter {
+            it.status != "rejected" && it.status != "resolved" &&
+                ProximityLogic.isFresh(it.timestampMs, now)
+        }
+        val score = RiskScore.score(
+            scoredReports.map { it.severity to (it.status == "verified") },
+            snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
+        )
+        val fresh = snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)
+        riskScoreText?.text = if (fresh) score.toString() else "—"
+        if (fresh) {
+            riskBarMarker?.visibility = View.VISIBLE
+            positionRiskMarker(score)
+            riskScoreText?.setTextColor(RiskScore.bandColor(score))
+        } else {
+            riskBarMarker?.animate()?.cancel()
+            lastMarkerX = -1f
+            riskBarMarker?.visibility = View.GONE
+        }
+        riskLabelText?.text = if (fresh) RiskScore.labelAr(score) else getString(R.string.risk_unknown)
+        riskDetailText?.text = getString(
+            R.string.risk_detail_fmt,
+            snap.reports.count { it.status == "verified" },
+            snap.reports.count { it.status != "verified" && it.status != "rejected" && it.status != "resolved" },
+            snap.hotspots.count { it.confidence >= 70 }
+        )
     }
 
     // Fix 49 (NMODEL-1): one formatting point for the weather line. A
@@ -328,7 +358,7 @@ class ObservatoryFragment : Fragment() {
             val freshReports = snap.reports.filter { it.status != "rejected" && it.status != "resolved" }
             val pins = freshReports.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.timestampMs) } +
                 snap.hotspots.map { ProximityLogic.ThreatPin(it.lat, it.lng, it.scanTimeMs) } +
-                snap.meshIntel.mapNotNull { intel ->
+                snap.meshIntel.filter { it.kind == "report" }.mapNotNull { intel ->
                     val lat = intel.lat ?: return@mapNotNull null
                     val lng = intel.lng ?: return@mapNotNull null
                     ProximityLogic.ThreatPin(lat, lng, intel.tsMs)
@@ -366,35 +396,8 @@ class ObservatoryFragment : Fragment() {
         meshChip?.text = getString(R.string.mesh_state_fmt, meshLabel(snap.meshState), snap.meshPeers)
         meshChip?.setTextColor(if (snap.meshState == "connected") 0xFF22D3EE.toInt() else 0xFF94A3B8.toInt())
 
-        // Risk gauge from the SAME freshness rule as the banner (one authority).
-        // v2.15.0 audit fix: RESOLVED fires no longer feed the CURRENT-risk
-        // gauge (verified==resolved was double-counting an extinguished fire
-        // forever), and reports are FRESHNESS-gated before scoring (the list
-        // variable used to be named "fresh" while never gating on freshness).
-        // Resolved incidents still count in the honest detail line below.
         val now = System.currentTimeMillis()
-        val scoredReports = snap.reports.filter {
-            it.status != "rejected" && it.status != "resolved" &&
-                ProximityLogic.isFresh(it.timestampMs, now)
-        }
-        val score = RiskScore.score(
-            scoredReports.map { it.severity to (it.status == "verified") },
-            snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
-        )
-        riskScoreText?.text = score.toString()
-        positionRiskMarker(score)
-        // v2.1.0: band the number's color — a calm 6/100 must never scream red.
-        // v2.16.0: bands follow the brand book's 5-level fire danger scale
-        // (Low / Moderate / High / Very High / Extreme).
-        // Fix 57 (NRESBG-1): single-sourced from RiskScore.bandColor.
-        riskScoreText?.setTextColor(RiskScore.bandColor(score))
-        riskLabelText?.text = RiskScore.labelAr(score)
-        riskDetailText?.text = getString(
-            R.string.risk_detail_fmt,
-            snap.reports.count { it.status == "verified" },
-            snap.reports.count { it.status != "verified" && it.status != "rejected" && it.status != "resolved" },
-            snap.hotspots.count { it.confidence >= 70 }
-        )
+        updateRiskDisplay(snap, now)
 
         // Fix 21c: the banner lives in updateProximityBanner() so the same
         // isFreshFix gate runs from render, renderGps and the freshness tick.
@@ -438,7 +441,7 @@ class ObservatoryFragment : Fragment() {
         for (s in snap.safezones) {
             blips.add(RadarModel.blipFrom(liveFix.lat, liveFix.lng, s.lat, s.lng, RadarModel.Kind.SAFEZONE, s.nameAr))
         }
-        for (m in snap.meshIntel) {
+        for (m in snap.meshIntel.filter { it.kind == "report" }) {
             val lat = m.lat ?: continue
             val lng = m.lng ?: continue
             // Fix 53 (NOBS-3): stale mesh blips are not threats — same
@@ -460,7 +463,7 @@ class ObservatoryFragment : Fragment() {
         val wilaya = Wilayas.nearest(liveFix.lat, liveFix.lng)
         val nearest = blips.filter { it.kind != RadarModel.Kind.SAFEZONE }.minByOrNull { it.distKm }
         awarenessText?.text = if (nearest == null || nearest.distKm > RadarModel.RANGE_KM) {
-            getString(R.string.radar_awareness_calm_fmt, wilaya.nameAr)
+            getString(R.string.radar_awareness_unknown_fmt, wilaya.nameAr)
         } else {
             val dirAr = TelemetryCamera.bearingDirectionAr(nearest.angleDeg)
             getString(R.string.radar_awareness_fmt, wilaya.nameAr, nearest.distKm, dirAr)

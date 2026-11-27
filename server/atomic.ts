@@ -110,7 +110,8 @@ export async function deleteUnitIfUnlinked(unitId: string): Promise<UnitDeleteRe
   const db = getDb();
   if (!db) return "unavailable";
   try {
-    const identities = [unitId, unitId.replace(/^unit-/, "").toUpperCase()];
+    const rawId = unitId.replace(/^unit-/i, "");
+    const identities = [unitId, rawId, rawId.toUpperCase(), rawId.toLowerCase()];
     if (isAdminDb(db)) {
       const result = await db.runTransaction(async (tx: any): Promise<UnitDeleteResult> => {
         const unitRef = db.collection("units").doc(unitId);
@@ -922,6 +923,71 @@ export async function setPrincipalBlocked(
     return result;
   } catch (err) {
     logger.error({ err, teamId, principal: "[principal]" }, "Atomic principal block update failed");
+    return "unavailable";
+  }
+}
+
+/** Apply a small field update against the transaction's current document. */
+async function updateCurrentDocument<T>(
+  collectionName: string,
+  id: string,
+  decide: (current: Record<string, unknown> | null) => { result: T; update?: Record<string, unknown> },
+): Promise<T> {
+  const db = getDb();
+  if (!db) throw new Error("Storage unavailable");
+  let result: T;
+  if (isAdminDb(db)) {
+    result = await db.runTransaction(async (tx: AdminTransaction) => {
+      const ref = db.collection(collectionName).doc(id);
+      const snap = await tx.get(ref);
+      const decision = decide(snap.exists ? snap.data() || {} : null);
+      if (decision.update) tx.set(ref, decision.update, { merge: true });
+      return decision.result;
+    });
+  } else {
+    const { doc, runTransaction } = await import("firebase/firestore");
+    result = await runTransaction(db, async (tx: ClientTransaction) => {
+      const ref = doc(db, collectionName, id);
+      const snap = await tx.get(ref);
+      const decision = decide(snap.exists() ? snap.data() : null);
+      if (decision.update) tx.set(ref, decision.update, { merge: true });
+      return decision.result;
+    });
+  }
+  invalidateDocCache(collectionName, id);
+  invalidateCollectionCache(collectionName);
+  return result;
+}
+
+export async function removeAgentFromRosterDay(collectionName: string, id: string, agentId: string): Promise<boolean> {
+  try {
+    return await updateCurrentDocument(collectionName, id, (current) => {
+      if (!current || !Array.isArray(current.posts)) return { result: false };
+      const posts: unknown[] = current.posts.map((post: unknown) => {
+        if (!post || typeof post !== "object" || !("personnel" in post) || !Array.isArray(post.personnel)) return post;
+        return { ...post, personnel: post.personnel.filter((person: unknown) =>
+          !person || typeof person !== "object" || !("agentId" in person) || person.agentId !== agentId
+        ) };
+      });
+      return { result: true, update: { posts, updatedAt: new Date().toISOString() } };
+    });
+  } catch (err) {
+    logger.warn({ err, id }, "Roster cleanup unavailable");
+    return false;
+  }
+}
+
+export async function deactivateTeamMemberIfGeneration(
+  memberId: string, teamId: string, tokenGen: number,
+): Promise<"left" | "missing" | "revoked" | "unavailable"> {
+  try {
+    return await updateCurrentDocument<"left" | "missing" | "revoked">("teamMembers", memberId, (current) => {
+      if (!current || current.teamId !== teamId) return { result: "missing" };
+      if ((Number(current.tokenGen) || 0) !== tokenGen) return { result: "revoked" };
+      return { result: "left", update: { active: false, leftAt: Date.now() } };
+    });
+  } catch (err) {
+    logger.warn({ err, memberId }, "Team leave unavailable");
     return "unavailable";
   }
 }

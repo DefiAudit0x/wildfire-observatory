@@ -235,7 +235,7 @@ object ApiPayloads {
      * still listen via the bridge see a readable JSON object either way.
      */
     fun buildMeshIntelJson(kind: String, text: String, lat: Double, lng: Double, tsMs: Long): String {
-        require(kind == "report" || kind == "sos") { "mesh intel kind must be report|sos" }
+        require(kind == "report" || kind == "sos" || kind == "chat") { "mesh intel kind must be report|sos|chat" }
         return "{\"app\":\"wlfire\",\"kind\":\"$kind\",\"text\":\"${jsonEscape(text.take(300))}\"," +
             "\"lat\":${jsonNum(lat)},\"lng\":${jsonNum(lng)},\"t\":$tsMs}"
     }

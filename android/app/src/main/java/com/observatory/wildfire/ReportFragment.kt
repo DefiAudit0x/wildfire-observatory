@@ -2,6 +2,7 @@ package com.observatory.wildfire
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -79,6 +80,8 @@ class ReportFragment : Fragment() {
     private var imageDataUri: String? = null
     private var autofilledName = false
     private var autofilledWilaya = false
+    private var nameManuallyEdited = false
+    private var wilayaManuallyEdited = false
 
     // v2.19.0: the last GPS verdict drives what tapping the location line does.
     private var lastStatus: LocationLogic.Status = LocationLogic.Status.SEARCHING
@@ -86,6 +89,7 @@ class ReportFragment : Fragment() {
     /** True while code sets field text — the watchers must not treat that as
      *  a manual edit (manual edits are protected, programmatic fills are ours). */
     private var programmaticFill = false
+    private var placeFix: LocationLogic.FixSnapshot? = null
 
     // v2.19.0: the permission request lives HERE now — the activity ladder
     // runs once at launch; a user who tapped "لاحقًا" and later opens the
@@ -102,6 +106,7 @@ class ReportFragment : Fragment() {
     // outstanding) + a 60 s backoff after any failure, so a degraded
     // upstream never turns the autofill into a retry storm. The call also
     // now rides the server's /api/geo/reverse proxy (cache + rate limit).
+    private var reportGeneration = 0
     private var geoLookupInFlight = false
     private var geoBackoffUntilElapsedMs = 0L
 
@@ -134,8 +139,14 @@ class ReportFragment : Fragment() {
         locationLine?.setOnClickListener { onLocationLineTapped() }
         // Manual edits are sacred: any user keystroke marks the field as
         // hand-owned so a later autofill can never overwrite it.
-        locationNameInput?.addTextChangedListener(manualEditWatcher { autofilledName = true })
-        wilayaInput?.addTextChangedListener(manualEditWatcher { autofilledWilaya = true })
+        locationNameInput?.addTextChangedListener(manualEditWatcher {
+            autofilledName = true
+            nameManuallyEdited = true
+        })
+        wilayaInput?.addTextChangedListener(manualEditWatcher {
+            autofilledWilaya = true
+            wilayaManuallyEdited = true
+        })
 
         severityButtons["low"] = view.findViewById(R.id.sev_low)
         severityButtons["medium"] = view.findViewById(R.id.sev_medium)
@@ -234,7 +245,37 @@ class ReportFragment : Fragment() {
                 }
             else -> {
                 val fix = app.locationEngine.currentFix()
-                if (fix != null && geoFailed) {
+                val boundFix = placeFix
+                if (boundFix != null) {
+                    if (geoLookupInFlight) {
+                        Toast.makeText(requireContext(), R.string.geo_status_resolving, Toast.LENGTH_SHORT).show()
+                        return
+                    }
+                    AlertDialog.Builder(requireContext())
+                        .setMessage(R.string.report_use_current_location)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.report_use_current_location_action) { _, _ ->
+                            val current = app.locationEngine.currentFix()
+                            if (geoLookupInFlight || current == null ||
+                                !LocationLogic.isFreshFix(current, System.currentTimeMillis())) {
+                                Toast.makeText(requireContext(), R.string.report_need_fix, Toast.LENGTH_LONG).show()
+                            } else {
+                                // Explicit consent replaces both place fields; keep
+                                // the report's description, severity and photo.
+                                nameManuallyEdited = false
+                                wilayaManuallyEdited = false
+                                autofilledName = false
+                                autofilledWilaya = false
+                                fillField(locationNameInput, "")
+                                fillField(wilayaInput, Wilayas.nearest(current.lat, current.lng).nameAr)
+                                placeFix = current
+                                renderLocationLine(current)
+                                geoBackoffUntilElapsedMs = 0L
+                                reverseGeocode(current.lat, current.lng)
+                            }
+                        }
+                        .show()
+                } else if (fix != null && geoFailed) {
                     geoBackoffUntilElapsedMs = 0L // explicit user retry beats the backoff
                     reverseGeocode(fix.lat, fix.lng)
                 }
@@ -247,41 +288,67 @@ class ReportFragment : Fragment() {
         geoStatusLine?.text = text
     }
 
-    private fun onLocation(state: LocationEngine.State) {
-        val fix = state.fix
-        lastStatus = state.status
+    private fun renderLocationLine(fix: LocationLogic.FixSnapshot? = app.locationEngine.currentFix()) {
+        val displayFix = placeFix ?: fix
         // Fix 52 (NLOC-1): a fix without reported accuracy shows
         // "unknown", never "0 m".
-        val accText = if (fix?.hasAccuracy == true) "${fix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
+        val accText = if (displayFix?.hasAccuracy == true) "${displayFix.accuracyM.toInt()} م" else getString(R.string.accuracy_unknown)
         locationLine?.text = when {
-            state.status == LocationLogic.Status.NO_PERMISSION -> getString(R.string.gps_no_permission)
-            state.status == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
-            fix == null -> getString(R.string.gps_searching)
+            lastStatus == LocationLogic.Status.NO_PERMISSION -> getString(R.string.gps_no_permission)
+            lastStatus == LocationLogic.Status.PROVIDERS_OFF -> getString(R.string.gps_providers_off)
+            displayFix == null -> getString(R.string.gps_searching)
             // Fix 20 (NREPORT-1): a fix too old to submit is labelled
             // stale — the user sees WHY submit refuses, instead of a
             // coordinate line that looks submittable.
-            !LocationLogic.isUsableFix(fix, System.currentTimeMillis()) ->
+            !LocationLogic.isUsableFix(displayFix, System.currentTimeMillis()) ->
                 getString(R.string.gps_stale_fmt, accText)
             else -> {
                 // Review Nit 3: D1 promises age disclosure whenever a fix
                 // is shown — the age rides the line even for usable fixes.
                 // Clamped at 0: a far-future (hostile-clock) fix would
                 // otherwise print a negative age.
-                val ageS = maxOf(0, ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt())
-                getString(R.string.report_location_line_fmt, fix.lat, fix.lng, accText, ageS)
+                val ageS = maxOf(0, ((System.currentTimeMillis() - displayFix.timeMs) / 1000).toInt())
+                getString(R.string.report_location_line_fmt, displayFix.lat, displayFix.lng, accText, ageS)
             }
         }
+        if (placeFix != null) {
+            locationLine?.append("\n" + getString(R.string.report_use_current_location_action))
+        }
+    }
+
+    private fun onLocation(state: LocationEngine.State) {
+        val fix = state.fix
+        lastStatus = state.status
+        renderLocationLine(fix)
         // Autofill place name + wilaya once a fix EXISTS — fresh or stale
         // (v2.19.0: the old < 60 s freshness gate was the "لماذا لا تُملأ"
         // bug — a fix minutes old never filled anything). The single-flight
         // guard + backoff below keep this from ever becoming a retry storm;
         // the flags keep it from overwriting user edits.
-        if (fix != null && (!autofilledName || !autofilledWilaya)) {
+        val now = System.currentTimeMillis()
+        val boundFix = placeFix
+        val liveFix = fix?.takeIf { LocationLogic.isFreshFix(it, now) }
+        val expiredBinding = boundFix != null && !LocationLogic.isUsableFix(boundFix, now)
+        val samePlace = boundFix != null && liveFix != null &&
+            boundFix.lat == liveFix.lat && boundFix.lng == liveFix.lng
+        if (expiredBinding && liveFix != null &&
+            (samePlace || (!nameManuallyEdited && !wilayaManuallyEdited))
+        ) {
+            reverseGeocode(liveFix.lat, liveFix.lng, recoverExpired = true)
+        } else if (fix != null && (!autofilledName || !autofilledWilaya)) {
             reverseGeocode(fix.lat, fix.lng)
         }
     }
 
-    private fun reverseGeocode(lat: Double, lng: Double) {
+    private fun reverseGeocode(lat: Double, lng: Double, recoverExpired: Boolean = false) {
+        // A partial autofill already belongs to its captured fix. Do not mix
+        // another fix's remaining fields into the same report.
+        val boundFix = placeFix
+        val bindingExpired = boundFix != null &&
+            !LocationLogic.isUsableFix(boundFix, System.currentTimeMillis())
+        if (boundFix != null && (boundFix.lat != lat || boundFix.lng != lng) &&
+            !(recoverExpired && bindingExpired)
+        ) return
         // F6: single-flight + failure backoff. The lookup used to re-fire
         // with every GPS publish while the autofill flags were unset, and
         // once the service degraded into 403s this became a continuous
@@ -295,15 +362,24 @@ class ReportFragment : Fragment() {
         // 51b (CodeRabbit): the deadline rides the MONOTONIC clock
         // (SystemClock.elapsedRealtime), not the wall clock — a backward
         // device-clock jump after a failure must not stretch the 60 s
-        // window. The offline wilaya still tracks the newest fix during
-        // backoff, so a boundary crossing inside the window does not leave
-        // the previous fix's wilaya next to the new coordinates in
-        // submit(). No network request is started here.
+        // window. During backoff the offline wilaya may move only if the
+        // name can move with it; a name autofilled for another fix must stay
+        // bound to that fix. No network request is started here.
+        val lookupFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng } ?: return
+        if (recoverExpired && !LocationLogic.isFreshFix(lookupFix, System.currentTimeMillis())) return
+        val canMovePlaceFields = ReportPlacePolicy.canFillOfflineWilaya(
+            boundFix, lookupFix, autofilledName, nameManuallyEdited, wilayaManuallyEdited
+        )
         if (SystemClock.elapsedRealtime() < geoBackoffUntilElapsedMs) {
-            if (!autofilledWilaya) fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
+            if (!autofilledWilaya && canMovePlaceFields) {
+                fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
+                placeFix = lookupFix
+                renderLocationLine(lookupFix)
+            }
             return
         }
         geoLookupInFlight = true
+        val generation = reportGeneration
         if (!autofilledName) setGeoStatus(getString(R.string.geo_status_resolving))
         viewLifecycleOwner.lifecycleScope.launch {
             try {
@@ -314,6 +390,13 @@ class ReportFragment : Fragment() {
                     }
                 }
                 if (!isAdded) return@launch
+                // A successful submission starts a new report, including offline fallback.
+                if (generation != reportGeneration) return@launch
+                // Re-check after the await, BEFORE success OR offline fallback:
+                // a manual edit made during recovery owns the original place.
+                if (recoverExpired && !ReportPlacePolicy.canApplyRecovery(
+                        placeFix, lookupFix, nameManuallyEdited, wilayaManuallyEdited
+                    )) return@launch
                 if (result == null) {
                     // v2.19.0: failure is VISIBLE now, and the wilaya still
                     // fills from the offline nearest-centroid table (marked
@@ -322,13 +405,17 @@ class ReportFragment : Fragment() {
                     geoBackoffUntilElapsedMs = SystemClock.elapsedRealtime() + GEO_BACKOFF_MS
                     if (!autofilledName) {
                         val fallback = Wilayas.nearest(lat, lng)
-                        if (!autofilledWilaya) fillField(wilayaInput, fallback.nameAr)
+                        if (!autofilledWilaya) {
+                            fillField(wilayaInput, fallback.nameAr)
+                            placeFix = lookupFix
+                        }
                         setGeoStatus(getString(R.string.geo_status_offline_fmt, fallback.nameAr))
                     } else {
                         setGeoStatus(getString(R.string.geo_status_failed))
                     }
                     return@launch
                 }
+                if (recoverExpired && !LocationLogic.isFreshFix(lookupFix, System.currentTimeMillis())) return@launch
                 geoFailed = false
                 // Fix 51 (NREPORT-2, second half): a stale deadline from
                 // an earlier failure must not block a later legitimate
@@ -337,19 +424,34 @@ class ReportFragment : Fragment() {
                 // for up to 60 s.
                 geoBackoffUntilElapsedMs = 0L
                 val (display, stateName) = result
-                if (!autofilledName) {
-                    fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
-                    autofilledName = true
-                }
-                if (!autofilledWilaya && stateName.isNotBlank()) {
-                    fillField(wilayaInput, stateName)
-                    autofilledWilaya = true
+                if (recoverExpired) {
+                    if (!nameManuallyEdited) {
+                        fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
+                        autofilledName = true
+                    }
+                    if (!wilayaManuallyEdited) {
+                        fillField(wilayaInput, stateName.ifBlank { Wilayas.nearest(lat, lng).nameAr })
+                        autofilledWilaya = true
+                    }
+                    placeFix = lookupFix
+                } else {
+                    if (!autofilledName) {
+                        placeFix = lookupFix
+                        fillField(locationNameInput, display.split(",").take(2).joinToString("،").trim())
+                        autofilledName = true
+                    }
+                    if (!autofilledWilaya && stateName.isNotBlank()) {
+                        placeFix = lookupFix
+                        fillField(wilayaInput, stateName)
+                        autofilledWilaya = true
+                    }
                 }
                 setGeoStatus(null)
             } finally {
                 // Released even when the coroutine is cancelled (view left) —
                 // a stuck lock would silence the autofill for the session.
                 geoLookupInFlight = false
+                if (isAdded && generation == reportGeneration) renderLocationLine()
             }
         }
     }
@@ -460,7 +562,7 @@ class ReportFragment : Fragment() {
 
     private fun submit() {
         val ctx = context ?: return
-        val fix = app.locationEngine.currentFix()
+        val fix = placeFix ?: app.locationEngine.currentFix()
         val name = locationNameInput?.text?.toString()?.trim().orEmpty()
         val wilaya = wilayaInput?.text?.toString()?.trim().orEmpty()
         val desc = descriptionInput?.text?.toString()?.trim().orEmpty()
@@ -473,6 +575,7 @@ class ReportFragment : Fragment() {
         // calling submitReport, so nothing is queued either.
         if (!LocationLogic.isUsableFix(fix, System.currentTimeMillis())) {
             Toast.makeText(ctx, R.string.report_need_fix, Toast.LENGTH_LONG).show()
+            onLocationLineTapped()
             return
         }
         submitButton?.isEnabled = false
@@ -487,6 +590,7 @@ class ReportFragment : Fragment() {
         ) { ok, userError ->
             activity?.runOnUiThread {
                 submitButton?.isEnabled = true
+                if (!isAdded) return@runOnUiThread
                 if (ok && userError == null) {
                     Toast.makeText(ctx, R.string.report_sent, Toast.LENGTH_LONG).show()
                     descriptionInput?.setText("")
@@ -497,10 +601,17 @@ class ReportFragment : Fragment() {
                     telemetryLine?.visibility = View.GONE
                     // v2.19.0: the NEXT report is a new report — autofill must
                     // run again (was stuck for the whole view lifetime).
+                    reportGeneration++
+                    placeFix = null
+                    fillField(locationNameInput, "")
+                    fillField(wilayaInput, "")
                     autofilledName = false
                     autofilledWilaya = false
+                    nameManuallyEdited = false
+                    wilayaManuallyEdited = false
                     geoFailed = false
                     geoBackoffUntilElapsedMs = 0L
+                    renderLocationLine()
                 } else if (ok && userError == AppRepository.OFFLINE_QUEUED_MSG) {
                     Toast.makeText(ctx, userError, Toast.LENGTH_LONG).show()
                 } else if (!ok) {

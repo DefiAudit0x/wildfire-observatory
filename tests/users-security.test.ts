@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
   logAdminAction: vi.fn(async () => undefined),
   updateUserAtomic: vi.fn(),
   deleteUserAtomically: vi.fn(async () => "deleted"),
+  removeAgentFromRosterDay: vi.fn(async () => true),
   appliedUpdates: [] as Array<{ agentId: string; update: any }>,
 }));
 
@@ -38,6 +39,7 @@ vi.mock("../server/atomic.js", () => ({
   createUserIfUnitExists: state.createUserIfUnitExists,
   createDocIfAbsent: vi.fn(),
   deleteUserAtomically: state.deleteUserAtomically,
+  removeAgentFromRosterDay: state.removeAgentFromRosterDay,
 }));
 
 vi.mock("../server/routes/audit.js", () => ({
@@ -74,6 +76,7 @@ beforeEach(() => {
   state.docUpdate.mockClear();
   state.docDelete.mockClear();
   state.deleteUserAtomically.mockReset().mockResolvedValue("deleted");
+  state.removeAgentFromRosterDay.mockReset().mockResolvedValue(true);
   state.createUserIfUnitExists.mockClear();
   state.logAdminAction.mockClear();
   loggerState.warn.mockClear();
@@ -163,7 +166,7 @@ describe("Fix 43 (USR-2): the roster-cleanup outcome is reported, not claimed", 
 
   it("reports a failed sweep in the response instead of logging a false success", async () => {
     state.collectionGet.mockResolvedValueOnce([rosterDay]);
-    vi.mocked(fsMockModule.docSet).mockResolvedValueOnce(false);
+    state.removeAgentFromRosterDay.mockResolvedValueOnce(false);
     const res = await supertest(createApp())
       .delete("/api/users/agent-1")
       .set(adminAuth());
@@ -173,7 +176,7 @@ describe("Fix 43 (USR-2): the roster-cleanup outcome is reported, not claimed", 
 
   it("reports a successful sweep with the removed count", async () => {
     state.collectionGet.mockResolvedValueOnce([rosterDay]);
-    vi.mocked(fsMockModule.docSet).mockResolvedValueOnce(true);
+    state.removeAgentFromRosterDay.mockResolvedValueOnce(true);
     const res = await supertest(createApp())
       .delete("/api/users/agent-1")
       .set(adminAuth());
