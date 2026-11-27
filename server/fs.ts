@@ -61,14 +61,45 @@ export function invalidateDocCache(collectionName: string, id: string) {
   docCache.delete(key);
 }
 
-function collectionCacheKey(
+/**
+ * CodeRabbit on PR #213: JSON.stringify collapses null, NaN and Infinity
+ * all to "null", so distinct filter values collided in the cache key and a
+ * later query could be served another filter's cached rows. The key is
+ * type-preserving: NaN / ±Infinity / -0 / undefined are distinct from null
+ * and from each other, and a string "null" is distinct from null.
+ */
+function encodeWhereValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "number:NaN";
+    if (value === Infinity) return "number:Infinity";
+    if (value === -Infinity) return "number:-Infinity";
+    if (Object.is(value, -0)) return "number:-0";
+    return `number:${value}`;
+  }
+  if (typeof value === "string") return `string:${JSON.stringify(value)}`;
+  if (typeof value === "boolean") return `boolean:${value}`;
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (value instanceof Date) return `date:${value.toISOString()}`;
+  if (Array.isArray(value)) return `array:[${value.map(encodeWhereValue).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([k, v]) => `${JSON.stringify(k)}:${encodeWhereValue(v)}`);
+    return `object:{${entries.join(",")}}`;
+  }
+  return `${typeof value}:${String(value)}`;
+}
+
+export function collectionCacheKey(
   collectionName: string,
   orderByField?: string,
   limitCount?: number,
   whereFilter?: CollectionWhere
 ) {
   const whereKey = whereFilter
-    ? `::${whereFilter.field}${whereFilter.op}${JSON.stringify(whereFilter.value)}`
+    ? `::${whereFilter.field}${whereFilter.op}${encodeWhereValue(whereFilter.value)}`
     : "";
   return `${collectionName}::${orderByField || ""}::${limitCount || ""}${whereKey}`;
 }
