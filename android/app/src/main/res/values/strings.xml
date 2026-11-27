@@ -179,6 +179,7 @@
     <string name="mesh_entry_me_fmt">%1$s — أنت: %2$s</string>
     <string name="mesh_queued_local">أُدرجت الرسالة في شبكة البلوتوث</string>
     <string name="mesh_unavailable_toast">الشبكة غير متاحة حاليًا</string>
+    <string name="mesh_chat_compatibility_disabled">تحتاج المحادثة الشبكية إلى تحديث الأجهزة القريبة أولاً</string>
     <string name="mesh_legend">الرسائل والبلاغات تنتقل بين الأجهزة عبر البلوتوث مع تشفير تام — أجهزة بلوتوث دون إنترنت تظهر على رادارك وخرائطك</string>
 
     <!-- S4 Radar v2 — integrated operational map -->
