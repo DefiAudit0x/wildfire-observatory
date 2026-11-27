@@ -143,6 +143,77 @@ describe("partial satellite outages", () => {
 });
 
 
+describe("satellite dedup freshness (CodeRabbit on PR #213)", () => {
+  const datePart = (d: Date) => d.toISOString().slice(0, 10);
+  const timePart = (d: Date) => d.toISOString().slice(11, 13) + d.toISOString().slice(14, 16);
+  const expectedScanTime = (d: Date) => `${datePart(d)}T${timePart(d).slice(0, 2)}:${timePart(d).slice(2, 4)}:00Z`;
+  // VIIRS confidence is a letter (h → 95, n → 80, l → 45); MODIS is numeric.
+  const viirsRow = (at: Date, confidence: "h" | "n" | "l", brightness = 320) =>
+    `36.8,7.8,${brightness},1,1,${datePart(at)},${timePart(at)},N20,VIIRS,${confidence},2.0NRT,284.11,1.17,N`;
+  const modisRow = (at: Date, confidence: number, brightness = 340) =>
+    `36.8,7.8,${brightness},1,1,${datePart(at)},${timePart(at)},Terra,MODIS,${confidence},6.1NRT,292.65,10.58,N`;
+
+  it("never pairs a fresh scanTime with confidence from outside the 30-min window", async () => {
+    const now = new Date();
+    const stale = new Date(now.getTime() - 40 * 60_000);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(viirsHeader + "\n" + viirsRow(stale, "h")))
+      .mockResolvedValueOnce(new Response(modisHeader + "\n" + modisRow(now, 60))));
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    const data = await getLiveSatelliteData();
+    // Old code merged this into (scanTime: now, confidence: 95) — a fresh
+    // high-confidence threat although no observation inside the window
+    // ever had 95%. The 95% observation is 40 min old, so the fresh
+    // duplicate's own 60% stands.
+    expect(data.hotspots).toHaveLength(1);
+    expect(data.hotspots[0]).toMatchObject({
+      scanTime: expectedScanTime(now),
+      confidence: 60,
+      brightness: 340,
+    });
+  });
+
+  it("keeps the stronger confidence when it is still inside the window", async () => {
+    const now = new Date();
+    const recent = new Date(now.getTime() - 5 * 60_000);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(viirsHeader + "\n" + viirsRow(recent, "h")))
+      .mockResolvedValueOnce(new Response(modisHeader + "\n" + modisRow(now, 60))));
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    const data = await getLiveSatelliteData();
+    // The 95% observation is 5 min old — fresh — so the latest scanTime
+    // may honestly carry it, with the VIIRS brightness.
+    expect(data.hotspots).toHaveLength(1);
+    expect(data.hotspots[0]).toMatchObject({
+      scanTime: expectedScanTime(now),
+      confidence: 95,
+      brightness: 320,
+      satellite: "VIIRS",
+    });
+  });
+
+  it("does not let a chain of duplicates drift the pair apart over hours", async () => {
+    const now = new Date();
+    const fiftyAgo = new Date(now.getTime() - 50 * 60_000);
+    const twentyFiveAgo = new Date(now.getTime() - 25 * 60_000);
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(
+        viirsHeader + "\n" + viirsRow(fiftyAgo, "h") + "\n" + viirsRow(twentyFiveAgo, "l")
+      ))
+      .mockResolvedValueOnce(new Response(modisHeader + "\n" + modisRow(now, 60))));
+    const { getLiveSatelliteData } = await import("../server/routes/satellite");
+    const data = await getLiveSatelliteData();
+    // Pairwise against the stored scanTime alone, the 95% would survive
+    // two 25-min hops and land on the fresh scanTime 50 min later. The
+    // tracked confidence timestamp expires it after the second hop.
+    expect(data.hotspots).toHaveLength(1);
+    expect(data.hotspots[0]).toMatchObject({
+      scanTime: expectedScanTime(now),
+      confidence: 60,
+    });
+  });
+});
+
 describe("Fix 12f FIRMS wire columns", () => {
   it.each([
     ["Terra", "0", "MODIS", 0], ["Aqua", "100", "MODIS", 100],

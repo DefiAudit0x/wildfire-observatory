@@ -95,7 +95,13 @@ describe("Fix 12 AIG-2 guidance freshness", () => {
     backend.aiEnabled = true;
     backend.generate.mockResolvedValue({ text: "provider response" });
     const live = await guidanceRequest(app);
-    expect(live.body.guidance).toBe("provider response");
+    // F046 (CodeRabbit on PR #213): with zero active reports the
+    // provider's text must not be served as-is — sanitizeAiOutput does
+    // not enforce the unknown-status wording, so a provider all-clear
+    // would stand. The provider is still consulted with the honest
+    // count, but the unknown-status fallback is what the user gets.
+    expect(live.body.guidance).toContain("Situation des incendies inconnue");
+    expect(live.body.guidance).not.toBe("provider response");
     expect(backend.generate.mock.calls[0][0].contents).toContain("Active reports: 0, High/Critical: 0");
   });
   it("keeps fresh critical reports and excludes resolved/rejected reports", async () => {
