@@ -1047,6 +1047,48 @@ describe("RosterBoard add-post identity change (CodeRabbit PR #215, R3-#2)", () 
     expect(screen.queryByText("تعذر إضافة المنصب.")).toBeNull();
     expect(screen.getByText("منصب ب")).toBeTruthy();
   });
+
+  it("does not surface a stale HTTP-error response from the previous identity (CodeRabbit PR #215, R4-#1)", async () => {
+    const stub = installPostStub();
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    // Start adding a post under commander A.
+    await startAddPost();
+    // While the POST is in flight, commander B signs in.
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    // A's POST now resolves as an HTTP error with valid JSON — a resolved
+    // fetch, not a rejection, so the catch guard cannot cover it. The
+    // identity guard must run before the status dispatch, or the error
+    // would be displayed on commander B's board.
+    stub.resolvePost(
+      new Response(JSON.stringify({ error: "Database not available" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("Database not available")).toBeNull();
+    expect(screen.queryByText("فشل إضافة المنصب")).toBeNull();
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+  });
+
+  it("still displays a same-identity HTTP error (CodeRabbit PR #215, R4-#1 control)", async () => {
+    const stub = installPostStub();
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    await startAddPost();
+    stub.resolvePost(
+      new Response(JSON.stringify({ error: "Database not available" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+    await waitFor(() => expect(screen.getByText("Database not available")).toBeTruthy());
+    expect(screen.getByText("منصب أ")).toBeTruthy();
+    expect(stub.rosterCalls).toBe(1);
+  });
 });
 
 describe("RosterBoard logout timeout (CodeRabbit PR #215, R2-#4)", () => {
