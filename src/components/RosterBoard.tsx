@@ -333,6 +333,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       return;
     }
     const requestedDate = date;
+    // CodeRabbit (PR #215, R3-#2): capture the issuing identity — the POST
+    // was sent under this session, and its response belongs to it. Mirrors
+    // the saveRoster guard (R2-#3).
+    const identityAtAddStart = sessionIdentityRef.current;
     setSaving(true);
     setMsg(null);
     try {
@@ -345,6 +349,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       const data = await res.json();
       if (res.ok || res.status === 201) {
         if (requestedDate !== dateRef.current || unitRef.current !== unitQuery) return;
+        // CodeRabbit (PR #215, R3-#2): same guard for the signed-in
+        // identity — if another commander signed in while the POST was in
+        // flight, the response belongs to the old session and must not be
+        // merged into the new one's roster (nor refetched through the
+        // stale closure's fetchRoster).
+        if (identityAtAddStart !== sessionIdentityRef.current) return;
         setNewPost({ labelAr: "", vehicle: "" });
         // Fix 24 (RSTR-2): the POST returns the created post (201 + the
         // post object, server-assigned id). Append it to the LOCAL roster
@@ -411,6 +421,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         setMsg(isArabic ? (data.error || "فشل إضافة المنصب") : (data.error || "Échec d'ajout"));
       }
     } catch {
+      // CodeRabbit (PR #215, R3-#2): same identity guard on the failure
+      // path — a post that fails after another commander signed in must
+      // not surface its error over the new session's board (mirrors
+      // saveRoster).
+      if (identityAtAddStart !== sessionIdentityRef.current) return;
       setMsg(isArabic ? "تعذر إضافة المنصب." : "Erreur d'ajout.");
     } finally {
       setSaving(false);
