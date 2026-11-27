@@ -234,4 +234,6 @@
     <string name="cd_zoom_in">تكبير الخريطة</string>
     <string name="cd_zoom_out">تصغير الخريطة</string>
     <string name="cd_recenter">توسيط الخريطة على موقعي</string>
+    <string name="report_use_current_location">انتهت صلاحية موقع البلاغ. هل تريد استخدام موقعك الحالي ومسح اسم المكان والولاية وإعادة تعبئتهما؟ سيبقى الوصف والصورة محفوظين.</string>
+    <string name="report_use_current_location_action">استخدام موقعي الحالي وإعادة تعبئة المكان</string>
 </resources>
