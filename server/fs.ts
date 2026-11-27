@@ -98,8 +98,13 @@ export function collectionCacheKey(
   limitCount?: number,
   whereFilter?: CollectionWhere
 ) {
+  // CodeRabbit on PR #213: the where segment used to concatenate field +
+  // op + value with no separators, so distinct (field, op) pairs collided
+  // — field "statusnot-" + op "in" produced the same segment as field
+  // "status" + op "not-in". The filter is now serialized as a JSON tuple
+  // so each element keeps its own boundary.
   const whereKey = whereFilter
-    ? `::${whereFilter.field}${whereFilter.op}${encodeWhereValue(whereFilter.value)}`
+    ? `::${JSON.stringify([whereFilter.field, whereFilter.op, encodeWhereValue(whereFilter.value)])}`
     : "";
   return `${collectionName}::${orderByField || ""}::${limitCount || ""}${whereKey}`;
 }
