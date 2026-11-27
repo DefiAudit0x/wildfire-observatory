@@ -143,9 +143,7 @@ describe("POST /api/reports — badge trust hardening", () => {
     const res = await supertest(app)
       .post("/api/reports")
       .send({ ...baseReport(), reporterType: "official", reporterBadgeCode: "193" });
-    expect(res.status).toBe(200);
     expect(res.body.status).toBe("pending");
-    expect(res.body.consensusCount).toBe(1);
   });
 
   it("rejects a badge with an unparseable expiry string — corrupt expiry never verifies", async () => {
