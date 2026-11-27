@@ -24,6 +24,7 @@ function todayISO(): string {
 afterEach(() => {
   staffSession.role = "commander";
   staffSession.unitId = "DZ16";
+  staffSession.agentId = "t-commander";
   vi.unstubAllGlobals();
 });
 
@@ -828,5 +829,162 @@ describe("Round 2 roster unit selection", () => {
     await waitFor(() => expect(save).toBeEnabled());
     fireEvent.click(save);
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith("?unit=DZ16") && init?.method === "PUT")).toBe(true));
+  });
+});
+
+describe("RosterBoard identity change (CodeRabbit PR #215, R2-#3)", () => {
+  function rosterResponse(label: string) {
+    return new Response(
+      JSON.stringify({
+        unitId: "unit-dz16",
+        date: todayISO(),
+        posts: [{ id: "p1", labelAr: label, status: "active", personnel: [] }],
+        saved: true,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  it("clears the old commander's roster and loads the new commander's roster when the session identity changes", async () => {
+    let rosterCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (String(url).includes("/api/roster/")) {
+          rosterCalls += 1;
+          return rosterResponse(rosterCalls === 1 ? "منصب أ" : "منصب ب");
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    expect(rosterCalls).toBe(1);
+    // A different commander signs in (same unit, same role) — e.g. in
+    // another tab, picked up by the shared session poll. `authenticated`
+    // stays true and unitQuery stays "" for both, so without the fix no
+    // reload happens and commander A's roster stays rendered.
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    expect(screen.queryByText("منصب أ")).toBeNull();
+    expect(rosterCalls).toBe(2);
+  });
+
+  it("does not install a save response issued under the previous identity", async () => {
+    let rosterCalls = 0;
+    let resolvePut!: (value: Response) => void;
+    const putPromise = new Promise<Response>((resolve) => {
+      resolvePut = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: any) => {
+        if (String(url).includes("/api/roster/")) {
+          if (init?.method === "PUT") return putPromise;
+          rosterCalls += 1;
+          return rosterResponse(rosterCalls === 1 ? "منصب أ" : "منصب ب");
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    // Start a save under commander A.
+    fireEvent.click(screen.getByText("حفظ جدول اليوم"));
+    // While the PUT is in flight, commander B signs in.
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    // The PUT now lands with commander A's response — it must be discarded,
+    // not installed over commander B's board.
+    resolvePut(rosterResponse("منصب محفوظ"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("منصب محفوظ")).toBeNull();
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+  });
+
+  it("does not surface a save failure from the previous identity", async () => {
+    let rosterCalls = 0;
+    let rejectPut!: (err: Error) => void;
+    const putPromise = new Promise<Response>((_resolve, reject) => {
+      rejectPut = reject;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: any) => {
+        if (String(url).includes("/api/roster/")) {
+          if (init?.method === "PUT") return putPromise;
+          rosterCalls += 1;
+          return rosterResponse(rosterCalls === 1 ? "منصب أ" : "منصب ب");
+        }
+        return new Response(JSON.stringify({ users: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      })
+    );
+    const { rerender } = render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب أ")).toBeTruthy());
+    fireEvent.click(screen.getByText("حفظ جدول اليوم"));
+    staffSession.agentId = "t-commander-2";
+    rerender(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب ب")).toBeTruthy());
+    rejectPut(new Error("network down"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.queryByText("تعذر حفظ الجدول.")).toBeNull();
+    expect(screen.getByText("منصب ب")).toBeTruthy();
+  });
+});
+
+describe("RosterBoard logout timeout (CodeRabbit PR #215, R2-#4)", () => {
+  it("logout rides the 15 s apiFetch ceiling", async () => {
+    const fetchMock = vi.fn(async (url: string, _init?: any) => {
+      if (String(url).includes("/api/roster/")) {
+        return new Response(
+          JSON.stringify({
+            unitId: "unit-dz16",
+            date: todayISO(),
+            posts: [{ id: "p1", labelAr: "منصب", status: "active", personnel: [] }],
+            saved: true,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      if (String(url).includes("/logout")) {
+        return new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ users: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<RosterBoard lang="ar" />);
+    await waitFor(() => expect(screen.getByText("منصب")).toBeTruthy());
+    fireEvent.click(screen.getByText("خروج"));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/logout"));
+      expect(calls.length).toBe(2);
+    });
+    // apiFetch passes an AbortSignal.timeout(15_000); bare fetch() passes
+    // no signal at all, so these assertions fail on the pre-fix code.
+    const logoutCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/logout"));
+    expect(logoutCalls.map(([url]) => String(url)).sort()).toEqual([
+      "/api/admin/logout",
+      "/api/auth/logout",
+    ]);
+    for (const [, init] of logoutCalls) {
+      expect((init as any)?.signal).toBeInstanceOf(AbortSignal);
+    }
   });
 });

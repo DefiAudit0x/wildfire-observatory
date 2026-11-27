@@ -297,6 +297,43 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
     expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-privacy-1/"))).toEqual([]);
     expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
   });
+
+  // CodeRabbit (PR #215, R2-#1): a previous purge deleted the parent and
+  // then failed in the straggler pass — the confirmations survive under the
+  // deleted path. A retry used to return "missing" before any cleanup and
+  // orphan them forever. The retry must now delete them first.
+  it("a retry after a partial purge still deletes orphaned confirmations", async () => {
+    const fake = makeFakeAdminDb({
+      "reports/rep-orphan/confirmations/principal-a": { at: 1 },
+      "reports/rep-orphan/confirmations/principal-b": { at: 2 },
+      "reports/other/confirmations/principal-a": { at: 3 },
+    });
+    state.fake = fake;
+
+    const outcome = await purgeReportWithIdempotency("rep-orphan");
+    expect(outcome).toBe("missing");
+    expect(fake.deleted).toContain("reports/rep-orphan/confirmations/principal-a");
+    expect(fake.deleted).toContain("reports/rep-orphan/confirmations/principal-b");
+    expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-orphan/"))).toEqual([]);
+    expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
+  });
+
+  it("a retry after a partial purge still deletes orphaned confirmations (client branch)", async () => {
+    const fake = makeFakeAdminDb({
+      "reports/rep-orphan/confirmations/principal-a": { at: 1 },
+      "reports/rep-orphan/confirmations/principal-b": { at: 2 },
+      "reports/other/confirmations/principal-a": { at: 3 },
+    });
+    state.fake = fake;
+    state.clientMode = true;
+
+    const outcome = await purgeReportWithIdempotency("rep-orphan");
+    expect(outcome).toBe("missing");
+    expect(fake.deleted).toContain("reports/rep-orphan/confirmations/principal-a");
+    expect(fake.deleted).toContain("reports/rep-orphan/confirmations/principal-b");
+    expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-orphan/"))).toEqual([]);
+    expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
+  });
 });
 
 describe("legacy rows — scrub on read + fire-and-forget migration", () => {
