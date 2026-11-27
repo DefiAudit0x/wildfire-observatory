@@ -42,8 +42,7 @@ release** — Android rejects updates whose signature does not match.
 ## 3. Cutting a release
 
 1. Land the release PR through the normal pipeline (green 5/5 CI).
-2. After the signed main-merge workflow succeeds, tag that commit on `main`: `git tag vX.Y.Z && git push origin vX.Y.Z` (or create the
-   release from the GitHub UI).
+2. After the signed main-merge workflow succeeds, tag that commit on `main` — pass the merge commit SHA explicitly (the step-3 artifact is keyed to the merge commit, while a bare `git tag` tags whatever HEAD the operator happens to be on, e.g. a feature branch or a stale local `main`): `git tag vX.Y.Z <merge-commit-sha> && git push origin vX.Y.Z` (or create the release from the GitHub UI).
 3. Take the `release-<sha>` artifact from the run of the merge commit on
    `main` — there is no tag trigger in `android.yml`; a tag or GitHub Release does not start another build. Confirm that the artifact is signed before distributing it. It contains:
    - `app-release.apk` (direct distribution, GitHub Releases)
