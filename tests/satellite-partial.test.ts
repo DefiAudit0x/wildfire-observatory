@@ -4,7 +4,6 @@ import supertest from "supertest";
 
 vi.mock("../server/db.js", () => ({
   getReportsDbResult: async () => ({ status: "empty" }),
-  getReportsFromFirestore: async () => [],
 }));
 
 const unavailable = () => new Response("offline", { status: 503 });
