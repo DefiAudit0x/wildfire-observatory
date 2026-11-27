@@ -6,6 +6,7 @@ export async function fetchWithRetry(
 ): Promise<Response> {
   let lastError: any = null;
   for (let i = 0; i < retries; i++) {
+    options.signal?.throwIfAborted();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
