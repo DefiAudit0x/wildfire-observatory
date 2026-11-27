@@ -86,6 +86,7 @@ export class ReconnectingSocket {
 
   getState(): SocketEngineState {
     if (this.ws?.readyState === WebSocket.OPEN) return "open";
+    if (this.ws?.readyState === WebSocket.CONNECTING) return "connecting";
     return this.connecting || this.reconnectTimer !== null ? "connecting" : "idle";
   }
 
