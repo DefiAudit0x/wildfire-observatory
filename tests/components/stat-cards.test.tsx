@@ -3,7 +3,7 @@
 // /api/locations map — the card permanently showed 0 labelled as live admin
 // presence. The fix removes the card (and the grid goes 8 → 7 columns).
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import StatCards, { type UserLocationData } from "../../src/components/command/StatCards";
 import type { Report, TrappedSOS } from "../../src/types";
 
@@ -68,11 +68,24 @@ describe("StatCards admin card (Fix 34 — CSTAT-1)", () => {
         registeredTeams={[]}
       />
     );
-    expect(screen.getByText("استغاثات SOS")).toBeTruthy();
-    expect(screen.getByText("حرائق نشطة")).toBeTruthy();
-    expect(screen.getByText("مؤكدة")).toBeTruthy();
-    expect(screen.getByText("أقمار صناعية")).toBeTruthy();
-    expect(screen.getByText("الحماية المدنية")).toBeTruthy();
-    expect(screen.getByText("فرق المتطوعين")).toBeTruthy();
+    const expectedCards = [
+      ["استغاثات SOS", "1"],
+      ["حرائق نشطة", "2"],
+      ["مؤكدة", "1"],
+      ["أقمار صناعية", "0"],
+      ["متصل الآن", "3"],
+      ["الحماية المدنية", "0/0"],
+      ["فرق المتطوعين", "0/0"],
+    ];
+    const grid = screen.getByText("استغاثات SOS").parentElement!.parentElement!.parentElement!;
+    expect(grid.children).toHaveLength(7);
+    for (const [label, count] of expectedCards) {
+      const card = screen.getByText(label).parentElement!.parentElement!;
+      expect(within(card).getByText((_content, element) =>
+        element?.tagName === "P" && element.classList.contains("text-2xl") && element.textContent === count
+      )).toBeTruthy();
+    }
+    const online = screen.getByText("متصل الآن").parentElement!.parentElement!;
+    expect(within(online).getByText("1 متطوع | 1 رسمي")).toBeTruthy();
   });
 });
