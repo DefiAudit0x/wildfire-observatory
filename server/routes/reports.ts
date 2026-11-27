@@ -380,7 +380,6 @@ router.post("/", reportLimiter, upload.single("image"), async (req: Request, res
     };
     inFlightIdempotency.set(clientGeneratedId, pending);
     res.once("finish", pending.finish);
-    res.once("close", pending.finish);
     releaseIdempotencyEntry = pending.finish;
   }
 
