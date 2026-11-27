@@ -14,10 +14,10 @@
 
 ## ملاحظات معمارية حرجة
 - **الخادم والواجهة يتشاركان الأنواع**: `src/types.ts` مستوردة من `server/*.ts` — أي تغيير في نوع عام يؤثر على الطرفين.
-- **قاعدة البيانات**: Firestore (firebase-admin أو client SDK) عبر `server/firebase.ts` — غائبة في CI والـ e2e بـ `SKIP_FIREBASE=true`؛ عندها تُستخدم بيانات البذرة `server/data.ts`. لا تكتب اختبارات تعتمد على DB حقيقية.
+- **قاعدة البيانات**: Firestore (firebase-admin أو client SDK) عبر `server/firebase.ts` — اختبارات Vitest تعزل القاعدة بـ `SKIP_FIREBASE=true` وبدائل اختبارية، ولا توجد بذرة بلاغات تجريبية في `server/data.ts`. اختبارات E2E تشغّل Firestore Emulator عبر `test:e2e` وتتحقق من الحفظ الدائم؛ لا تعتمد على قاعدة إنتاج حقيقية.
 - **حد المعدل**: `/api/*` مجمعاً 100/60s (`server.ts`)، مفاتيح إضافية لكل نقطة (AI 10/ساعة، SOS 2/دقيقة، heartbeat 30/دقيقة + حد شارات). اختبارات الـ limiter تُعزل بـ XFF.
 - **التعقيم**: PII تُعقم في `server/sentry-scrub.ts`؛ مدخلات AI عبر `sanitizeForPrompt` (استبدال بـ `[بيانات المستخدم]`، لا حذف).
-- **الصلاحيات**: تتطلب `requireAdmin` (كوكي admin_token) — تقريباً كل مسارات `/api/admin/*`, `/api/roster/*`, `/api/units/*`, `/api/auth/*` الموظفين، `/api/badges` للكتابة.
+- **الصلاحيات**: مسارات الإدارة المحمية وكتابة `/api/badges` تتطلب `requireAdmin` (كوكي `admin_token` أو Bearer مقبول). مسارات المناوبة `/api/roster/*` تستخدم `requireAuth` مع قيود الدور والوحدة؛ قراءة `/api/units` تقبل الموظفين ومنهم agent/commander. الدخول عام عبر `/api/auth/login`، وباقي مسارات الموظفين تطبق صلاحياتها الخاصة — راجع middleware كل مسار.
 - **الواجهة**: Angular-less React 19 + Tailwind 4؛ التقسيم الكسول موجود (InteractiveMap/RosterBoard/CentralCommand/AdminPanel); لا تُضف مكتبات ثقيلة بلا سبب (رفضنا clustering بـ 500kB لأن الخادم يجمع من 3كم).
 
 ## المستندات المرتبطة
