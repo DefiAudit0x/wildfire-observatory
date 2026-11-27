@@ -61,17 +61,37 @@ export function invalidateDocCache(collectionName: string, id: string) {
   docCache.delete(key);
 }
 
-function collectionCacheKey(collectionName: string, orderByField?: string, limitCount?: number) {
-  return `${collectionName}::${orderByField || ""}::${limitCount || ""}`;
+function collectionCacheKey(
+  collectionName: string,
+  orderByField?: string,
+  limitCount?: number,
+  whereFilter?: CollectionWhere
+) {
+  const whereKey = whereFilter
+    ? `::${whereFilter.field}${whereFilter.op}${JSON.stringify(whereFilter.value)}`
+    : "";
+  return `${collectionName}::${orderByField || ""}::${limitCount || ""}${whereKey}`;
 }
+
+/** A single Firestore field filter for collectionGet (admin + client SDK). */
+export type CollectionWhere = {
+  field: string;
+  op: "==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not-in" | "array-contains";
+  value: unknown;
+};
 
 export async function collectionGet(
   collectionName: string,
   orderByField?: string,
   limitCount?: number,
-  fresh = false
+  fresh = false,
+  // CodeRabbit on PR #213 (SOS list): the caller must be able to read one
+  // status slice without pulling the whole collection — e.g. all active SOS
+  // plus the 100 newest resolved, each as its own timestamp-ordered query.
+  // A where filter changes the result set, so it is part of the cache key.
+  whereFilter?: CollectionWhere
 ): Promise<any[] | null> {
-  const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount);
+  const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount, whereFilter);
   const cached = collectionCache.get(cacheKey);
   if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
@@ -83,6 +103,7 @@ export async function collectionGet(
     let data: any[] = [];
     if (isAdminDb(db)) {
       let ref: any = db.collection(collectionName);
+      if (whereFilter) ref = ref.where(whereFilter.field, whereFilter.op, whereFilter.value);
       if (orderByField) ref = ref.orderBy(orderByField, "desc");
       if (limitCount) ref = ref.limit(limitCount);
       const snapshot = await ref.get();
@@ -92,6 +113,14 @@ export async function collectionGet(
     } else {
       const { collection, getDocs, query, orderBy, limit } = await loadClientSdk();
       let q: any = collection(db, collectionName);
+      if (whereFilter) {
+        // Lazy: destructuring `where` up front breaks test doubles of the
+        // client SDK that do not define it (Vitest throws on access of a
+        // missing mocked export) — and production callers without a filter
+        // must not pay for it either.
+        const { where } = await loadClientSdk();
+        q = query(q, where(whereFilter.field, whereFilter.op, whereFilter.value));
+      }
       if (orderByField) q = query(q, orderBy(orderByField, "desc"));
       if (limitCount) q = query(q, limit(limitCount));
       const snapshot = await getDocs(q);
