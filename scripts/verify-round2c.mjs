@@ -64,7 +64,7 @@ const fields=[...signedFields].map(m=>m[1]);
 const sha=text=>createHash('sha256').update(text).digest('hex');
 function hashFromSource(name,env){
   const template=wire.match(new RegExp(`fun ${name}\\([^\\n]*\\): String =\\s*sha256Hex\\("([^"\\n]+)"\\)`))[1];
-  const expanded=template.replace(/\$\{([^}]+)\}|\$(\w+)/g,(_m,expr,key)=>String(expr?evaluate(expr.replaceAll('.toString()','.toString()'),env):env[key]));
+  const expanded=template.replace(/\$\{([^}]+)\}|\$(\w+)/g,(_m,expr,key)=>String(expr?evaluate(expr,env):env[key]));
   return sha(expanded);
 }
 const env={origEphemeralId:'abc012def345gh67',messageId:'captured-msg',nonce:7,payloadB64:'captured-body'};
@@ -79,7 +79,10 @@ if(!baseline){
   const acceptsExpr=binding.match(/fun accepts\(.*\): Boolean =\s*([^\n]+)/)[1];
   accepts=(ephemeralId,publicKeyBase64)=>evaluate(acceptsExpr,{ephemeralId,publicKeyBase64,SCHEME_PREFIX:'k1:',issue});
   assert.ok(crypto.includes('ephemeralId = MeshIdentityBinding.issue('));
-  assert.ok(crypto.indexOf('if (!MeshIdentityBinding.accepts(')<crypto.indexOf('val ciphertext =',crypto.indexOf('fun verifyMessageSignature(')));
+  const fnIdx = crypto.indexOf('fun verifyMessageSignature(');
+  const guardIdx = crypto.indexOf('if (!MeshIdentityBinding.accepts(', fnIdx);
+  const cipherIdx = crypto.indexOf('val ciphertext =', fnIdx);
+  assert.ok(fnIdx >= 0 && guardIdx >= 0 && cipherIdx >= 0 && guardIdx > fnIdx && guardIdx < cipherIdx);
 }
 const trusted=generateKeyPairSync('ec',{namedCurve:'prime256v1'});
 const trustedKey=trusted.publicKey.export({type:'spki',format:'der'}).toString('base64');
@@ -111,10 +114,11 @@ console.log(`8384: ${baseline?'REPRODUCED':'PARTIAL'} — attacker copies admitt
 const display=risk.slice(risk.indexOf('private fun updateRiskDisplay'),risk.indexOf('private fun formatWeatherText'));
 const markerCode=display.slice(display.indexOf('\n',display.indexOf('riskScoreText?.text ='))+1,display.indexOf('        riskLabelText'))
   .replaceAll('riskBarMarker?.animate()?.cancel()','marker.cancelled = true;')
+  .replace(/(-?\d+)f/g, '$1')
   .replace(/riskBarMarker\?\.visibility = View\.(\w+)/g,'marker.visibility = "$1";')
   .replaceAll('positionRiskMarker(score)','marker.positioned = true;')
   .replaceAll('riskScoreText?.setTextColor(RiskScore.bandColor(score))','marker.colored = true;');
-const marker=Function(`let marker={visibility:"VISIBLE"}; const fresh=false, score=0; ${markerCode} return marker;`)();
+const marker=Function(`let marker={visibility:"VISIBLE"}; let lastMarkerX=80; const fresh=false, score=0; ${markerCode} return marker;`)();
 check('8391',marker.visibility==='GONE'&&marker.cancelled===true&&!marker.positioned&&!marker.colored,`stale marker state: ${JSON.stringify(marker)}`);
 // Evaluate actual Boolean policies, not a separately restated condition.
 let canMovePlaceFields=false, canApplyRecovery=()=>true;
