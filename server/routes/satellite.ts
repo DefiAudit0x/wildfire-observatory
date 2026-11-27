@@ -88,7 +88,14 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
         const brightness = Number(cols[columns.brightness]);
         const scanDate = cols[columns.scanDate];
-        const scanTimeRaw = cols[columns.scanTime].padStart(4, "0");
+        const scanTimeRawInput = cols[columns.scanTime];
+        // CodeRabbit (PR #215): the formatter below assumes 1–4 decimal
+        // digits, but Number("1e02") is 100 (in range, minute part 0), so
+        // "1e02" passed and emitted the invalid timestamp "T1e:02:00Z";
+        // "01230" likewise passed and was silently truncated to 01:23.
+        // Reject anything that is not 1–4 decimal digits up front.
+        if (!/^\d{1,4}$/.test(scanTimeRawInput)) continue;
+        const scanTimeRaw = scanTimeRawInput.padStart(4, "0");
         const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scanDate);
         const timeValue = Number(scanTimeRaw);
         if (!Number.isFinite(brightness) || !dateMatch || !Number.isInteger(timeValue) ||
