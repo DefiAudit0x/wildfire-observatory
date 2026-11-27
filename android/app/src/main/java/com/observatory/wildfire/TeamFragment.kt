@@ -98,6 +98,7 @@ class TeamFragment : Fragment() {
         val code = codeInput?.text?.toString().orEmpty()
         val name = nameInput?.text?.toString().orEmpty()
         joinError?.text = ""
+        joinError?.visibility = View.GONE
         joinButton?.isEnabled = false
         app.repository.joinTeam(code, name, app.deviceId) { ok, teamNameAr, error ->
             activity?.runOnUiThread {
@@ -106,6 +107,7 @@ class TeamFragment : Fragment() {
                     Toast.makeText(ctx, getString(R.string.team_joined_fmt, teamNameAr ?: ""), Toast.LENGTH_LONG).show()
                 } else if (error != null) {
                     joinError?.text = error
+                    joinError?.visibility = View.VISIBLE
                 }
             }
         }

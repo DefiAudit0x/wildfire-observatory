@@ -440,12 +440,14 @@ class RadarView @JvmOverloads constructor(
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windGlowPaint)
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windPaint)
             // Arrowhead pointing INWARD (from where the wind arrives).
-            val inP = RadarModel.projectInto(from + 180.0, 27.6, cx, cy, radius, s[2])
+            val inP = RadarModel.projectInto(from, 25.0, cx, cy, radius, s[2])
             val left = RadarModel.projectInto(from + 20.0, 26.0, cx, cy, radius, s[3])
             val right = RadarModel.projectInto(from - 20.0, 26.0, cx, cy, radius, s[4])
             canvas.drawLine(p.x, p.y, left.x, left.y, headPaint)
             canvas.drawLine(p.x, p.y, right.x, right.y, headPaint)
             canvas.drawLine(p.x, p.y, inP.x, inP.y, headPaint)
+            canvas.drawLine(left.x, left.y, inP.x, inP.y, headPaint)
+            canvas.drawLine(right.x, right.y, inP.x, inP.y, headPaint)
         }
 
         // User triangle at center — breathing glow ring + halo + core (or a

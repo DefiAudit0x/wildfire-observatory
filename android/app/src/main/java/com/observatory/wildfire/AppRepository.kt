@@ -107,6 +107,7 @@ class AppRepository(
     private val meshListener = { plaintext: String ->
         onMeshPlaintext(plaintext)
     }
+    private val meshPeerListener = { refreshMeshPeers() }
 
     private val teamListener = { state: String, payload: String? ->
         val current = _state.value.team
@@ -141,6 +142,7 @@ class AppRepository(
 
     fun stop() {
         TeamLocationService.removeStateListener(teamListener)
+        meshService?.removePeerChangeListener(meshPeerListener)
     }
 
     // ========================
@@ -159,8 +161,10 @@ class AppRepository(
 
     fun attachMesh(service: MeshService?) {
         meshService?.removeMessageListener(meshListener)
+      meshService?.removePeerChangeListener(meshPeerListener)
         meshService = service
         service?.addMessageListener(meshListener)
+      service?.addPeerChangeListener(meshPeerListener)
         setMeshState(if (service != null) "connected" else "disconnected")
     }
 
@@ -573,6 +577,8 @@ class AppRepository(
                 // on failure both fields stay untouched, so the old weather
                 // keeps its old timestamp and its age keeps growing.
                 _state.value = _state.value.copy(weather = w, weatherFetchedAtMs = System.currentTimeMillis())
+            } else {
+                _state.value = _state.value.copy(weather = null, weatherFetchedAtMs = 0L)
             }
             onDone(w)
         }

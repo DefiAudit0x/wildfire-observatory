@@ -105,13 +105,18 @@ object TelemetryOverlay {
         // The pure plan decides; Matrix only executes it. postRotate then
         // postScale(-1,1) applies the rotation first, then the mirror —
         // exactly the decomposition TelemetryCamera.exifPlan pins.
-        val plan = TelemetryCamera.exifPlan(exifOrientation(file))
-        if (plan.rotateDeg == 0f && !plan.flipH) return raw
+        return orientUpright(raw, exifOrientation(file))
+    }
+
+    /** Apply the EXIF rotation/mirroring plan to an already sampled bitmap. */
+    fun orientUpright(bitmap: Bitmap, orientation: Int): Bitmap {
+        val plan = TelemetryCamera.exifPlan(orientation)
+        if (plan.rotateDeg == 0f && !plan.flipH) return bitmap
         val matrix = Matrix()
         if (plan.rotateDeg != 0f) matrix.postRotate(plan.rotateDeg)
         if (plan.flipH) matrix.postScale(-1f, 1f)
-        val upright = Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, matrix, true)
-        if (upright != raw) raw.recycle()
+        val upright = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+        if (upright != bitmap) bitmap.recycle()
         return upright
     }
 

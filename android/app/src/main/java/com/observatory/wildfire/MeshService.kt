@@ -171,6 +171,7 @@ class MeshService : Service() {
 
     // Listeners
     private val messageListeners = CopyOnWriteArrayList<(String) -> Unit>()
+    private val peerChangeListeners = CopyOnWriteArrayList<() -> Unit>()
 
     fun addMessageListener(listener: (String) -> Unit) {
         messageListeners.add(listener)
@@ -178,6 +179,19 @@ class MeshService : Service() {
 
     fun removeMessageListener(listener: (String) -> Unit) {
         messageListeners.remove(listener)
+    }
+
+    fun addPeerChangeListener(listener: () -> Unit) {
+        peerChangeListeners.add(listener)
+        listener()
+    }
+
+    fun removePeerChangeListener(listener: () -> Unit) {
+        peerChangeListeners.remove(listener)
+    }
+
+    private fun notifyPeerChangeListeners() {
+        peerChangeListeners.forEach { listener -> runCatching { listener() } }
     }
 
     override fun onCreate() {
@@ -403,6 +417,7 @@ class MeshService : Service() {
                 Log.d(TAG, "Connected: $endpointId")
                 registry.connectingPeers.remove(endpointId)
                 registry.connectedPeers.add(endpointId)
+                notifyPeerChangeListeners()
                 // Preserve any key already learned from discovery/initiation
                 // instead of wiping it (audit round 11).
                 if (known != null && known.publicKey.isNotBlank()) {
@@ -510,6 +525,7 @@ class MeshService : Service() {
     private fun peerCleanup(endpointId: String) {
         registry.forget(endpointId)
         queue.onPeerGone(endpointId)
+        notifyPeerChangeListeners()
     }
 
     private val payloadCallback = object : PayloadCallback() {
