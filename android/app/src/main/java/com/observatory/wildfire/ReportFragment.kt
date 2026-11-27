@@ -2,6 +2,7 @@ package com.observatory.wildfire
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -243,7 +244,36 @@ class ReportFragment : Fragment() {
                 }
             else -> {
                 val fix = app.locationEngine.currentFix()
-                if (fix != null && geoFailed) {
+                val boundFix = placeFix
+                if (boundFix != null && !LocationLogic.isUsableFix(boundFix, System.currentTimeMillis())) {
+                    if (geoLookupInFlight) {
+                        Toast.makeText(requireContext(), R.string.geo_status_resolving, Toast.LENGTH_SHORT).show()
+                        return
+                    }
+                    AlertDialog.Builder(requireContext())
+                        .setMessage(R.string.report_use_current_location)
+                        .setNegativeButton(android.R.string.cancel, null)
+                        .setPositiveButton(R.string.report_use_current_location_action) { _, _ ->
+                            val current = app.locationEngine.currentFix()
+                            if (geoLookupInFlight || current == null ||
+                                !LocationLogic.isFreshFix(current, System.currentTimeMillis())) {
+                                Toast.makeText(requireContext(), R.string.report_need_fix, Toast.LENGTH_LONG).show()
+                            } else {
+                                // Explicit consent replaces both place fields; keep
+                                // the report's description, severity and photo.
+                                nameManuallyEdited = false
+                                wilayaManuallyEdited = false
+                                autofilledName = false
+                                autofilledWilaya = false
+                                fillField(locationNameInput, "")
+                                fillField(wilayaInput, Wilayas.nearest(current.lat, current.lng).nameAr)
+                                placeFix = current
+                                geoBackoffUntilElapsedMs = 0L
+                                reverseGeocode(current.lat, current.lng)
+                            }
+                        }
+                        .show()
+                } else if (fix != null && geoFailed) {
                     geoBackoffUntilElapsedMs = 0L // explicit user retry beats the backoff
                     reverseGeocode(fix.lat, fix.lng)
                 }
@@ -279,6 +309,9 @@ class ReportFragment : Fragment() {
                 val ageS = maxOf(0, ((System.currentTimeMillis() - fix.timeMs) / 1000).toInt())
                 getString(R.string.report_location_line_fmt, fix.lat, fix.lng, accText, ageS)
             }
+        }
+        if (placeFix?.let { !LocationLogic.isUsableFix(it, System.currentTimeMillis()) } == true) {
+            locationLine?.append("\n" + getString(R.string.report_use_current_location_action))
         }
         // Autofill place name + wilaya once a fix EXISTS — fresh or stale
         // (v2.19.0: the old < 60 s freshness gate was the "لماذا لا تُملأ"
@@ -322,19 +355,21 @@ class ReportFragment : Fragment() {
         // 51b (CodeRabbit): the deadline rides the MONOTONIC clock
         // (SystemClock.elapsedRealtime), not the wall clock — a backward
         // device-clock jump after a failure must not stretch the 60 s
-        // window. The offline wilaya still tracks the newest fix during
-        // backoff, so a boundary crossing inside the window does not leave
-        // the previous fix's wilaya next to the new coordinates in
-        // submit(). No network request is started here.
+        // window. During backoff the offline wilaya may move only if the
+        // name can move with it; a name autofilled for another fix must stay
+        // bound to that fix. No network request is started here.
+        val lookupFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng } ?: return
+        if (recoverExpired && !LocationLogic.isFreshFix(lookupFix, System.currentTimeMillis())) return
+        val canMovePlaceFields = ReportPlacePolicy.canFillOfflineWilaya(
+            boundFix, lookupFix, autofilledName, nameManuallyEdited, wilayaManuallyEdited
+        )
         if (SystemClock.elapsedRealtime() < geoBackoffUntilElapsedMs) {
-            if (!autofilledWilaya) {
+            if (!autofilledWilaya && canMovePlaceFields) {
                 fillField(wilayaInput, Wilayas.nearest(lat, lng).nameAr)
-                placeFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng }
+                placeFix = lookupFix
             }
             return
         }
-        val lookupFix = app.locationEngine.currentFix()?.takeIf { it.lat == lat && it.lng == lng } ?: return
-        if (recoverExpired && !LocationLogic.isFreshFix(lookupFix, System.currentTimeMillis())) return
         geoLookupInFlight = true
         if (!autofilledName) setGeoStatus(getString(R.string.geo_status_resolving))
         viewLifecycleOwner.lifecycleScope.launch {
@@ -346,6 +381,11 @@ class ReportFragment : Fragment() {
                     }
                 }
                 if (!isAdded) return@launch
+                // Re-check after the await, BEFORE success OR offline fallback:
+                // a manual edit made during recovery owns the original place.
+                if (recoverExpired && !ReportPlacePolicy.canApplyRecovery(
+                        placeFix, lookupFix, nameManuallyEdited, wilayaManuallyEdited
+                    )) return@launch
                 if (result == null) {
                     // v2.19.0: failure is VISIBLE now, and the wilaya still
                     // fills from the offline nearest-centroid table (marked
@@ -523,6 +563,7 @@ class ReportFragment : Fragment() {
         // calling submitReport, so nothing is queued either.
         if (!LocationLogic.isUsableFix(fix, System.currentTimeMillis())) {
             Toast.makeText(ctx, R.string.report_need_fix, Toast.LENGTH_LONG).show()
+            onLocationLineTapped()
             return
         }
         submitButton?.isEnabled = false

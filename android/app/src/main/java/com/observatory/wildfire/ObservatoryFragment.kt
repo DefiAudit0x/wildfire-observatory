@@ -204,7 +204,7 @@ class ObservatoryFragment : Fragment() {
         val track = riskBar ?: return
         val marker = riskBarMarker ?: return
         track.post {
-            if (track.width == 0 || marker.width == 0) return@post
+            if (marker.visibility != View.VISIBLE || track.width == 0 || marker.width == 0) return@post
             val range = (track.width - marker.width).toFloat()
             if (range <= 0f) return@post
             // score/100f keeps this in Float space (translationX is a Float
@@ -293,8 +293,14 @@ class ObservatoryFragment : Fragment() {
         )
         val fresh = snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)
         riskScoreText?.text = if (fresh) score.toString() else "—"
-        positionRiskMarker(score)
-        riskScoreText?.setTextColor(RiskScore.bandColor(score))
+        if (fresh) {
+            riskBarMarker?.visibility = View.VISIBLE
+            positionRiskMarker(score)
+            riskScoreText?.setTextColor(RiskScore.bandColor(score))
+        } else {
+            riskBarMarker?.animate()?.cancel()
+            riskBarMarker?.visibility = View.GONE
+        }
         riskLabelText?.text = if (fresh) RiskScore.labelAr(score) else getString(R.string.risk_unknown)
         riskDetailText?.text = getString(
             R.string.risk_detail_fmt,

@@ -79,8 +79,9 @@ class MapFragment : Fragment() {
         private const val MAX_ROUTE_CHIPS = 3
         /** Window that hides our own animateTo from the scroll listener. */
         private const val ANIMATE_SUPPRESS_MS = 900L
-        /** A route remains useful until the user has moved a short distance from its origin. */
+        /** Moving 30 m queues a refresh; a completed road can still be usable. */
         private const val ROUTE_REFRESH_DISTANCE_M = 30.0
+        private const val ROUTE_MATCH_DISTANCE_M = 60.0
     }
 
     private val app get() = requireActivity().application as ObservatoryApp
@@ -811,7 +812,6 @@ class MapFragment : Fragment() {
                 } ?: Double.POSITIVE_INFINITY
                 if (movedFromRequest >= ROUTE_REFRESH_DISTANCE_M) {
                     routeRefreshPending = true
-                    return@launch
                 }
                 val current = app.repository.state.value
                 if (current.reports != snap.reports || current.hotspots != snap.hotspots ||
@@ -839,8 +839,14 @@ class MapFragment : Fragment() {
                     snap.hotspots.filter { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }.map { it.lat to it.lng } +
                     snap.meshIntel.filter { it.kind == "report" && ProximityLogic.isFresh(it.tsMs, now) }
                         .mapNotNull { intel -> intel.lat?.let { lat -> intel.lng?.let { lng -> lat to lng } } }
+                // Movement from the request origin triggers a refresh, but
+                // a completed road is usable while we are still near it.
+                val latestFix = lastUserLatLng ?: return@launch
+                val usable = raw.filter { (pts, _, _) ->
+                    GeoMath.minDistanceToPolylineM(latestFix.first, latestFix.second, pts) <= ROUTE_MATCH_DISTANCE_M
+                }
                 rankedRoutes = RadarV2.rankRoutes(
-                raw.map { (pts, dist, dur) ->
+                usable.map { (pts, dist, dur) ->
                     // Fix 22 (NMAP-1): the clearance is the min distance
                     // between the ROAD polyline and the FIRE points — the
                     // old code measured each road vertex against imaginary
@@ -850,6 +856,8 @@ class MapFragment : Fragment() {
                 )
                 renderRouteChips()
                 if (rankedRoutes.isEmpty()) {
+                    routeLine?.let { mv.overlays.remove(it); routeLine = null }
+                    mv.invalidate()
                     routeChipsScroll?.visibility = View.GONE
                     routeInfoText?.text = getString(R.string.route_offline_fmt, target.nameAr, 0.0)
                     return@launch

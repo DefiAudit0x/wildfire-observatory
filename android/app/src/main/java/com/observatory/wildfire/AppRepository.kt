@@ -208,7 +208,10 @@ class AppRepository(
         // chat entry) and the internet path (hasLocation:false) is the
         // honest channel for coordinate-less SOS.
         if (lat == null || lng == null) return false
-        val json = ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
+        // Plain text is understood by legacy peers and stays in meshChat
+        // (parseMeshIntel returns null), without creating fire intel.
+        val json = if (kind == "chat") MeshChatPolicy.plaintext(text)
+            else ApiPayloads.buildMeshIntelJson(kind, text, lat, lng, System.currentTimeMillis())
         // Fix 16 (NSVC-5): SOS must NOT ride as wire type "echo". Echo
         // frames are plaintext-by-design on the wire (MeshInbound
         // base64-decodes them without decrypting), but MeshService
@@ -314,21 +317,15 @@ class AppRepository(
         audioDataUri: String?, audioDurationSec: Int?,
         onDone: (ok: Boolean, outcome: SosOutcome?, userError: String?) -> Unit
     ) {
-        // F1+F4: the idempotency key is minted ONCE per logical SOS, embedded
-        // in the body AND used as the queue key — a replay (offline queue or
-        // retry) can never become a second emergency call.
-        // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795): one
-        // pending SOS per device. A re-press while an SOS is already
-        // queued must NOT mint a second key — the server's 5-minute
-        // per-device window 409s the second key, and dropping it on 409
-        // (the first 18b attempt) loses a distinct emergency. Reuse the
-        // queued entry's key: the re-press is the same logical SOS, and
-        // the server's replay returns the stored SOS for a repeated key
-        // instead of a duplicate. A cold start can still restore several
-        // pre-fix entries; the first (oldest) key is reused and the rest
-        // keep the old retry behaviour — no loss, just no new key.
-        val key = sosQueue.snapshot().firstOrNull()?.key
-            ?: ApiPayloads.newClientGeneratedId()
+        // Reuse only an identical queued emergency, never replace a body
+        // whose first server response may have been lost. A new GPS/audio
+        // payload needs its own key; a same-payload re-press stays idempotent.
+        val key = sosQueue.snapshot().firstOrNull { queued ->
+            queued.payload == ApiPayloads.buildSosJson(
+                deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec,
+                clientGeneratedId = queued.key
+            )?.first
+        }?.key ?: ApiPayloads.newClientGeneratedId()
         val built = ApiPayloads.buildSosJson(
             deviceId, lat, lng, name, phone, textMessage, audioDataUri, audioDurationSec,
             clientGeneratedId = key
@@ -359,14 +356,10 @@ class AppRepository(
                 )
                 onDone(false, null, extractServerError(result.body) ?: "تم رفض النداء (خطأ ${result.status})")
             } else {
-                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660269795):
-                // the re-press refreshes the WAITING entry's payload
-                // under the same key (fresher location/audio, same
-                // logical SOS). An in-flight entry is owned by the drain
-                // and is never touched — the emergency itself is already
-                // being sent; a fresh key is only minted when nothing is
-                // queued at all (see above).
-                val admitted = sosQueue.replacePayload(key, body) || sosQueue.enqueue(key, body)
+                // Existing identical entries (including in-flight ones) already
+                // own their immutable body. Distinct emergencies enqueue separately.
+                val admitted = sosQueue.snapshot().any { it.key == key && it.payload == body } ||
+                    sosQueue.enqueue(key, body)
                 persistSnapshot()
                 // Fix 18 (NREP-5): confirm durability BEFORE promising
                 // storage; do NOT set queuedWhileOffline when the entry
@@ -376,20 +369,9 @@ class AppRepository(
                 // in memory (the drain loop can still send it while the
                 // app lives), but onDone(false) when it is not on disk.
                 val (_, sosResult) = persistQueues()
-                // Fix 18 (NREP-5 follow-up, CodeRabbit Major 4660332342):
-                // `durable` alone is vacuous for an empty snapshot. When
-                // admission was rejected (key in flight — `admitted` is
-                // false), the drain owns the entry's fate: it may deliver
-                // it, or poison-drop it after 8 failed attempts, while
-                // the persist still reports durable on an empty snapshot
-                // — so never report queuing then. Report queuing only
-                // when this submission was admitted AND its key is in the
-                // file that was actually written AND still in the queue.
-                // Known residual: an admitted entry at 7 failed attempts
-                // can still be poison-dropped by the drain after a
-                // truthful report — the pre-existing MAX_ATTEMPTS
-                // doctrine, out of scope for this part (changing it is a
-                // separate product decision, not a queue bug).
+                // An empty snapshot can be durably written while the drain
+                // finishes a send. Promise queuing only when this key is
+                // actually on disk AND still pending (waiting or in-flight).
                 val keyStored = sosResult.durable &&
                     key in sosResult.persistedKeys &&
                     sosQueue.snapshot().any { it.key == key }
@@ -649,20 +631,9 @@ class AppRepository(
                             if (io { api.post("/api/reports", e.payload).is2xx }) deliveredR.add(e.key)
                         }
                         for (e in reservedS) {
-                            // Fix 18 (NREP-5 follow-up, CodeRabbit Major
-                            // 4660269795): the first 18b attempt dropped a
-                            // queued SOS on the 409 "already received
-                            // recently" — withdrawn, it was over-broad:
-                            // the server's window is per device, so a
-                            // DISTINCT queued emergency inside the window
-                            // got the same 409 and was lost without ever
-                            // being stored. The duplicate is now prevented
-                            // at the source (sendSos reuses the queued
-                            // key — one pending SOS per device), so the
-                            // drain keeps the old retry-forever behaviour:
-                            // a 409 retries with backoff and is admitted
-                            // once the window passes. Nothing queued is
-                            // ever dropped on a 409.
+                            // A distinct emergency may hit the per-device window.
+                            // Keep retrying its fresh key; never drop a queued SOS
+                            // on 409 or overwrite an earlier emergency's body.
                             if (io { api.post("/api/sos", e.payload).is2xx }) deliveredS.add(e.key)
                         }
                         io {
