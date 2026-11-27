@@ -40,16 +40,32 @@ export function memoryAdminDb(docs: Map<string, Row>) {
     get: async () => querySnapshot({ collectionName: name, field, value, count }),
   });
   const transaction = () => {
+    // CodeRabbit (PR #215): commit used to apply each queued write
+    // directly to the shared `docs` map, so a later write throwing left
+    // the earlier writes applied — real Firestore transactions never
+    // partially apply. Writes now land in staged storage (reads inside the
+    // transaction consult it, so a create-then-get sees its own write) and
+    // are published to the shared map only after every write succeeds.
+    const staged = new Map<string, Row>();
+    const stagedGet = (path: string) => staged.has(path) ? staged.get(path)! : docs.get(path);
     const writes: (() => void)[] = [];
     return {
-      get: async (ref: Ref | Query) => "path" in ref ? snapshot(ref.path) : querySnapshot(ref),
+      get: async (ref: Ref | Query) => "path" in ref
+        ? { id: ref.path.split("/").at(-1)!, exists: stagedGet(ref.path) !== undefined, data: () => stagedGet(ref.path) && structuredClone(stagedGet(ref.path)!) }
+        : querySnapshot(ref),
       create: (ref: Ref, data: Row) => { writes.push(() => {
-        if (docs.has(ref.path)) throw new Error("Document already exists");
-        write(ref, data);
+        if (stagedGet(ref.path) !== undefined) throw new Error("Document already exists");
+        staged.set(ref.path, structuredClone(data));
       }); },
-      update: (ref: Ref, data: Row) => { writes.push(() => write(ref, data, true)); },
-      commit: () => { writes.forEach((apply) => apply()); },
+      update: (ref: Ref, data: Row) => { writes.push(() => writeStaged(ref, data)); },
+      commit: () => {
+        writes.forEach((apply) => apply());
+        for (const [path, row] of staged) docs.set(path, row);
+      },
     };
+    function writeStaged(ref: Ref, data: Row) {
+      staged.set(ref.path, structuredClone({ ...stagedGet(ref.path), ...data }));
+    }
   };
   let queue = Promise.resolve();
   return { collection, runTransaction: async <T>(callback: (tx: ReturnType<typeof transaction>) => Promise<T>) => {
