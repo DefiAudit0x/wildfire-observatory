@@ -79,8 +79,8 @@ const WILAYA_BOUNDS: { name: string; minLat: number; maxLat: number; minLng: num
   { name: "تونس - تونس العاصمة (Tunisie - Tunis)", minLat: 36.5, maxLat: 37.2, minLng: 9.8, maxLng: 10.5 },
   { name: "تونس - سوسة (Tunisie - Sousse)", minLat: 35.6, maxLat: 36.2, minLng: 10.2, maxLng: 10.9 },
   { name: "تونس - صفاقس (Tunisie - Sfax)", minLat: 34.5, maxLat: 35.6, minLng: 10.3, maxLng: 11.2 },
-  { name: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan)", minLat: 35.0, maxLat: 36.0, minLng: -6.0, maxLng: -4.5 },
-  { name: "المغرب - الرباط سلا القنيطرة (Maroc - Rabat-Salé)", minLat: 33.5, maxLat: 34.8, minLng: -7.0, maxLng: -5.5 },
+  { name: "المغرب - طنجة تطوان الحسيمة (Maroc - Tanger-Tétouan-Al Hoceïma)", minLat: 35.0, maxLat: 36.0, minLng: -6.0, maxLng: -4.5 },
+  { name: "المغرب - الرباط سلا القنيطرة (Maroc - Rabat-Salé-Kénitra)", minLat: 33.5, maxLat: 34.8, minLng: -7.0, maxLng: -5.5 },
   { name: "المغرب - مراكش آسفي (Maroc - Marrakech-Safi)", minLat: 31.0, maxLat: 33.5, minLng: -9.0, maxLng: -7.0 },
   { name: "المغرب - سوس ماسة (Maroc - Souss-Massa)", minLat: 29.5, maxLat: 31.5, minLng: -10.0, maxLng: -8.0 },
   { name: "ليبيا - الجبل الأخضر (Libye - Al Jabal al Akhdar)", minLat: 32.0, maxLat: 33.0, minLng: 21.0, maxLng: 22.5 },
@@ -96,7 +96,7 @@ function pointInBounds(lat: number, lng: number, bounds: typeof WILAYA_BOUNDS[0]
 }
 
 export function wilayaContainsCoords(wilaya: string, lat: number, lng: number): boolean {
-  const bounds = WILAYA_BOUNDS.find((b) => b.name === wilaya);
+  const bounds = WILAYA_BOUNDS.find((b) => b.name === canonicalizeWilaya(wilaya));
   if (bounds) return pointInBounds(lat, lng, bounds);
 
   // Country-level coverage is not a wilaya geofence. Reject until precise
@@ -128,7 +128,9 @@ export const WILAYA_NAMES: readonly string[] = WILAYA_BOUNDS.map((b) => b.name);
  * rather than being guessed into the wrong region.
  */
 export function canonicalizeWilaya(value: string): string {
-  const trimmed = value.trim();
+  const trimmed = value.trim()
+    .replace(/Rabat-Salé(?=\)|$)/i, "Rabat-Salé-Kénitra")
+    .replace(/Tanger-Tétouan(?=\)|$)/i, "Tanger-Tétouan-Al Hoceïma");
   if (WILAYA_NAMES.includes(trimmed)) return trimmed;
   const folded = trimmed.toLocaleLowerCase();
   const matches = WILAYA_BOUNDS.filter((b) => {
