@@ -74,7 +74,9 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
   }
   if (!decoded || typeof decoded.jti !== "string" || !decoded.jti) return "nothing-to-revoke";
   const expMs = typeof decoded.exp === "number" ? decoded.exp * 1000 : Date.now() + 24 * 60 * 60 * 1000;
+  sweepRevocationCache();
   revocationSeen.set(decoded.jti, expMs);
+  sweepRevocationCache();
   try {
     const ok = await docSet(ADMIN_REVOCATION_COLLECTION, decoded.jti, {
       revokedAt: new Date().toISOString(),
@@ -111,7 +113,25 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
  * rejects the staff session; admin sessions keep the fail-open above.
  */
 const revocationSeen = new Map<string, number>(); // jti → expMs of a token seen revoked
+const MAX_REVOCATION_CACHE_ENTRIES = 10_000;
+
+function sweepRevocationCache(): void {
+  const now = Date.now();
+  for (const [jti, expiry] of revocationSeen) {
+    if (Number.isFinite(expiry) && expiry <= now) revocationSeen.delete(jti);
+  }
+  while (revocationSeen.size > MAX_REVOCATION_CACHE_ENTRIES) {
+    const oldest = revocationSeen.keys().next().value;
+    if (oldest === undefined) break;
+    revocationSeen.delete(oldest);
+  }
+}
+
+const revocationSweepTimer = setInterval(sweepRevocationCache, 60_000);
+revocationSweepTimer.unref();
+
 async function isAdminSessionRevoked(jti: string, failClosed = false): Promise<boolean> {
+  sweepRevocationCache();
   // The register read is strict: a failed read throws instead of resolving
   // null, so "absent" and "unreadable" stay distinguishable. Consult known
   // revocations first.

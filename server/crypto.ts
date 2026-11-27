@@ -28,7 +28,7 @@ export function decryptAead(token: string | undefined, key: Buffer): Buffer | nu
   if (!token) return null;
   try {
     const [ivB64, tagB64, dataB64] = token.split(".");
-    if (!ivB64 || !tagB64 || !dataB64) return null;
+    if (!ivB64 || !tagB64 || dataB64 === undefined) return null;
     const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
     decipher.setAuthTag(Buffer.from(tagB64, "base64"));
     return Buffer.concat([decipher.update(Buffer.from(dataB64, "base64")), decipher.final()]);

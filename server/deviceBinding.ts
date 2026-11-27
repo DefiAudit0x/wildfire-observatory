@@ -44,7 +44,11 @@ export function boundDeviceId(req: Request): string | null {
   const sig = bound.slice(idx + 1);
   const expected = signDevice(id);
   if (sig.length !== expected.length) return null;
-  if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    if (!timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  } catch {
+    return null;
+  }
   return id;
 }
 

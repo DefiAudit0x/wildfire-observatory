@@ -274,7 +274,7 @@ export async function getFreshDocResult(collectionName: string, id: string): Pro
   }
 }
 
-export type RosterAppendResult = "created" | "limit" | "duplicate-agent" | "unavailable";
+export type RosterAppendResult = "created" | "limit" | "duplicate-agent" | "duplicate-post-id" | "unavailable";
 
 export async function appendRosterPostAtomic(collectionName: string, date: string, unitId: string, post: Record<string, any>, maxPosts: number): Promise<RosterAppendResult> {
   const db = getDb();
@@ -286,6 +286,7 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
         const snap = await tx.get(ref);
         const existing = snap.exists ? snap.data() : null;
         const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
+        if (post.id && posts.some((existingPost) => existingPost?.id === post.id)) return "duplicate-post-id";
         if (posts.length >= maxPosts) return "limit";
         const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
         const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];
@@ -305,6 +306,7 @@ export async function appendRosterPostAtomic(collectionName: string, date: strin
       const snap = await tx.get(ref);
       const existing = snap.exists() ? snap.data() : null;
       const posts: any[] = Array.isArray(existing?.posts) ? existing.posts : [];
+      if (post.id && posts.some((existingPost) => existingPost?.id === post.id)) return "duplicate-post-id";
       if (posts.length >= maxPosts) return "limit";
       const existingAgents = new Set(posts.flatMap((p: any) => Array.isArray(p.personnel) ? p.personnel.map((x: any) => x.agentId) : []));
       const incomingAgents = Array.isArray(post.personnel) ? post.personnel.map((x: any) => x.agentId) : [];

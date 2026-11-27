@@ -125,13 +125,17 @@ export async function collectionGet(
   // status slice without pulling the whole collection — e.g. all active SOS
   // plus the 100 newest resolved, each as its own timestamp-ordered query.
   // A where filter changes the result set, so it is part of the cache key.
-  whereFilter?: CollectionWhere
+  whereFilter?: CollectionWhere,
+  strict = false
 ): Promise<any[] | null> {
   const cacheKey = collectionCacheKey(collectionName, orderByField, limitCount, whereFilter);
   const cached = collectionCache.get(cacheKey);
   if (!fresh && cached && Date.now() < cached.expiresAt) return cached.data;
   const db = getDb();
-  if (!db) return null;
+  if (!db) {
+    if (strict) throw new Error("Firestore collection unavailable");
+    return null;
+  }
   // Fix 10b: capture the generation before the read — any invalidation
   // during the await must prevent this snapshot from being cached.
   const generation = cacheGenerations.get(collectionName) ?? 0;
@@ -174,6 +178,7 @@ export async function collectionGet(
     return data;
   } catch (err) {
     logger.error({ err, collectionName }, "Firestore collection read failed");
+    if (strict) throw err;
     return null;
   }
 }
@@ -347,6 +352,10 @@ export async function createSosWithAdmission(
   try {
     if (isAdminDb(db)) {
       const outcome = await db.runTransaction(async (tx: any) => {
+        const idempotencyRef = idempotency
+          ? db.collection(idempotency.collection).doc(idempotency.key)
+          : null;
+        if (idempotencyRef && (await tx.get(idempotencyRef)).exists) return "duplicate";
         const admissionRef = db.collection("sosAdmissions").doc(admissionId);
         const existing = await tx.get(admissionRef);
         const lastAcceptedAt = Number(existing.exists ? existing.data()?.acceptedAt : 0);
@@ -363,9 +372,7 @@ export async function createSosWithAdmission(
         // admission — a process crash or ledger-write failure between the
         // two left an admitted SOS with no replay key, so a client retry
         // (after the 5-min device window) created a true duplicate.
-        if (idempotency) {
-          tx.set(db.collection(idempotency.collection).doc(idempotency.key), idempotency.record);
-        }
+        if (idempotencyRef && idempotency) tx.set(idempotencyRef, idempotency.record);
         return "created";
       });
       if (outcome === "created") {
@@ -380,6 +387,8 @@ export async function createSosWithAdmission(
 
     const { doc, runTransaction } = await loadClientSdk();
     const outcome = await runTransaction(db, async (tx: any) => {
+      const idempotencyRef = idempotency ? doc(db, idempotency.collection, idempotency.key) : null;
+      if (idempotencyRef && (await tx.get(idempotencyRef)).exists()) return "duplicate";
       const admissionRef = doc(db, "sosAdmissions", admissionId);
       const existing = await tx.get(admissionRef);
       const lastAcceptedAt = Number(existing.exists() ? existing.data()?.acceptedAt : 0);
@@ -392,9 +401,7 @@ export async function createSosWithAdmission(
         sosId,
       });
       // v2.15.0: same transaction on the client-SDK branch.
-      if (idempotency) {
-        tx.set(doc(db, idempotency.collection, idempotency.key), idempotency.record);
-      }
+      if (idempotencyRef && idempotency) tx.set(idempotencyRef, idempotency.record);
       return "created";
     });
     if (outcome === "created") {
@@ -522,44 +529,6 @@ export async function appendSosDispatch(
   }
 }
 
-/**
- * ARC-H8 companion: when an SOS is resolved, every team mission still pointing
- * at it is cleared so those teams become dispatchable again.
- */
-export async function clearTeamMissionsForSos(sosId: string): Promise<boolean> {
-  const db = getDb();
-  if (!db) return false;
-  try {
-    const missionIds: string[] = [];
-    if (isAdminDb(db)) {
-      const snap = await db.collection("teamMissions").where("sosId", "==", sosId).get();
-      if (snap.empty) return true;
-      const batch = db.batch();
-      snap.forEach((docSnap: any) => {
-        missionIds.push(docSnap.id);
-        batch.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
-      });
-      await batch.commit();
-    } else {
-      const { collection, getDocs, query, where, writeBatch } = await loadClientSdk();
-      const snap = await getDocs(query(collection(db, "teamMissions"), where("sosId", "==", sosId)));
-      if (snap.empty) return true;
-      const batch = writeBatch(db);
-      snap.forEach((docSnap: any) => {
-        missionIds.push(docSnap.id);
-        batch.update(docSnap.ref, { phase: "cleared", clearedAt: Date.now() });
-      });
-      await batch.commit();
-    }
-    invalidateCollectionCache("teamMissions");
-    for (const id of missionIds) invalidateDocCache("teamMissions", id);
-    return true;
-  } catch (err) {
-    logger.error({ err, sosId }, "Firestore team mission clear failed");
-    return false;
-  }
-}
-
 export async function docUpdate(
   collectionName: string,
   id: string,
@@ -599,7 +568,7 @@ function decideBadgeBinding(
   if (current.expiresAt) {
     const expiry =
       typeof current.expiresAt === "number" ? current.expiresAt : Date.parse(String(current.expiresAt));
-    if (Number.isFinite(expiry) && Date.now() >= expiry) return "unavailable";
+    if (!Number.isFinite(expiry) || Date.now() >= expiry) return "unavailable";
   }
   const owner = typeof current.boundDeviceId === "string" ? current.boundDeviceId : "";
   if (owner) return owner === deviceId ? "already_bound" : "conflict";

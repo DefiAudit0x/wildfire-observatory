@@ -584,6 +584,12 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
         .where("reportId", "==", id)
         .get();
       legacy.forEach((d) => keys.add(d.id));
+      const confirmations = await reportRef.collection("confirmations").get();
+      for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
+        const confirmationBatch = db.batch();
+        confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
+        await confirmationBatch.commit();
+      }
       const batch = db.batch();
       batch.delete(reportRef);
       // S-H1: the split shards are part of the report's lifecycle — purge
@@ -610,6 +616,12 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
       query(collection(db, REPORT_IDEMPOTENCY_COLLECTION), where("reportId", "==", id))
     );
     legacy.forEach((d) => keys.add(d.id));
+    const confirmations = await getDocs(collection(db, "reports", id, "confirmations"));
+    for (let offset = 0; offset < confirmations.docs.length; offset += 450) {
+      const confirmationBatch = writeBatch(db);
+      confirmations.docs.slice(offset, offset + 450).forEach((confirmation) => confirmationBatch.delete(confirmation.ref));
+      await confirmationBatch.commit();
+    }
     const batch = writeBatch(db);
     batch.delete(reportRef);
     // Fix 44 (DB-2 scope expansion): the client branch used to omit the
