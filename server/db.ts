@@ -601,6 +601,20 @@ export async function purgeReportWithIdempotency(id: string): Promise<ReportPurg
         batch.delete(db.collection(REPORT_IDEMPOTENCY_COLLECTION).doc(key));
       }
       await batch.commit();
+      // CodeRabbit (PR #215): a confirmation whose transaction committed
+      // after the line-587 snapshot but before the parent delete is not in
+      // the delete set, and deleting the parent does not delete its
+      // subcollection in Firestore — it would survive under the deleted
+      // report path while the purge still returns "deleted". Re-read and
+      // delete stragglers before returning. One pass suffices: the parent
+      // is gone now, so confirmReportWithPrincipal refuses new
+      // confirmations (report not found) and none can land after this read.
+      const stragglers = await reportRef.collection("confirmations").get();
+      for (let offset = 0; offset < stragglers.docs.length; offset += 450) {
+        const stragglerBatch = db.batch();
+        stragglers.docs.slice(offset, offset + 450).forEach((confirmation) => stragglerBatch.delete(confirmation.ref));
+        await stragglerBatch.commit();
+      }
       invalidateReportsCache();
       return "deleted";
     }

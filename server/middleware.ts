@@ -83,6 +83,12 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
       exp: expMs,
       reason,
     });
+    // CodeRabbit (PR #215, Major): the in-memory entry is populated BEFORE
+    // this write, so a failed write leaves the cache as the SOLE revocation
+    // record. Mark durability only on a confirmed write — the sweep below
+    // never evicts an unexpired entry whose durable record is unconfirmed,
+    // or a register outage could resurrect the revoked session.
+    if (ok) revocationDurable.add(decoded.jti);
     if (!ok) logger.warn({ jti: decoded.jti }, "Session revocation not durable — retained in this process until expiry");
     return ok ? "revoked" : "failed";
   } catch (err) {
@@ -113,17 +119,35 @@ export async function revokeAdminSession(token: string | undefined | null, reaso
  * rejects the staff session; admin sessions keep the fail-open above.
  */
 const revocationSeen = new Map<string, number>(); // jti → expMs of a token seen revoked
+// jtis whose revocation is confirmed in the durable register. An entry NOT
+// in this set may be the sole revocation record (its register write failed
+// or was never confirmed) and must never be evicted while unexpired.
+const revocationDurable = new Set<string>();
 const MAX_REVOCATION_CACHE_ENTRIES = 10_000;
 
 function sweepRevocationCache(): void {
   const now = Date.now();
   for (const [jti, expiry] of revocationSeen) {
-    if (Number.isFinite(expiry) && expiry <= now) revocationSeen.delete(jti);
+    if (Number.isFinite(expiry) && expiry <= now) {
+      revocationSeen.delete(jti);
+      revocationDurable.delete(jti);
+    }
   }
   while (revocationSeen.size > MAX_REVOCATION_CACHE_ENTRIES) {
-    const oldest = revocationSeen.keys().next().value;
-    if (oldest === undefined) break;
-    revocationSeen.delete(oldest);
+    // Evict only an entry with a confirmed durable record: evicting an
+    // unconfirmed one would discard the only proof of revocation, and a
+    // later register outage would fail open and admit the revoked token.
+    // If every remaining entry is unconfirmed, keep them all — correctness
+    // of the revocation guarantee outranks the cache bound.
+    let evicted = false;
+    for (const jti of revocationSeen.keys()) {
+      if (!revocationDurable.has(jti)) continue;
+      revocationSeen.delete(jti);
+      revocationDurable.delete(jti);
+      evicted = true;
+      break;
+    }
+    if (!evicted) break;
   }
 }
 
@@ -139,6 +163,7 @@ async function isAdminSessionRevoked(jti: string, failClosed = false): Promise<b
   if (cachedExp !== undefined) {
     if (!Number.isFinite(cachedExp) || cachedExp >= Date.now()) return true;
     revocationSeen.delete(jti);
+    revocationDurable.delete(jti);
   }
   if (!getDb()) {
     if (failClosed) throw new Error("Revocation register unavailable");
@@ -149,6 +174,9 @@ async function isAdminSessionRevoked(jti: string, failClosed = false): Promise<b
     if (!entry) return false;
     const exp = typeof entry.exp === "number" ? entry.exp : Date.parse(entry.exp);
     if (Number.isFinite(exp) && exp < Date.now()) return false;
+    // The register confirmed this revocation: the durable record exists,
+    // so the cache entry may be evicted under memory pressure.
+    revocationDurable.add(jti);
     revocationSeen.set(jti, exp);
     return true;
   } catch (err) {
