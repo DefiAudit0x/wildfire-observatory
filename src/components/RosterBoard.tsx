@@ -133,6 +133,20 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   // only honest post-await comparison for it, mirroring dateRef above.
   const rosterRef = useRef(roster);
   rosterRef.current = roster;
+  // CodeRabbit (PR #215, R2-#3): the live session identity — the only
+  // honest post-await comparison for it, mirroring dateRef/unitRef above.
+  // A commander→commander switch leaves `authenticated` true and
+  // `unitQuery` "" for both, so neither the load effect's deps nor the
+  // save guards (date/unit only) observe it; the board would keep showing
+  // the previous commander's roster and a save in flight could install
+  // its response over the new session.
+  const sessionIdentity = (s: typeof staffSession) =>
+    `${s.agentId ?? ""}|${s.unitId ?? ""}|${s.role ?? ""}`;
+  const sessionIdentityRef = useRef(sessionIdentity(staffSession));
+  sessionIdentityRef.current = sessionIdentity(staffSession);
+  // The identity the roster on screen was loaded for; null until the
+  // first load.
+  const rosterIdentityRef = useRef<string | null>(null);
   // CodeRabbit Major (PR #215): saveRoster used to decide "unsaved
   // changes" by object identity (rosterRef.current !== roster) — but a
   // reload (fetchRoster) also replaces the object, so a pre-save GET
@@ -198,9 +212,18 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
 
   useEffect(() => {
     if (staffSession.authenticated) {
+      // CodeRabbit (PR #215, R2-#3): a commander→commander switch leaves
+      // `authenticated` true and `unitQuery` "" for both, so this effect
+      // never re-ran and the previous commander's roster stayed rendered.
+      // Depend on the identity fields and drop the old roster before the
+      // refetch, so no other identity's day is ever shown as current.
+      if (rosterIdentityRef.current !== null && rosterIdentityRef.current !== sessionIdentityRef.current) {
+        setRoster(null);
+      }
+      rosterIdentityRef.current = sessionIdentityRef.current;
       fetchRoster();
     }
-  }, [staffSession.authenticated, fetchRoster]);
+  }, [staffSession.authenticated, staffSession.agentId, staffSession.unitId, staffSession.role, fetchRoster]);
 
   const fetchStaff = useCallback(async () => {
     try {
@@ -235,6 +258,9 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     // unsaved changes (they are not in the PUT body). A reload that lands
     // mid-save replaces the roster object but does not bump the counter.
     const editSeqAtSaveStart = rosterEditSeqRef.current;
+    // CodeRabbit (PR #215, R2-#3): capture the issuing identity — the PUT
+    // was sent under this session, and its response belongs to it.
+    const identityAtSaveStart = sessionIdentityRef.current;
     try {
       const res = await apiFetch(`/api/roster/${rosterDate}${unitQuery}`, "PUT", { posts: roster.posts });
       const data = await res.json();
@@ -244,6 +270,11 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       // by the date change) is already loading or loaded, and installing
       // day A's roster under day B's header is the finding.
       if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
+      // CodeRabbit (PR #215, R2-#3): same guard for the signed-in identity —
+      // if another commander signed in while the PUT was in flight, the
+      // response belongs to the old session and must not be installed over
+      // the new one's roster.
+      if (identityAtSaveStart !== sessionIdentityRef.current) return;
       if (res.ok) {
         const hasUnsavedChanges = rosterEditSeqRef.current !== editSeqAtSaveStart;
         if (!hasUnsavedChanges) setRoster(data);
@@ -258,6 +289,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       // target the OLD date and abort the new day's in-flight GET, then
       // load day A under day B's header.
       if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
+      // CodeRabbit (PR #215, R2-#3): same identity guard — a save that
+      // fails after another commander signed in must not surface its
+      // error over the new session's board.
+      if (identityAtSaveStart !== sessionIdentityRef.current) return;
       setMsg(isArabic ? "تعذر حفظ الجدول." : "Erreur d'enregistrement.");
     } finally {
       setSaving(false);
@@ -480,9 +515,13 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   };
 
   const handleLogout = () => {
+    // CodeRabbit (PR #215, R2-#4): bare fetch() has no timeout — a hung
+    // logout used to leave Promise.allSettled unsettled forever and the
+    // session state stale. apiFetch applies the shared 15 s ceiling, so
+    // an aborted request rejects, allSettled settles, and refetch runs.
     void Promise.allSettled([
-      fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" }),
-      fetch("/api/admin/logout", { method: "POST", credentials: "same-origin" }),
+      apiFetch("/api/auth/logout", "POST"),
+      apiFetch("/api/admin/logout", "POST"),
     ]).finally(() => refetchSession());
     setRoster(null);
   };
