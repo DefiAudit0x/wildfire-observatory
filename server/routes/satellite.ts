@@ -1,6 +1,7 @@
 import { Request, Response, Router } from "express";
 import { determineWilayaByCoords, isInKnownWilaya } from "../geo.js";
 import { SatelliteHotspot } from "../../src/types.js";
+import { THREAT_MAX_AGE_MS } from "../../src/utils/threats.js";
 import config from "../config.js";
 import logger from "../logger.js";
 
@@ -151,18 +152,45 @@ export async function getLiveSatelliteData(): Promise<SatelliteData> {
     if (hotspots.length > 0) {
       // Deduplicate: the same burning area often appears in both VIIRS and MODIS
       const unique: SatelliteHotspot[] = [];
+      // CodeRabbit on PR #213: the old merge took the max scanTime and the
+      // max confidence INDEPENDENTLY, so a fresh low-confidence duplicate
+      // paired a fresh scanTime with a stale 95% confidence — downstream
+      // freshness filters then read it as a fresh high-confidence threat,
+      // although no observation inside the 30-min window ever had 95%.
+      // The confidence a representative carries came from one observation;
+      // its scanTime is tracked alongside (confidenceTime), so the merge
+      // below can only pair a scanTime with a confidence measured inside
+      // the freshness window of that scanTime. The latest observation's
+      // own confidence always qualifies (gap 0), so the representative
+      // still reflects the latest scan. Unparseable timestamps keep the
+      // old behavior (no merge of that field).
+      const confidenceTime = new Map<SatelliteHotspot, number>();
       for (const h of hotspots) {
         const existing = unique.find(
           (u) => Math.abs(u.lat - h.lat) < 0.05 && Math.abs(u.lng - h.lng) < 0.05
         );
         if (!existing) {
           unique.push(h);
+          confidenceTime.set(h, Date.parse(h.scanTime));
         } else {
-          if (Date.parse(h.scanTime) > Date.parse(existing.scanTime)) existing.scanTime = h.scanTime;
-          if (h.confidence > existing.confidence) {
-            existing.confidence = h.confidence;
-            existing.brightness = h.brightness;
-            existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+          const existingTime = Date.parse(existing.scanTime);
+          const incomingTime = Date.parse(h.scanTime);
+          if (Number.isFinite(incomingTime) && incomingTime > existingTime) existing.scanTime = h.scanTime;
+          const latestTime = Date.parse(existing.scanTime);
+          const candidates = [
+            { time: confidenceTime.get(existing) ?? existingTime, confidence: existing.confidence, fromIncoming: false },
+            { time: incomingTime, confidence: h.confidence, fromIncoming: true },
+          ].filter(
+            (c) => Number.isFinite(c.time) && Number.isFinite(latestTime) && latestTime - c.time <= THREAT_MAX_AGE_MS
+          );
+          if (candidates.length > 0) {
+            const winner = candidates.reduce((best, c) => (c.confidence > best.confidence ? c : best), candidates[0]);
+            if (winner.fromIncoming) {
+              existing.confidence = h.confidence;
+              existing.brightness = h.brightness;
+              existing.satellite = `${existing.satellite}/${h.satellite}` as SatelliteHotspot["satellite"];
+              confidenceTime.set(existing, incomingTime);
+            }
           }
         }
       }

@@ -205,12 +205,22 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
         ),
       ]);
       const text = response?.text?.trim() || "";
-      if (text) {
+      if (text && activeReportsCount > 0) {
         logger.info({ wilaya, nearby: activeReportsCount, critical: criticalReports }, "AI guidance generated");
         res.json({ guidance: sanitizeAiOutput(text) });
         return;
       }
-      logger.warn({ wilaya }, "AI returned empty guidance — serving fallback");
+      if (text) {
+        // F046 (CodeRabbit on PR #213): with zero active reports the
+        // provider's text must NOT be served as-is — sanitizeAiOutput
+        // only escapes HTML/dangerous schemes, it does not enforce the
+        // unknown-status wording, so a reply like "Aucun incendie à
+        // proximité" would read as an all-clear. Fall through to the
+        // local unknown-status fallback instead.
+        logger.warn({ wilaya }, "AI returned guidance with no active reports — serving unknown-status fallback");
+      } else {
+        logger.warn({ wilaya }, "AI returned empty guidance — serving fallback");
+      }
     } catch (err) {
       logger.error({ err }, "AI guidance error");
     }
