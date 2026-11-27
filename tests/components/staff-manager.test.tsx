@@ -119,3 +119,39 @@ describe("StaffManager role matrix (Fix 33 — STF-1)", () => {
     expect(screen.queryByText("إدارة وحدات الحماية المدنية")).toBeNull();
   });
 });
+
+describe("StaffManager logout timeout (CodeRabbit PR #215, R2-#4)", () => {
+  it("logout rides the 15 s apiFetch ceiling", async () => {
+    setSession("admin", null);
+    const fetchMock = vi.fn(async (url: string, _init?: any) => {
+      if (String(url).includes("/api/units")) {
+        return new Response(JSON.stringify({ units }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (String(url).includes("/api/users")) {
+        return new Response(JSON.stringify({ users }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (String(url).includes("/logout")) {
+        return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({}), { status: 404, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<StaffManager lang="ar" />);
+    await waitFor(() => expect(screen.getByText("AG-16")).toBeTruthy());
+    fireEvent.click(screen.getByText("خروج"));
+    await waitFor(() => {
+      const calls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/logout"));
+      expect(calls.length).toBe(2);
+    });
+    // apiFetch passes an AbortSignal.timeout(15_000); bare fetch() passes
+    // no signal at all, so these assertions fail on the pre-fix code.
+    const logoutCalls = fetchMock.mock.calls.filter(([url]) => String(url).includes("/logout"));
+    expect(logoutCalls.map(([url]) => String(url)).sort()).toEqual([
+      "/api/admin/logout",
+      "/api/auth/logout",
+    ]);
+    for (const [, init] of logoutCalls) {
+      expect((init as any)?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+});
