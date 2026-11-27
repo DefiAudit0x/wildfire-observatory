@@ -133,6 +133,19 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   // only honest post-await comparison for it, mirroring dateRef above.
   const rosterRef = useRef(roster);
   rosterRef.current = roster;
+  // CodeRabbit Major (PR #215): saveRoster used to decide "unsaved
+  // changes" by object identity (rosterRef.current !== roster) — but a
+  // reload (fetchRoster) also replaces the object, so a pre-save GET
+  // landing before the PUT committed was mistaken for a user edit and the
+  // committed response was discarded, leaving the pre-save roster editable
+  // (a later save could then overwrite the acknowledged changes). Edits
+  // are now tracked explicitly: every local mutation bumps this counter
+  // and loads do not. A save captures the counter at start; only a bump
+  // after that means genuine unsaved changes.
+  const rosterEditSeqRef = useRef(0);
+  const noteRosterEdit = () => {
+    rosterEditSeqRef.current += 1;
+  };
   const fetchRoster = useCallback(async () => {
     if (isGlobalAdmin && !selectedUnit) {
       rosterReqRef.current?.abort();
@@ -218,6 +231,10 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     }
     setSaving(true);
     setMsg(null);
+    // Snapshot the edit counter: only edits made AFTER the save starts are
+    // unsaved changes (they are not in the PUT body). A reload that lands
+    // mid-save replaces the roster object but does not bump the counter.
+    const editSeqAtSaveStart = rosterEditSeqRef.current;
     try {
       const res = await apiFetch(`/api/roster/${rosterDate}${unitQuery}`, "PUT", { posts: roster.posts });
       const data = await res.json();
@@ -228,7 +245,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       // day A's roster under day B's header is the finding.
       if (rosterDate !== dateRef.current || unitRef.current !== unitQuery) return;
       if (res.ok) {
-        const hasUnsavedChanges = rosterRef.current !== roster;
+        const hasUnsavedChanges = rosterEditSeqRef.current !== editSeqAtSaveStart;
         if (!hasUnsavedChanges) setRoster(data);
         setMsg(hasUnsavedChanges
           ? (isArabic ? "✓ تم الحفظ، لكن توجد تغييرات غير محفوظة." : "✓ Enregistré, mais des modifications restent à enregistrer.")
@@ -373,6 +390,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
     if (!roster) return;
     const updated = { ...roster, posts: roster.posts.filter((p) => p.id !== postId) };
     setRoster(updated);
+    noteRosterEdit();
     setMsg(isArabic ? "تمت إزالة المنصب — اضغط حفظ لتأكيد التغيير." : "Poste retiré — cliquez Enregistrer pour confirmer.");
   };
 
@@ -407,6 +425,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       ),
     };
     setRoster(updated);
+    noteRosterEdit();
   };
 
   const removePersonnel = (postId: string, agentId: string) => {
@@ -418,10 +437,12 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       ),
     };
     setRoster(updated);
+    noteRosterEdit();
   };
 
   const updatePersonnel = (postId: string, agentId: string, field: "name" | "rank", value: string) => {
     if (!roster) return;
+    noteRosterEdit();
     setRoster((r) => ({
       ...r!,
       posts: r!.posts.map((p) =>
@@ -455,6 +476,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       posts: roster.posts.map((p) => (p.id === postId ? { ...p, status } : p)),
     };
     setRoster(updated);
+    noteRosterEdit();
   };
 
   const handleLogout = () => {
