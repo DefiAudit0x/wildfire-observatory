@@ -143,6 +143,13 @@ export default function App() {
       lng: userLocation.lng,
       reports,
       satellites,
+      // Fix 25b doctrine (EvacuationRadar): the freshness check reads the
+      // clock, so the memo must re-evaluate as time passes. Without a clock
+      // dep, a verified report keeps `confirmed: true` past the 30-min
+      // window whenever polls fail and the reports reference stays put,
+      // and TrappedSOSModal keeps showing the imminent-danger label from
+      // that stale object. The 30 s syncNow clock drives the re-check.
+      now: syncNow,
     });
 
     const confirmed = nearbySources.filter((source) => source.kind === "report" && source.status === "verified");
@@ -151,7 +158,7 @@ export default function App() {
       null
     );
     return nearest ? { distanceM: Math.round(nearest.distanceKm * 1000), kind: nearest.kind, confirmed: true } : null;
-  }, [userLocation, reports, satellites]);
+  }, [userLocation, reports, satellites, syncNow]);
 
   return (
     <div className="min-h-screen bg-[#0a0505] text-slate-100 font-sans flex flex-col selection:bg-red-500 selection:text-white" dir={isArabic ? "rtl" : "ltr"}>
