@@ -352,7 +352,10 @@ async function browserEncrypt(
   type: string = "report"
 ): Promise<EncryptedMessage | null> {
   try {
-    if (!browserKeyPair || !browserSignKey) return null;
+    const senderKeyPair = browserKeyPair;
+    const senderSignKey = browserSignKey;
+    const senderEphemeralId = browserEphemeralId;
+    if (!senderKeyPair || !senderSignKey) return null;
 
     // Import peer's public key
     const peerPubKey = await crypto.subtle.importKey(
@@ -366,7 +369,7 @@ async function browserEncrypt(
     // Derive shared secret
     const sharedBits = await crypto.subtle.deriveBits(
       { name: "ECDH", public: peerPubKey },
-      browserKeyPair.privateKey,
+      senderKeyPair.privateKey,
       256
     );
 
@@ -393,8 +396,8 @@ async function browserEncrypt(
     // ciphertext, iv AND every relay-invariant field — the browser fallback
     // previously signed only "ciphertext + iv", a scheme mismatch that
     // produced signatures no native verifier would accept and vice versa.
-    const exportedPub = await crypto.subtle.exportKey("spki", browserKeyPair.publicKey);
-    const exportedSignPub = await crypto.subtle.exportKey("spki", browserSignKey.publicKey);
+    const exportedPub = await crypto.subtle.exportKey("spki", senderKeyPair.publicKey);
+    const exportedSignPub = await crypto.subtle.exportKey("spki", senderSignKey.publicKey);
     const messageId = generateId();
     const timestamp = Date.now();
     const nonce = crypto.getRandomValues(new Uint32Array(1))[0] & 0x7fffffff;
@@ -404,7 +407,7 @@ async function browserEncrypt(
       messageId,
       type,
       0,
-      browserEphemeralId,
+      senderEphemeralId,
       arrayBufferToBase64(exportedPub),
       timestamp,
       nonce,
@@ -413,7 +416,7 @@ async function browserEncrypt(
     );
     const signature = await crypto.subtle.sign(
       { name: "ECDSA", hash: "SHA-256" },
-      browserSignKey.privateKey,
+      senderSignKey.privateKey,
       canonical
     );
 
@@ -421,7 +424,7 @@ async function browserEncrypt(
       ciphertext: arrayBufferToBase64(ciphertext),
       iv: arrayBufferToBase64(iv.buffer),
       signature: arrayBufferToBase64(signature),
-      ephemeralId: browserEphemeralId,
+      ephemeralId: senderEphemeralId,
       senderPublicKey: arrayBufferToBase64(exportedPub),
       timestamp,
       lat,

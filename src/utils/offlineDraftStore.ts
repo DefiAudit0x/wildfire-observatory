@@ -64,16 +64,26 @@ async function loadOfflineDraftsUnlocked(): Promise<OfflineDraftRecord[]> {
   try {
     // ARC-L15: tombstones are store bookkeeping, not drafts — never surface them.
     const records = (await readAllStore(db)).filter((r) => typeof r.deletedAt !== "number");
-    if (records.length > 0) return records;
+    if (records.length > 0) return sortDraftsOldestFirst(records);
     const legacy = await readLegacyDrafts();
     if (legacy.length > 0) {
-      await replaceOfflineDraftsUnlocked(legacy);
+      const committed = await replaceOfflineDraftsUnlocked(legacy);
       try { localStorage.removeItem(LEGACY_KEY); } catch { /* storage may be unavailable */ }
+      return sortDraftsOldestFirst(committed);
     }
-    return legacy;
+    return sortDraftsOldestFirst(legacy);
   } finally {
     db.close();
   }
+}
+
+function sortDraftsOldestFirst(records: OfflineDraftRecord[]): OfflineDraftRecord[] {
+  const queuedAt = (record: OfflineDraftRecord) => {
+    const value = record.queuedAt ?? record.createdAt ?? record.timestamp;
+    const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return [...records].sort((a, b) => queuedAt(a) - queuedAt(b) || a.id.localeCompare(b.id));
 }
 
 function readAllStore(db: IDBDatabase): Promise<OfflineDraftRecord[]> {
