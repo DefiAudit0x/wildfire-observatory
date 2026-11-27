@@ -23,6 +23,7 @@ registerSW({ immediate: true });
 // a dead "Failed to fetch dynamically imported module" screen, reload ONCE —
 // the sessionStorage guard prevents a reload loop if the failure persists.
 const CHUNK_LOAD_KEY = "chunk-load-reloaded";
+let chunkRecoveryAttempted = false;
 function isChunkLoadError(message: string): boolean {
   return (
     message.includes("Failed to fetch dynamically imported module") ||
@@ -31,18 +32,25 @@ function isChunkLoadError(message: string): boolean {
     message.includes("Loading chunk")
   );
 }
+function recoverFromChunkLoadError(): void {
+  if (chunkRecoveryAttempted) return;
+  try {
+    if (sessionStorage.getItem(CHUNK_LOAD_KEY)) return;
+    sessionStorage.setItem(CHUNK_LOAD_KEY, "1");
+  } catch {
+    // Storage can be disabled; still attempt one recovery reload per page.
+  }
+  chunkRecoveryAttempted = true;
+  window.location.reload();
+}
 window.addEventListener("error", (e) => {
   if (!e.message || !isChunkLoadError(e.message)) return;
-  if (sessionStorage.getItem(CHUNK_LOAD_KEY)) return;
-  sessionStorage.setItem(CHUNK_LOAD_KEY, "1");
-  window.location.reload();
+  recoverFromChunkLoadError();
 });
 window.addEventListener("unhandledrejection", (e) => {
   const message = String((e.reason && (e.reason as Error).message) || e.reason || "");
   if (!isChunkLoadError(message)) return;
-  if (sessionStorage.getItem(CHUNK_LOAD_KEY)) return;
-  sessionStorage.setItem(CHUNK_LOAD_KEY, "1");
-  window.location.reload();
+  recoverFromChunkLoadError();
 });
 
 // Store-and-forward mesh gateway: relay decryptable offline reports to the API
