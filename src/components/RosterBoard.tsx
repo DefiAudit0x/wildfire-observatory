@@ -134,7 +134,13 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   const rosterRef = useRef(roster);
   rosterRef.current = roster;
   const fetchRoster = useCallback(async () => {
-    if (isGlobalAdmin && !selectedUnit) return;
+    if (isGlobalAdmin && !selectedUnit) {
+      rosterReqRef.current?.abort();
+      rosterReqRef.current = null;
+      setLoading(false);
+      setRoster(null);
+      return;
+    }
     rosterReqRef.current?.abort();
     const controller = new AbortController();
     rosterReqRef.current = controller;
@@ -239,11 +245,14 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
   };
 
   const doCopyToNextDay = async (target: string) => {
+    const sourceDate = date;
+    const sourceUnit = unitQuery;
     setSaving(true);
     setMsg(null);
     try {
-      const res = await apiFetch(`/api/roster/${date}/copy-to/${target}${unitQuery}`, "POST");
+      const res = await apiFetch(`/api/roster/${sourceDate}/copy-to/${target}${sourceUnit}`, "POST");
       const data = await res.json();
+      if (sourceDate !== dateRef.current || sourceUnit !== unitRef.current) return;
       if (res.status === 201) {
         setMsg(isArabic ? `✓ نُسخ الجدول إلى ${target}.` : `✓ Copié vers ${target}.`);
         setDate(target);
@@ -251,6 +260,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         setMsg(isArabic ? (data.error || "فشل النسخ") : (data.error || "Échec de la copie"));
       }
     } catch {
+      if (sourceDate !== dateRef.current || sourceUnit !== unitRef.current) return;
       setMsg(isArabic ? "تعذر النسخ." : "Erreur de copie.");
     } finally {
       setSaving(false);
@@ -279,6 +289,7 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
       });
       const data = await res.json();
       if (res.ok || res.status === 201) {
+        if (requestedDate !== dateRef.current || unitRef.current !== unitQuery) return;
         setNewPost({ labelAr: "", vehicle: "" });
         // Fix 24 (RSTR-2): the POST returns the created post (201 + the
         // post object, server-assigned id). Append it to the LOCAL roster
@@ -288,7 +299,6 @@ export default function RosterBoard({ lang }: RosterBoardProps) {
         // merge into, and never when the operator has moved to another day
         // (that day's GET is already in flight — the stale closure's
         // fetchRoster would fetch the OLD day and abort the new load).
-        if (requestedDate !== dateRef.current || unitRef.current !== unitQuery) return;
         if (!roster) {
           await fetchRoster();
           return;
