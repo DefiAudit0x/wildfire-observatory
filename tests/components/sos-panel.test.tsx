@@ -79,4 +79,31 @@ describe("SosPanel audio loading (Fix 34 — SPN-1)", () => {
     await waitFor(() => expect(screen.getByText(/الاستغاثة الصوتية المسجلة/)).toBeTruthy());
     expect(onAudioError).not.toHaveBeenCalled();
   });
+
+  it("renders an active roster dispatch when the SOS snapshot has no dispatchedTeams", () => {
+    render(
+      <SosPanel
+        isArabic={true}
+        sosCalls={[sos()]}
+        dispatchLoading={false}
+        registeredTeams={[{
+          teamId: "TEAM-1",
+          name: "Team 1",
+          nameAr: "فريق 1",
+          type: "protection_civile",
+          baseLat: null,
+          baseLng: null,
+          active: true,
+          blockedPrincipals: [],
+          members: [],
+          activeMission: { sosId: "SOS-1", phase: "en_route", since: Date.now() },
+        }]}
+        onDispatch={async () => true}
+        onResolve={() => {}}
+        onFocusSos={() => {}}
+      />
+    );
+
+    expect(screen.getByText("الفرق الموجهة:")).toBeTruthy();
+  });
 });
