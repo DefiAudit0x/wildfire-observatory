@@ -326,7 +326,7 @@ class TeamLocationLogicTest {
 
     @Test
     fun `mission target coords parse from the extracted mission object`() {
-        val mission = "\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42,\"sosLat\":36.7503,\"sosLng\":5.0703"
+        val mission = "{\"sosId\":\"sos-9\",\"phase\":\"en_route\",\"since\":42,\"sosLat\":36.7503,\"sosLng\":5.0703}"
         val target = TeamLocationLogic.parseMissionCoords(mission)
         assertNotNull(target)
         assertEquals(36.7503, target!!.first, 1e-9)
@@ -344,7 +344,7 @@ class TeamLocationLogicTest {
         // Garbage coordinates — a string value is not a number token
         assertNull(TeamLocationLogic.parseMissionCoords("\"sosLat\":\"abc\",\"sosLng\":5.07"))
         // Negative coordinates are legitimate (western longitudes)
-        val west = TeamLocationLogic.parseMissionCoords("\"sosLat\":35.1,\"sosLng\":-6.2")
+        val west = TeamLocationLogic.parseMissionCoords("{\"sosLat\":35.1,\"sosLng\":-6.2}")
         assertEquals(-6.2, west?.second!!, 1e-9)
         // Null/blank ids and phases
         assertNull(TeamLocationLogic.parseMissionSosId(null))

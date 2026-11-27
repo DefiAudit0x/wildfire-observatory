@@ -54,7 +54,8 @@ class MeshInboundTest {
         nonce: Int = 7,
         powNonce: Int = solvedNonce(messageId, "EPH_1", nonce),
         powDifficulty: Int = difficulty,
-        hopsLeft: Int = 3
+        hopsLeft: Int = 3,
+        origPublicKey: String = canonicalB64(ByteArray(32))
     ): MeshWire.Frame =
         MeshWire.Frame(
             protocolVersion = MeshWire.PROTOCOL_VERSION,
@@ -64,7 +65,7 @@ class MeshInboundTest {
             iv = canonicalB64(ByteArray(12)),
             hopCount = 0,
             origEphemeralId = "EPH_1",
-            origPublicKey = canonicalB64(ByteArray(32)),
+            origPublicKey = origPublicKey,
             timestamp = timestamp,
             signature = canonicalB64(ByteArray(64)),
             nonce = nonce,
@@ -318,6 +319,22 @@ class MeshInboundTest {
     }
 
     @Test
+    fun variantBudgetIsSharedAcrossKeysForTheSamePowIdentity() {
+        val inb = inbound()
+        repeat(MeshInbound.MAX_VARIANTS_PER_TRIPLE) { i ->
+            val payload = canonicalB64("ciphertext-variant-$i".toByteArray())
+            val key = canonicalB64(ByteArray(32) { (i % 2).toByte() })
+            assertTrue(evaluate(frame(nonce = 7, payloadB64 = payload, origPublicKey = key), inbound = inb) is MeshInbound.Verdict.Accepted)
+        }
+        val extra = canonicalB64("ciphertext-variant-extra".toByteArray())
+        val otherKey = canonicalB64(ByteArray(32) { 1 })
+        val verdict = evaluate(frame(nonce = 7, payloadB64 = extra, origPublicKey = otherKey), inbound = inb)
+        assertTrue(verdict is MeshInbound.Verdict.Rejected)
+        assertEquals(MeshInbound.RejectReason.REPLAY, (verdict as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(MeshInbound.MAX_VARIANTS_PER_TRIPLE, inb.seenMessageHashes.size)
+    }
+
+    @Test
     fun sweepReplayWindowExpiresTripleCounts() {
         val inb = inbound()
         val now = System.currentTimeMillis()
@@ -343,7 +360,7 @@ class MeshInboundTest {
         assertEquals(MeshInbound.RejectReason.REPLAY, (unseen as MeshInbound.Verdict.Rejected).reason)
         assertEquals(0, inb.seenMessageHashes.size)
         // A triple already in the map is still admitted at capacity.
-        val knownHash = MeshWire.seenTripleHash("msg-1", 8, frame().origPublicKey)
+        val knownHash = MeshWire.seenTripleHash("msg-1", 8, frame().origEphemeralId)
         inb.seenTripleCounts[knownHash] = MeshInbound.TripleAdmission(1, System.currentTimeMillis())
         assertTrue(evaluate(frame(nonce = 8), inbound = inb) is MeshInbound.Verdict.Accepted)
         assertEquals(1, inb.seenMessageHashes.size)
