@@ -45,6 +45,7 @@ interface MainContentProps {
   userLocation: GeoPoint | null;
   mapClickedCoords: GeoPoint | null;
   selectedReportId: string | null;
+  reportSelectionVersion?: number;
   privilegedTabVisible: boolean;
   rosterVisible: boolean;
   syncState: SyncState;
@@ -71,6 +72,7 @@ export default function MainContent({
   userLocation,
   mapClickedCoords,
   selectedReportId,
+  reportSelectionVersion,
   privilegedTabVisible,
   rosterVisible,
   syncState,
@@ -217,6 +219,7 @@ export default function MainContent({
                     onMapClick={onMapClick}
                     onConfirmReport={onConfirmReport}
                     selectedReportId={selectedReportId}
+                    selectionVersion={reportSelectionVersion}
                     lang={lang}
                   />
                 </Suspense>

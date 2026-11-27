@@ -180,6 +180,11 @@ class MeshHub {
             }
             const label = labelValue.slice(0, 64);
 
+            if (nodeId && nodeId !== subject && this.nodes.get(nodeId)?.ws === ws) {
+              this.nodes.delete(nodeId);
+              this.broadcast({ type: "node:left", nodeId, nodeCount: this.nodes.size });
+            }
+
             const previous = this.nodes.get(subject);
             if (!previous && this.nodes.size >= MAX_NODES) {
               logger.warn({ ip, subject }, "Mesh node rejected — node limit reached");

@@ -193,7 +193,7 @@ async function getVerifiedSubscribers(): Promise<VerifiedSubscriber[]> {
   }
 }
 
-export async function sendVerificationEmail(email: string, token: string): Promise<"sent" | "not-configured"> {
+export async function sendVerificationEmail(email: string, token: string, unsubscribeToken?: string): Promise<"sent" | "not-configured"> {
   const provider = getProvider();
   // Fix 44 (MAIL-3): report the unconfigured state instead of silently
   // no-opping — the subscribe sites answer "Check email to verify" and the
@@ -201,6 +201,9 @@ export async function sendVerificationEmail(email: string, token: string): Promi
   if (!provider) return "not-configured";
 
   const verifyUrl = `${config.appUrl}/api/notifications/verify?email=${encodeURIComponent(email)}&token=${encodeURIComponent(token)}`;
+  const unsubscribeUrl = unsubscribeToken
+    ? `${config.appUrl}/api/notifications/unsubscribe?email=${encodeURIComponent(email)}&token=${encodeURIComponent(unsubscribeToken)}`
+    : null;
 
   const html = `
 <!DOCTYPE html>
@@ -216,6 +219,7 @@ export async function sendVerificationEmail(email: string, token: string): Promi
       <p style="color:#f3f4f6;font-size:14px;margin:0 0 8px">مرحباً! لتأكيد اشتراكك في تنبيهات حرائق الغابات، اضغط الزر التالي:</p>
       <a href="${verifyUrl}" style="display:inline-block;margin-top:16px;padding:12px 28px;background:#dc2626;color:white;text-decoration:none;border-radius:8px;font-size:14px;font-weight:bold">تأكيد الاشتراك</a>
       <p style="color:#6b7280;font-size:11px;margin-top:20px">إن لم يعمل الزر، انسخ الرابط: <span style="word-break:break-all">${verifyUrl}</span></p>
+      ${unsubscribeUrl ? `<p style="color:#6b7280;font-size:11px;margin-top:16px"><a href="${unsubscribeUrl}" style="color:#9ca3af">إلغاء الاشتراك أو تعديل التفضيلات</a></p>` : ""}
     </td></tr>
   </table>
 </body>
@@ -250,21 +254,24 @@ export async function sendFireAlert(report: {
   const subject = `🔥 [${report.severity.toUpperCase()}] حريق في ${report.wilaya}`;
 
   const BATCH_SIZE = 10;
+  let sent = 0;
+  let failed = 0;
   for (let i = 0; i < matchingSubscribers.length; i += BATCH_SIZE) {
     const batch = matchingSubscribers.slice(i, i + BATCH_SIZE);
-    await Promise.allSettled(
-      batch.map(({ email, unsubscribeToken }) => {
+    const results = await Promise.allSettled(
+      batch.map(async ({ email, unsubscribeToken }) => {
         const unsubscribeUrl = unsubscribeToken
           ? `${config.appUrl}/api/notifications/unsubscribe?email=${encodeURIComponent(email)}&token=${encodeURIComponent(unsubscribeToken)}`
           : `${config.appUrl}/#unsubscribe`;
-        return sendEmail({ to: email, subject, html: buildAlertHtml(report, unsubscribeUrl) }).catch((err) => {
-          logger.error({ err, recipientFingerprint: secretFingerprint(email) }, "Failed to send alert email");
-        });
+        await sendEmail({ to: email, subject, html: buildAlertHtml(report, unsubscribeUrl) });
       })
     );
+    sent += results.filter((result) => result.status === "fulfilled").length;
+    failed += results.filter((result) => result.status === "rejected").length;
   }
 
-  logger.info({ count: matchingSubscribers.length, wilaya: report.wilaya }, "Fire alerts sent");
+  logger.info({ count: sent, failed, wilaya: report.wilaya }, "Fire alerts sent");
+  if (failed > 0) throw new Error(`${failed} fire alert deliveries failed`);
 }
 
 export { buildAlertHtml };

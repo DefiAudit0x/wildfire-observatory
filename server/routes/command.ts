@@ -151,7 +151,7 @@ router.post("/location/heartbeat", heartbeatLimiter, async (req: Request, res: R
         if (b.code !== badgeCode || b.isActive !== true) return false;
         if (b.expiresAt) {
           const expiry = typeof b.expiresAt === "number" ? b.expiresAt : Date.parse(b.expiresAt);
-          if (Number.isFinite(expiry) && now >= expiry) return false;
+          if (!Number.isFinite(expiry) || now >= expiry) return false;
         }
         return true;
       });

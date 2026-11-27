@@ -38,7 +38,7 @@ ProvenanceEvent {
   threatId: UUID           // the report/SOS the event attaches to
   kind: REPORT | CONFIRM | VERIFY | RETRACT | BADGE_BIND
   channel: API | MESH_RELAY | OPERATOR | FIRMS_PASS
-  actor: ActorRef          // principal-cookie id | mesh ephemeral id (rotating) | badge id | satellite pass id
+  actor: ActorRef          // principal-cookie id | mesh ephemeral id (rotating; not a stable voter) | badge id | satellite pass id
   identityStrength: ANONYMOUS(0) | DEVICE_PSEUDONYM(1) | BADGE_HOLDER(2) | OPERATOR(3)
   atMs: server timestamp   // client timestamps are data, never authority
   payloadDigest: sha256    // binds the event to exactly what was claimed
@@ -53,7 +53,7 @@ EffectiveTrust {
 
 ### 3.3 Derivation rules (v1 — deliberately simple)
 
-1. `strength = Σ over distinct actors (identityStrength weight)` — distinctness keyed on actor id, so mesh key rotation cannot re-vote (the audit's voter-shift finding stays dead).
+1. `strength = Σ over distinct actors (identityStrength weight)` — distinctness keyed on actor id only deduplicates within that identity lifetime. Mesh key rotation creates a new actor ID; rotation alone cannot prevent repeat voting. A privacy-reviewed stable principal/credential binding, or an explicit policy that unbound mesh observations do not count as distinct voters, must be specified before making an anti-repeat guarantee.
 2. Level mapping: any OPERATOR or BADGE_HOLDER VERIFY → `VERIFIED`; strength ≥ 5 with only ANONYMOUS/DEVICE_PSEUDONYM confirmations → `COMMUNITY_CONFIRMED`; else `PENDING`. (Preserves today's Sybil-honest behavior — v2.15.0 wave 1 — as a theorem, not a convention.)
 3. Trust never *decays* in v1; recency enters via the existing freshness window at display time. Decay is a v2 concern (needs owner decision on what "stale verified fire" means operationally).
 4. The events table is append-only; a retraction is an event, never a deletion (audit-trail doctrine already used for team removal).
@@ -131,6 +131,6 @@ Gate between phases: the audit's own criteria — no behavior change visible to 
 ## 6. Open decisions for the owner (blockers for 2a sign-off)
 
 1. **Trust decay** — should `VERIFIED` near a 10-min-stale fix downgrade at display time? (SOS dispatch UX impact.)
-2. **Mesh identity binding** — bind ephemeral mesh keys to the device identity at handshake (CryptoEngine's stated future purpose) — yes/no? Privacy trade documented in CryptoEngine kdoc (correlation across rotation windows).
+2. **Mesh identity binding / voting policy (unresolved)** — decide whether and how to bind ephemeral mesh keys to a stable principal/credential before counting votes across rotations; bind to the device identity at handshake (CryptoEngine's stated future purpose) — yes/no? Privacy trade documented in CryptoEngine kdoc (correlation across rotation windows).
 3. **FIRMS pass horizon** — accept the next-pass estimate (2–6h) as `expiresAtMs`, or keep observations alive until the *next* pass contradicts them?
 4. **Route-score hosting** — server-computed (needs Render CPU) vs on-device only (works offline, slower). v1 leans on-device with server as optional accelerator.

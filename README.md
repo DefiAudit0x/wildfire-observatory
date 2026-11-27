@@ -10,10 +10,10 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB)
 ![Express](https://img.shields.io/badge/Express-5-green)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.0-orange)
+![Version](https://img.shields.io/badge/version-2.18.0-orange)
 
 <p align="center">
-  <img alt="Live dashboard" src="docs/screenshots/home-map.png" width="820" />
+  <img alt="Current observatory — local capture with unavailable feeds" src="docs/screenshots/home-map.png" width="820" />
 </p>
 
 </div>
@@ -54,7 +54,7 @@
 |---|---|
 | 🗺️ **Interactive Map** | Near-real-time wildfire monitoring with Leaflet, satellite hotspots (MODIS/VIIRS) & citizen reports |
 | 🤖 **AI Verification** | Google Gemini Vision API analyzes uploaded images for fire/smoke detection |
-| 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time over a Cloudflare proxy; unreachable = an honest empty sky, zero fabricated hotspots) |
+| 🛰️ **Satellite Data** | NASA FIRMS integration (near-real-time; source failures are unavailable/partial, with zero fabricated hotspots) |
 | 📊 **Fire Risk Index** | Deterministic 0–100 risk indicator from citizen reports, satellite hotspots & wilaya severity |
 | 📈 **History & Open Export** | 30-day activity chart + public CSV/GeoJSON export of reports and hotspots |
 | 👥 **Consensus Engine** | Citizen confirmations — 5+ marks community agreement without changing verification status |
@@ -67,7 +67,11 @@
 
 ### Screenshots / لقطات الشاشة
 
-![Live map view](docs/screenshots/map-view.png)
+**Current observatory:** the banner (`home-map.png`) was regenerated from the local production build on November 27, 2026. It shows the current **report verification share** label and separate reporting tab. This capture runs with Firebase disabled and unavailable external feeds; the history error and partial sync indicator are visible, and the map panel has no loaded tiles. Its zero counts are not evidence of live incident coverage. AI analysis is advisory.
+
+**Home screen:** `map-view.png` shows HomeHub emergency/service cards, despite its filename; it is not an interactive map capture. The mobile image shows the same current home screen.
+
+![Home screen — emergency and service cards, no map](docs/screenshots/map-view.png)
 
 <p>
   <img alt="Mobile view" src="docs/screenshots/mobile-view.png" width="330" />
@@ -84,13 +88,13 @@
 ### Frontend
 | Technology | Usage |
 |---|---|
-| React 19 | UI framework |
+| React 19.2.8 | UI framework |
 | TypeScript 5.8 | Type-safe JavaScript |
-| Vite 6.2 | Build tool & dev server |
+| Vite 8.2.2 | Build tool & dev server |
 | TailwindCSS 4.1 | Utility-first CSS |
 | Leaflet 1.9 | Interactive maps |
 | Lucide React | Icons |
-| Motion 12 | Animations |
+| Motion 13.1.1 | Animations |
 | Sentry React | Error monitoring |
 
 ### Backend
@@ -98,7 +102,7 @@
 |---|---|
 | Node.js ≥22.13 | Runtime |
 | Express 5 | HTTP server |
-| Firebase Firestore | NoSQL database (optional persistence) |
+| Firebase Firestore | Required durable database for citizen report submission (Firebase Admin SDK) |
 | Google GenAI 2.4 | Gemini AI image verification |
 | Helmet | HTTP security headers |
 | CORS | Cross-origin resource sharing |
@@ -122,7 +126,7 @@
 
 ## 🛰️ Satellite & Data Sources / الأقمار ومصادر البيانات
 
-- **NASA FIRMS** — Near-real-time thermal anomalies (fire hotspots) over the Maghreb region, fetched through a Cloudflare proxy and degraded gracefully to a static snapshot when unreachable (fully offline-safe).
+- **NASA FIRMS** — Near-real-time thermal anomalies (fire hotspots) over the Maghreb region, fetched directly or through a configured Cloudflare proxy. Source failure returns 503 with per-source availability and any retained partial hotspots; it does not imply a healthy empty sky or supply a static snapshot.
 - **MODIS vs VIIRS** — MODIS offers ~1 km resolution with 2–4 passes/day; VIIRS ~375 m with more frequent passes. Every hotspot carries its source satellite, brightness (fire radiative power proxy), confidence and detection time.
 - **What a hotspot means** — a thermal anomaly flagged by the sensor is a *signal to verify*, not a confirmed fire. Satellite observations are displayed independently; they do not automatically corroborate or verify citizen reports.
 - **Confidence** — nominal confidence is normalized to a percentage; high-confidence hotspots (≥70%) trigger proximity alerts.
@@ -207,14 +211,22 @@ cp .env.example .env
 # Edit .env with your keys:
 #   GEMINI_API_KEY — required for AI verification
 #   NASA_FIRMS_KEY — optional, for live satellite data
-#   ADMIN_PASSWORD — required for admin panel
-#   JWT_SECRET — change for production
+#   FIREBASE_SERVICE_ACCOUNT_PATH — required Admin service-account JSON path
+#     (or FIREBASE_SERVICE_ACCOUNT as JSON); provision a Firestore database first
+#   FIREBASE_DATABASE_ID — set for a named database; omit for (default)
+#   ADMIN_PASSWORD — required for admin panel (or ADMIN_PASSWORD_HASH)
+#   SUPER_ADMIN_PASSWORD — separate production credential (or SUPER_ADMIN_PASSWORD_HASH)
+#   JWT_SECRET — strong random secret required for production
 
 # Run development server
 pnpm run dev
 ```
 
 Open http://localhost:3000 in your browser.
+
+Citizen report submission requires a provisioned Firestore database and working **Firebase Admin** credentials with access to it. Set `FIREBASE_SERVICE_ACCOUNT_PATH` to a securely mounted service-account JSON file, or supply the JSON through `FIREBASE_SERVICE_ACCOUNT`; set `FIREBASE_DATABASE_ID` for a named database. Keep credentials outside Git. The optional browser config (`firebase-applet-config.json`) and client SDK alone do not satisfy durable admission. With no Admin database, the page can boot in a limited mode but citizen submission returns 503 `DURABLE_IDEMPOTENCY_UNAVAILABLE`.
+
+For local integration tests, `pnpm run test:e2e` starts the Firestore Emulator and supplies its project/host settings; do not point tests at production. For production, set a strong `JWT_SECRET`, configure the admin credential and a separate explicit super-admin credential. Startup refuses an admin-configured production environment without `SUPER_ADMIN_PASSWORD` or `SUPER_ADMIN_PASSWORD_HASH`.
 
 > 🌐 **Live deployment (Render free tier):** https://wildfire-observatory.onrender.com/ — the free instance sleeps after ~15 min idle; the first request wakes it in ~50 s.
 
@@ -224,7 +236,11 @@ Open http://localhost:3000 in your browser.
 |---|---|---|
 | `GEMINI_API_KEY` | ✅ | Google Gemini API key for AI image verification |
 | `ADMIN_PASSWORD` | ✅ | Admin panel password (replaces hardcoded `nova2026`) |
-| `JWT_SECRET` | ✅ | Secret key for JWT token signing |
+| `JWT_SECRET` | ✅ Production | Strong random secret for token signing |
+| `SUPER_ADMIN_PASSWORD` | ✅ Production with admin configured | Explicit separate super-admin credential; `SUPER_ADMIN_PASSWORD_HASH` is the alternative |
+| `FIREBASE_SERVICE_ACCOUNT` | ✅ One Admin credential source | Service-account JSON; alternatively mount a JSON file and set `FIREBASE_SERVICE_ACCOUNT_PATH` |
+| `FIREBASE_SERVICE_ACCOUNT_PATH` | ✅ Unless JSON supplied above | Secure server-side Admin JSON path; never commit the file |
+| `FIREBASE_DATABASE_ID` | Named databases only | Firestore database ID; omit for `(default)` |
 | `NASA_FIRMS_KEY` | ❌ | NASA FIRMS API key for live satellite data |
 | `NODE_ENV` | ❌ | `development` or `production` (default: `development`) |
 | `PORT` | ❌ | Server port (default: `3000`) |
@@ -248,13 +264,14 @@ The endpoint table below documents the API (there is no generated Swagger UI —
 | `GET` | `/api/health` | Health check | ❌ |
 | `GET` | `/api/reports` | List all reports (clustered) | ❌ |
 | `POST` | `/api/reports` | Submit a new report | ❌ |
-| `POST` | `/api/reports/:id/confirm` | Upvote/confirm a report | ❌ |
+| `POST` | `/api/public-principal` | Issue/renew anonymous principal cookie | No login; same-origin request |
+| `POST` | `/api/reports/:id/confirm` | Confirm community agreement; obtain principal first | ✅ Public-principal cookie |
 | `GET` | `/api/satellite-data` | Get satellite hotspots (NASA FIRMS) | ❌ |
 | `GET` | `/api/wilayas` | Get region statistics | ❌ |
 | `POST` | `/api/ai/guidance` | AI safety guidance | ❌ |
-| `POST` | `/api/admin/verify` | Admin login (returns JWT) | ❌ |
-| `POST` | `/api/admin/reports/:id/update-status` | Update report status/severity | ✅ Bearer JWT |
-| `POST` | `/api/admin/reports/:id/delete` | Delete a report | ✅ Bearer JWT |
+| `POST` | `/api/admin/verify` | Admin login (sets HttpOnly `admin_token`; returns `{success:true, role:"admin"}`) | ❌ |
+| `POST` | `/api/admin/reports/:id/update-status` | Update report status/severity | ✅ Admin cookie or accepted Bearer JWT |
+| `POST` | `/api/admin/reports/:id/delete` | Delete a report | ✅ Admin cookie or accepted Bearer JWT |
 
 ---
 

@@ -440,12 +440,20 @@ class RadarView @JvmOverloads constructor(
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windGlowPaint)
             canvas.drawLine(tail.x, tail.y, p.x, p.y, windPaint)
             // Arrowhead pointing INWARD (from where the wind arrives).
-            val inP = RadarModel.projectInto(from + 180.0, 27.6, cx, cy, radius, s[2])
-            val left = RadarModel.projectInto(from + 20.0, 26.0, cx, cy, radius, s[3])
-            val right = RadarModel.projectInto(from - 20.0, 26.0, cx, cy, radius, s[4])
+            // The tip (inP, 25 km) must be the INNERMOST vertex: the side
+            // points sit at 27 km / ±15°, i.e. 27·cos(15°) ≈ 26.1 km along
+            // the wind axis — farther from the centre than the tip. The old
+            // 26 km / ±20° sides projected to ≈24.4 km, closer in than the
+            // tip, so the "tip" stuck out and the head pointed outward
+            // (CodeRabbit, PR #215).
+            val inP = RadarModel.projectInto(from, 25.0, cx, cy, radius, s[2])
+            val left = RadarModel.projectInto(from + 15.0, 27.0, cx, cy, radius, s[3])
+            val right = RadarModel.projectInto(from - 15.0, 27.0, cx, cy, radius, s[4])
             canvas.drawLine(p.x, p.y, left.x, left.y, headPaint)
             canvas.drawLine(p.x, p.y, right.x, right.y, headPaint)
             canvas.drawLine(p.x, p.y, inP.x, inP.y, headPaint)
+            canvas.drawLine(left.x, left.y, inP.x, inP.y, headPaint)
+            canvas.drawLine(right.x, right.y, inP.x, inP.y, headPaint)
         }
 
         // User triangle at center — breathing glow ring + halo + core (or a

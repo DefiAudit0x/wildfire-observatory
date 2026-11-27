@@ -86,9 +86,24 @@ async function fetchFirmsData(source: string): Promise<FirmsResult> {
         const lat = Number(cols[columns.lat]);
         const lng = Number(cols[columns.lng]);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        const brightness = parseFloat(cols[columns.brightness]);
+        const brightness = Number(cols[columns.brightness]);
         const scanDate = cols[columns.scanDate];
-        const scanTimeRaw = cols[columns.scanTime].padStart(4, "0");
+        const scanTimeRawInput = cols[columns.scanTime];
+        // CodeRabbit (PR #215): the formatter below assumes 1–4 decimal
+        // digits, but Number("1e02") is 100 (in range, minute part 0), so
+        // "1e02" passed and emitted the invalid timestamp "T1e:02:00Z";
+        // "01230" likewise passed and was silently truncated to 01:23.
+        // Reject anything that is not 1–4 decimal digits up front.
+        if (!/^\d{1,4}$/.test(scanTimeRawInput)) continue;
+        const scanTimeRaw = scanTimeRawInput.padStart(4, "0");
+        const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(scanDate);
+        const timeValue = Number(scanTimeRaw);
+        if (!Number.isFinite(brightness) || !dateMatch || !Number.isInteger(timeValue) ||
+            timeValue < 0 || timeValue > 2359 || timeValue % 100 >= 60) continue;
+        const checkedDate = new Date(Date.UTC(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])));
+        if (checkedDate.getUTCFullYear() !== Number(dateMatch[1]) ||
+            checkedDate.getUTCMonth() !== Number(dateMatch[2]) - 1 ||
+            checkedDate.getUTCDate() !== Number(dateMatch[3])) continue;
         const spacecraft = cols[columns.satellite];
         const satType = ["Terra", "Aqua", "T", "A"].includes(spacecraft) ? "MODIS" : ["N", "N20", "N21"].includes(spacecraft) ? "VIIRS" : null;
         if (!satType || cols[columns.instrument] !== satType) continue;

@@ -49,6 +49,7 @@ async function getNotificationsFromDb(deviceId: string): Promise<any[]> {
       return fromDb;
     } catch (err) {
       logger.error({ err }, "Failed to load device notifications");
+      throw err;
     }
   }
   return memoryNotifications.filter((n) => n.deviceId === deviceId);
@@ -232,8 +233,12 @@ router.get("/:deviceId", async (req: Request, res: Response) => {
     }
     return;
   }
-  const notifs = await getNotificationsFromDb(deviceId);
-  res.json(notifs);
+  try {
+    const notifs = await getNotificationsFromDb(deviceId);
+    res.json(notifs);
+  } catch {
+    res.status(503).json({ error: "Notifications temporarily unavailable" });
+  }
 });
 
 // v2.15.0: explicit enrollment. The signed binding cookie is issued ONLY
@@ -428,7 +433,7 @@ router.post("/subscribe", subscribeLimiter, async (req: Request, res: Response) 
     }
 
     // Email is sent only after commit, never inside a retried transaction.
-    const emailDelivery = await sendVerificationEmail(email, verificationToken);
+    const emailDelivery = await sendVerificationEmail(email, verificationToken, unsubscribeToken);
     if (outcome === "created") logger.info({ emailFingerprint: secretFingerprint(email) }, "New subscriber registered");
     if (emailDelivery === "not-configured") {
       res.json({ success: true, message: "Subscription saved, but email delivery is not configured — you will not receive a verification email.", emailDelivery: "disabled" });

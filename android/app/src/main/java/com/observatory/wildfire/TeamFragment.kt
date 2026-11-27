@@ -41,6 +41,12 @@ class TeamFragment : Fragment() {
     private var sendButton: View? = null
     private var renderedChatIds: HashSet<String> = HashSet()
 
+    // CodeRabbit (PR #215): joinTeam runs on the repository scope, not the
+    // view scope, so its callback can land after the view was recreated.
+    // Each join captures its generation and its own view widgets; a
+    // callback from an older attempt is ignored once a newer join started.
+    private var joinGeneration = 0
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -98,14 +104,28 @@ class TeamFragment : Fragment() {
         val code = codeInput?.text?.toString().orEmpty()
         val name = nameInput?.text?.toString().orEmpty()
         joinError?.text = ""
+        joinError?.visibility = View.GONE
         joinButton?.isEnabled = false
+        // Capture this attempt's generation and widgets: the callback must
+        // only touch the view that started the join, never a recreated one.
+        val generation = ++joinGeneration
+        val errorView = joinError
+        val buttonView = joinButton
         app.repository.joinTeam(code, name, app.deviceId) { ok, teamNameAr, error ->
             activity?.runOnUiThread {
-                joinButton?.isEnabled = true
+                // A newer join started since — this callback is stale; the
+                // newer attempt owns the button and the error line now.
+                if (generation != joinGeneration) return@runOnUiThread
+                buttonView?.isEnabled = true
                 if (ok) {
+                    // Clear any error the previous attempt left behind — a
+                    // success must never leave a stale error visible.
+                    errorView?.text = ""
+                    errorView?.visibility = View.GONE
                     Toast.makeText(ctx, getString(R.string.team_joined_fmt, teamNameAr ?: ""), Toast.LENGTH_LONG).show()
                 } else if (error != null) {
-                    joinError?.text = error
+                    errorView?.text = error
+                    errorView?.visibility = View.VISIBLE
                 }
             }
         }

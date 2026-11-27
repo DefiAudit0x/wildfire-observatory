@@ -9,7 +9,7 @@ const mockReports = vi.hoisted(() => ({
   idempotency: new Map<string, { report: any; fingerprint: string }>(),
 }));
 
-vi.mock("../server/db.js", () => ({
+vi.mock("../server/db.js", async (importOriginal) => ({
   getReportsDbResult: vi.fn(async () => ({ status: "ok", reports: mockReports.list })),
   // v2.4.0 (S-H2): the route serves the pre-sanitized wire; sanitize strips
   // PII AND the inline image (replaced by hasImage + GET /:id/image).
@@ -27,45 +27,19 @@ vi.mock("../server/db.js", () => ({
     const entry = mockReports.idempotency.get(id);
     return entry ? { status: "found", report: entry.report, fingerprint: entry.fingerprint } : { status: "missing" };
   }),
-  saveReportWithIdempotency: vi.fn(async (report: any, fingerprint: string, _canonicalize: unknown, badgeTrust?: {
-    code: string;
-    reporterType: string;
-    wilaya: string;
-    trustedReport: Record<string, unknown>;
-  }) => {
-    const existing = mockReports.idempotency.get(report.clientGeneratedId);
-    if (existing) {
-      return existing.fingerprint === fingerprint
-        ? { status: "existing", report: existing.report }
-        : { status: "same_id_different_body", report: existing.report };
-    }
-    let reportToSave = report;
-    if (badgeTrust) {
-      const badge = mockDocs.get(`badgeCodes/${badgeTrust.code}`);
-      const expiresAt = typeof badge?.expiresAt === "number"
-        ? badge.expiresAt
-        : typeof badge?.expiresAt === "string"
-          ? new Date(badge.expiresAt).getTime()
-          : null;
-      const valid = badge?.isActive === true &&
-        (!badge.type || badge.type === badgeTrust.reporterType) &&
-        (!badge.wilaya || badge.wilaya === badgeTrust.wilaya) &&
-        (expiresAt === null || (Number.isFinite(expiresAt) && Date.now() < expiresAt)) &&
-        (!(typeof badge.maxUses === "number" && badge.maxUses > 0) || Number(badge.usedCount || 0) < badge.maxUses);
-      if (valid) {
-        reportToSave = badgeTrust.trustedReport;
-        badge.usedCount = Number(badge.usedCount || 0) + 1;
-      }
-    }
-    mockReports.idempotency.set(report.clientGeneratedId, { report: reportToSave, fingerprint });
-    mockReports.list.unshift(reportToSave);
-    return { status: "saved", report: reportToSave };
-  }),
+  // Exercise the actual transactional badge predicates, not a replica here.
+  saveReportWithIdempotency: (await importOriginal<typeof import("../server/db.js")>()).saveReportWithIdempotency,
   confirmReportInFirestore: vi.fn(async () => ({ status: "no_db" })),
   updateReportInFirestore: vi.fn(async () => true),
 }));
 
 const mockDocs = vi.hoisted(() => new Map<string, any>());
+
+vi.mock("../server/firebase.js", async () => {
+  const { memoryAdminDb } = await import("./helpers/memoryAdminDb");
+  const db = memoryAdminDb(mockDocs);
+  return { getDb: () => db, isAdminDb: () => true };
+});
 
 vi.mock("express-rate-limit", () => ({
   default: () => (_req: any, _res: any, next: () => void) => next(),

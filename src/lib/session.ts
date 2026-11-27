@@ -71,12 +71,26 @@ export function fetchSharedSession(force = false): Promise<void> {
   const generation = ++fetchGeneration;
   sharedFetchForced = force;
   sharedFetch = (async () => {
+    const controller = new AbortController();
+    let deadline: ReturnType<typeof setTimeout>;
+    const timedOut = new Promise<never>((_, reject) => {
+      deadline = setTimeout(() => {
+        controller.abort();
+        reject(new Error("Staff session probe timed out"));
+      }, 10_000);
+    });
     try {
-      const res = await fetch("/api/auth/session", { credentials: "same-origin" });
+      const result = await Promise.race([
+        (async () => {
+          const res = await fetch("/api/auth/session", { credentials: "same-origin", signal: controller.signal });
+          return { res, data: res.ok ? await res.json() : null };
+        })(),
+        timedOut,
+      ]);
+      const { res, data } = result;
       // Superseded: a newer fetch owns the answer — write nothing.
       if (generation !== fetchGeneration) return;
       if (res.ok) {
-        const data = await res.json();
         // Fix 29c (CodeRabbit Minor, review 6028708124): re-check AFTER
         // parsing — a forced fetch may have started and committed while
         // this body was parsing, and the stale result must not overwrite
@@ -98,6 +112,7 @@ export function fetchSharedSession(force = false): Promise<void> {
       if (generation !== fetchGeneration) return;
       sharedSession = { ...UNAUTHENTICATED_SESSION };
     } finally {
+      clearTimeout(deadline!);
       if (generation === fetchGeneration) {
         sharedLoading = false;
         sharedFetch = null;

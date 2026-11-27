@@ -116,11 +116,19 @@ describe("mesh relay replay admission reservations", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 503 })));
     relay.initMeshRelay();
     const raw = meshReport("origin-protected-retry", 1);
+    expect(await relay.enqueueRelay({ clientGeneratedId: "capacity-control" })).toEqual({
+      accepted: false, reason: "queue_capacity_protected",
+    });
 
     bridgeMock.handler?.(raw);
     await vi.waitFor(() => expect(bridgeMock.verifyPoW).toHaveBeenCalledTimes(1));
     await new Promise((resolve) => setTimeout(resolve, 0));
 
+    const rejectedState = JSON.parse(storage.get("mesh_relay_queue") || "{}");
+    expect(rejectedState.pending).toHaveLength(50);
+    expect(rejectedState.pending.some((item: { report: { clientGeneratedId: string } }) =>
+      item.report.clientGeneratedId === "origin-protected-retry"
+    )).toBe(false);
     clearProtection();
     bridgeMock.handler?.(raw);
     await vi.waitFor(() => expect(bridgeMock.verifyPoW).toHaveBeenCalledTimes(2));
@@ -236,8 +244,10 @@ describe("mesh relay replay admission reservations", () => {
 
   it("rejects a concurrent duplicate while the first admission owns the reservation", async () => {
     const relay = await loadRelay();
-    await fillPending(relay);
-    protectAllPending();
+    // Leave capacity free: the first envelope must be accepted, and only
+    // the concurrent replay refused. Protected-capacity refusal is tested
+    // separately above, including release + retry after capacity recovers.
+    vi.stubGlobal("navigator", { onLine: false });
     let resolvePow: ((value: boolean) => void) | undefined;
     const powResult = new Promise<boolean>((resolve) => { resolvePow = resolve; });
     bridgeMock.verifyPoW.mockReturnValue(powResult);
@@ -251,9 +261,10 @@ describe("mesh relay replay admission reservations", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const state = JSON.parse(storage.get("mesh_relay_queue") || "{}");
-    expect(state.pending).toHaveLength(50);
+    expect(state.pending).toHaveLength(1);
     expect(state.pending.some((item: { report: { clientGeneratedId: string } }) =>
       item.report.clientGeneratedId === "origin-concurrent-admission"
-    )).toBe(false);
+    )).toBe(true);
+    expect(relay.reserveRelayHash(raw)).toBeNull();
   });
 });

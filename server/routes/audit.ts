@@ -93,7 +93,10 @@ export async function logAdminAction(
   // Drain older failures first so ordering roughly follows event order.
   await flushPendingAudit();
   if (!(await persistAuditEntry(entry))) {
-    if (pendingAudit.length >= PENDING_AUDIT_MAX) pendingAudit.shift();
+    if (pendingAudit.length >= PENDING_AUDIT_MAX) {
+      const evicted = pendingAudit.shift();
+      logger.error({ auditId: evicted?.id, pending: pendingAudit.length }, "Pending audit entry evicted; audit trail data lost");
+    }
     pendingAudit.push(entry);
     logger.warn({ auditId: entry.id, queued: pendingAudit.length }, "Audit entry queued after persistence failure");
   }
@@ -110,16 +113,18 @@ const auditLimiter = rateLimit({
 router.get("/", requireAdmin, auditLimiter, async (_req: Request, res: Response) => {
   let entries: any[] | null = null;
   try {
-    entries = await collectionGet("adminAuditLog", "timestamp", 100);
+    entries = await collectionGet("adminAuditLog", "timestamp", 100, true, undefined, true);
   } catch (err) {
     logger.error({ err }, "Audit log read failed");
+    res.status(503).json({ error: "Audit log temporarily unavailable" });
+    return;
   }
   // Fix 41 (AUD-3): merge, don't pick a side — the DB list hides recent
   // entries that only exist in memoryAudit (a failed audit write queues
   // them locally). Both lists are newest-first; dedupe by id (an entry
   // that persisted sits in both), sort by timestamp desc, cap 100. The
-  // response shape is unchanged. A DB read failure still falls back to
-  // memoryAudit only (entries === null → dbEntries []).
+  // response shape is unchanged. Read failures are reported above instead
+  // of turning a partial process-local trail into a successful response.
   const dbEntries = entries ?? [];
   // Fix 41b (CodeRabbit Nitpick, review 6037710493): the merged list is
   // typed — no new `any` (the pre-existing `entries: any[] | null` and the

@@ -305,6 +305,7 @@ class SosFragment : Fragment() {
 
     private fun startRecording() {
         val ctx = context ?: return
+        var allocatedRecorder: MediaRecorder? = null
         try {
             val file = File(ctx.cacheDir, "sos_voice_${System.currentTimeMillis()}.m4a")
             val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -313,6 +314,7 @@ class SosFragment : Fragment() {
                 @Suppress("DEPRECATION")
                 MediaRecorder()
             }
+            allocatedRecorder = rec
             rec.setAudioSource(MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -336,7 +338,9 @@ class SosFragment : Fragment() {
             handler.postDelayed(stopper, MAX_RECORD_MS)
         } catch (e: Exception) {
             Toast.makeText(ctx, getString(R.string.sos_record_failed), Toast.LENGTH_LONG).show()
-            releaseRecorder()
+            try { allocatedRecorder?.release() } catch (_: Exception) { /* already released */ }
+            if (recorder === allocatedRecorder) recorder = null
+            recording = false
         }
     }
 

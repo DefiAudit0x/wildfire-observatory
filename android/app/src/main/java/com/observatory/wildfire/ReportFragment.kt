@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.ExifInterface
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
@@ -530,8 +531,13 @@ class ReportFragment : Fragment() {
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = PhotoPipeline.targetSample(bounds.outWidth, bounds.outHeight)
             }
-            val bitmap = openStream(false)?.use { BitmapFactory.decodeStream(it, null, opts) }
-            if (bitmap == null) return
+            val rawBitmap = openStream(false)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return
+            val orientation = if (fromCapture) ExifInterface.ORIENTATION_NORMAL else runCatching {
+                openStream(false)?.use {
+                    ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                } ?: ExifInterface.ORIENTATION_NORMAL
+            }.getOrDefault(ExifInterface.ORIENTATION_NORMAL)
+            val bitmap = TelemetryOverlay.orientUpright(rawBitmap, orientation)
             // Pre-scan on the decoded frame BEFORE it is recycled (gallery
             // only — stamped captures deliver their verdict in the bundle).
             val scan = if (!fromCapture) {

@@ -88,6 +88,7 @@ export default function CommandMap({ isArabic, satellites, activeUsers, reports,
       map.remove();
       mapInstance.current = null;
       markersLayer.current = null;
+      didFitRef.current = false;
     };
   }, []);
 

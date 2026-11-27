@@ -10,9 +10,9 @@ This document records the implementation facts that must remain aligned across l
 - Module system: ESM
 - Package manager: `pnpm@11.21.0`
 - Backend: Express `5.2.1`
-- Frontend: React `19.0.1`
-- Build: Vite `6.2.3` + esbuild
-- Validation: Zod `4.4.3`
+- Frontend: React `19.2.8` (pnpm lockfile; manifest permits `^19.0.1`)
+- Build: Vite `8.2.2` + esbuild
+- Validation: Zod `4.5.4`
 
 ## Local commands
 
@@ -52,13 +52,13 @@ pnpm run build
 - pnpm `11.21.0`
 - Java `21` for the E2E job
 
-The CI runtime being Node 24 while the application declares Node `>=22.13.0` is intentional: CI verifies the supported engine floor on a newer supported Node release, while production remains pinned to the Node 22 Alpine image.
+The CI runtime being Node 24 while the application declares Node `>=22.13.0` is intentional: CI exercises Node 24, not the exact engine floor, while production remains pinned to the Node 22 Alpine image.
 
 ## Source of truth
 
 When version references disagree, verify against these implementation files first:
 
-1. `package.json` — declared package manager, engine floor, dependencies, and scripts.
+1. `package.json` — declared package manager, engine floor, dependency ranges, and scripts; `pnpm-lock.yaml` — resolved versions. pnpm is the supported install path; the obsolete Bun lockfile has been removed.
 2. `Dockerfile` — production container runtime and install policy.
 3. `.github/workflows/ci.yml` — CI runtime and dependency installation.
 

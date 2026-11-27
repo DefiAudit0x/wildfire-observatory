@@ -8,22 +8,22 @@ Search existing issues first. For bugs, include expected behavior, actual behavi
 
 ## Development setup
 
-Requirements: Node.js 20 or newer and npm.
+Requirements: Node.js 22.13.0 or newer and pnpm 11.21.0 (the version declared in `package.json`).
 
 ```bash
-npm ci
+pnpm install --frozen-lockfile
 cp .env.example .env
-npm run lint
-npm run test:server
-npm run test:react
-npm run build
+pnpm run lint
+pnpm run test:server
+pnpm run test:react
+pnpm run build
 ```
 
 Run end-to-end tests only when Chromium and the required local environment are available:
 
 ```bash
-npx playwright install chromium
-npm run test:e2e
+pnpm exec playwright install chromium
+pnpm run test:e2e
 ```
 
 ## Pull requests

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Radio, Phone, MapPin, Check, Volume2, AlertTriangle, Clock } from "lucide-react";
 import { TrappedSOS } from "../../types";
 import { RegisteredTeam } from "./registeredTeams";
@@ -50,7 +50,8 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
   // still read "2 min" many minutes later. Shared tick re-renders ages.
   const now = useNowTick(30_000);
   const [audioUrls, setAudioUrls] = useState<Record<string, string>>({});
-  const [loadingAudio, setLoadingAudio] = useState<string | null>(null);
+  const [loadingAudio, setLoadingAudio] = useState<Set<string>>(new Set());
+  const loadingAudioRef = useRef(new Set<string>());
 
   const handleDispatchSubmit = async (sosId: string) => {
     if (!selectedTeam) return;
@@ -68,10 +69,13 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
   );
 
   const fetchAudio = async (sos: TrappedSOS) => {
-    if (audioUrls[sos.id] || loadingAudio === sos.id) return;
-    setLoadingAudio(sos.id);
+    if (audioUrls[sos.id] || loadingAudioRef.current.has(sos.id)) return;
+    loadingAudioRef.current.add(sos.id);
+    setLoadingAudio((current) => new Set(current).add(sos.id));
+    const controller = new AbortController();
+    const deadline = setTimeout(() => controller.abort(), 12_000);
     try {
-      const res = await fetch(`/api/sos/${sos.id}`, { credentials: "same-origin" });
+      const res = await fetch(`/api/sos/${sos.id}`, { credentials: "same-origin", signal: controller.signal });
       if (res.ok) {
         const full = await res.json();
         if (full.audioUrl) {
@@ -94,7 +98,13 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
       console.error("Failed to load SOS audio:", err);
       onAudioError?.();
     } finally {
-      setLoadingAudio(null);
+      clearTimeout(deadline);
+      loadingAudioRef.current.delete(sos.id);
+      setLoadingAudio((current) => {
+        const next = new Set(current);
+        next.delete(sos.id);
+        return next;
+      });
     }
   };
 
@@ -187,11 +197,11 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
                   <button
                     type="button"
                     onClick={() => fetchAudio(sos)}
-                    disabled={loadingAudio === sos.id}
+                    disabled={loadingAudio.has(sos.id)}
                     className="w-full flex items-center justify-center gap-1 bg-red-950/60 border border-red-500/30 text-red-300 rounded-lg p-1.5 text-[9px] font-bold cursor-pointer hover:bg-red-950"
                   >
                     <Volume2 className="h-3 w-3" />
-                    {loadingAudio === sos.id
+                    {loadingAudio.has(sos.id)
                       ? (isArabic ? "جاري التحميل..." : "Chargement...")
                       : (isArabic ? "استماع للتسجيل الصوتي" : "Écouter le vocal")}
                   </button>

@@ -4,7 +4,7 @@
  *   mode) silently DROPPED every privileged action while the HTTP caller got
  *   200. A bounded pending queue now survives the outage, is retried on the
  *   next write and by a 60s sweeper, and GET /api/audit keeps serving the
- *   in-memory copy when the database read fails.
+ *   unavailable state when the database read fails (F049).
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import express from "express";
@@ -57,9 +57,15 @@ describe("S-M8: durable audit queue", () => {
   it("QUEUES the entry instead of dropping it when persistence fails (no-db)", async () => {
     state.docSetImpl.mockResolvedValue(false); // docSet's no-db contract
     await logAdminAction("test.outage", { n: 1 }, { ip: null });
-    // Nothing hit the register, but the entry is queued, not lost:
-    await flushPendingAudit();
-    expect(state.docSetCalls.length).toBeGreaterThan(0);
+    expect(state.docSetCalls).toHaveLength(1);
+    const failedEntry = state.docSetCalls[0];
+    // Recovery must retry the SAME failed entry, not count its initial attempt.
+    state.docSetCalls.length = 0;
+    state.docSetImpl.mockResolvedValue(true);
+    expect(await flushPendingAudit()).toBe(1);
+    expect(state.docSetCalls).toEqual([failedEntry]);
+    expect(await flushPendingAudit()).toBe(0);
+    expect(state.docSetCalls).toHaveLength(1);
   });
 
   it("replays queued entries on the NEXT successful write (outage recovery)", async () => {
@@ -128,18 +134,15 @@ describe("S-M8: durable audit queue", () => {
     await expect(logAdminAction("test.hardcrash", {}, { ip: null })).resolves.toBeUndefined();
   });
 
-  it("GET /api/audit serves the in-memory copy when the database read fails", async () => {
+  it("GET /api/audit reports unavailable when the database read fails", async () => {
     state.collectionGet.mockRejectedValue(new Error("db down"));
     await logAdminAction("test.fallback", { marker: true }, { ip: null });
     const res = await supertest(createApp())
       .get("/api/audit")
       .set("Authorization", `Bearer ${generateAdminToken()}`);
-    expect(res.status).toBe(200);
-    // The fallback output alone does not prove the DB was consulted:
-    // a route that always served the memory copy would pass too.
-    expect(state.collectionGet).toHaveBeenCalledWith("adminAuditLog", "timestamp", 100);
-    expect(Array.isArray(res.body)).toBe(true);
-    expect(res.body.some((e: any) => e.action === "test.fallback")).toBe(true);
+    expect(state.collectionGet).toHaveBeenCalledWith("adminAuditLog", "timestamp", 100, true, undefined, true);
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ error: "Audit log temporarily unavailable" });
   });
 
   it("GET /api/audit merges queued memory entries with durable rows (Fix 41 — AUD-3)", async () => {

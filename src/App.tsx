@@ -25,6 +25,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>("home");
   const [mapClickedCoords, setMapClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [reportSelectionVersion, setReportSelectionVersion] = useState(0);
   const [showTrappedModal, setShowTrappedModal] = useState(false);
 
   const isArabic = lang === "ar";
@@ -108,6 +109,7 @@ export default function App() {
 
   const handleSelectReport = useCallback((id: string) => {
     setSelectedReportId(id);
+    setReportSelectionVersion((version) => version + 1);
     setMapClickedCoords(null);
     setActiveTab("map");
   }, []);
@@ -118,6 +120,11 @@ export default function App() {
   const handleShowThreatOnMap = useCallback(() => {
     if (activeAlerts.length > 0 && userLocation) {
       setSelectedReportId(activeAlerts[0].id);
+      // CodeRabbit (PR #215): same as handleSelectReport — the map's
+      // fly-to effect depends on [selectedReportId, selectionVersion], so
+      // without the bump a threat already selected never recentres when
+      // the user explicitly asks to be taken to it.
+      setReportSelectionVersion((version) => version + 1);
       setMapClickedCoords(null);
       setActiveTab("map");
     }
@@ -224,6 +231,7 @@ export default function App() {
         userLocation={userLocation}
         mapClickedCoords={mapClickedCoords}
         selectedReportId={selectedReportId}
+        reportSelectionVersion={reportSelectionVersion}
         privilegedTabVisible={privilegedTabVisible}
         rosterVisible={rosterVisible}
         syncState={syncState}

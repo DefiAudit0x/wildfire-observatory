@@ -433,11 +433,19 @@ export function useObservatoryPoll(deviceId: string): UseObservatoryPollResult {
     try {
       const res = await fetchWithRetry(`/api/notifications/${id}/read`, { method: "POST" });
       if (!res.ok) return;
+      // Ignore any already-running poll that may contain the unread snapshot.
+      cycleRef.current += 1;
+      // CodeRabbit (PR #215): the bump above invalidates the in-flight
+      // fetch, whose stale branch returns WITHOUT clearing loading — and
+      // the bump starts no replacement, so nothing owned the spinner until
+      // the next scheduled poll (up to 60 s). Start a replacement fetch
+      // now: it owns dataset completion and clears loading when it settles.
+      void fetchData();
       setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
     } catch (e) {
       console.error("Failed to mark notification read", e);
     }
-  }, []);
+  }, [fetchData]);
 
   // Legacy `setReports` surface: same signature as the raw useState setter,
   // but the sync mirror can never drift from the rendered list.
