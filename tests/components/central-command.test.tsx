@@ -789,3 +789,60 @@ describe("CentralCommand dispatch refresh (CodeRabbit on PR #213)", () => {
     expect(sosA?.dispatchedTeams?.[0]?.teamId).toBe("team-alpha");
   });
 });
+
+describe("acknowledged dispatch during roster outage", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each(["cleared", "reassigned"] as const)("keeps the ack across failed refreshes, then accepts a %s roster", async (nextMission) => {
+    const team = { teamId: "team-alpha", type: "protection_civile", name: "Team Alpha", nameAr: "فريق ألفا", active: true, baseLat: null, baseLng: null, blockedPrincipals: [], members: [], activeMission: null };
+    const call = sos("sos-ack", "Acknowledged SOS");
+    let acknowledged = false;
+    let rosterRecovered = false;
+    let rosterRequests = 0;
+    const dispatch = { teamId: team.teamId, type: "protection_civile", teamNameAr: team.nameAr,
+      teamNameFr: team.name, status: "en_route", dispatchedAt: new Date(Date.now() - 3 * 60_000).toISOString() };
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("/api/admin/session")) return jsonResponse(200, {});
+      if (url.includes("/api/teams")) {
+        rosterRequests++;
+        if (acknowledged && !rosterRecovered) return jsonResponse(503, {});
+        const replacement = nextMission === "cleared" ? [] : [{ ...team, teamId: "team-beta", name: "Team Beta",
+          activeMission: { sosId: call.id, phase: "en_route", since: Date.now() } }];
+        return jsonResponse(200, [team, ...(rosterRecovered ? replacement : [])]);
+      }
+      // Even an SOS snapshot still carrying the ack cannot override a successful roster.
+      if (url.includes("/api/sos/full")) return jsonResponse(200, [{ ...call, dispatchedTeams: acknowledged ? [dispatch] : [] }]);
+      if (url.includes("/api/locations")) return jsonResponse(200, []);
+      if (url.includes("/dispatch")) {
+        acknowledged = true;
+        return jsonResponse(200, { success: true, dispatch });
+      }
+      return jsonResponse(404, {});
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<CentralCommand reports={[]} satellites={[]} sosCalls={[]} userLocation={null} lang="fr" />);
+    await waitFor(() => expect(screen.getByText("1 sans dispatch")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Dépêcher secours" }));
+    const select = screen.getAllByRole("combobox").find(s => s.querySelector('option[value="team-alpha"]'));
+    expect(select).toBeTruthy();
+    fireEvent.change(select!, { target: { value: "team-alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "Envoyer" }));
+    await waitFor(() => expect(rosterRequests).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.getByText("Dépêchés:")).toBeTruthy());
+    expect(screen.queryByText("1 sans dispatch")).toBeNull();
+    expect(screen.getByText("Dépêchés:").parentElement?.textContent).toContain("Team Alpha");
+    expect(screen.getByText("Dépêchée il y a 3 min")).toBeTruthy();
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(rosterRequests).toBeGreaterThanOrEqual(3));
+    expect(screen.getByText("Dépêchés:")).toBeTruthy();
+    rosterRecovered = true;
+    fireEvent(document, new Event("visibilitychange"));
+    if (nextMission === "cleared") {
+      await waitFor(() => expect(screen.queryByText("Dépêchés:")).toBeNull());
+      expect(screen.getByText("1 sans dispatch")).toBeTruthy();
+    } else {
+      await waitFor(() => expect(screen.getByText("Dépêchés:").parentElement?.textContent).toContain("Team Beta"));
+      expect(screen.getByText("Dépêchés:").parentElement?.textContent).not.toContain("Team Alpha");
+    }
+  });
+});
