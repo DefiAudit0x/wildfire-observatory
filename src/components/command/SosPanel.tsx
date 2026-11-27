@@ -201,7 +201,7 @@ export default function SosPanel({ isArabic, sosCalls, dispatchLoading, register
                     <span className="text-[9px] font-extrabold uppercase text-emerald-400 block">
                       {isArabic ? "الفرق الموجهة:" : "Dépêchés:"}
                     </span>
-                    {sos.dispatchedTeams!.map((team, idx) => {
+                    {(sos.dispatchedTeams ?? []).map((team, idx) => {
                       return (
                         <div key={idx} className="bg-black/30 border border-white/5 rounded p-1 text-[10px] flex items-center justify-between gap-1">
                           <span className="font-bold text-slate-300 truncate max-w-[130px]">
