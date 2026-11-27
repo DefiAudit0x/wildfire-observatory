@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FileText, Filter, Check, X, CheckCircle2, ShieldAlert } from "lucide-react";
 import { Report } from "../../types";
 import { useReportModeration } from "../../hooks/useReportModeration";
@@ -40,7 +40,7 @@ export default function ReportsTable({ isArabic, reports, onChanged, notify }: R
   // and wording as AdminPanel) replaces the hand-rolled fetch that had no
   // 401 handling (expired session = silent button) and swallowed errors
   // into console.error.
-  const { updatingIds, updateStatus: postStatus } = useReportModeration(isArabic, {
+  const { updatingIds, updateStatus: postStatus, updateSeverity: postSeverity } = useReportModeration(isArabic, {
     onSettled: onChanged,
     onSessionExpiry: (message) => notify(message, "warning"),
     onError: (message) => notify(message, "error"),
@@ -51,7 +51,7 @@ export default function ReportsTable({ isArabic, reports, onChanged, notify }: R
   // itself runs through the shared hook.
   const updateStatus = (id: string, body: { status?: string; severity?: string }) => {
     if (body.status) postStatus(id, body.status);
-    else if (body.severity) postStatus(id, body.severity);
+    else if (body.severity) postSeverity(id, body.severity);
   };
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: reports.length };
@@ -74,6 +74,7 @@ export default function ReportsTable({ isArabic, reports, onChanged, notify }: R
   }, [reports, statusFilter, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / ITEMS_PER_PAGE));
+  useEffect(() => setPage((current) => Math.min(current, totalPages)), [totalPages]);
   const safePage = Math.min(page, totalPages);
   const paginated = filtered.slice((safePage - 1) * ITEMS_PER_PAGE, safePage * ITEMS_PER_PAGE);
 

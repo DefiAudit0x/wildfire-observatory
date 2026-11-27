@@ -136,7 +136,7 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
           <span className="text-gray-600 text-sm">/{pcTeams.length}</span>
         </p>
         <p className="text-[10px] text-red-400/80 mt-1">
-          {pcEnRoute > 0 ? `${pcEnRoute} ${isArabic ? "في مهمة" : "en mission"}` : isArabic ? "كلها جاهزة" : "Toutes prêtes"}
+          {pcEnRoute > 0 ? `${pcEnRoute} ${isArabic ? "في مهمة" : "en mission"}` : isArabic ? "لا توجد مهمة نشطة" : "Aucune mission active"}
         </p>
       </div>
 
@@ -152,7 +152,7 @@ export default function StatCards({ isArabic, reports, satellites, sosCalls, act
           <span className="text-gray-600 text-sm">/{volTeams.length}</span>
         </p>
         <p className="text-[10px] text-emerald-400/80 mt-1">
-          {volEnRoute > 0 ? `${volEnRoute} ${isArabic ? "في مهمة" : "en mission"}` : isArabic ? "كلها جاهزة" : "Toutes prêtes"}
+          {volEnRoute > 0 ? `${volEnRoute} ${isArabic ? "في مهمة" : "en mission"}` : isArabic ? "لا توجد مهمة نشطة" : "Aucune mission active"}
         </p>
       </div>
 
