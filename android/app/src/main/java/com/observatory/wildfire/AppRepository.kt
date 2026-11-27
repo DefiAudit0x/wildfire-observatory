@@ -191,7 +191,7 @@ class AppRepository(
         )
         _state.value = _state.value.copy(
             meshChat = (_state.value.meshChat + entry).takeLast(MESH_CHAT_MAX),
-            meshIntel = if (intel != null && entry.hasCoords) {
+            meshIntel = if (intel != null && entry.hasCoords && intel.kind != "chat") {
                 (_state.value.meshIntel + intel).takeLast(MESH_INTEL_MAX)
             } else _state.value.meshIntel
         )

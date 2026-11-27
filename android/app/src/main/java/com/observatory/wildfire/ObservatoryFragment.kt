@@ -278,7 +278,30 @@ class ObservatoryFragment : Fragment() {
         val now = System.currentTimeMillis()
         updateWeatherLine(snap, now)
         updateProximityBanner(snap)
+        updateRiskDisplay(snap, now)
         updateRadar()
+    }
+
+    private fun updateRiskDisplay(snap: AppRepository.Snapshot, now: Long) {
+        val scoredReports = snap.reports.filter {
+            it.status != "rejected" && it.status != "resolved" &&
+                ProximityLogic.isFresh(it.timestampMs, now)
+        }
+        val score = RiskScore.score(
+            scoredReports.map { it.severity to (it.status == "verified") },
+            snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
+        )
+        val fresh = snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)
+        riskScoreText?.text = if (fresh) score.toString() else "—"
+        positionRiskMarker(score)
+        riskScoreText?.setTextColor(RiskScore.bandColor(score))
+        riskLabelText?.text = if (fresh) RiskScore.labelAr(score) else getString(R.string.risk_unknown)
+        riskDetailText?.text = getString(
+            R.string.risk_detail_fmt,
+            snap.reports.count { it.status == "verified" },
+            snap.reports.count { it.status != "verified" && it.status != "rejected" && it.status != "resolved" },
+            snap.hotspots.count { it.confidence >= 70 }
+        )
     }
 
     // Fix 49 (NMODEL-1): one formatting point for the weather line. A
@@ -366,35 +389,8 @@ class ObservatoryFragment : Fragment() {
         meshChip?.text = getString(R.string.mesh_state_fmt, meshLabel(snap.meshState), snap.meshPeers)
         meshChip?.setTextColor(if (snap.meshState == "connected") 0xFF22D3EE.toInt() else 0xFF94A3B8.toInt())
 
-        // Risk gauge from the SAME freshness rule as the banner (one authority).
-        // v2.15.0 audit fix: RESOLVED fires no longer feed the CURRENT-risk
-        // gauge (verified==resolved was double-counting an extinguished fire
-        // forever), and reports are FRESHNESS-gated before scoring (the list
-        // variable used to be named "fresh" while never gating on freshness).
-        // Resolved incidents still count in the honest detail line below.
         val now = System.currentTimeMillis()
-        val scoredReports = snap.reports.filter {
-            it.status != "rejected" && it.status != "resolved" &&
-                ProximityLogic.isFresh(it.timestampMs, now)
-        }
-        val score = RiskScore.score(
-            scoredReports.map { it.severity to (it.status == "verified") },
-            snap.hotspots.count { it.confidence >= 70 && ProximityLogic.isFresh(it.scanTimeMs, now) }
-        )
-        riskScoreText?.text = if (snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)) score.toString() else "—"
-        positionRiskMarker(score)
-        // v2.1.0: band the number's color — a calm 6/100 must never scream red.
-        // v2.16.0: bands follow the brand book's 5-level fire danger scale
-        // (Low / Moderate / High / Very High / Extreme).
-        // Fix 57 (NRESBG-1): single-sourced from RiskScore.bandColor.
-        riskScoreText?.setTextColor(RiskScore.bandColor(score))
-        riskLabelText?.text = if (snap.lastSyncMs > 0 && ProximityLogic.isFresh(snap.lastSyncMs, now)) RiskScore.labelAr(score) else getString(R.string.risk_unknown)
-        riskDetailText?.text = getString(
-            R.string.risk_detail_fmt,
-            snap.reports.count { it.status == "verified" },
-            snap.reports.count { it.status != "verified" && it.status != "rejected" && it.status != "resolved" },
-            snap.hotspots.count { it.confidence >= 70 }
-        )
+        updateRiskDisplay(snap, now)
 
         // Fix 21c: the banner lives in updateProximityBanner() so the same
         // isFreshFix gate runs from render, renderGps and the freshness tick.

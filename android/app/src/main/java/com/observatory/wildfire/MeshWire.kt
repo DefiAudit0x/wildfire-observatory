@@ -235,12 +235,12 @@ object MeshWire {
         sha256Hex("${senderPublicKey.length}:$senderPublicKey:${messageId.length}:$messageId:${nonce.toString().length}:$nonce:${payloadB64.length}:$payloadB64")
 
     /**
-     * The per-triple hash over (messageId, nonce) — the same length-prefixed
-     * framing, without the payload. Fix 55d: the variant budget is keyed by
+     * The per-triple hash over (messageId, origEphemeralId, nonce) — the same
+     * length-prefixed framing, without the payload. Fix 55d: the variant budget is keyed by
      * the triple, so one PoW solve cannot admit unbounded payload variants.
      */
-    fun seenTripleHash(messageId: String, nonce: Int, senderPublicKey: String = ""): String =
-        sha256Hex("${senderPublicKey.length}:$senderPublicKey:${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
+    fun seenTripleHash(messageId: String, nonce: Int, origEphemeralId: String = ""): String =
+        sha256Hex("${origEphemeralId.length}:$origEphemeralId:${messageId.length}:$messageId:${nonce.toString().length}:$nonce")
 
     /**
      * Canonical coordinate serialization (audit round 12): micro-degrees,

@@ -16,6 +16,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
 
+// Older receivers reject the new chat kind, so keep it gated until their
+// parser support has rolled out.
+private const val MESH_CHAT_KIND_ENABLED = false
+
 /**
  * v2.0.0 — الفريق والشبكة. The member screen: join with the commander's
  * code (native door into the SAME TeamLocationService the WebView stack
@@ -191,6 +195,10 @@ class TeamFragment : Fragment() {
         val ctx = context ?: return
         val text = chatInput?.text?.toString()?.trim().orEmpty()
         if (text.isEmpty()) return
+        if (!MESH_CHAT_KIND_ENABLED) {
+            Toast.makeText(ctx, R.string.mesh_chat_compatibility_disabled, Toast.LENGTH_SHORT).show()
+            return
+        }
         val fix = app.locationEngine.currentFix()
         // v2.15.0: no fix → no coordinates, never a fabricated Algiers fix.
         val ok = if (fix != null) {
