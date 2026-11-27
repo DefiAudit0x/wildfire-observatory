@@ -8,6 +8,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -177,9 +178,15 @@ class AppRepository(
     }
 
     fun refreshMeshPeers() {
-        _state.value = _state.value.copy(
-            meshPeers = meshService?.getConnectedPeers()?.size ?: 0
-        )
+        // CodeRabbit (PR #215): read-copy-write lost a concurrent refreshAll
+        // commit (or vice versa) — a peer-count write installed a copy
+        // carrying stale lists. update{} applies the copy atomically
+        // against the latest state, so neither writer can clobber the other.
+        _state.update { current ->
+            current.copy(
+                meshPeers = meshService?.getConnectedPeers()?.size ?: 0
+            )
+        }
     }
 
     private fun onMeshPlaintext(plaintext: String) {
@@ -553,32 +560,48 @@ class AppRepository(
         val hotspots = hotspotsR ?: prev.hotspots
         val safezones = safezonesR ?: prev.safezones
         val wilayas = wilayasR ?: prev.wilayas
-        _state.value = _state.value.copy(
-            reports = reports,
-            hotspots = hotspots,
-            safezones = safezones,
-            wilayas = wilayas,
-            // Fix 21c: the weather fields are deliberately NOT copied
-            // from prev — the copy keeps the receiver's current values,
-            // so a fetchWeatherAt that lands mid-refresh survives (the
-            // old copy reverted it to prev). With no overlap current ==
-            // prev, so the Fix 21 R7 carry still holds.
-            lastSyncMs = if (allSucceeded) System.currentTimeMillis() else prev.lastSyncMs
-        )
+        // CodeRabbit (PR #215): this used to be a read-copy-write against
+        // the pre-fetch snapshot — a refreshMeshPeers landing mid-refresh
+        // was overwritten with the stale meshPeers (and vice versa).
+        // update{} applies the copy atomically against the latest state.
+        _state.update { current ->
+            current.copy(
+                reports = reports,
+                hotspots = hotspots,
+                safezones = safezones,
+                wilayas = wilayas,
+                // Fix 21c: the weather fields are deliberately NOT copied
+                // from prev — the copy keeps the receiver's current values,
+                // so a fetchWeatherAt that lands mid-refresh survives (the
+                // old copy reverted it to prev). With no overlap current ==
+                // prev, so the Fix 21 R7 carry still holds.
+                lastSyncMs = if (allSucceeded) System.currentTimeMillis() else current.lastSyncMs
+            )
+        }
         if (allSucceeded) persistSnapshot()
     }
 
     fun fetchWeatherAt(lat: Double, lng: Double, onDone: (WeatherNow?) -> Unit) {
         scope.launch {
+            // CodeRabbit (PR #215): the two callers throttle independently,
+            // so a slow request can fail AFTER a faster one succeeded — the
+            // failure must not wipe the newer result. The request's start
+            // time is the staleness watermark for the failure path.
+            val startedAtMs = System.currentTimeMillis()
             val r = io { api.get(ApiPayloads.buildOpenMeteoUrl(lat, lng)) }
             val w = if (r is ObservatoryApi.Result.Ok) Parsers.parseWeather(r.body) else null
             if (w != null) {
                 // Fix 21 (NOBS-2): stamp the fetch time with the reading —
                 // on failure both fields stay untouched, so the old weather
                 // keeps its old timestamp and its age keeps growing.
-                _state.value = _state.value.copy(weather = w, weatherFetchedAtMs = System.currentTimeMillis())
+                _state.update { it.copy(weather = w, weatherFetchedAtMs = System.currentTimeMillis()) }
             } else {
-                _state.value = _state.value.copy(weather = null, weatherFetchedAtMs = 0L)
+                _state.update { current ->
+                    // Only clear when no success landed after this request
+                    // started; a newer reading survives an older failure.
+                    if (current.weatherFetchedAtMs > startedAtMs) current
+                    else current.copy(weather = null, weatherFetchedAtMs = 0L)
+                }
             }
             onDone(w)
         }
