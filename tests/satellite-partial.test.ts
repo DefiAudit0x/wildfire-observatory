@@ -212,6 +212,37 @@ describe("satellite dedup freshness (CodeRabbit on PR #213)", () => {
       confidence: 60,
     });
   });
+
+  it("merges the same observations to the same representative regardless of input order", async () => {
+    // CodeRabbit review 2 on PR #213: A=11:10/95, B=11:35/80, C=12:00/60
+    // at the same location. Oldest-first used to report (12:00, 60) — B's
+    // 80 was discarded when A won at the 11:35 step — while newest-first
+    // reported (12:00, 80). Both orders must now agree on (12:00, 80):
+    // B is the strongest observation inside the 30-min window of the
+    // final latest scanTime.
+    const latest = new Date("2026-11-21T12:00:00.000Z");
+    const at = (minutesAgo: number) => new Date(latest.getTime() - minutesAgo * 60_000);
+    const rows = [modisRow(at(50), 95), modisRow(at(25), 80), modisRow(at(0), 60)];
+    const run = async (ordered: string[]) => {
+      vi.resetModules();
+      vi.stubGlobal("fetch", vi.fn()
+        .mockResolvedValueOnce(empty())
+        .mockResolvedValueOnce(new Response(modisHeader + "\n" + ordered.join("\n"))));
+      const { getLiveSatelliteData } = await import("../server/routes/satellite");
+      return getLiveSatelliteData();
+    };
+    const oldestFirst = await run(rows);
+    const newestFirst = await run([...rows].reverse());
+    for (const data of [oldestFirst, newestFirst]) {
+      expect(data.hotspots).toHaveLength(1);
+      expect(data.hotspots[0]).toMatchObject({
+        scanTime: expectedScanTime(latest),
+        confidence: 80,
+        brightness: 340,
+      });
+    }
+    expect(newestFirst.hotspots[0]).toEqual(oldestFirst.hotspots[0]);
+  });
 });
 
 describe("Fix 12f FIRMS wire columns", () => {

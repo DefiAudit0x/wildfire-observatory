@@ -29,7 +29,10 @@ const backend = vi.hoisted(() => {
         if (c.type === "where") {
           docs = docs.filter((d) => {
             const v = d.data()[c.field];
-            if (c.op === "==") return v === c.value;
+            // Firestore converts `== NaN` to IS_NAN, so a NaN query matches
+            // NaN fields (CodeRabbit on PR #213) — strict `===` alone
+            // never matches NaN, which made the seeded NaN row invisible.
+            if (c.op === "==") return v === c.value || (Number.isNaN(v) && Number.isNaN(c.value));
             if (c.op === "!=") return v !== c.value;
             return true;
           });
@@ -141,6 +144,20 @@ for (const admin of [true, false]) {
       expect(new Set(keys).size).toBe(values.length);
     });
 
+    it("gives colliding (field, op) pairs distinct cache keys", () => {
+      // CodeRabbit on PR #213: the where segment concatenated field + op
+      // with no separator, so field "statusnot-" + op "in" collided with
+      // field "status" + op "not-in" ("statusnot-in" either way).
+      const keys = [
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "statusnot-", op: "in", value: ["active"] }),
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "status", op: "not-in", value: ["active"] }),
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "status", op: "in", value: ["active"] }),
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "status", op: "==", value: "active" }),
+        fs.collectionCacheKey("trappedSos", "timestamp", undefined, { field: "status", op: "!=", value: "active" }),
+      ];
+      expect(new Set(keys).size).toBe(keys.length);
+    });
+
     it("does not serve one filter value's cached rows to a distinct filter value", async () => {
       // End-to-end through collectionGet: the null query caches its rows;
       // a NaN query (or the string "null") must not be served them.
@@ -155,7 +172,8 @@ for (const admin of [true, false]) {
       const nanRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
         field: "score", op: "==", value: NaN,
       });
-      expect(nanRows).toHaveLength(0);
+      // Firestore `== NaN` is IS_NAN: it matches the seeded NaN row.
+      expect(nanRows!.map((r: any) => r.id)).toEqual(["score-nan"]);
       const infRows = await fs.collectionGet("trappedSos", undefined, undefined, false, {
         field: "score", op: "==", value: Infinity,
       });
