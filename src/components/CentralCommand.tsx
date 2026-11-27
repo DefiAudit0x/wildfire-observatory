@@ -537,6 +537,7 @@ export default function CentralCommand({ reports, satellites, sosCalls = [], use
             sosCalls={fullSos}
             dispatchLoading={dispatchLoading}
             registeredTeams={registeredTeams}
+            teamsLoaded={teamsLastUpdated !== null}
             onDispatch={handleDispatchRegistered}
             onResolve={(sos) => setConfirmResolve(sos)}
             onFocusSos={handleFocusSos}
