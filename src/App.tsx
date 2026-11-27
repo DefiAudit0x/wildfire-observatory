@@ -120,6 +120,11 @@ export default function App() {
   const handleShowThreatOnMap = useCallback(() => {
     if (activeAlerts.length > 0 && userLocation) {
       setSelectedReportId(activeAlerts[0].id);
+      // CodeRabbit (PR #215): same as handleSelectReport — the map's
+      // fly-to effect depends on [selectedReportId, selectionVersion], so
+      // without the bump a threat already selected never recentres when
+      // the user explicitly asks to be taken to it.
+      setReportSelectionVersion((version) => version + 1);
       setMapClickedCoords(null);
       setActiveTab("map");
     }
