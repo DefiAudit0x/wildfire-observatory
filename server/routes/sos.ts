@@ -272,10 +272,21 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   const active = await collectionGet("trappedSos", undefined, undefined, false, { field: "status", op: "==", value: "active" });
   if (active === null) return { items: memorySos, source: "memory_fallback" };
   const newest = await collectionGet("trappedSos", "timestamp", SOS_RESOLVED_CAP, false);
-  if (newest === null) return { items: memorySos, source: "memory_fallback" };
-  const resolved = newest.filter((s: any) => s.status === "resolved");
+  // CodeRabbit on PR #213: when only the history read fails, the active
+  // read already succeeded — discarding it hid every active SOS (after a
+  // restart memorySos can be empty, so both feeds answered an empty list
+  // with HTTP 200). Return the active result merged with available memory
+  // records instead; the source stays "memory_fallback" because the
+  // resolved history is missing and the list is incomplete.
+  const resolved = newest === null ? [] : newest.filter((s: any) => s.status === "resolved");
 
-  const fromDb = [...active, ...resolved];
+  // CodeRabbit on PR #213: the two reads are not one snapshot — a resolve
+  // landing between them returns the same SOS in both lists (active
+  // version + resolved version), and [...active, ...resolved] kept both.
+  // Dedup by id with the later (resolved) version winning.
+  const byId = new Map<string, any>();
+  for (const s of [...active, ...resolved]) byId.set(s.id, s);
+  const fromDb = [...byId.values()];
   let merged: any[];
   if (fromDb.length > 0) {
     const dbIds = new Set(fromDb.map((s: any) => s.id));
@@ -286,7 +297,7 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
   }
   let resolvedCount = 0;
   merged.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  return { items: merged.filter((s) => s.status !== "resolved" || ++resolvedCount <= SOS_RESOLVED_CAP), source: "firestore" };
+  return { items: merged.filter((s) => s.status !== "resolved" || ++resolvedCount <= SOS_RESOLVED_CAP), source: newest === null ? "memory_fallback" : "firestore" };
 }
 
 router.get("/", async (_req: Request, res: Response) => {

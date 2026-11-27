@@ -179,7 +179,11 @@ router.post("/", aiLimiter, async (req: Request, res: Response) => {
   const criticalReports = nearbyReports.filter((r) => r.severity === "critical" || r.severity === "high").length;
 
   const ai = getAiClient();
-  if (ai && aiBudgetAvailable()) {
+  // CodeRabbit on PR #213 (nitpick): with zero active reports the provider
+  // call was still dispatched (budget + up to 15 s) and its text then
+  // discarded — gate the call itself on having an active report to
+  // describe, so the provider is never consulted for an all-clear.
+  if (ai && activeReportsCount > 0 && aiBudgetAvailable()) {
     try {
       aiCallsToday += 1;
       const languageInstruction = isArabic
