@@ -22,8 +22,10 @@ router.get("/", async (_req: Request, res: Response) => {
   const days = reqQuery.success && reqQuery.data.days ? reqQuery.data.days : 30;
 
   const dbResult = await getReportsDbResult();
-  // v2.3.0 (simulation purge): no demo-seed fallback — a database outage or an
-  // empty collection means an honest all-zero history chart.
+  if (dbResult.status === "error" || dbResult.status === "no-db") {
+    res.status(503).json({ error: "Report history unavailable", reportsUnavailable: true });
+    return;
+  }
   const reports = dbResult.status === "ok" ? dbResult.reports : [];
 
   const buckets = new Map<string, { reports: number; verified: number; sos: number; hotspots: number }>();
@@ -86,6 +88,12 @@ router.get("/", async (_req: Request, res: Response) => {
 
   res.json({
     days,
+    partial: true,
+    coverage: {
+      reports: "Current snapshot, at most 5000 reports; not a complete historical archive",
+      sos: "Current snapshot, at most 500 SOS plus retained memory fallback",
+      hotspots: "Current satellite observation window (24 hours), not a historical archive",
+    },
     generatedAt: new Date().toISOString(),
     ...(hotspotsPartial ? { hotspotsPartial: true } : {}),
     ...(hotspotsUnavailable ? { hotspotsUnavailable: true } : {}),

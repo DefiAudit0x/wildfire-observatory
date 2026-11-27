@@ -293,7 +293,7 @@ async function getAllSos(): Promise<{ items: any[]; source: SosReadSource }> {
     const extra = memorySos.filter((s: any) => !dbIds.has(s.id));
     merged = [...extra, ...fromDb];
   } else {
-    merged = memorySos;
+    merged = [...memorySos];
   }
   let resolvedCount = 0;
   merged.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
