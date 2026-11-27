@@ -21,6 +21,7 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
     const path = `${col}/${id}`;
     return {
       __path: path,
+      collection: (name: string) => queryRef(`${path}/${name}`),
       get: async () => ({
         exists: existing[path] !== undefined,
         data: () => existing[path],
@@ -44,9 +45,9 @@ function makeFakeAdminDb(existing: Record<string, DocData>) {
     limit: () => queryRef(col, filter),
     get: async () => {
       const docs = Object.entries(existing)
-        .filter(([path, data]) => path.startsWith(`${col}/`) &&
+        .filter(([path, data]) => path.startsWith(`${col}/`) && !path.slice(col.length + 1).includes("/") &&
           (!filter || data[filter.field] === filter.value))
-        .map(([path, data]) => ({ id: path.split("/")[1], data: () => data, exists: true }));
+        .map(([path, data]) => ({ id: path.split("/").at(-1), ref: { __path: path }, data: () => data, exists: true }));
       return { docs, empty: docs.length === 0, size: docs.length, forEach: (cb: (d: any) => void) => docs.forEach(cb) };
     },
   });
@@ -104,7 +105,7 @@ vi.mock("../server/firebase.js", () => ({
 // so the client-branch purge test asserts against one shared store.
 vi.mock("firebase/firestore", () => ({
   doc: (_db: unknown, collection: string, id: string) => ({ id, __path: `${collection}/${id}`, path: `${collection}/${id}` }),
-  collection: (_db: unknown, name: string) => ({ __col: name }),
+  collection: (_db: unknown, ...segments: string[]) => ({ __col: segments.join("/") }),
   where: (field: string, _op: string, value: any) => ({ field, value }),
   query: (col: { __col: string }, filter?: { field: string; value: any }) => ({ __col: col.__col, __filter: filter }),
   getDoc: async (ref: { __path: string }) => ({
@@ -114,9 +115,9 @@ vi.mock("firebase/firestore", () => ({
   }),
   getDocs: async (q: { __col: string; __filter?: { field: string; value: any } }) => {
     const docs = Object.entries(state.fake?.docs ?? {})
-      .filter(([path, data]: [string, any]) => path.startsWith(`${q.__col}/`) &&
+      .filter(([path, data]: [string, any]) => path.startsWith(`${q.__col}/`) && !path.slice(q.__col.length + 1).includes("/") &&
         (!q.__filter || data[q.__filter.field] === q.__filter.value))
-      .map(([path, data]: [string, any]) => ({ id: path.split("/")[1], data: () => data }));
+      .map(([path, data]: [string, any]) => ({ id: path.split("/").at(-1), ref: { __path: path }, data: () => data }));
     return { docs, empty: docs.length === 0, forEach: (cb: (d: any) => void) => docs.forEach(cb) };
   },
   writeBatch: () => {
@@ -254,6 +255,9 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
       "reportPrivate/rep-privacy-1": { deviceId: "device-abc" },
       "reportImages/rep-privacy-1": { image: "data:image/jpeg;base64,AAAA" },
       "reportIdempotency/cg-privacy-1": { reportId: "rep-privacy-1" },
+      "reports/rep-privacy-1/confirmations/principal-a": { at: 1 },
+      "reports/rep-privacy-1/confirmations/principal-b": { at: 2 },
+      "reports/other/confirmations/principal-a": { at: 3 },
     });
     state.fake = fake;
 
@@ -263,6 +267,10 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
     expect(fake.deleted).toContain("reportPrivate/rep-privacy-1");
     expect(fake.deleted).toContain("reportImages/rep-privacy-1");
     expect(fake.deleted).toContain("reportIdempotency/cg-privacy-1");
+    expect(fake.deleted).toContain("reports/rep-privacy-1/confirmations/principal-a");
+    expect(fake.deleted).toContain("reports/rep-privacy-1/confirmations/principal-b");
+    expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-privacy-1/"))).toEqual([]);
+    expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
   });
 
   it("client-branch purge deletes the shards too (Fix 44, DB-2 scope expansion)", async () => {
@@ -271,6 +279,9 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
       "reportPrivate/rep-privacy-1": { deviceId: "device-abc" },
       "reportImages/rep-privacy-1": { image: "data:image/jpeg;base64,AAAA" },
       "reportIdempotency/cg-privacy-1": { reportId: "rep-privacy-1" },
+      "reports/rep-privacy-1/confirmations/principal-a": { at: 1 },
+      "reports/rep-privacy-1/confirmations/principal-b": { at: 2 },
+      "reports/other/confirmations/principal-a": { at: 3 },
     });
     state.fake = fake;
     state.clientMode = true;
@@ -281,6 +292,10 @@ describe("purgeReportWithIdempotency — shards die WITH the report", () => {
     expect(fake.deleted).toContain("reportPrivate/rep-privacy-1");
     expect(fake.deleted).toContain("reportImages/rep-privacy-1");
     expect(fake.deleted).toContain("reportIdempotency/cg-privacy-1");
+    expect(fake.deleted).toContain("reports/rep-privacy-1/confirmations/principal-a");
+    expect(fake.deleted).toContain("reports/rep-privacy-1/confirmations/principal-b");
+    expect(Object.keys(fake.docs).filter((path) => path.startsWith("reports/rep-privacy-1/"))).toEqual([]);
+    expect(fake.docs["reports/other/confirmations/principal-a"]).toEqual({ at: 3 });
   });
 });
 

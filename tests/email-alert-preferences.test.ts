@@ -56,7 +56,8 @@ describe("sendFireAlert subscriber preferences", () => {
       { email: "legacy-alias@example.test", wilayas: ["Annaba"], minSeverity: "medium", unsubscribeToken: "alias-token" },
       { email: "unknown-alias@example.test", wilayas: ["Atlantis"], minSeverity: "medium" },
     ];
-    fetchMock.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
   });
 
@@ -87,7 +88,21 @@ describe("sendFireAlert subscriber preferences", () => {
       "legacy-alias@example.test",
     ]);
     expect(String(fetchMock.mock.calls[0][1]?.body)).toContain("match-token");
-    expect(state.info).toHaveBeenLastCalledWith({ count: 4, wilaya: "الجزائر - عنابة (Algérie - Annaba)" }, "Fire alerts sent");
+    expect(state.info).toHaveBeenLastCalledWith({ count: 4, failed: 0, wilaya: "الجزائر - عنابة (Algérie - Annaba)" }, "Fire alerts sent");
+  });
+
+  it("counts only delivered alerts and surfaces a failed delivery (F071)", async () => {
+    state.adminSdk = true;
+    fetchMock.mockResolvedValueOnce(new Response("provider down", { status: 500 }));
+    await expect(sendFireAlert({
+      severity: "high", locationName: "Test forest", wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+      description: "Delivery failure test", lat: 36.9, lng: 7.7,
+      timestamp: new Date().toISOString(), reporterType: "citizen",
+    })).rejects.toThrow("1 fire alert deliveries failed");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(state.info).toHaveBeenLastCalledWith({
+      count: 3, failed: 1, wilaya: "الجزائر - عنابة (Algérie - Annaba)",
+    }, "Fire alerts sent");
   });
 
   it.each([true, false])("defaults missing severity to medium, excluding low alerts (admin SDK: %s)", async (adminSdk) => {
@@ -111,7 +126,8 @@ describe("sendEmail provider timeout (Fix 44, MAIL-2)", () => {
   const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response("{}", { status: 200 }));
 
   beforeEach(() => {
-    fetchMock.mockClear();
+    fetchMock.mockReset();
+    fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
   });
 

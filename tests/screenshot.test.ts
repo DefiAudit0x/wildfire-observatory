@@ -109,7 +109,7 @@ describe("screenshot capture (Fix 47 — SHOT-1/2)", () => {
       env: { PORT: "4001" },
       outDir,
     });
-    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:4001/api/health");
+    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:4001/api/health", { signal: expect.any(AbortSignal) });
     expect(browser._page.goto).toHaveBeenCalledWith("http://127.0.0.1:4001/", expect.anything());
     expect(browser._mobile.goto).toHaveBeenCalledWith("http://127.0.0.1:4001/", expect.anything());
   });
@@ -144,9 +144,32 @@ describe("screenshot capture (Fix 47 — SHOT-1/2)", () => {
       env: {},
       outDir,
     });
-    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3000/api/health");
+    expect(fetchFn).toHaveBeenCalledWith("http://127.0.0.1:3000/api/health", { signal: expect.any(AbortSignal) });
     expect(browser._page.goto).toHaveBeenCalledWith("http://127.0.0.1:3000/", expect.anything());
     expect(browser._mobile.goto).toHaveBeenCalledWith("http://127.0.0.1:3000/", expect.anything());
+  });
+
+  it("bounds a stalled readiness fetch and cleans up the child (F079)", async () => {
+    vi.useFakeTimers();
+    try {
+      const child = makeChild();
+      const browser = makeBrowser();
+      const fetchFn = vi.fn((_url: string, _init?: RequestInit) => new Promise<never>(() => {}));
+      let outcome: unknown;
+      const capture = captureScreenshots({
+        chromium: { launch: async () => browser }, spawnFn: () => child,
+        fetchFn, env: {}, outDir: os.tmpdir(),
+      }).then(() => { outcome = "unexpected success"; }, (error: unknown) => { outcome = error; });
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(outcome).toBeInstanceOf(Error);
+      expect(String(outcome)).toContain("Screenshot readiness request timed out");
+      await capture;
+      expect(fetchFn.mock.calls[0][1]?.signal?.aborted).toBe(true);
+      expect(child.kill).toHaveBeenCalledTimes(1);
+      expect(browser.newPage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never spawns a server when the browser dependency fails to load (Fix 47b — CodeRabbit 4685534445)", async () => {

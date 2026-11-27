@@ -18,42 +18,12 @@ vi.mock("../server/atomic.js", () => ({
   },
 }));
 
-// Models the real fs.js doc/collection cache (30 s collection TTL, 60 s
-// doc TTL): collectionGet serves a cached list, and every write
-// invalidates it — mirroring real docUpdate's invalidateCollectionCache
-// + invalidateDocCache (server/fs.ts:513–514). Without the cache the
-// update test could never observe invalidation: the mock would re-read
-// mockDocs on every call and a stale list would be unobservable.
-const mockCollectionCache = vi.hoisted(() => new Map<string, any[]>());
-
-vi.mock("../server/fs.js", () => ({
-  collectionGet: async (collection: string) => {
-    const cached = mockCollectionCache.get(collection);
-    if (cached) return cached;
-    const rows = Array.from(mockDocs.entries())
-      .filter(([key]) => key.startsWith(`${collection}/`))
-      .map(([key, value]) => ({ id: key.split("/")[1], ...value }));
-    mockCollectionCache.set(collection, rows);
-    return rows;
-  },
-  docSet: async (collection: string, id: string, data: any) => {
-    mockDocs.set(`${collection}/${id}`, { ...data });
-    mockCollectionCache.delete(collection);
-    return true;
-  },
-  docUpdate: async (collection: string, id: string, data: any) => {
-    const key = `${collection}/${id}`;
-    const current = mockDocs.get(key) || {};
-    mockDocs.set(key, { ...current, ...data });
-    mockCollectionCache.delete(collection);
-    return true;
-  },
-  docDelete: async (collection: string, id: string) => {
-    mockDocs.delete(`${collection}/${id}`);
-    mockCollectionCache.delete(collection);
-    return true;
-  },
-}));
+// Run the actual fs cache/write implementation; only its database is fake.
+vi.mock("../server/firebase.js", async () => {
+  const { memoryAdminDb } = await import("./helpers/memoryAdminDb");
+  const db = memoryAdminDb(mockDocs);
+  return { getDb: () => db, isAdminDb: () => true };
+});
 
 vi.mock("../server/middleware.js", () => ({
   requireAdmin: (req: any, res: any, next: () => void) => {
@@ -71,6 +41,8 @@ vi.mock("../server/routes/admin.js", () => ({
   verifyAdminPassword: async (password: string) => password === "admin-secret",
 }));
 
+const { invalidateCollectionCache, invalidateDocCache, docGet } = await import("../server/fs.js");
+
 const { default: badgesRouter } = await import("../server/routes/badges.js");
 
 function createApp() {
@@ -82,7 +54,8 @@ function createApp() {
 
 beforeEach(() => {
   mockDocs.clear();
-  mockCollectionCache.clear();
+  invalidateCollectionCache("badgeCodes");
+  invalidateDocCache("badgeCodes", "VOL-001");
 });
 
 function seedBadge(overrides: Record<string, any> = {}) {
@@ -138,13 +111,14 @@ describe("PUT /api/badges/:code", () => {
   it("updates limits and invalidates trust cache", async () => {
     seedBadge();
     const app = createApp();
-    // Prime the mocked collection cache with the PRE-update list: the
+    // Prime the production collection cache with the PRE-update list: the
     // next loadBadges serves this cached copy until the update
     // invalidates it. (The PUT's own loadBadges would prime it too —
     // the explicit read + assertion makes the priming visible.)
     const before = await supertest(app).get("/api/badges").set("Authorization", "Bearer fake-token");
     expect(before.status).toBe(200);
     expect(before.body.find((b: any) => b.code === "VOL-001").wilaya).toBe("الجزائر - عنابة (Algérie - Annaba)");
+    expect((await docGet("badgeCodes", "VOL-001")).maxUses).toBeUndefined();
     const res = await supertest(app)
       .put("/api/badges/VOL-001")
       .set("Authorization", "Bearer fake-token")
@@ -159,6 +133,7 @@ describe("PUT /api/badges/:code", () => {
     expect(after.status).toBe(200);
     const updated = after.body.find((b: any) => b.code === "VOL-001");
     expect(updated.maxUses).toBe(10);
+    expect((await docGet("badgeCodes", "VOL-001")).maxUses).toBe(10);
     expect(updated.wilaya).toBe("الجزائر - تلمسان (Algérie - Tlemcen)");
   });
 
