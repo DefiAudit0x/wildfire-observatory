@@ -340,17 +340,21 @@ class MeshInboundTest {
     @Test
     fun variantBudgetIsSharedAcrossKeysForTheSamePowIdentity() {
         val inb = inbound()
-        repeat(MeshInbound.MAX_VARIANTS_PER_TRIPLE) { i ->
-            val payload = canonicalB64("ciphertext-variant-$i".toByteArray())
-            val key = canonicalB64(ByteArray(32) { (i % 2).toByte() })
-            assertTrue(evaluate(frame(nonce = 7, payloadB64 = payload, origPublicKey = key), inbound = inb) is MeshInbound.Verdict.Accepted)
-        }
-        val extra = canonicalB64("ciphertext-variant-extra".toByteArray())
+        val first = frame()
+        assertTrue(evaluate(first, inb) is MeshInbound.Verdict.Accepted)
         val otherKey = canonicalB64(ByteArray(32) { 1 })
-        val verdict = evaluate(frame(nonce = 7, payloadB64 = extra, origPublicKey = otherKey), inbound = inb)
-        assertTrue(verdict is MeshInbound.Verdict.Rejected)
+        val verdict = evaluate(first.copy(origPublicKey = otherKey), inb)
         assertEquals(MeshInbound.RejectReason.REPLAY, (verdict as MeshInbound.Verdict.Rejected).reason)
-        assertEquals(MeshInbound.MAX_VARIANTS_PER_TRIPLE, inb.seenMessageHashes.size)
+        assertNull(verdict.penalty)
+        val triple = MeshWire.seenTripleHash(first.messageId, first.nonce, first.origEphemeralId)
+        assertEquals(1, inb.seenTripleCounts[triple]?.count)
+        assertEquals(1, inb.seenMessageHashes.size)
+        // Declined keys do not consume any of the original key's allowance.
+        repeat(MeshInbound.MAX_VARIANTS_PER_TRIPLE - 1) { i ->
+            val payload = canonicalB64("same-key-variant-$i".toByteArray())
+            assertTrue(evaluate(first.copy(payloadB64 = payload), inb) is MeshInbound.Verdict.Accepted)
+        }
+        assertEquals(MeshInbound.MAX_VARIANTS_PER_TRIPLE, inb.seenTripleCounts[triple]?.count)
     }
 
     @Test
@@ -359,9 +363,76 @@ class MeshInboundTest {
         val now = System.currentTimeMillis()
         inb.seenTripleCounts["triple-old"] = MeshInbound.TripleAdmission(3, now - 1_000_000L)
         inb.seenTripleCounts["triple-fresh"] = MeshInbound.TripleAdmission(2, now)
+        inb.legacyBindings["legacy-old"] = MeshInbound.LegacyBinding("key-old", now - 1_000_000L)
+        inb.legacyBindings["legacy-fresh"] = MeshInbound.LegacyBinding("key-fresh", now)
         inb.sweepReplayWindow(now - 500_000L)
         assertFalse(inb.seenTripleCounts.containsKey("triple-old"))
         assertTrue(inb.seenTripleCounts.containsKey("triple-fresh"))
+        assertFalse(inb.legacyBindings.containsKey("legacy-old"))
+        assertTrue(inb.legacyBindings.containsKey("legacy-fresh"))
+    }
+
+    @Test
+    fun sameLegacyKeyRefreshesBindingAndIdleBindingCanBindAgain() {
+        val inb = inbound()
+        val first = frame()
+        assertTrue(evaluate(first, inb) is MeshInbound.Verdict.Accepted)
+        assertTrue(evaluate(frame(nonce = 8), inb, now + 100) is MeshInbound.Verdict.Accepted)
+        assertEquals(now + 100, inb.legacyBindings[first.origEphemeralId]?.lastSeenMs)
+        inb.sweepReplayWindow(now + 100)
+        assertTrue(inb.legacyBindings.containsKey(first.origEphemeralId))
+        val otherKey = canonicalB64(ByteArray(32) { 1 })
+        val rejected = evaluate(frame(nonce = 9, origPublicKey = otherKey), inb, now + 200)
+        assertEquals(MeshInbound.RejectReason.REPLAY, (rejected as MeshInbound.Verdict.Rejected).reason)
+        assertEquals(now + 100, inb.legacyBindings[first.origEphemeralId]?.lastSeenMs)
+        inb.sweepReplayWindow(now + 101)
+        assertTrue(inb.legacyBindings.isEmpty())
+        assertTrue(evaluate(frame(origPublicKey = otherKey), inb, now + 200) is MeshInbound.Verdict.Accepted)
+        assertEquals(otherKey, inb.legacyBindings[first.origEphemeralId]?.publicKey)
+    }
+
+    @Test
+    fun legacyBindingNoteRunsOncePerNewBindingAfterSignature() {
+        val inb = inbound()
+        var notes = 0
+        fun admit(f: MeshWire.Frame): MeshInbound.Verdict =
+            inb.evaluate(wireBytes(f), now, ttl, skew, difficulty, onLegacyBinding = { notes++ })
+        assertTrue(admit(frame()) is MeshInbound.Verdict.Accepted)
+        assertTrue(admit(frame(nonce = 8)) is MeshInbound.Verdict.Accepted)
+        assertTrue(admit(frame()) is MeshInbound.Verdict.Rejected)
+        assertTrue(admit(frame(origPublicKey = canonicalB64(ByteArray(32) { 1 }))) is MeshInbound.Verdict.Rejected)
+        assertEquals(1, notes)
+        inb.sweepReplayWindow(now + 1)
+        assertTrue(admit(frame()) is MeshInbound.Verdict.Accepted)
+        assertEquals(2, notes)
+
+        val invalid = inbound(verify = { false })
+        invalid.evaluate(wireBytes(frame()), now, ttl, skew, difficulty, onLegacyBinding = { notes++ })
+        assertTrue(invalid.legacyBindings.isEmpty())
+        assertEquals(2, notes)
+    }
+
+    @Test
+    fun legacyBindingMapRejectsUnseenIdentifiersAtCapacityWithoutEviction() {
+        // Isolate the admission gate from the changed identifier's PoW.
+        val inb = inbound(powVerify = { _, _, _ -> true })
+        val known = frame()
+        inb.legacyBindings[known.origEphemeralId] = MeshInbound.LegacyBinding(known.origPublicKey, now)
+        repeat(MeshInbound.MAX_SEEN_HASHES - 1) { i ->
+            inb.legacyBindings["legacy-$i"] = MeshInbound.LegacyBinding("key-$i", now)
+        }
+        val unseen = known.copy(origEphemeralId = "unseen")
+        val rejected = evaluate(unseen, inb) as MeshInbound.Verdict.Rejected
+        assertEquals(MeshInbound.RejectReason.REPLAY, rejected.reason)
+        assertTrue(inb.seenTripleCounts.isEmpty())
+        assertTrue(inb.seenMessageHashes.isEmpty())
+        assertEquals(MeshInbound.MAX_SEEN_HASHES, inb.legacyBindings.size)
+        assertFalse(inb.legacyBindings.containsKey("unseen"))
+        assertTrue(evaluate(known, inb) is MeshInbound.Verdict.Accepted)
+        val otherKey = known.copy(origPublicKey = canonicalB64(ByteArray(32) { 1 }))
+        assertTrue(evaluate(otherKey, inb) is MeshInbound.Verdict.Rejected)
+        assertEquals(known.origPublicKey, inb.legacyBindings[known.origEphemeralId]?.publicKey)
+        assertEquals(MeshInbound.MAX_SEEN_HASHES, inb.legacyBindings.size)
     }
 
     // ---- Fix 55e: budget map cap ----
@@ -433,16 +504,17 @@ class MeshInboundTest {
         assertEquals(f.hopCount, sm.hopCount)
     }
     @Test
-    fun differentSenderCannotSuppressAuthenticFrameWithSameIdentity() {
+    fun firstKeyWinsForLegacyIdentityEvenWhenLaterFrameIsDecryptable() {
         val inb = inbound(decrypt = { msg ->
             if (msg.senderPublicKey == frame().origPublicKey) "authentic".toByteArray() else null
         })
         val authentic = frame()
         val otherSender = authentic.copy(origPublicKey = canonicalB64(ByteArray(32) { 1 }))
         assertTrue(evaluate(otherSender, inb) is MeshInbound.Verdict.Accepted)
-        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Accepted)
-        assertEquals(2, inb.seenMessageHashes.size)
-        assertTrue(evaluate(authentic, inb) is MeshInbound.Verdict.Rejected)
+        val rejected = evaluate(authentic, inb) as MeshInbound.Verdict.Rejected
+        assertEquals(MeshInbound.RejectReason.REPLAY, rejected.reason)
+        assertEquals(1, inb.seenMessageHashes.size)
+        assertEquals(otherSender.origPublicKey, inb.legacyBindings[authentic.origEphemeralId]?.publicKey)
     }
 
 }
