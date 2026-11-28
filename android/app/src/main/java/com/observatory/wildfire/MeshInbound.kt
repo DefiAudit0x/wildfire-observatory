@@ -94,6 +94,11 @@ class MeshInbound(
     data class TripleAdmission(val count: Int, val firstSeenMs: Long)
     val seenTripleCounts = ConcurrentHashMap<String, TripleAdmission>()
 
+    data class LegacyBinding(val publicKey: String, val lastSeenMs: Long)
+    // All binding admission and expiry operations share this monitor so the
+    // first-key decision and strict size cap are atomic across identifiers.
+    internal val legacyBindings = mutableMapOf<String, LegacyBinding>()
+
     /** Why a frame was rejected — the service maps these to the ORIGINAL log strings + penalties. */
     enum class RejectReason { MAGIC, PARSE, STALE, DIFFICULTY, POW, SIGNATURE, REPLAY }
 
@@ -130,7 +135,8 @@ class MeshInbound(
         now: Long,
         messageTtlMs: Long,
         clockSkewMs: Long,
-        networkPowDifficulty: Int
+        networkPowDifficulty: Int,
+        onLegacyBinding: () -> Unit = {}
     ): Verdict {
         // Wire format: only magic-framed frames (deflate or raw-flagged)
         // are accepted. Decoding a raw frame as JSON would defeat the
@@ -194,6 +200,28 @@ class MeshInbound(
 
         if (!verifySignature(secureMsg)) {
             return Verdict.Rejected(RejectReason.SIGNATURE, MeshReputation.REPUTATION_BAD_SIGNATURE)
+        }
+
+        // Legacy IDs are not derived from their key: bind the first verified
+        // key before charging either shared replay allowance. Never evict a
+        // live binding to make room for a new identifier.
+        // Follow-up: remove legacy identifier support in a future release;
+        // the removal version/date has not yet been chosen.
+        if (MeshIdentityBinding.isLegacy(payload.origEphemeralId)) {
+            val newLegacyBinding = synchronized(legacyBindings) {
+                val existing = legacyBindings[payload.origEphemeralId]
+                if (existing != null && existing.publicKey != payload.origPublicKey) {
+                    return Verdict.Rejected(RejectReason.REPLAY, null)
+                }
+                if (existing == null && legacyBindings.size >= MAX_SEEN_HASHES) {
+                    return Verdict.Rejected(RejectReason.REPLAY, null)
+                }
+                legacyBindings[payload.origEphemeralId] = LegacyBinding(
+                    payload.origPublicKey, maxOf(now, existing?.lastSeenMs ?: now)
+                )
+                existing == null
+            }
+            if (newLegacyBinding) onLegacyBinding()
         }
 
         // Anti-replay / anti-broadcast-storm — ONLY AFTER authentication:
@@ -266,6 +294,9 @@ class MeshInbound(
      * cache (verbatim cutoff math).
      */
     fun sweepReplayWindow(replayCutoff: Long) {
+        synchronized(legacyBindings) {
+            legacyBindings.entries.removeAll { it.value.lastSeenMs < replayCutoff }
+        }
         seenMessageHashes.entries.removeAll { it.value < replayCutoff }
         // Fix 55d: the per-triple budget entries expire on the same cutoff —
         // a triple whose frames are all stale can admit nothing new.

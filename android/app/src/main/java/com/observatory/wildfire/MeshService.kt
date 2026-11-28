@@ -668,7 +668,10 @@ class MeshService : Service() {
                 now = System.currentTimeMillis(),
                 messageTtlMs = MESSAGE_TTL_MS,
                 clockSkewMs = MESSAGE_CLOCK_SKEW_MS,
-                networkPowDifficulty = PO_W_DIFFICULTY
+                networkPowDifficulty = PO_W_DIFFICULTY,
+                onLegacyBinding = {
+                    Log.w(TAG, "Legacy mesh identifier bound to its first key; legacy identifiers will be rejected in a future release")
+                }
             )
             if (verdict is MeshInbound.Verdict.Rejected) {
                 when (verdict.reason) {
